@@ -3,9 +3,10 @@ name: Auto build
 # alpha 发布 CI：推送 main / dev 时自动构建 alpha，仅 Windows x64。
 # 手动多通道/多架构发布走 release.yml（workflow_dispatch）。
 #
-# 版本号（见 crates/suwayomi-server/build.rs）：
-# - 内部 versionCode = commit count + 3000（38 次提交 -> 3038）
-# - 外部 versionName = 3.{count/100}.{(count/10)%10}（38 -> 3.0.3，100 -> 3.1.0）
+# alpha 版本号（见 crates/suwayomi-server/build.rs）：
+# - 内部 versionCode = commit count + 3000（46 次提交 -> 3046）
+# - alpha versionName = r{versionCode}（46 -> r3046）；正式外部版本号
+#   （3.x.y）由 release.yml 手动发布使用
 
 on:
   push:
@@ -32,9 +33,9 @@ jobs:
         shell: bash
         run: |
           COUNT="$(git rev-list --count HEAD)"
-          VER_NAME="3.$((COUNT/100)).$(((COUNT/10)%10))"
           VER_CODE="$((COUNT+3000))"
-          TAG="v${VER_NAME}-alpha.${{ github.run_id }}"
+          VER_NAME="r${VER_CODE}"
+          TAG="${VER_NAME}-alpha.${{ github.run_id }}"
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
           echo "version_name=$VER_NAME" >> "$GITHUB_OUTPUT"
           echo "version_code=$VER_CODE" >> "$GITHUB_OUTPUT"
@@ -61,18 +62,19 @@ jobs:
           TGT="windows-x64"
           BIN="target/x86_64-pc-windows-msvc/release/suwayomi-server.exe"
 
-          STAGE="dist/SuwayomiNext-${VER}-${CH}-${TGT}"
+          # 产物命名：Suwayomi-r3046-windows-x64.zip（无 Next、无 -alpha 后缀）
+          STAGE="dist/Suwayomi-${VER}-${TGT}"
           mkdir -p "$STAGE"
           cp "$BIN" "$STAGE/"
           printf 'name=%s\nchannel=%s\nversionName=%s\nversionCode=%s\ncommitCount=%s\ntarget=%s\n' \
-            "SuwayomiNext" "$CH" "$VER" "${{ steps.ver.outputs.version_code }}" \
+            "Suwayomi" "$CH" "$VER" "${{ steps.ver.outputs.version_code }}" \
             "${{ steps.ver.outputs.count }}" "$TGT" > "$STAGE/VERSION.txt"
-          powershell -Command "Compress-Archive -Path 'dist/SuwayomiNext-${VER}-${CH}-${TGT}' -DestinationPath 'dist/SuwayomiNext-${VER}-${CH}-${TGT}.zip' -Force"
-          echo "artifact=dist/SuwayomiNext-${VER}-${CH}-${TGT}.zip" >> "$GITHUB_OUTPUT"
+          powershell -Command "Compress-Archive -Path 'dist/Suwayomi-${VER}-${TGT}' -DestinationPath 'dist/Suwayomi-${VER}-${TGT}.zip' -Force"
+          echo "artifact=dist/Suwayomi-${VER}-${TGT}.zip" >> "$GITHUB_OUTPUT"
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: SuwayomiNext-${{ steps.ver.outputs.version_name }}-alpha-windows-x64
+          name: Suwayomi-${{ steps.ver.outputs.version_name }}-windows-x64
           path: ${{ steps.pack.outputs.artifact }}
 
   publish:
@@ -101,8 +103,8 @@ jobs:
         run: |
           gh release create "$TAG" \
             artifacts/* \
-            --title "SuwayomiNext $VER (alpha)" \
-            --notes "## SuwayomiNext $VER · alpha
+            --title "Suwayomi $VER (alpha)" \
+            --notes "## Suwayomi $VER · alpha
           - versionName: $VER
           - versionCode: $CODE
           - commits: $COUNT

@@ -5,7 +5,7 @@ cd /d "%~dp0"
 
 rem ============================================================
 rem  Suwayomi 启动脚本：先拉起无头服务器，等待就绪后打开 WebUI
-rem  发布布局：suwayomi.exe + suwayomi_launch.bat + webui/ + data/
+rem  发布布局：suwayomi-server.exe + suwayomi_launch.bat + webui/ + data/
 rem ============================================================
 
 set "PORT=8090"
@@ -17,8 +17,8 @@ if not exist "data\downloads"  mkdir "data\downloads"
 if not exist "data\local"      mkdir "data\local"
 
 echo [suwayomi] 启动服务器 (127.0.0.1:%PORT%) ...
-rem 隐藏窗口启动（start /min 会残留最小化 cmd 窗口）
-powershell -NoProfile -Command "Start-Process -FilePath '%~dp0suwayomi.exe' -WorkingDirectory '%~dp0' -WindowStyle Hidden"
+rem server 为 GUI 子系统（release 无控制台窗口），直接启动即可
+start "" "%~dp0suwayomi-server.exe"
 
 echo [suwayomi] 等待服务器就绪...
 :wait

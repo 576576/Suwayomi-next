@@ -5,6 +5,10 @@
 //! - HTTP server (axum) with `/api/v1/**` (Phase 3), GraphQL (Phase 4),
 //!   OPDS (Phase 6) and static WebUI hosting.
 
+// release 版不创建控制台窗口（替代托盘/bat 的隐藏 CLI 启动——隐藏启动在
+// 真实系统上可能被安全软件拦截）。日志仍可被父进程重定向到文件。
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -217,6 +221,31 @@ async fn main() -> anyhow::Result<()> {
         println!("{}", env!("CARGO_PKG_REPOSITORY"));
         return Ok(());
     }
+
+    // 单实例：命名互斥体，已运行则退出（避免多开）
+    #[cfg(windows)]
+    let _instance_guard = {
+        use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError};
+        use windows_sys::Win32::System::Threading::CreateMutexW;
+        let name: Vec<u16> = "SuwayomiServerSingleInstance"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        unsafe {
+            let h = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
+            let already = h.is_null() || GetLastError() == ERROR_ALREADY_EXISTS;
+            if already {
+                if !h.is_null() {
+                    CloseHandle(h);
+                }
+                eprintln!("suwayomi-server 已在运行（单实例），本实例退出");
+                return Ok(());
+            }
+            h
+        }
+    };
+    #[cfg(not(windows))]
+    let _instance_guard = ();
 
     tracing_subscriber::fmt()
         .with_env_filter(

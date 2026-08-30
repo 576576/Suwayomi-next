@@ -51,8 +51,8 @@ docs/                基线文档（REST 端点 / GraphQL schema / 迁移说明 
 
 ```bash
 gradle -p tools/h2-dump build
-suwayomi --migrate <kotlin-data-dir>   # H2 → 当前后端，完成后退出
-suwayomi                                    # 正常启动即可
+suwayomi-server --migrate <kotlin-data-dir>   # H2 → 当前后端，完成后退出
+suwayomi-server                                # 正常启动即可
 ```
 
 备份导入/导出：`GET /api/v1/backup/export`、`POST /api/v1/backup/import`（详见用户指南）。
@@ -116,7 +116,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 无头 `suwayomi` 服务端 + Tauri 2 桌面壳（独立工程，不进 workspace）。发布布局（zip 内）：
 
 ```
-suwayomi.exe           无头服务器（自带 WebUI 静态托管）
+suwayomi-server.exe     无头服务器（自带 WebUI 静态托管；单实例）
 suwayomi-tray.exe      桌面壳：托盘 + 设置窗口
 suwayomi_launch.bat    启动脚本：拉起服务器 → 等就绪 → 打开浏览器 WebUI
 webui/                 Suwayomi-WebUI 构建产物（CI 自动捆绑官方最新 release）

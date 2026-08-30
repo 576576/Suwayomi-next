@@ -7,17 +7,17 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY . .
-RUN cargo build --release --bin suwayomi
+RUN cargo build --release --bin suwayomi-server
 
 # GLIBC must match the build image (rust:1.95-slim is trixie-based).
 FROM debian:trixie-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=build /app/target/release/suwayomi /usr/local/bin/suwayomi
+COPY --from=build /app/target/release/suwayomi-server /usr/local/bin/suwayomi-server
 EXPOSE 4567
 ENV SUWAYOMI_PORT=4567 \
     SUWAYOMI_IP=0.0.0.0 \
     SUWAYOMI_PGLITE_DATA_DIR=/data/pglite-data
 VOLUME ["/data"]
-CMD ["suwayomi"]
+CMD ["suwayomi-server"]

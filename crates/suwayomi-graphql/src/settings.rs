@@ -27,6 +27,7 @@ impl AuthMode {
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(name = "DatabaseType")]
 pub enum GraphqlDatabaseType {
     H2,
     Postgresql,
@@ -346,6 +347,7 @@ pub struct JvmInfo {
 }
 
 #[derive(SimpleObject, Clone)]
+#[graphql(name = "OSInfo")]
 pub struct OSInfo {
     pub build: Option<String>,
     pub name: String,

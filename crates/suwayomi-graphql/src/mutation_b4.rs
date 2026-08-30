@@ -732,6 +732,112 @@ pub struct PartialSettingsTypeInput {
     pub initial_open_in_browser_enabled: Option<bool>,
 }
 
+#[derive(InputObject)]
+pub struct ConnectKoSyncAccountInput {
+    pub client_mutation_id: Option<String>,
+    pub password: String,
+    pub server_address: String,
+    pub username: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct KoSyncStatusPayload {
+    pub is_logged_in: bool,
+    pub server_address: Option<String>,
+    pub username: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct KoSyncConnectPayload {
+    pub client_mutation_id: Option<String>,
+    pub message: Option<String>,
+    pub status: KoSyncStatusPayload,
+}
+
+#[derive(InputObject)]
+pub struct LogoutKoSyncAccountInput {
+    pub client_mutation_id: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct LogoutKoSyncAccountPayload {
+    pub client_mutation_id: Option<String>,
+    pub status: KoSyncStatusPayload,
+}
+
+#[derive(InputObject)]
+pub struct PullKoSyncProgressInput {
+    pub chapter_id: i32,
+    pub client_mutation_id: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct PullKoSyncProgressPayload {
+    pub chapter: Option<ChapterType>,
+    pub client_mutation_id: Option<String>,
+    pub sync_conflict: Option<crate::mutation::SyncConflictInfoType>,
+}
+
+#[derive(InputObject)]
+pub struct PushKoSyncProgressInput {
+    pub chapter_id: i32,
+    pub client_mutation_id: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct PushKoSyncProgressPayload {
+    pub chapter: Option<ChapterType>,
+    pub client_mutation_id: Option<String>,
+    pub success: bool,
+}
+
+#[derive(InputObject)]
+pub struct UpdateCategoryMangaInput {
+    pub categories: Vec<i32>,
+    pub client_mutation_id: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct UpdateCategoryMangaPayload {
+    pub client_mutation_id: Option<String>,
+    pub update_status: crate::query::UpdateStatusPayload,
+}
+
+#[derive(InputObject)]
+pub struct UpdateLibraryMangaInput {
+    pub client_mutation_id: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct UpdateLibraryMangaPayload {
+    pub client_mutation_id: Option<String>,
+    pub update_status: crate::query::UpdateStatusPayload,
+}
+
+#[derive(InputObject)]
+pub struct SourcePreferenceChangeInput {
+    pub check_box_state: Option<bool>,
+    pub edit_text_state: Option<String>,
+    pub list_state: Option<String>,
+    pub multi_select_state: Option<Vec<String>>,
+    pub position: Option<i32>,
+    pub switch_state: Option<bool>,
+}
+
+#[derive(InputObject)]
+pub struct UpdateSourcePreferenceInput {
+    pub change: SourcePreferenceChangeInput,
+    pub client_mutation_id: Option<String>,
+    pub source: LongString,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct UpdateSourcePreferencePayload {
+    pub client_mutation_id: Option<String>,
+    pub preferences: Vec<crate::types::Preference>,
+    pub source: crate::types::SourceType,
+}
+
 // ---------------------------------------------------------------------------
 // B4 Mutation root
 // ---------------------------------------------------------------------------
@@ -920,15 +1026,6 @@ impl MutationRootB4 {
             id: String::new(),
             status: Some(BackupRestoreStatus { manga_progress: 0, state: BackupRestoreState::Idle, total_manga: 0 }),
         })
-    }
-
-    async fn validate_backup(
-        &self,
-        _ctx: &Context<'_>,
-        input: ValidateBackupInput,
-    ) -> async_graphql::Result<ValidateBackupResult> {
-        let _ = input.backup;
-        Ok(ValidateBackupResult { missing_sources: vec![], missing_trackers: vec![] })
     }
 
     // ---- Track ----
@@ -1272,6 +1369,94 @@ impl MutationRootB4 {
         })
     }
 
+    // ---- KoSync (Phase 6 wires account service) ----
+
+    async fn connect_ko_sync_account(
+        &self,
+        _ctx: &Context<'_>,
+        input: ConnectKoSyncAccountInput,
+    ) -> async_graphql::Result<KoSyncConnectPayload> {
+        let _ = (input.password, input.server_address, input.username);
+        Ok(KoSyncConnectPayload {
+            client_mutation_id: input.client_mutation_id,
+            message: None,
+            status: KoSyncStatusPayload { is_logged_in: false, server_address: None, username: None },
+        })
+    }
+
+    async fn logout_ko_sync_account(
+        &self,
+        _ctx: &Context<'_>,
+        input: LogoutKoSyncAccountInput,
+    ) -> async_graphql::Result<LogoutKoSyncAccountPayload> {
+        Ok(LogoutKoSyncAccountPayload {
+            client_mutation_id: input.client_mutation_id,
+            status: KoSyncStatusPayload { is_logged_in: false, server_address: None, username: None },
+        })
+    }
+
+    async fn pull_ko_sync_progress(
+        &self,
+        ctx: &Context<'_>,
+        input: PullKoSyncProgressInput,
+    ) -> async_graphql::Result<PullKoSyncProgressPayload> {
+        let state = ctx.data::<GraphQLState>()?;
+        let chapter = crate::types::ChapterType::from_row(&fetch_chapter_row(state, input.chapter_id).await?);
+        Ok(PullKoSyncProgressPayload {
+            chapter: Some(chapter),
+            client_mutation_id: input.client_mutation_id,
+            sync_conflict: None,
+        })
+    }
+
+    async fn push_ko_sync_progress(
+        &self,
+        ctx: &Context<'_>,
+        input: PushKoSyncProgressInput,
+    ) -> async_graphql::Result<PushKoSyncProgressPayload> {
+        let state = ctx.data::<GraphQLState>()?;
+        let chapter = crate::types::ChapterType::from_row(&fetch_chapter_row(state, input.chapter_id).await?);
+        Ok(PushKoSyncProgressPayload {
+            chapter: Some(chapter),
+            client_mutation_id: input.client_mutation_id,
+            success: false,
+        })
+    }
+
+    // ---- Update helpers ----
+
+    async fn update_category_manga(
+        &self,
+        _ctx: &Context<'_>,
+        input: UpdateCategoryMangaInput,
+    ) -> async_graphql::Result<UpdateCategoryMangaPayload> {
+        let _ = input.categories;
+        Ok(UpdateCategoryMangaPayload {
+            client_mutation_id: input.client_mutation_id,
+            update_status: crate::query::UpdateStatusPayload::idle(),
+        })
+    }
+
+    async fn update_library_manga(
+        &self,
+        _ctx: &Context<'_>,
+        input: UpdateLibraryMangaInput,
+    ) -> async_graphql::Result<UpdateLibraryMangaPayload> {
+        Ok(UpdateLibraryMangaPayload {
+            client_mutation_id: input.client_mutation_id,
+            update_status: crate::query::UpdateStatusPayload::idle(),
+        })
+    }
+
+    async fn update_source_preference(
+        &self,
+        _ctx: &Context<'_>,
+        input: UpdateSourcePreferenceInput,
+    ) -> async_graphql::Result<UpdateSourcePreferencePayload> {
+        let _ = (input.change, input.source);
+        Err(async_graphql::Error::new("source preferences require the extension sandbox (Phase 5)"))
+    }
+
     // ---- Sync / Cache / Settings / User / WebUI ----
 
     async fn start_sync(&self, _ctx: &Context<'_>, input: StartSyncInput) -> async_graphql::Result<StartSyncPayload> {
@@ -1343,6 +1528,7 @@ impl MutationRootB4 {
         Ok(RefreshTokenPayload { access_token: String::new(), client_mutation_id: input.client_mutation_id })
     }
 
+    #[graphql(name = "updateWebUI")]
     async fn update_web_ui(
         &self,
         _ctx: &Context<'_>,
@@ -1358,6 +1544,7 @@ impl MutationRootB4 {
         })
     }
 
+    #[graphql(name = "resetWebUIUpdateStatus")]
     async fn reset_web_ui_update_status(&self, _ctx: &Context<'_>) -> async_graphql::Result<WebUIUpdateStatus> {
         Ok(WebUIUpdateStatus {
             info: WebUIUpdateInfo { channel: crate::settings::WebUIChannel::Stable, tag: String::new() },

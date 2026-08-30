@@ -8,6 +8,7 @@ pub mod scalars;
 pub mod schema;
 pub mod settings;
 pub mod state;
+pub mod subscription;
 pub mod track;
 pub mod types;
 

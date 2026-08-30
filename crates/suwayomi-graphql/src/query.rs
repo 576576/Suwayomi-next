@@ -1,12 +1,17 @@
 //! Query root — mirrors `graphql/queries/*.kt`.
 //! Core queries implemented; remaining queries land in later increments.
 
-use async_graphql::{Context, Enum, InputObject, Object};
+use async_graphql::{Context, Enum, InputObject, Object, SimpleObject};
 use sqlx::Row;
 use suwayomi_core::schema::{CategoryRow, ChapterRow, MangaRow};
 use suwayomi_domain::sql::bind_placeholders;
 
+use crate::mutation_b4::{
+    BackupRestoreState, BackupRestoreStatus, DownloadStatus, KoSyncStatusPayload, LibraryUpdateStatus, UpdateState,
+    ValidateBackupInput, ValidateBackupResult, WebUIUpdateInfo, WebUIUpdateStatus,
+};
 use crate::scalars::{Cursor, LongString};
+use crate::settings::WebUIChannel;
 use crate::settings::{AboutServerPayload, SettingsType};
 use crate::state::GraphQLState;
 use crate::track::{SearchTrackerPayload, TrackRecordNodeList, TrackRecordType, TrackerNodeList, TrackerType};
@@ -21,6 +26,7 @@ enum BindVal {
 
 /// Mirrors `MangaCondition` from `MangaQuery.kt` (core filters).
 #[derive(InputObject)]
+#[graphql(name = "MangaConditionInput")]
 pub struct MangaCondition {
     pub id: Option<i32>,
     pub source_id: Option<i64>,
@@ -44,6 +50,7 @@ pub enum MangaOrderBy {
 }
 
 #[derive(InputObject)]
+#[graphql(name = "MangaOrderInput")]
 pub struct MangaOrder {
     pub by: MangaOrderBy,
     pub by_type: Option<SortOrder>,
@@ -57,6 +64,7 @@ pub enum SortOrder {
 
 /// Mirrors `ChapterCondition` (core filters).
 #[derive(InputObject, Default)]
+#[graphql(name = "ChapterConditionInput")]
 pub struct ChapterCondition {
     pub manga_id: Option<i32>,
     pub id: Option<i32>,
@@ -65,6 +73,7 @@ pub struct ChapterCondition {
 
 /// Mirrors `CategoryCondition` (core).
 #[derive(InputObject, Default)]
+#[graphql(name = "CategoryConditionInput")]
 pub struct CategoryCondition {
     pub id: Option<i32>,
     pub name: Option<String>,
@@ -73,6 +82,7 @@ pub struct CategoryCondition {
 
 /// Mirrors `MetaCondition` from `MetaQuery.kt`.
 #[derive(InputObject, Default)]
+#[graphql(name = "MetaConditionInput")]
 pub struct MetaCondition {
     pub key: Option<String>,
     pub value: Option<String>,
@@ -85,6 +95,7 @@ pub enum MetaOrderBy {
 }
 
 #[derive(InputObject)]
+#[graphql(name = "MetaOrderInput")]
 pub struct MetaOrder {
     pub by: MetaOrderBy,
     pub by_type: Option<SortOrder>,
@@ -237,6 +248,7 @@ pub struct MetaFilterInput {
 
 /// Mirrors `SourceConditionInput`.
 #[derive(InputObject, Default)]
+#[graphql(name = "SourceConditionInput")]
 pub struct SourceCondition {
     pub content_warning: Option<ContentWarning>,
     pub id: Option<LongString>,
@@ -252,6 +264,7 @@ pub enum SourceOrderBy {
 }
 
 #[derive(InputObject)]
+#[graphql(name = "SourceOrderInput")]
 pub struct SourceOrder {
     pub by: SourceOrderBy,
     pub by_type: Option<SortOrder>,
@@ -269,6 +282,7 @@ pub struct SourceFilterInput {
 }
 
 #[derive(InputObject, Default)]
+#[graphql(name = "ExtensionConditionInput")]
 pub struct ExtensionCondition {
     pub lang: Option<String>,
     pub name: Option<String>,
@@ -286,6 +300,7 @@ pub enum ExtensionOrderBy {
 }
 
 #[derive(InputObject)]
+#[graphql(name = "ExtensionOrderInput")]
 pub struct ExtensionOrder {
     pub by: ExtensionOrderBy,
     pub by_type: Option<SortOrder>,
@@ -302,6 +317,7 @@ pub struct ExtensionFilterInput {
 }
 
 #[derive(InputObject, Default)]
+#[graphql(name = "ExtensionStoreConditionInput")]
 pub struct ExtensionStoreCondition {
     pub id: Option<i32>,
     pub index_url: Option<String>,
@@ -315,6 +331,7 @@ pub enum ExtensionStoreOrderBy {
 }
 
 #[derive(InputObject)]
+#[graphql(name = "ExtensionStoreOrderInput")]
 pub struct ExtensionStoreOrder {
     pub by: ExtensionStoreOrderBy,
     pub by_type: Option<SortOrder>,
@@ -330,6 +347,7 @@ pub struct ExtensionStoreFilterInput {
 }
 
 #[derive(InputObject, Default)]
+#[graphql(name = "TrackerConditionInput")]
 pub struct TrackerCondition {
     pub id: Option<i32>,
     pub is_logged_in: Option<bool>,
@@ -344,12 +362,14 @@ pub enum TrackerOrderBy {
 }
 
 #[derive(InputObject)]
+#[graphql(name = "TrackerOrderInput")]
 pub struct TrackerOrder {
     pub by: TrackerOrderBy,
     pub by_type: Option<SortOrder>,
 }
 
 #[derive(InputObject, Default)]
+#[graphql(name = "TrackRecordConditionInput")]
 pub struct TrackRecordCondition {
     pub id: Option<i32>,
     pub manga_id: Option<i32>,
@@ -375,6 +395,7 @@ pub enum TrackRecordOrderBy {
 }
 
 #[derive(InputObject)]
+#[graphql(name = "TrackRecordOrderInput")]
 pub struct TrackRecordOrder {
     pub by: TrackRecordOrderBy,
     pub by_type: Option<SortOrder>,
@@ -390,17 +411,117 @@ pub struct TrackRecordFilterInput {
     pub tracker_id: Option<IntFilterInput>,
 }
 
+/// Mirrors `UpdateStatus` — deprecated query payload (idle).
+#[derive(SimpleObject, Clone)]
+#[graphql(name = "UpdateStatus")]
+pub struct UpdateStatusPayload {
+    pub complete_jobs: UpdateStatusJobs,
+    pub failed_jobs: UpdateStatusJobs,
+    pub is_running: bool,
+    pub pending_jobs: UpdateStatusJobs,
+    pub running_jobs: UpdateStatusJobs,
+    pub skipped_categories: UpdateStatusCategories,
+    pub skipped_jobs: UpdateStatusJobs,
+    pub updating_categories: UpdateStatusCategories,
+}
+
+impl UpdateStatusPayload {
+    pub fn idle() -> Self {
+        Self {
+            complete_jobs: UpdateStatusJobs::empty(),
+            failed_jobs: UpdateStatusJobs::empty(),
+            is_running: false,
+            pending_jobs: UpdateStatusJobs::empty(),
+            running_jobs: UpdateStatusJobs::empty(),
+            skipped_categories: UpdateStatusCategories::empty(),
+            skipped_jobs: UpdateStatusJobs::empty(),
+            updating_categories: UpdateStatusCategories::empty(),
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone)]
+#[graphql(name = "UpdateStatusType")]
+pub struct UpdateStatusJobs {
+    pub mangas: MangaNodeList,
+}
+
+impl UpdateStatusJobs {
+    pub fn empty() -> Self {
+        Self { mangas: MangaNodeList::from_nodes(vec![]) }
+    }
+}
+
+#[derive(SimpleObject, Clone)]
+#[graphql(name = "UpdateStatusCategoryType")]
+pub struct UpdateStatusCategories {
+    pub categories: CategoryNodeList,
+}
+
+impl UpdateStatusCategories {
+    pub fn empty() -> Self {
+        Self { categories: CategoryNodeList::from_nodes(vec![]) }
+    }
+}
+
 #[derive(InputObject)]
 pub struct SearchTrackerInput {
     pub query: String,
     pub tracker_id: i32,
 }
 
+#[derive(SimpleObject, Clone)]
+pub struct LastUpdateTimestampPayload {
+    pub timestamp: LongString,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+pub enum SyncState {
+    Started,
+    CreatingBackup,
+    Downloading,
+    Merging,
+    Uploading,
+    Restoring,
+    Success,
+    Error,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct SyncStatus {
+    pub backup_restore_id: Option<String>,
+    pub end_date: Option<LongString>,
+    pub error_message: Option<String>,
+    pub start_date: LongString,
+    pub state: SyncState,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct AboutWebUI {
+    pub channel: WebUIChannel,
+    pub tag: String,
+    pub update_timestamp: LongString,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct WebUIUpdateCheck {
+    pub channel: WebUIChannel,
+    pub tag: String,
+    pub update_available: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct CheckForServerUpdatesPayload {
+    pub channel: String,
+    pub tag: String,
+    pub url: String,
+}
+
 /// Root Query object.
 #[derive(Default)]
 pub struct QueryRoot;
 
-#[Object]
+#[Object(name = "Query")]
 impl QueryRoot {
     async fn manga(&self, ctx: &Context<'_>, id: i32) -> async_graphql::Result<MangaType> {
         let state = ctx.data::<GraphQLState>()?;
@@ -1025,6 +1146,78 @@ impl QueryRoot {
         Ok(SearchTrackerPayload { track_searches: vec![] })
     }
 
+    /// Mirrors `downloadStatus()` — current download queue (Phase 6 wires the manager).
+    async fn download_status(&self) -> DownloadStatus {
+        DownloadStatus::idle()
+    }
+
+    /// Mirrors `updateStatus()` — deprecated library update status.
+    async fn update_status(&self) -> UpdateStatusPayload {
+        UpdateStatusPayload::idle()
+    }
+
+    /// Mirrors `libraryUpdateStatus()`.
+    async fn library_update_status(&self) -> LibraryUpdateStatus {
+        LibraryUpdateStatus::idle()
+    }
+
+    /// Mirrors `lastUpdateTimestamp()`.
+    async fn last_update_timestamp(&self) -> LastUpdateTimestampPayload {
+        LastUpdateTimestampPayload { timestamp: LongString(0) }
+    }
+
+    /// Mirrors `koSyncStatus()` — Koreader sync (Phase 6 wires accounts).
+    async fn ko_sync_status(&self) -> KoSyncStatusPayload {
+        KoSyncStatusPayload { is_logged_in: false, server_address: None, username: None }
+    }
+
+    /// Mirrors `lastSyncStatus()` — SyncYomi status.
+    async fn last_sync_status(&self) -> Option<SyncStatus> {
+        None
+    }
+
+    /// Mirrors `aboutWebUI()`.
+    #[graphql(name = "aboutWebUI")]
+    async fn about_web_ui(&self) -> AboutWebUI {
+        AboutWebUI { channel: WebUIChannel::Stable, tag: String::new(), update_timestamp: LongString(0) }
+    }
+
+    /// Mirrors `checkForServerUpdates()`.
+    async fn check_for_server_updates(&self) -> Vec<CheckForServerUpdatesPayload> {
+        vec![]
+    }
+
+    /// Mirrors `checkForWebUIUpdate()`.
+    #[graphql(name = "checkForWebUIUpdate")]
+    async fn check_for_web_ui_update(&self) -> WebUIUpdateCheck {
+        WebUIUpdateCheck { channel: WebUIChannel::Stable, tag: String::new(), update_available: false }
+    }
+
+    /// Mirrors `getWebUIUpdateStatus()`.
+    #[graphql(name = "getWebUIUpdateStatus")]
+    async fn get_web_ui_update_status(&self) -> WebUIUpdateStatus {
+        WebUIUpdateStatus {
+            info: WebUIUpdateInfo { channel: WebUIChannel::Stable, tag: String::new() },
+            progress: 0,
+            state: UpdateState::Idle,
+        }
+    }
+
+    /// Mirrors `restoreStatus(id:)`.
+    async fn restore_status(&self, _id: String) -> BackupRestoreStatus {
+        BackupRestoreStatus { manga_progress: 0, state: BackupRestoreState::Idle, total_manga: 0 }
+    }
+
+    /// Mirrors `validateBackup(input:)` — backup validation (Phase 6 parses proto).
+    async fn validate_backup(
+        &self,
+        _ctx: &Context<'_>,
+        input: ValidateBackupInput,
+    ) -> async_graphql::Result<ValidateBackupResult> {
+        let _ = input.backup;
+        Ok(ValidateBackupResult { missing_sources: vec![], missing_trackers: vec![] })
+    }
+
     /// Mirrors `settings()` — full settings registry.
     async fn settings(&self, ctx: &Context<'_>) -> async_graphql::Result<SettingsType> {
         let state = ctx.data::<GraphQLState>()?;
@@ -1039,6 +1232,7 @@ impl QueryRoot {
 
 /// Mirrors `CategoryOrderInput` (shape parity; currently unused by categories).
 #[derive(InputObject)]
+#[graphql(name = "CategoryOrderInput")]
 pub struct CategoryOrderInput {
     pub by: CategoryOrderBy,
     pub by_type: Option<SortOrder>,
@@ -1053,6 +1247,7 @@ pub enum CategoryOrderBy {
 
 /// Mirrors `ChapterOrderInput` (shape parity; currently unused by chapters).
 #[derive(InputObject)]
+#[graphql(name = "ChapterOrderInput")]
 pub struct ChapterOrderInput {
     pub by: ChapterOrderBy,
     pub by_type: Option<SortOrder>,

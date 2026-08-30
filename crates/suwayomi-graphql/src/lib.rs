@@ -1,6 +1,7 @@
 //! GraphQL API — mirrors `suwayomi.tachidesk.graphql.*` on async-graphql.
 //! Compatibility target: `docs/graphql/schema-baseline.graphql` (359 types).
 
+pub mod mutation;
 pub mod query;
 pub mod scalars;
 pub mod schema;

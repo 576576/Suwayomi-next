@@ -1,18 +1,19 @@
 //! Schema construction + axum handlers — mirrors
 //! `graphql/server/TachideskGraphQLServer.kt` + `GraphQLController.kt`.
 
-use async_graphql::{EmptyMutation, EmptySubscription, Schema};
+use async_graphql::{EmptySubscription, Schema};
 use async_graphql_axum::GraphQL;
 use axum::Router;
 
+use crate::mutation::MutationRoot;
 use crate::query::QueryRoot;
 use crate::state::GraphQLState;
 
-pub type GraphQLSchema = Schema<QueryRoot, EmptyMutation, EmptySubscription>;
+pub type GraphQLSchema = Schema<QueryRoot, MutationRoot, EmptySubscription>;
 
 /// Builds the schema with runtime state injected (accessible via `ctx.data`).
 pub fn build_schema(state: GraphQLState) -> GraphQLSchema {
-    Schema::build(QueryRoot, EmptyMutation, EmptySubscription).data(state).finish()
+    Schema::build(QueryRoot, MutationRoot, EmptySubscription).data(state).finish()
 }
 
 /// Mirrors `GraphQL.defineEndpoints()`: POST/GET `/graphql` under `/api`.
@@ -24,7 +25,7 @@ pub fn graphql_router<S: Clone + Send + Sync + 'static>(schema: GraphQLSchema) -
 
 /// Schema SDL without runtime state (for compatibility checks).
 pub fn schema_sdl() -> String {
-    let schema = Schema::build(QueryRoot, EmptyMutation, EmptySubscription).finish();
+    let schema = Schema::build(QueryRoot, MutationRoot, EmptySubscription).finish();
     schema.sdl()
 }
 

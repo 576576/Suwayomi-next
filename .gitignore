@@ -34,3 +34,4 @@ node_modules/
 jvm-sandbox/build/
 tools/h2-dump/build/
 jvm-sandbox/libs/
+.workbuddy/

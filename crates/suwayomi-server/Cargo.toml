@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "suwayomi-server"
+name = "suwayomi"
 path = "src/main.rs"
 
 [dependencies]

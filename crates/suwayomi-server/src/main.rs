@@ -179,7 +179,7 @@ async fn main() -> anyhow::Result<()> {
     // Phase 7: import the Kotlin H2 data and stop.
     if let Some(dir) = migrate_dir {
         import_h2_data(&db, &dir).await?;
-        tracing::info!("--migrate finished; run `suwayomi-server` normally to serve");
+        tracing::info!("--migrate finished; run `suwayomi` normally to serve");
         return Ok(());
     }
 
@@ -214,8 +214,36 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState::new(db, config.clone(), fetcher, sandbox_base);
     let app = build_router(state, schema);
 
-    let addr: SocketAddr = format!("{}:{}", config.ip, config.port).parse()?;
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    // Bind with automatic port fallback. On Windows the configured port may be
+    // inside the Hyper-V dynamic exclusion range (4501-4900) or already taken,
+    // which surfaces as os error 10013 (WSAEACCES) / 10048 (WSAEADDRINUSE).
+    // Instead of crashing, walk upward a few ports and log what happened.
+    let start = config.port;
+    let mut port = start;
+    let (listener, addr) = loop {
+        let candidate: SocketAddr = format!("{}:{}", config.ip, port).parse()?;
+        match tokio::net::TcpListener::bind(candidate).await {
+            Ok(l) => break (l, candidate),
+            Err(e) => {
+                if port >= start + 50 {
+                    return Err(e.into());
+                }
+                // Windows Hyper-V 动态保留区（4501-4900）整段不可用：10013 直接跳过
+                let in_hyperv_range = cfg!(windows) && e.raw_os_error() == Some(10013) && port <= 4900;
+                if in_hyperv_range {
+                    tracing::warn!("port {port} 处于 Hyper-V 动态保留区（os error 10013）; 跳到 4901");
+                    port = 4901;
+                } else {
+                    tracing::warn!(
+                        "port {port} unavailable ({e}); trying {} — \
+                         Windows 上 4501-4900 可能被 Hyper-V 动态保留，或被其他进程占用",
+                        port + 1
+                    );
+                    port += 1;
+                }
+            }
+        }
+    };
     tracing::info!("server listening on http://{addr}");
     axum::serve(listener, app).await?;
     Ok(())

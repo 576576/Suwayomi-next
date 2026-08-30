@@ -76,7 +76,9 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             ip: "0.0.0.0".into(),
-            port: 4567,
+            // Windows 上 4501-4900 常被 Hyper-V 动态保留（bind 报 10013），
+            // 默认 8090 避开该区间；Docker 镜像内仍用 4567（Linux 无此问题）。
+            port: 8090,
             database_type: DatabaseType::H2,
             database_url: String::new(),
             database_username: String::new(),

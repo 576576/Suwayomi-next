@@ -10,7 +10,7 @@ GraphQL / REST / OPDS 接口与 Mihon 扩展体系兼容，默认**零外部依�
 # 直接运行（默认端口 4567，嵌入式数据库，数据存 ./pglite-data）
 cargo run --release -p suwayomi-server
 # 或使用已构建二进制
-./target/release/suwayomi-server
+./target/release/suwayomi
 ```
 
 - WebUI：`http://localhost:4567`（托管目录，见下）
@@ -43,7 +43,7 @@ Kotlin 版使用 H2 数据库文件（JVM 专有格式，Rust 无法直读）。
 2. 迁移（嵌入式默认；或设 `SUWAYOMI_DATABASE_URL` 指到外部 PG）：
 
 ```bash
-suwayomi-server --migrate <kotlin-data-dir> [--h2-dump-jar <path>]
+suwayomi --migrate <kotlin-data-dir> [--h2-dump-jar <path>]
 ```
 
 流程：定位 `<dir>/*.mv.db` → h2-dump 导出 PostgreSQL 脚本 → 导入当前后端 → 退出。

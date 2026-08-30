@@ -60,7 +60,7 @@ jobs:
           VER="${{ steps.ver.outputs.version_name }}"
           CH="alpha"
           TGT="windows-x64"
-          BIN="target/x86_64-pc-windows-msvc/release/suwayomi-server.exe"
+          BIN="target/x86_64-pc-windows-msvc/release/suwayomi.exe"
 
           # 产物命名：Suwayomi-r3046-windows-x64.zip（无 Next、无 -alpha 后缀）
           STAGE="dist/Suwayomi-${VER}-${TGT}"

@@ -18,11 +18,11 @@ Suwayomi（Kotlin/JVM）的 Rust 重写版。目标：保持既有数据、Graph
 ## 快速开始
 
 ```bash
-# 构建 + 启动（默认端口 4567，内置嵌入式 PGlite，零外部依赖）
+# 构建 + 启动（默认端口 8090，内置嵌入式 PGlite，零外部依赖；Windows 上 4501-4900 可能被 Hyper-V 保留，启动失败时自动顺延端口）
 cargo run --release -p suwayomi-server
 ```
 
-- WebUI：`http://localhost:4567`
+- WebUI：`http://localhost:8090`
 - GraphQL：`/api/graphql` ｜ REST：`/api/v1` ｜ OPDS：`/api/opds/v1.2`（KOReader 可用）
 - 完整配置与迁移说明见 **`docs/user-guide.md`**
 
@@ -51,8 +51,8 @@ docs/                基线文档（REST 端点 / GraphQL schema / 迁移说明 
 
 ```bash
 gradle -p tools/h2-dump build
-suwayomi-server --migrate <kotlin-data-dir>   # H2 → 当前后端，完成后退出
-suwayomi-server                                # 正常启动即可
+suwayomi --migrate <kotlin-data-dir>   # H2 → 当前后端，完成后退出
+suwayomi                                    # 正常启动即可
 ```
 
 备份导入/导出：`GET /api/v1/backup/export`、`POST /api/v1/backup/import`（详见用户指南）。
@@ -74,7 +74,7 @@ SUWAYOMI_SANDBOX_JAR=jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar \
 SUWAYOMI_SANDBOX_PORT=8091 \
 SUWAYOMI_EXTENSIONS_DIR=E:/path/to/extensions \
 SUWAYOMI_SANDBOX_PROXY=127.0.0.1:7890 \   # 可选：出境代理（访问被墙源）
-./target/debug/suwayomi-server
+./target/debug/suwayomi
 ```
 
 环境变量：`SUWAYOMI_SANDBOX_JAR`（启用沙盒）、`SUWAYOMI_SANDBOX_PORT`（默认 8091，避开 Windows 动态端口保留区 4501–4900）、`SUWAYOMI_EXTENSIONS_DIR`（默认 ./extensions）、`SUWAYOMI_SANDBOX_PROXY`（可选 HTTP 代理）。未配置时回退内置 `StubFetcher`。
@@ -115,7 +115,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ```bash
 docker build -t suwayomi-next .
-docker run -p 4567:4567 -v suwayomi-data:/data suwayomi-next
+docker run -p 8090:4567 -v suwayomi-data:/data suwayomi-next   # 容器内 4567，映射到宿主 8090
 ```
 
 ## License

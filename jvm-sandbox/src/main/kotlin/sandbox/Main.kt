@@ -31,6 +31,7 @@ fun main() {
     val registry = ExtensionRegistry(Paths.get(extensionsDir))
     registry.scan()
 
+    setupInjekt()
     val server = HttpServer.create(InetSocketAddress("127.0.0.1", port), 0)
     val router = Router(registry)
 

@@ -181,11 +181,12 @@ async fn main() -> anyhow::Result<()> {
 
     // Phase 5: launch the JVM extension sandbox when configured.
     // SUWAYOMI_SANDBOX_JAR  -> path to the built sandbox jar (optional)
-    // SUWAYOMI_SANDBOX_PORT -> sandbox HTTP port (default 4569)
+    // SUWAYOMI_SANDBOX_PORT -> sandbox HTTP port (default 8091; 4501-4900 is
+    //                          reserved by Windows for Hyper-V dynamic ports)
     // SUWAYOMI_EXTENSIONS_DIR -> directory holding extension jars (default ./extensions)
     let mut sandbox_guard: Option<suwayomi_domain::source::sandbox::SandboxProcess> = None;
     if let Ok(jar) = std::env::var("SUWAYOMI_SANDBOX_JAR") {
-        let port = std::env::var("SUWAYOMI_SANDBOX_PORT").unwrap_or_else(|_| "4569".into());
+        let port = std::env::var("SUWAYOMI_SANDBOX_PORT").unwrap_or_else(|_| "8091".into());
         let proc = suwayomi_domain::source::sandbox::SandboxProcess::start(&jar, &port).await;
         match proc {
             Ok(p) => {

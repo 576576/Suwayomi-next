@@ -14,6 +14,7 @@ use crate::source::SourceFetcher;
 
 /// A source described by the sandbox (used for registration/debug).
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SandboxSourceInfo {
     pub id: i64,
     pub name: String,
@@ -22,6 +23,7 @@ pub struct SandboxSourceInfo {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SandboxManga {
     pub url: String,
     #[serde(default)]
@@ -41,6 +43,7 @@ pub struct SandboxManga {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SandboxMangasPage {
     #[serde(default)]
     pub mangas: Vec<SandboxManga>,
@@ -49,6 +52,7 @@ pub struct SandboxMangasPage {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SandboxChapter {
     pub url: String,
     #[serde(default)]
@@ -62,19 +66,33 @@ pub struct SandboxChapter {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SandboxChapters {
     #[serde(default)]
     pub chapters: Vec<SandboxChapter>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxPage {
+    #[serde(default)]
+    pub index: i32,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub image_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SandboxPages {
     #[serde(default)]
-    pub pages: Vec<String>,
+    pub pages: Vec<SandboxPage>,
 }
 
 /// Mirrors the sandbox /extensions payload.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SandboxExtension {
     pub pkg_name: String,
     #[serde(default)]
@@ -228,6 +246,36 @@ impl SourceFetcher for HttpSandboxFetcher {
     fn supports_latest(&self, _source_id: i64) -> bool {
         true // extensions support latest unless the source overrides it
     }
+
+    async fn fetch_pages(
+        &self,
+        source_id: i64,
+        manga_url: &str,
+        chapter_url: &str,
+    ) -> Result<Vec<suwayomi_core::source::SourcePage>> {
+        let cenc = urlencode(chapter_url);
+        let menc = urlencode(manga_url);
+        let url = format!("{}/source/{source_id}/chapter/{cenc}/pages", self.base_url);
+        let resp = self.client.get(&url).query(&[("mangaUrl", menc)]).send().await.map_err(DomainError::from)?;
+        if !resp.status().is_success() {
+            return Err(DomainError::Source(format!(
+                "sandbox error {}: {}",
+                resp.status(),
+                resp.text().await.unwrap_or_default()
+            )));
+        }
+        let pages: SandboxPages = resp.json().await.map_err(DomainError::from)?;
+        Ok(pages
+            .pages
+            .into_iter()
+            .map(|p| suwayomi_core::source::SourcePage {
+                index: p.index,
+                url: p.image_url.clone().unwrap_or(p.url),
+                image_url: p.image_url,
+                uri: None,
+            })
+            .collect())
+    }
 }
 
 /// Owns the sandbox JVM process: spawns `java -jar`, waits for health,
@@ -250,14 +298,18 @@ impl SandboxProcess {
             }
             Err(_) => std::path::PathBuf::from("java"),
         };
-        let child = std::process::Command::new(java)
-            .arg("-jar")
-            .arg(jar_path)
-            .env("SUWAYOMI_SANDBOX_PORT", port)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| DomainError::Sandbox(format!("spawn sandbox: {e}")))?;
+        let mut cmd = std::process::Command::new(java);
+        cmd.arg("-jar").arg(jar_path).env("SUWAYOMI_SANDBOX_PORT", port);
+        // Pass through the extensions directory (default ./extensions) and an
+        // optional outbound proxy (e.g. Clash) for geo-blocked sources.
+        if let Ok(dir) = std::env::var("SUWAYOMI_EXTENSIONS_DIR") {
+            cmd.env("SUWAYOMI_EXTENSIONS_DIR", dir);
+        }
+        if let Ok(proxy) = std::env::var("SUWAYOMI_SANDBOX_PROXY") {
+            cmd.env("SUWAYOMI_SANDBOX_PROXY", proxy);
+        }
+        cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        let child = cmd.spawn().map_err(|e| DomainError::Sandbox(format!("spawn sandbox: {e}")))?;
         let base = format!("http://127.0.0.1:{port}");
         let fetcher = HttpSandboxFetcher::new(base.clone());
         // wait for health with retries (up to ~15s)

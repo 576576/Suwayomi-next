@@ -57,6 +57,28 @@ suwayomi-server                                # 正常启动即可
 
 备份导入/导出：`GET /api/v1/backup/export`、`POST /api/v1/backup/import`（详见用户指南）。
 
+## 真实扩展（JVM sandbox）
+
+server 可启动一个 JVM 沙盒进程，通过 HTTP 契约驱动真实 Mihon/Tachiyomi 扩展（APK → dex2jar → ChildFirst 类加载 + 反射，字节码修复 R8 产物）：
+
+```bash
+# 1) 构建 sandbox（JDK 17+，产物 build/libs/suwayomi-jvm-sandbox.jar）
+cd jvm-sandbox
+gradle build          # 需要 jvm-sandbox/libs/AndroidCompat-1.0.jar（从 Suwayomi-Server
+                      #   AndroidCompat 模块构建后复制，或自行替换为等价 Android stub）
+cd ..
+
+# 2) 把扩展 APK 放入目录（默认 ./extensions，或用 SUWAYOMI_EXTENSIONS_DIR 指定）
+# 3) 启动 server 并启用 sandbox（需要 Java 25+，AndroidCompat 以 JDK 21 编译）
+SUWAYOMI_SANDBOX_JAR=jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar \
+SUWAYOMI_SANDBOX_PORT=8091 \
+SUWAYOMI_EXTENSIONS_DIR=E:/path/to/extensions \
+SUWAYOMI_SANDBOX_PROXY=127.0.0.1:7890 \   # 可选：出境代理（访问被墙源）
+./target/debug/suwayomi-server
+```
+
+环境变量：`SUWAYOMI_SANDBOX_JAR`（启用沙盒）、`SUWAYOMI_SANDBOX_PORT`（默认 8091，避开 Windows 动态端口保留区 4501–4900）、`SUWAYOMI_EXTENSIONS_DIR`（默认 ./extensions）、`SUWAYOMI_SANDBOX_PROXY`（可选 HTTP 代理）。未配置时回退内置 `StubFetcher`。
+
 ## 关键文档
 
 - `MIGRATION_PLAN.md` — 分阶段迁移计划（含决策记录 R1–R8）

@@ -1,84 +1,97 @@
+//! Extension registry — scans the extensions directory for APKs, converts
+//! them to jars (dex2jar), loads the Source classes and exposes the sources
+//! to the HTTP router.
+
 package sandbox
 
-import com.sun.net.httpserver.HttpExchange
+import net.dongliu.apk.parser.ApkFile
 import java.nio.file.Files
 import java.nio.file.Path
-import java.util.jar.JarFile
+import java.util.concurrent.ConcurrentHashMap
 
-/** A loaded extension: metadata + its declared source classes. */
-data class SandboxExtension(
+class ExtensionRegistry(private val rootDir: Path) {
+    val extensions = ConcurrentHashMap<String, ExtensionInfo>() // pkgName -> info
+    val sources = ConcurrentHashMap<Long, LoadedSource>() // source id -> loaded
+
+    private val loader = ExtensionLoader(rootDir)
+
+    fun scan() {
+        if (!Files.isDirectory(rootDir)) {
+            Files.createDirectories(rootDir)
+        }
+        Files.list(rootDir).use { stream ->
+            stream.filter { it.fileName.toString().endsWith(".apk") }.forEach { apk ->
+                try {
+                    loadApk(apk)
+                } catch (e: Exception) {
+                    System.err.println("sandbox: failed to load $apk: ${e.message}")
+                    e.printStackTrace()
+                }
+            }
+        }
+    }
+
+    private fun loadApk(apk: Path) {
+        val info = readApkInfo(apk) ?: return
+        val loaded = loader.load(apk, info.className, info.extensionId)
+        extensions[info.pkgName] = info
+        loaded.forEach { sources[it.id] = it }
+        println("sandbox: loaded ${loaded.size} source(s) from ${apk.fileName} (${info.name}/${info.versionName})")
+    }
+
+    /** Reads pkg info + the Source class name from the APK manifest. */
+    private fun readApkInfo(apk: Path): ExtensionInfo? {
+        return ApkFile(apk.toFile()).use { apkFile ->
+            val meta = apkFile.apkMeta ?: return@use null
+            val manifest = apkFile.manifestXml ?: return@use null
+            // tachiyomi.extension.class meta-data (attribute order varies)
+            val className = Regex("android:name=\"tachiyomi\\.extension\\.class\"[^>]*android:value=\"([^\"]+)\"")
+                .find(manifest)?.groupValues?.get(1)
+                ?: Regex("android:value=\"([^\"]+)\"[^>]*android:name=\"tachiyomi\\.extension\\.class\"")
+                    .find(manifest)?.groupValues?.get(1)
+            if (className == null) {
+                System.err.println("sandbox: ${apk.fileName} has no tachiyomi.extension.class meta-data; skipped")
+                return@use null
+            }
+            ExtensionInfo(
+                pkgName = meta.packageName ?: apk.fileName.toString(),
+                name = meta.label ?: apk.fileName.toString(),
+                lang = extractLang(apk.fileName.toString()),
+                versionName = meta.versionName ?: "0",
+                className = className,
+                extensionId = (extensions.size + 1).toLong(),
+            )
+        }
+    }
+
+    /** "tachiyomi-all.nhentaicom-v1.4.10.apk" -> "all" */
+    private fun extractLang(fileName: String): String {
+        val m = Regex("tachiyomi-([a-z0-9]+)\\.").find(fileName)
+        return m?.groupValues?.get(1) ?: "all"
+    }
+
+    fun toExtensionsJson(): String {
+        val parts = extensions.values.joinToString(",") { e ->
+            """{"pkgName":${jsonStr(e.pkgName)},"name":${jsonStr(e.name)},"lang":${jsonStr(e.lang)},"versionName":${jsonStr(e.versionName)},"className":${jsonStr(e.className)},"sources":[${sources.values.filter { it.extensionId == e.extensionId }.joinToString(",") { """{"id":${it.id},"name":${jsonStr(it.name)},"lang":${jsonStr(it.lang)}}""" }}]}"""
+        }
+        return "[$parts]"
+    }
+
+    fun toSourcesJson(): String {
+        val parts = sources.values.joinToString(",") { s ->
+            """{"id":${s.id},"name":${jsonStr(s.name)},"lang":${jsonStr(s.lang)},"extension":${s.extensionId}}"""
+        }
+        return "[$parts]"
+    }
+
+    fun driver(sourceId: Long): SourceDriver? = sources[sourceId]?.let { SourceDriver(it) }
+}
+
+data class ExtensionInfo(
     val pkgName: String,
     val name: String,
     val lang: String,
     val versionName: String,
     val className: String,
-    val jarPath: Path,
-    val sourceIds: MutableList<Long> = mutableListOf(),
+    val extensionId: Long,
 )
-
-/**
- * Scans the extensions directory for installed extension jars and keeps the
- * registry that the Rust server queries via /extensions and /sources.
- *
- * Phase 5 skeleton: jar metadata (manifest) is parsed; instantiating source
- * objects through the child-first classloader is the next increment.
- */
-class ExtensionRegistry(private val extensionsDir: Path) {
-    val extensions = mutableListOf<SandboxExtension>()
-    val sources = mutableListOf<SandboxSource>()
-
-    fun scan() {
-        extensions.clear()
-        sources.clear()
-        if (!Files.isDirectory(extensionsDir)) return
-        Files.list(extensionsDir).use { stream ->
-            stream.filter { it.toString().endsWith(".jar") }
-                .sorted()
-                .forEach { scanJar(it) }
-        }
-    }
-
-    private fun scanJar(jarPath: Path) {
-        try {
-            JarFile(jarPath.toFile()).use { jar ->
-                val manifest = jar.manifest ?: return
-                val attrs = manifest.mainAttributes
-                val feature = attrs.getValue("Tachiyomi-Extension") ?: attrs.getValue("tachiyomi.extension") ?: return
-                if (feature != "true") return
-                val pkgName = attrs.getValue("Tachiyomi-Extension-Pkg") ?: attrs.getValue("tachiyomi.extension.pkg") ?: jarPath.fileName.toString().removeSuffix(".jar")
-                val className = attrs.getValue("Tachiyomi-Extension-Class") ?: attrs.getValue("tachiyomi.extension.class")
-                val name = attrs.getValue("Tachiyomi-Extension-Name") ?: pkgName
-                val lang = attrs.getValue("Tachiyomi-Extension-Lang") ?: "en"
-                val versionName = attrs.getValue("Tachiyomi-Extension-Version") ?: ""
-                val ext = SandboxExtension(pkgName, name, lang, versionName, className ?: "", jarPath)
-                extensions.add(ext)
-            }
-        } catch (_: Exception) {
-            // unreadable jar -> skip
-        }
-    }
-
-    fun toJson(): String {
-        val parts = extensions.joinToString(",") { e ->
-            """{"pkgName":${jsonStr(e.pkgName)},"name":${jsonStr(e.name)},"lang":${jsonStr(e.lang)},"versionName":${jsonStr(e.versionName)},"className":${jsonStr(e.className)},"sources":[${e.sourceIds.joinToString(",")}]}"""
-        }
-        return "[$parts]"
-    }
-}
-
-/** A registered source (Phase 5 skeleton: metadata only). */
-data class SandboxSource(
-    val id: Long,
-    val name: String,
-    val lang: String,
-    val extension: Int,
-)
-
-fun HttpExchange.respond(code: Int, body: String) {
-    val bytes = body.toByteArray(Charsets.UTF_8)
-    responseHeaders.set("Content-Type", "application/json; charset=utf-8")
-    sendResponseHeaders(code, bytes.size.toLong())
-    responseBody.use { it.write(bytes) }
-}
-
-fun HttpExchange.respond404() = respond(404, """{"error":"not found"}""")

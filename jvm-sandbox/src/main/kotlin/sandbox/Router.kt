@@ -5,28 +5,25 @@ import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 
 /**
- * Routes incoming requests to handlers. The /source/ subtree dispatch is a
- * placeholder for the source invocation layer (next Phase 5 increment).
+ * Routes incoming requests to handlers. /source/ drives the loaded extension
+ * sources reflectively through [SourceDriver].
  */
 class Router(private val registry: ExtensionRegistry) {
 
     fun health(ex: HttpExchange) {
-        ex.respond(200, """{"ok":true,"extensions":${registry.extensions.size}}""")
+        ex.respond(200, """{"ok":true,"extensions":${registry.extensions.size},"sources":${registry.sources.size}}""")
     }
 
     fun extensions(ex: HttpExchange) {
-        ex.respond(200, registry.toJson())
+        ex.respond(200, registry.toExtensionsJson())
     }
 
     fun sources(ex: HttpExchange) {
-        val parts = registry.sources.joinToString(",") { s ->
-            """{"id":${s.id},"name":${jsonStr(s.name)},"lang":${jsonStr(s.lang)},"extension":${s.extension}}"""
-        }
-        ex.respond(200, "[$parts]")
+        ex.respond(200, registry.toSourcesJson())
     }
 
     fun sourceDispatch(ex: HttpExchange) {
-        val path = ex.requestURI.path
+        val path = ex.requestURI.rawPath
         val segments = path.removePrefix("/source/").split("/").filter { it.isNotBlank() }
         if (segments.isEmpty()) {
             ex.respond404()
@@ -37,34 +34,71 @@ class Router(private val registry: ExtensionRegistry) {
             ex.respond(400, """{"error":"invalid source id"}""")
             return
         }
-        when {
-            segments.size == 1 && ex.requestMethod == "GET" -> {
-                val query = ex.requestURI.rawQuery ?: ""
-                val params = parseQuery(query)
-                val page = params["page"]?.toIntOrNull() ?: 1
-                val q = params["query"]
-                // Phase 5 skeleton: no source runtime loaded yet.
-                ex.respond(200, """{"mangas":[],"hasNextPage":false,"query":${jsonOpt(q)},"page":$page}""")
+        val driver = registry.driver(sourceId)
+        if (driver == null) {
+            ex.respond(404, """{"error":"source $sourceId not loaded"}""")
+            return
+        }
+        val params = parseQuery(ex.requestURI.rawQuery ?: "")
+
+        try {
+            when {
+                // list: /source/{id} or /source/{id}/manga  (?page=&query=&mode=latest)
+                (segments.size == 1 || (segments.size == 2 && segments[1] == "manga")) && ex.requestMethod == "GET" -> {
+                    val page = params["page"]?.toIntOrNull() ?: 1
+                    val mode = params["mode"]
+                    val q = params["query"]
+                    val (mangas, hasNext) = when {
+                        mode == "latest" -> driver.getLatestUpdates(page)
+                        q != null && q.isNotBlank() -> driver.search(q, page)
+                        else -> driver.getPopularManga(page)
+                    }
+                    ex.respond(200, """{"mangas":[${mangas.joinToString(",") { mapToJson(it) }}],"hasNextPage":$hasNext,"page":$page}""")
+                }
+                // /source/{id}/manga/{mangaUrl}
+                segments.size == 3 && segments[1] == "manga" -> {
+                    val mangaUrl = decodeSeg(segments[2])
+                    val details = driver.getMangaDetails(mapOf("url" to mangaUrl))
+                    ex.respond(200, mapToJson(details))
+                }
+                // /source/{id}/manga/{mangaUrl}/chapters
+                segments.size == 4 && segments[1] == "manga" && segments[3] == "chapters" -> {
+                    val mangaUrl = decodeSeg(segments[2])
+                    val chapters = driver.getChapterList(mapOf("url" to mangaUrl))
+                    ex.respond(200, """{"chapters":[${chapters.joinToString(",") { mapToJson(it) }}]}""")
+                }
+                // /source/{id}/chapter/{chapterUrl}/pages?mangaUrl=
+                segments.size == 4 && segments[1] == "chapter" && segments[3] == "pages" -> {
+                    val chapterUrl = decodeSeg(segments[2])
+                    val mangaUrl = params["mangaUrl"] ?: ""
+                    val pages = driver.getPageList(mapOf("url" to chapterUrl, "mangaUrl" to mangaUrl))
+                    val resolved = driver.resolveImageUrls(pages)
+                    ex.respond(200, """{"pages":[${resolved.joinToString(",") { mapToJson(it) }}]}""")
+                }
+                // /source/{id}/filters
+                segments.size == 3 && segments[1] == "filters" -> ex.respond(200, "[]")
+                segments.size == 2 && segments[1] == "filters" -> ex.respond(200, "[]")
+                else -> ex.respond404()
             }
-            segments.size == 2 -> {
-                // manga details: /source/{id}/manga/{url}
-                val mangaUrl = decodeSeg(segments[1])
-                ex.respond(200, """{"url":${jsonStr(mangaUrl)},"title":"","status":"UNKNOWN"}""")
+        } catch (t: Throwable) {
+            try {
+                ex.respond(500, """{"error":${jsonStr(t.stackTraceToString())}}""")
+            } catch (e2: Exception) {
+                t.printStackTrace()
             }
-            segments.size == 3 && segments[2] == "chapters" -> {
-                val mangaUrl = decodeSeg(segments[1])
-                ex.respond(200, """{"mangaUrl":${jsonStr(mangaUrl)},"chapters":[]}""")
-            }
-            segments.size == 3 && segments[2] == "filters" -> {
-                ex.respond(200, "[]")
-            }
-            segments.size == 3 && segments[2] == "pages" -> {
-                val chapterUrl = decodeSeg(segments[1])
-                ex.respond(200, """{"chapterUrl":${jsonStr(chapterUrl)},"pages":[]}""")
-            }
-            else -> ex.respond404()
         }
     }
+
+    private fun mapToJson(m: Map<String, Any?>): String =
+        m.entries.joinToString(",") { (k, v) ->
+            when (v) {
+                null -> """${jsonStr(k)}:null"""
+                is Number, is Boolean -> """${jsonStr(k)}:$v"""
+                is Map<*, *> -> """${jsonStr(k)}:${mapToJson(@Suppress("UNCHECKED_CAST") (v as Map<String, Any?>))}"""
+                is List<*> -> """${jsonStr(k)}:[${v.joinToString(",") { mapToJson(@Suppress("UNCHECKED_CAST") (it as Map<String, Any?>)) }}]"""
+                else -> """${jsonStr(k)}:${jsonStr(v.toString())}"""
+            }
+        }.let { "{${it}}" }
 
     private fun decodeSeg(s: String): String =
         URLDecoder.decode(s, StandardCharsets.UTF_8)

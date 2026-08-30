@@ -1,1 +1,3 @@
-jvm-sandbox/build
+build/
+.gradle/
+.kotlin/

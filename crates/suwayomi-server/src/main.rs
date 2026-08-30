@@ -18,7 +18,11 @@ use suwayomi_core::db::Db;
 use suwayomi_domain::source::{SourceFetcher, StubFetcher};
 use suwayomi_rest::AppState;
 
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// External release version — `3.{count/100}.{(count/10)%10}` (see build.rs).
+/// 38 commits -> 3.0.3, 100 -> 3.1.0.
+pub const VERSION: &str = env!("SUWAYOMI_VERSION_NAME");
+/// Internal version code — commit count + 3000 (see build.rs).
+pub const VERSION_CODE: &str = env!("SUWAYOMI_VERSION_CODE");
 
 fn config_from_env() -> ServerConfig {
     // Pure-PostgreSQL decision (2026-08-30): Rust backend only supports PG.

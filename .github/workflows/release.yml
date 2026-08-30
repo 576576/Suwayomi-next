@@ -1,0 +1,203 @@
+name: Release
+
+# 发布通道：
+# - push 到 master          -> alpha，仅 windows-x64 构建
+# - 手动触发（workflow_dispatch）-> 可选 alpha/beta/release + 多选构建目标
+#
+# 版本号（见 crates/suwayomi-server/build.rs）：
+# - 内部 versionCode = commit count + 3000（38 次提交 -> 3038）
+# - 外部 versionName = 3.{count/100}.{(count/10)%10}（38 -> 3.0.3，100 -> 3.1.0）
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 发布通道
+        type: choice
+        options: [alpha, beta, release]
+        default: alpha
+      targets:
+        description: 构建目标（可多选）
+        type: multi-select
+        options:
+          - windows-x64
+          - linux-x64
+          - linux-arm64
+          - macos-x64
+          - macos-arm64
+        default: [windows-x64]
+      version_count:
+        description: 版本计数（留空自动使用提交数；用于预发布验证）
+        type: string
+        default: ''
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prep:
+    name: 准备构建参数
+    runs-on: ubuntu-latest
+    outputs:
+      channel: ${{ steps.out.outputs.channel }}
+      targets: ${{ steps.out.outputs.targets }}
+      version_name: ${{ steps.out.outputs.version_name }}
+      version_code: ${{ steps.out.outputs.version_code }}
+      count: ${{ steps.out.outputs.count }}
+      tag: ${{ steps.out.outputs.tag }}
+      prerelease: ${{ steps.out.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: out
+        run: |
+          # 通道：手动触发取 input，push 默认 alpha
+          CHANNEL="${{ github.event.inputs.channel }}"
+          if [ -z "$CHANNEL" ]; then CHANNEL="alpha"; fi
+
+          # 版本计数：手动可覆盖，否则 git 提交数
+          COUNT="${{ github.event.inputs.version_count }}"
+          if [ -z "$COUNT" ]; then COUNT="$(git rev-list --count HEAD)"; fi
+
+          VER_NAME="3.$((COUNT/100)).$(((COUNT/10)%10))"
+          VER_CODE="$((COUNT+3000))"
+
+          # tag：release 用干净版本号；alpha/beta 带通道 + 运行号保证唯一
+          if [ "$CHANNEL" = "release" ]; then
+            TAG="v${VER_NAME}"
+            PRE="false"
+          else
+            TAG="v${VER_NAME}-${CHANNEL}.${{ github.run_id }}"
+            PRE="true"
+          fi
+
+          # 构建目标：push 仅 windows-x64；手动触发用多选
+          TARGETS="${{ github.event.inputs.targets }}"
+          if [ -z "$TARGETS" ]; then TARGETS='["windows-x64"]'; fi
+          # 转换为 matrix include 对象（os / rust_target / target）
+          INCLUDE="$(python3 - "$TARGETS" <<'PY'
+import json, sys
+mapping = {
+    "windows-x64": ("windows-latest", "x86_64-pc-windows-msvc"),
+    "linux-x64":   ("ubuntu-latest",  "x86_64-unknown-linux-gnu"),
+    "linux-arm64": ("ubuntu-latest",  "aarch64-unknown-linux-gnu"),
+    "macos-x64":   ("macos-13",       "x86_64-apple-darwin"),
+    "macos-arm64": ("macos-14",       "aarch64-apple-darwin"),
+}
+sel = json.loads(sys.argv[1])
+inc = [{"target": t, "os": mapping[t][0], "rust_target": mapping[t][1]} for t in sel if t in mapping]
+print(json.dumps(inc))
+PY
+)"
+          if [ -z "$INCLUDE" ] || [ "$INCLUDE" = "[]" ]; then
+            echo "::error::无效的构建目标: $TARGETS"
+            exit 1
+          fi
+
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "targets=$INCLUDE" >> "$GITHUB_OUTPUT"
+          echo "version_name=$VER_NAME" >> "$GITHUB_OUTPUT"
+          echo "version_code=$VER_CODE" >> "$GITHUB_OUTPUT"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRE" >> "$GITHUB_OUTPUT"
+          echo "构建: $CHANNEL $VER_NAME (code $VER_CODE, commits $COUNT) -> $TAG targets=$TARGETS"
+
+  build:
+    name: 构建 ${{ matrix.target }}
+    needs: prep
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.prep.outputs.targets) }}
+    env:
+      SUWAYOMI_VERSION_COUNT: ${{ needs.prep.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: 安装交叉编译工具链
+        if: matrix.rust_target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+      - name: 构建
+        run: |
+          cargo build --release -p suwayomi-server --target ${{ matrix.rust_target }}
+      - name: 打包
+        id: pack
+        shell: bash
+        run: |
+          VER="${{ needs.prep.outputs.version_name }}"
+          CH="${{ needs.prep.outputs.channel }}"
+          TGT="${{ matrix.target }}"
+          BIN="target/${{ matrix.rust_target }}/release/suwayomi-server"
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then BIN="${BIN}.exe"; fi
+
+          STAGE="dist/SuwayomiNext-${VER}-${CH}-${TGT}"
+          mkdir -p "$STAGE"
+          cp "$BIN" "$STAGE/"
+          printf 'name=%s\nchannel=%s\nversionName=%s\nversionCode=%s\ncommitCount=%s\ntarget=%s\n' \
+            "SuwayomiNext" "$CH" "$VER" "${{ needs.prep.outputs.version_code }}" \
+            "${{ needs.prep.outputs.count }}" "$TGT" > "$STAGE/VERSION.txt"
+
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            powershell -Command "Compress-Archive -Path 'dist/SuwayomiNext-${VER}-${CH}-${TGT}' -DestinationPath 'dist/SuwayomiNext-${VER}-${CH}-${TGT}.zip' -Force"
+            echo "artifact=dist/SuwayomiNext-${VER}-${CH}-${TGT}.zip" >> "$GITHUB_OUTPUT"
+          else
+            tar -C dist -czf "dist/SuwayomiNext-${VER}-${CH}-${TGT}.tar.gz" "SuwayomiNext-${VER}-${CH}-${TGT}"
+            echo "artifact=dist/SuwayomiNext-${VER}-${CH}-${TGT}.tar.gz" >> "$GITHUB_OUTPUT"
+          fi
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: SuwayomiNext-${{ needs.prep.outputs.version_name }}-${{ needs.prep.outputs.channel }}-${{ matrix.target }}
+          path: ${{ steps.pack.outputs.artifact }}
+
+  publish:
+    name: 发布 ${{ needs.prep.outputs.channel }} (${{ needs.prep.outputs.version_name }})
+    needs: [prep, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: 创建 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prep.outputs.tag }}
+          VER: ${{ needs.prep.outputs.version_name }}
+          CH: ${{ needs.prep.outputs.channel }}
+          CODE: ${{ needs.prep.outputs.version_code }}
+          COUNT: ${{ needs.prep.outputs.count }}
+          PRE: ${{ needs.prep.outputs.prerelease }}
+        run: |
+          # release 通道的 tag 可能已存在（同版本重复发布）——先删除旧 tag/release
+          if [ "$CH" = "release" ] && gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --yes --cleanup-tag || true
+          fi
+          gh release create "$TAG" \
+            artifacts/* \
+            --title "SuwayomiNext $VER ($CH)" \
+            --notes "## SuwayomiNext $VER · $CH
+
+- versionName: $VER
+- versionCode: $CODE
+- commits: $COUNT
+- channel: $CH" \
+            --prerelease="$PRE" \
+            --generate-notes

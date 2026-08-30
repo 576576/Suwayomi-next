@@ -187,6 +187,10 @@ fn webui_url_cmd(state: State<AppState>) -> String {
     webui_url(state.port.load(Ordering::Relaxed))
 }
 
+/// 设置页前端（编译期内联；纯 cargo build 不嵌入 frontendDist 资产，
+/// 故通过自定义协议提供，避免设置窗口白屏）。
+const SETTINGS_HTML: &str = include_str!("../frontend/index.html");
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -195,6 +199,12 @@ fn main() {
             open_data_dir,
             webui_url_cmd
         ])
+        .register_uri_scheme_protocol("settings", |_ctx, _req| {
+            tauri::http::Response::builder()
+                .header("Content-Type", "text/html; charset=utf-8")
+                .body(SETTINGS_HTML.as_bytes().to_vec())
+                .expect("build settings page response")
+        })
         .setup(|app| {
             let settings = load_settings();
             let port = settings.port;
@@ -210,7 +220,9 @@ fn main() {
             let _settings_window = WebviewWindowBuilder::new(
                 app,
                 "settings",
-                WebviewUrl::App("index.html".into()),
+                WebviewUrl::CustomProtocol(
+                    tauri::Url::parse("settings://localhost/index.html").expect("parse settings url"),
+                ),
             )
             .title("Suwayomi 设置")
             .inner_size(440.0, 320.0)

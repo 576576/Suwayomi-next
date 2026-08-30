@@ -82,10 +82,10 @@
 
 | Kotlin 目录 | Rust 目标 | 状态 |
 | --- | --- | --- |
-| queries/*（15 个 Query） | src/query.rs | 🔄 核心实现：manga/mangas/categories/category/chapters/chapter + 过滤排序分页；其余 12 个待增量 |
-| mutations/*（18 个 Mutation） | src/mutation.rs | ⬜ 待增量 |
+| queries/*（33 个 Query 字段） | src/query.rs | 🔄 12/33：manga/mangas/categories/category/chapters/chapter/meta/metas/settings/source/sources/aboutServer + 过滤排序分页；extension/track/download 等 21 个待增量 |
+| mutations/*（82 个 Mutation 字段） | src/mutation.rs | 🔄 27/82：Category 11 + Meta 16（DB 驱动全实现）；Download/Update/Backup/Track/Extension/Sync/User/WebUI 等 55 个待增量（多依赖 Phase 6） |
 | subscriptions/*（4 个） | src/subscription.rs | ⬜ 待增量 |
-| types/* | src/types.rs | 🔄 MangaType/ChapterType/CategoryType/PageType/SourceType/MetaType + NodeList 分页结构（edges 首尾语义对齐） |
+| types/* | src/types.rs | 🔄 MangaType/ChapterType/CategoryType/PageType/SourceType(完整)/ExtensionType/ExtensionStoreType/MetaType interface(5 实现)/Filter/Preference union + NodeList 分页结构（edges 首尾语义对齐） |
 | server/primitives/*（Cursor、LongString、Duration、OrderBy、NodeList、Upload） | src/scalars.rs | ✅ LongString/Duration(ISO-8601)/Cursor 已实现 |
 | dataLoaders/* | — | ⬜ 用 ctx.data 直接查询替代（后续可加 batch loader） |
 | server/*（GraphQLController 等） | src/schema.rs | ✅ GraphQL::new(service) 挂载 /api/graphql，GET/POST 可用 |
@@ -135,4 +135,5 @@
 - **决策变更（2026-08-30）：数据库后端统一为 PostgreSQL**（移除 SQLite）：`Db` 改为 PgPool 包装（连接级 search_path=suwayomi）、`bind_placeholders` 固定 `?`→`$n`、bool 列改 TRUE/FALSE 语法、迁移幂等（DROP CONSTRAINT IF EXISTS）、memo 列 TEXT 字符串；PG 集成测试经 Docker postgres:16（端口 15432）12 项全绿；workspace 23 单元测试全绿，clippy -D warnings 通过
 - **Phase 3 已完成（核心）**：axum REST 层（AppState/认证 Basic+Simple+login 豁免/错误映射 404·400·401·403·500）、/api/v1 全路由注册（backup/downloads/download/update/track 为 501 stub）、manga/category/chapter/source/extension/global 端点；REST 集成测试 2 项 + 真实服务冒烟（4568 端口）通过；25 单元测试全绿；clippy -D warnings 通过
 - **Phase 4 已启动（核心骨架）**：async-graphql 7 集成（自定义标量 LongString/Duration/Cursor、MangaType/ChapterType/CategoryType/PageType/SourceType/MetaType、NodeList 分页、mangas 条件过滤+排序+分页、计算字段 unread/download/bookmark/chapters/categories/meta）；挂载 /api/graphql（GET/POST）端到端查询验证通过（枚举值/NodeList/过滤/计算字段与 Kotlin 一致）；当前 28 类型，基线 359 待增量补全；27 单元测试全绿；clippy -D warnings 通过
-- 下一步：Phase 4 增量（其余 12 Query + 18 Mutation + 输入类型 + 全量类型）→ Phase 5 扩展桥接
+- **Phase 4 增量批次完成（A1/A2/A3/B1）**：MetaType 接口化、meta/metas/settings/source/sources/aboutServer 查询、Category+Meta 27 个 mutation；类型 101→172（基线 363）；Query 12/33、Mutation 27/82；端到端验证全通过；27 单元测试全绿
+- 下一步：Phase 4 剩余（extension/track/download 查询 + Download/Update/Backup/Track/Extension mutation，多依赖 Phase 6 服务；可先做 DB 部分）→ Phase 5 扩展桥接

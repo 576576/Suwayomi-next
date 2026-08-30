@@ -1,4 +1,4 @@
-//! Database layer — mirrors `suwayomi.tachidesk.server.database.*`.
+//! Database layer — mirrors `suwayomi.server.database.*`.
 //!
 //! Backends (Phase 6): embedded PGlite by default (`Db::connect_embedded`,
 //! in-process, no external server), external PostgreSQL as fallback

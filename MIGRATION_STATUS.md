@@ -1,6 +1,6 @@
 # MIGRATION_STATUS — 迁移追踪
 
-> 对照基准：`Suwayomi-Server` commit `4b2c19ab`（master）
+> 对照基准：`Suwayomi` commit `4b2c19ab`（master）
 > 状态：⬜ 未开始 · 🔄 进行中 · ✅ 已完成 · ⏭️ 裁剪/不迁移（含理由）
 
 ## 一、eu.kanade.tachiyomi（扩展 API 抽象）→ `suwayomi-core/src/source/`
@@ -13,7 +13,7 @@
 | network/**（NetworkHelper、CookieJar、拦截器、JavaScriptEngine） | source/network.rs | ⬜ | Phase 5 由 reqwest 替代 |
 | util/**（ChapterRecognition、Hash、JsoupExtensions 等） | source/util.rs | ⬜ | 少量工具 |
 
-## 二、suwayomi.tachidesk.manga.model → `suwayomi-core/src/{models,schema}/`
+## 二、suwayomi.manga.model → `suwayomi-core/src/{models,schema}/`
 
 | Kotlin 文件 | Rust 目标 | 状态 |
 | --- | --- | --- |
@@ -31,7 +31,7 @@
 | server/database/migration/M0001..M0062（62 个） | migrations/*.sql | ✅ 基线 DDL（PG + SQLite），增量迁移 Phase 1 补充中 |
 | server-config/**（ServerConfig.kt 等） | config/mod.rs | ✅ 核心配置（完整 settings 注册表 Phase 3） |
 
-## 三、suwayomi.tachidesk.server（配置/数据库/HTTP 层）→ `suwayomi-core/src/db/` + `suwayomi-server/`
+## 三、suwayomi.server（配置/数据库/HTTP 层）→ `suwayomi-core/src/db/` + `suwayomi-server/`
 
 | Kotlin 文件 | Rust 目标 | 状态 |
 | --- | --- | --- |
@@ -47,7 +47,7 @@
 | server/user/UserType.kt | server（认证） | ⬜ |
 | server-config/**（ServerConfig.kt、SettingDelegate.kt、SettingsRegistry.kt、SettingGroup.kt、graphql/types/*） | core/config/* | ⬜ |
 
-## 四、suwayomi.tachidesk.manga.impl（业务逻辑）→ `suwayomi-domain/src/`
+## 四、suwayomi.manga.impl（业务逻辑）→ `suwayomi-domain/src/`
 
 | Kotlin 文件 | Rust 目标 | 状态 |
 | --- | --- | --- |
@@ -65,7 +65,7 @@
 | util/**（含 jvm-sandbox 相关） | 分散 | ⬜ Phase 5/6 |
 | sync/KoreaderSyncService.kt | — | ⬜ Phase 6 |
 
-## 五、suwayomi.tachidesk.manga.controller（REST v1）→ `suwayomi-rest/src/routes/`
+## 五、suwayomi.manga.controller（REST v1）→ `suwayomi-rest/src/routes/`
 
 | Kotlin 文件 | Rust 目标 | 状态 |
 | --- | --- | --- |
@@ -78,7 +78,7 @@
 | GlobalAPI.kt（meta/settings/webview） | routes/global.rs + meta_handler.rs | ✅ |
 | global/GlobalAPI.kt + controller/（GlobalMetaController、SettingsController、WebViewController） | routes/global.rs | ⬜ |
 
-## 六、suwayomi.tachidesk.graphql → `suwayomi-graphql/src/schema/`
+## 六、suwayomi.graphql → `suwayomi-graphql/src/schema/`
 
 | Kotlin 目录 | Rust 目标 | 状态 |
 | --- | --- | --- |
@@ -92,13 +92,13 @@
 | directives/RequireAuth* | — | ⬜ 待增量 |
 | —（基线与验收） | docs/graphql/schema-baseline.graphql | ✅ 已从 Kotlin 版 introspection 导出（359 类型 / 3033 行）；当前 Rust 侧 28 类型（核心），全量 359 待增量补全 |
 
-## 七、suwayomi.tachidesk.opds → `suwayomi-opds/src/feeds/`
+## 七、suwayomi.opds → `suwayomi-opds/src/feeds/`
 
 | Kotlin 文件 | Rust 目标 | 状态 |
 | --- | --- | --- |
 | OpdsAPI.kt + controller/OpdsV1Controller.kt + impl/* + model/*（XML）+ dto/* + repository/* + util/* + constants | feeds/*.rs | ⬜ |
 
-## 八、suwayomi.tachidesk.global → `suwayomi-rest` + `tauri-app`
+## 八、suwayomi.global → `suwayomi-rest` + `tauri-app`
 
 | Kotlin 文件 | Rust 目标 | 状态 |
 | --- | --- | --- |

@@ -1,6 +1,6 @@
-# Suwayomi-Server → Suwayomi-next (Rust) 迁移计划
+# Suwayomi → Suwayomi-next (Rust) 迁移计划
 
-> 依据 `rust-migrate-guide-0.md` 制定，并逐文件核对 `Suwayomi-Server` 仓库（commit `4b2c19ab`，master 分支）源码后细化。
+> 依据 `rust-migrate-guide-0.md` 制定，并逐文件核对 `Suwayomi` 仓库（commit `4b2c19ab`，master 分支）源码后细化。
 > 目标：在 `Suwayomi-next/` 下完成行为兼容的 Rust 实现，**接口、数据、协议与 Kotlin 原版保持一致**。
 
 ---
@@ -277,7 +277,7 @@ Rust 主进程 ── HTTP/JSON IPC ──► JVM 沙盒进程（Kotlin，保留
 ```
 
 **任务**：
-- [ ] 从 `Suwayomi-Server` 源码提取扩展加载/执行逻辑到 `jvm-sandbox/`（独立 Gradle 模块），暴露 HTTP 端点：`GET /extensions`、`GET /sources`、`GET /source/{id}/manga?query=&page=`、`GET /source/{id}/manga/{mangaId}`、`GET /source/{id}/manga/{mangaId}/chapters`、`GET /source/{id}/chapter/{cid}/pages`、`GET /source/{id}/filters`、`POST /source/{id}/filters`
+- [ ] 从 `Suwayomi` 源码提取扩展加载/执行逻辑到 `jvm-sandbox/`（独立 Gradle 模块），暴露 HTTP 端点：`GET /extensions`、`GET /sources`、`GET /source/{id}/manga?query=&page=`、`GET /source/{id}/manga/{mangaId}`、`GET /source/{id}/manga/{mangaId}/chapters`、`GET /source/{id}/chapter/{cid}/pages`、`GET /source/{id}/filters`、`POST /source/{id}/filters`
 - [ ] **APK→JAR 转换链路**（R2）：移植 `PackageTools.kt`（APK 处理）、`AndroidManifestParser.kt`、`BytecodeEditor.kt`、dex2jar 调用逻辑，安装扩展时完成转换
 - [ ] Rust 侧 `suwayomi-domain` 实现 `SourceFetcher` trait 的 HTTP 客户端
 - [ ] 沙盒进程生命周期管理（启动、健康检查、优雅关闭、崩溃重启）

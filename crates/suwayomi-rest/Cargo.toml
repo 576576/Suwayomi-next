@@ -1,6 +1,6 @@
 [package]
 name = "suwayomi-rest"
-description = "REST API v1 (migrated from Suwayomi-Server kotlin suwayomi/tachidesk/manga/controller + MangaAPI.kt + GlobalAPI.kt)"
+description = "REST API v1 (migrated from Suwayomi kotlin suwayomi/tachidesk/manga/controller + MangaAPI.kt + GlobalAPI.kt)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "suwayomi-server"
-description = "Suwayomi server binary (mirrors Suwayomi-Server Main.kt + server/JavalinSetup.kt + App.kt)"
+description = "Suwayomi server binary (mirrors Suwayomi Main.kt + server/JavalinSetup.kt + App.kt)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

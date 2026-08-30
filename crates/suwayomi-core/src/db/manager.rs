@@ -113,16 +113,19 @@ impl Db {
 
     /// Runs the schema migrations for the active backend.
     pub async fn migrate(&self) -> Result<(), DbError> {
+        use sqlx::Executor;
+        // Both backends need the `suwayomi` schema to exist before migration:
+        // sqlx's `ensure_migrations_table` creates `_sqlx_migrations` with an
+        // UNQUALIFIED name that resolves through search_path — on a fresh
+        // database the missing schema would fail with 3F000.
+        self.pool.execute("CREATE SCHEMA IF NOT EXISTS suwayomi").await?;
         if self._server.is_some() {
             // The pglite-oxide TCP proxy terminates the embedded session on
             // ANY SQL error (e.g. 42P01 / 3F000). sqlx migrate probes
-            // `_sqlx_migrations` and every internal statement uses unqualified
-            // names that resolve through search_path — on a fresh database
-            // that errors (missing schema / missing table) and kills the
-            // session mid-migrate. Pre-creating both, schema-qualified, makes
-            // every subsequent unqualified statement resolve without error.
-            use sqlx::Executor;
-            self.pool.execute("CREATE SCHEMA IF NOT EXISTS suwayomi").await?;
+            // `_sqlx_migrations` (error 42P01 on a fresh database) which
+            // would kill the session mid-migrate. Pre-creating the table,
+            // schema-qualified, makes every subsequent unqualified statement
+            // resolve without error.
             self.pool
                 .execute(
                     r#"CREATE TABLE IF NOT EXISTS suwayomi._sqlx_migrations (

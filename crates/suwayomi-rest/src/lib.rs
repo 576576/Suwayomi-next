@@ -1,4 +1,4 @@
-//! REST API v1 — mirrors `suwayomi.tachidesk.manga.controller.*` +
+//! REST API v1 — mirrors `suwayomi.manga.controller.*` +
 //! `MangaAPI.kt` + `GlobalAPI.kt` on axum.
 
 pub mod auth;

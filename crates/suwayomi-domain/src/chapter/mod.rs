@@ -1,4 +1,4 @@
-//! Chapter service — mirrors `suwayomi.tachidesk.manga.impl.Chapter`
+//! Chapter service — mirrors `suwayomi.manga.impl.Chapter`
 //! (DB-backed parts).
 
 use std::collections::HashMap;

@@ -1,14 +1,14 @@
-以下是 Suwayomi-Server 核心迁移到 Rust 的完整可执行方案，可直接喂给 Agent 执行。
+以下是 Suwayomi 核心迁移到 Rust 的完整可执行方案，可直接喂给 Agent 执行。
 
 ---
 
-# Suwayomi-Server 核心迁移到 Rust —— 完整执行方案
+# Suwayomi 核心迁移到 Rust —— 完整执行方案
 
 ## 一、现状分析
 
 ### 1.1 项目概述
 
-Suwayomi-Server 是一个用 **Kotlin/JVM** 编写的免费开源漫画阅读服务器，核心能力是加载并运行 Mihon (Tachiyomi) 的 Android 扩展（APK 转 JAR），通过 GraphQL API 对外提供服务。
+Suwayomi 是一个用 **Kotlin/JVM** 编写的免费开源漫画阅读服务器，核心能力是加载并运行 Mihon (Tachiyomi) 的 Android 扩展（APK 转 JAR），通过 GraphQL API 对外提供服务。
 
 ### 1.2 核心模块（基于源码结构）
 

@@ -1,4 +1,4 @@
-//! Category↔Manga relations — mirrors `suwayomi.tachidesk.manga.impl.CategoryManga`.
+//! Category↔Manga relations — mirrors `suwayomi.manga.impl.CategoryManga`.
 
 use sqlx::Row;
 use suwayomi_core::db::Db;

@@ -1,4 +1,4 @@
-//! Manga list service — mirrors `suwayomi.tachidesk.manga.impl.MangaList`
+//! Manga list service — mirrors `suwayomi.manga.impl.MangaList`
 //! (DB-backed insert-or-update of browsed source manga).
 
 use std::sync::Arc;

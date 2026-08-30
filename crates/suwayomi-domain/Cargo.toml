@@ -1,6 +1,6 @@
 [package]
 name = "suwayomi-domain"
-description = "Core business logic (migrated from Suwayomi-Server kotlin suwayomi/tachidesk/manga/impl)"
+description = "Core business logic (migrated from Suwayomi kotlin suwayomi/tachidesk/manga/impl)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

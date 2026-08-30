@@ -38,7 +38,7 @@ async fn backup_export(State(state): State<AppState>) -> Response {
 async fn backup_export_file(State(state): State<AppState>) -> Response {
     match suwayomi_core::backup::create_backup(state.db.pool()).await {
         Ok(bytes) => {
-            let filename = format!("org.suwayomi.tachidesk_{}.tachibk", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0));
+            let filename = format!("org.suwayomi.next_{}.tachibk", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0));
             let content_disposition = format!("attachment; filename=\"{filename}\"");
             (
                 [

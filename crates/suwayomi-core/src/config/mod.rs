@@ -1,4 +1,4 @@
-//! Server configuration — mirrors `suwayomi.tachidesk.server.ServerConfig`
+//! Server configuration — mirrors `suwayomi.server.ServerConfig`
 //! and `server-config` module. Full settings registry lands with the
 //! settings subsystem (Phase 3); this is the minimal core used by the DB layer.
 

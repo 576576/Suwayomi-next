@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-- ✅ **基线已导出**（2026-08-30）：运行 Kotlin 版 Suwayomi-Server（本机 JDK 25 + Gradle 构建 installDist）introspection 导出，共 **359 个类型定义 / 3033 行 SDL**。
+- ✅ **基线已导出**（2026-08-30）：运行 Kotlin 版 Suwayomi（本机 JDK 25 + Gradle 构建 installDist）introspection 导出，共 **359 个类型定义 / 3033 行 SDL**。
 - 自动化脚本：`../../scripts/export-graphql-schema.sh`（重建 + 启动 + introspection + 转 SDL；本机验证可行，注意 Git Bash 命令行参数长度限制——长 introspection 载荷需经脚本文件发送）。
 
 ## 源 Schema 构成（实测基线 + Kotlin 源码审计）

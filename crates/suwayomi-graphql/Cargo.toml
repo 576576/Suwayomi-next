@@ -1,6 +1,6 @@
 [package]
 name = "suwayomi-graphql"
-description = "GraphQL API (migrated from Suwayomi-Server kotlin suwayomi/tachidesk/graphql)"
+description = "GraphQL API (migrated from Suwayomi kotlin suwayomi/tachidesk/graphql)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

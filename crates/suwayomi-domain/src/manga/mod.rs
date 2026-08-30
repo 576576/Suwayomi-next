@@ -1,4 +1,4 @@
-//! Manga service — mirrors `suwayomi.tachidesk.manga.impl.Manga` (DB-backed parts).
+//! Manga service — mirrors `suwayomi.manga.impl.Manga` (DB-backed parts).
 
 pub mod library;
 pub mod manga_list;

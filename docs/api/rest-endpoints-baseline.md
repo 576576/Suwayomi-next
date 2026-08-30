@@ -1,6 +1,6 @@
 # REST API v1 端点基线（兼容对照）
 
-> 依据 `Suwayomi-Server`（commit 4b2c19ab）`MangaAPI.kt` / `GlobalAPI.kt` / `OpdsAPI.kt` 生成。
+> 依据 `Suwayomi`（commit 4b2c19ab）`MangaAPI.kt` / `GlobalAPI.kt` / `OpdsAPI.kt` 生成。
 > 前缀：所有端点位于 `/api/` 下（`ServerSubpath` 支持子路径部署时前缀可配置）。
 > Rust 版须逐条对齐：方法、路径、参数、请求体、响应 JSON、状态码。
 > 状态码映射（源 `JavalinSetup.kt`）：NPE/NoSuchElement→404；IOException→500；IllegalArgumentException→400；Unauthorized→401；Forbidden→403。

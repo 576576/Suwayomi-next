@@ -1,4 +1,4 @@
-//! Domain models — mirrors `suwayomi.tachidesk.manga.model.dataclass.*`
+//! Domain models — mirrors `suwayomi.manga.model.dataclass.*`
 
 pub mod category;
 pub mod chapter;

@@ -1,4 +1,4 @@
-//! Library service — mirrors `suwayomi.tachidesk.manga.impl.Library`.
+//! Library service — mirrors `suwayomi.manga.impl.Library`.
 
 use suwayomi_core::db::Db;
 

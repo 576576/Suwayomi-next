@@ -1,4 +1,4 @@
-//! Page service — mirrors `suwayomi.tachidesk.manga.impl.Page`
+//! Page service — mirrors `suwayomi.manga.impl.Page`
 //! (DB-backed parts; image streaming lands with the source layer, Phase 5/6).
 
 use suwayomi_core::db::Db;

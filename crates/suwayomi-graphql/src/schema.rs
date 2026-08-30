@@ -1,5 +1,5 @@
 //! Schema construction + axum handlers — mirrors
-//! `graphql/server/TachideskGraphQLServer.kt` + `GraphQLController.kt`.
+//! `graphql/server/GraphQLServer.kt` + `GraphQLController.kt`.
 
 use async_graphql::{MergedObject, Schema};
 use async_graphql_axum::GraphQL;

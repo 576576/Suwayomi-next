@@ -1,6 +1,6 @@
 -- =====================================================================
 -- Suwayomi-next schema baseline (PostgreSQL)
--- Derived from Suwayomi-Server (commit 4b2c19ab) current Exposed table
+-- Derived from Suwayomi (commit 4b2c19ab) current Exposed table
 -- definitions + net effect of migrations M0001..M0062.
 -- All tables live in the `suwayomi` schema (matches M0054).
 -- Naming: lowercase table/column names (PostgreSQL convention; H2 stored

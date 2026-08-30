@@ -1,6 +1,6 @@
 //! Suwayomi server entry point.
 //!
-//! Mirrors Suwayomi-Server `Main.kt` + `JavalinSetup.kt`:
+//! Mirrors Suwayomi `Main.kt` + `JavalinSetup.kt`:
 //! - application setup: config → database → migrations
 //! - HTTP server (axum) with `/api/v1/**` (Phase 3), GraphQL (Phase 4),
 //!   OPDS (Phase 6) and static WebUI hosting.

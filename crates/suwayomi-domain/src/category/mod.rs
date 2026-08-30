@@ -1,4 +1,4 @@
-//! Category service — mirrors `suwayomi.tachidesk.manga.impl.Category`.
+//! Category service — mirrors `suwayomi.manga.impl.Category`.
 
 pub mod category_manga;
 

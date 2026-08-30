@@ -1,6 +1,6 @@
 [package]
 name = "suwayomi-core"
-description = "Domain models, database schema and source API abstractions (migrated from Suwayomi-Server kotlin manga/model + server/database)"
+description = "Domain models, database schema and source API abstractions (migrated from Suwayomi kotlin manga/model + server/database)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

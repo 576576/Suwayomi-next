@@ -1,6 +1,6 @@
 # Suwayomi-next
 
-Suwayomi-Server（Kotlin/JVM）的 Rust 重写版。目标：保持既有数据、GraphQL/REST/OPDS 接口、Mihon 扩展体系完全兼容。
+Suwayomi（Kotlin/JVM）的 Rust 重写版。目标：保持既有数据、GraphQL/REST/OPDS 接口、Mihon 扩展体系完全兼容。
 
 ## 状态
 

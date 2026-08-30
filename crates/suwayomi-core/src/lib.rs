@@ -1,10 +1,10 @@
 //! suwayomi-core
 //!
-//! Mirrors the following Suwayomi-Server Kotlin packages:
-//! - `suwayomi.tachidesk.manga.model.*`       → models / schema
-//! - `suwayomi.tachidesk.server.database.*`   → db
+//! Mirrors the following Suwayomi Kotlin packages:
+//! - `suwayomi.manga.model.*`       → models / schema
+//! - `suwayomi.server.database.*`   → db
 //! - `eu.kanade.tachiyomi.source.model.*`     → source
-//! - `suwayomi.tachidesk.server.settings.*`   → config
+//! - `suwayomi.server.settings.*`   → config
 
 pub mod backup;
 pub mod config;

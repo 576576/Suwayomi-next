@@ -1,6 +1,6 @@
 [package]
 name = "suwayomi-opds"
-description = "OPDS protocol (migrated from Suwayomi-Server kotlin suwayomi/tachidesk/opds)"
+description = "OPDS protocol (migrated from Suwayomi kotlin suwayomi/tachidesk/opds)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

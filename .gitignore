@@ -33,5 +33,6 @@ node_modules/
 # Phase 7 tooling build outputs
 jvm-sandbox/build/
 tools/h2-dump/build/
+tools/h2-dump/.gradle/
 jvm-sandbox/libs/
 .workbuddy/

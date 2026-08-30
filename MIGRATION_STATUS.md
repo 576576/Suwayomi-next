@@ -149,4 +149,10 @@
   nhentai（keiyoushi v1.4.10）实测：22 源、popular 18 部、详情/章节/71 页图片 URL 全通；
   Rust HttpSandboxFetcher 实现 fetch_pages + camelCase DTO + env 透传；默认端口 8091
   （Windows 4501-4900 被 Hyper-V 动态保留）；库内 e2e 测试（无 sandbox 自动 SKIP）
-- 剩余：Phase 6 同步（SyncYomi/Koreader）、扩展库安装/源注册管理 → 后续增量
+- **Phase 6 同步全完成**：KOReader（koreader_sync.rs：凭据/设备 hash/推送拉取/冲突策略 +
+  GraphQL connect/logout/push/pullKoSyncProgress + 3 测试）与 SyncYomi（sync_yomi.rs：
+  Backup protobuf + ETag pull/push/merge + startSync/lastSyncStatus + mock server 全链路测试）；
+  PG 版 SyncYomiTriggers（migrations/pg-only/0002_*，plpgsql 触发器，嵌入式 pglite 不支持
+  故仅外部 PG 应用，Db::migrate 自动分流 + advisory lock 串行化）；version_bump 语义测试
+  （DATABASE_URL 存在时真跑，否则 SKIP）；core backup 拆 create_backup_proto/restore_backup_proto
+- 剩余：扩展库在线安装/源注册管理 → 后续增量

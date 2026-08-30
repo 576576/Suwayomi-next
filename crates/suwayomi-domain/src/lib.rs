@@ -5,6 +5,7 @@
 
 pub mod category;
 pub mod download;
+pub mod koreader_sync;
 pub mod chapter;
 pub mod error;
 pub mod manga;
@@ -12,6 +13,7 @@ pub mod meta;
 pub mod page;
 pub mod source;
 pub mod sql;
+pub mod sync_yomi;
 
 #[cfg(test)]
 mod sandbox_e2e {

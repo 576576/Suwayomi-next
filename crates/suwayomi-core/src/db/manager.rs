@@ -114,11 +114,16 @@ impl Db {
     /// Runs the schema migrations for the active backend.
     pub async fn migrate(&self) -> Result<(), DbError> {
         use sqlx::Executor;
+        // Run the whole migration on ONE connection, serialized with other
+        // concurrent migrators (e.g. parallel test binaries) via a PG
+        // advisory lock. Without the lock, two `_sqlx_migrations` inserts on
+        // the same version race each other ("tuple concurrently updated").
+        let mut conn = self.pool.acquire().await?;
         // Both backends need the `suwayomi` schema to exist before migration:
         // sqlx's `ensure_migrations_table` creates `_sqlx_migrations` with an
         // UNQUALIFIED name that resolves through search_path — on a fresh
         // database the missing schema would fail with 3F000.
-        self.pool.execute("CREATE SCHEMA IF NOT EXISTS suwayomi").await?;
+        conn.execute("CREATE SCHEMA IF NOT EXISTS suwayomi").await?;
         if self._server.is_some() {
             // The pglite-oxide TCP proxy terminates the embedded session on
             // ANY SQL error (e.g. 42P01 / 3F000). sqlx migrate probes
@@ -126,20 +131,40 @@ impl Db {
             // would kill the session mid-migrate. Pre-creating the table,
             // schema-qualified, makes every subsequent unqualified statement
             // resolve without error.
-            self.pool
-                .execute(
-                    r#"CREATE TABLE IF NOT EXISTS suwayomi._sqlx_migrations (
-                        version BIGINT PRIMARY KEY,
-                        description TEXT NOT NULL,
-                        installed_on TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        success BOOLEAN NOT NULL,
-                        checksum BYTEA NOT NULL,
-                        execution_time BIGINT NOT NULL
-                    )"#,
-                )
-                .await?;
+            conn.execute(
+                r#"CREATE TABLE IF NOT EXISTS suwayomi._sqlx_migrations (
+                    version BIGINT PRIMARY KEY,
+                    description TEXT NOT NULL,
+                    installed_on TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    success BOOLEAN NOT NULL,
+                    checksum BYTEA NOT NULL,
+                    execution_time BIGINT NOT NULL
+                )"#,
+            )
+            .await?;
         }
-        MIGRATOR.run(&self.pool).await?;
+        conn.execute("SELECT pg_advisory_lock(728232364)").await?;
+        let r = MIGRATOR.run(&mut conn).await;
+        // SyncYomi version-bump triggers are PostgreSQL-only: they are written
+        // in PL/pgSQL, which the embedded pglite parser cannot compile (the
+        // baseline schema is pure DDL, so the embedded backend stays healthy).
+        // The files live in `migrations/pg-only/` so the sqlx migrator never
+        // sees them; external PostgreSQL applies them here (idempotent:
+        // CREATE OR REPLACE + DROP TRIGGER IF EXISTS).
+        let pg_only = if self._server.is_none() {
+            let f = conn
+                .execute(include_str!("../../../../migrations/pg-only/0002_sync_functions.sql"))
+                .await;
+            let t = conn
+                .execute(include_str!("../../../../migrations/pg-only/0002_sync_triggers.sql"))
+                .await;
+            f.and(t)
+        } else {
+            Ok(sqlx::postgres::PgQueryResult::default())
+        };
+        conn.execute("SELECT pg_advisory_unlock(728232364)").await?;
+        r?;
+        pg_only?;
         Ok(())
     }
 

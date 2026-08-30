@@ -384,6 +384,73 @@ pub struct ValidateBackupResult {
 // Track domain
 // ---------------------------------------------------------------------------
 
+
+/// Mirrors `KoSyncStatusPayload`.
+#[derive(SimpleObject)]
+pub struct KoSyncStatusPayloadType {
+    pub is_logged_in: bool,
+    pub server_address: Option<String>,
+    pub username: Option<String>,
+}
+
+#[derive(SimpleObject)]
+pub struct KoSyncConnectPayload {
+    pub client_mutation_id: Option<String>,
+    pub status: KoSyncStatusPayloadType,
+    pub message: Option<String>,
+}
+
+#[derive(SimpleObject)]
+pub struct LogoutKoSyncAccountPayload {
+    pub client_mutation_id: Option<String>,
+    pub status: KoSyncStatusPayloadType,
+}
+
+#[derive(SimpleObject)]
+pub struct SyncConflictInfoType {
+    pub device_name: String,
+    pub remote_page: i32,
+}
+
+#[derive(InputObject)]
+pub struct ConnectKoSyncAccountInput {
+    pub client_mutation_id: Option<String>,
+    pub server_address: String,
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(InputObject)]
+pub struct LogoutKoSyncAccountInput {
+    pub client_mutation_id: Option<String>,
+}
+
+#[derive(InputObject)]
+pub struct PushKoSyncProgressInput {
+    pub client_mutation_id: Option<String>,
+    pub chapter_id: i32,
+}
+
+#[derive(SimpleObject)]
+pub struct PushKoSyncProgressPayload {
+    pub client_mutation_id: Option<String>,
+    pub success: bool,
+    pub chapter: Option<crate::types::ChapterType>,
+}
+
+#[derive(InputObject)]
+pub struct PullKoSyncProgressInput {
+    pub client_mutation_id: Option<String>,
+    pub chapter_id: i32,
+}
+
+#[derive(SimpleObject)]
+pub struct PullKoSyncProgressPayload {
+    pub client_mutation_id: Option<String>,
+    pub chapter: Option<crate::types::ChapterType>,
+    pub sync_conflict: Option<SyncConflictInfoType>,
+}
+
 #[derive(InputObject)]
 pub struct BindTrackInput {
     pub client_mutation_id: Option<String>,
@@ -732,64 +799,7 @@ pub struct PartialSettingsTypeInput {
     pub initial_open_in_browser_enabled: Option<bool>,
 }
 
-#[derive(InputObject)]
-pub struct ConnectKoSyncAccountInput {
-    pub client_mutation_id: Option<String>,
-    pub password: String,
-    pub server_address: String,
-    pub username: String,
-}
 
-#[derive(SimpleObject, Clone)]
-pub struct KoSyncStatusPayload {
-    pub is_logged_in: bool,
-    pub server_address: Option<String>,
-    pub username: Option<String>,
-}
-
-#[derive(SimpleObject, Clone)]
-pub struct KoSyncConnectPayload {
-    pub client_mutation_id: Option<String>,
-    pub message: Option<String>,
-    pub status: KoSyncStatusPayload,
-}
-
-#[derive(InputObject)]
-pub struct LogoutKoSyncAccountInput {
-    pub client_mutation_id: Option<String>,
-}
-
-#[derive(SimpleObject, Clone)]
-pub struct LogoutKoSyncAccountPayload {
-    pub client_mutation_id: Option<String>,
-    pub status: KoSyncStatusPayload,
-}
-
-#[derive(InputObject)]
-pub struct PullKoSyncProgressInput {
-    pub chapter_id: i32,
-    pub client_mutation_id: Option<String>,
-}
-
-#[derive(SimpleObject, Clone)]
-pub struct PullKoSyncProgressPayload {
-    pub chapter: Option<ChapterType>,
-    pub client_mutation_id: Option<String>,
-    pub sync_conflict: Option<crate::mutation::SyncConflictInfoType>,
-}
-
-#[derive(InputObject)]
-pub struct PushKoSyncProgressInput {
-    pub chapter_id: i32,
-    pub client_mutation_id: Option<String>,
-}
-
-#[derive(SimpleObject, Clone)]
-pub struct PushKoSyncProgressPayload {
-    pub chapter: Option<ChapterType>,
-    pub client_mutation_id: Option<String>,
-    pub success: bool,
-}
 
 #[derive(InputObject)]
 pub struct UpdateCategoryMangaInput {
@@ -1308,6 +1318,88 @@ impl MutationRootB4 {
         Ok(LogoutTrackerPayload { client_mutation_id: input.client_mutation_id, is_logged_in: false, tracker })
     }
 
+
+    // ---- KOReader sync ----
+
+    /// Mirrors `connectKoSyncAccount`.
+    async fn connect_ko_sync_account(
+        &self,
+        ctx: &Context<'_>,
+        input: ConnectKoSyncAccountInput,
+    ) -> async_graphql::Result<KoSyncConnectPayload> {
+        let state = ctx.data::<GraphQLState>()?;
+        let (message, status) = state.koreader.connect(&input.server_address, &input.username, &input.password).await?;
+        Ok(KoSyncConnectPayload {
+            client_mutation_id: input.client_mutation_id,
+            status: KoSyncStatusPayloadType {
+                is_logged_in: status.is_logged_in,
+                server_address: status.server_address,
+                username: status.username,
+            },
+            message: Some(message),
+        })
+    }
+
+    /// Mirrors `logoutKoSyncAccount`.
+    async fn logout_ko_sync_account(
+        &self,
+        ctx: &Context<'_>,
+        input: LogoutKoSyncAccountInput,
+    ) -> async_graphql::Result<LogoutKoSyncAccountPayload> {
+        let state = ctx.data::<GraphQLState>()?;
+        state.koreader.logout().await?;
+        Ok(LogoutKoSyncAccountPayload {
+            client_mutation_id: input.client_mutation_id,
+            status: KoSyncStatusPayloadType { is_logged_in: false, server_address: None, username: None },
+        })
+    }
+
+    /// Mirrors `pushKoSyncProgress`.
+    async fn push_ko_sync_progress(
+        &self,
+        ctx: &Context<'_>,
+        input: PushKoSyncProgressInput,
+    ) -> async_graphql::Result<PushKoSyncProgressPayload> {
+        let state = ctx.data::<GraphQLState>()?;
+        let _ = state.koreader.push_progress(input.chapter_id).await;
+        let chapter = fetch_chapter_row(state, input.chapter_id).await.ok().map(|c| crate::types::ChapterType::from_row(&c));
+        Ok(PushKoSyncProgressPayload {
+            client_mutation_id: input.client_mutation_id,
+            success: true,
+            chapter,
+        })
+    }
+
+    /// Mirrors `pullKoSyncProgress`.
+    async fn pull_ko_sync_progress(
+        &self,
+        ctx: &Context<'_>,
+        input: PullKoSyncProgressInput,
+    ) -> async_graphql::Result<PullKoSyncProgressPayload> {
+        let state = ctx.data::<GraphQLState>()?;
+        let result = state.koreader.pull_progress(input.chapter_id).await?;
+        let mut sync_conflict = None;
+        if let Some(r) = &result {
+            if r.is_conflict {
+                sync_conflict = Some(SyncConflictInfoType { device_name: r.device.clone(), remote_page: r.page_read });
+            }
+            if r.should_update {
+                sqlx::query("UPDATE suwayomi.chapter SET last_page_read = $1, last_read_at = $2 WHERE id = $3")
+                    .bind(r.page_read)
+                    .bind(r.timestamp)
+                    .bind(input.chapter_id)
+                    .execute(state.db.pool())
+                    .await?;
+            }
+        }
+        let chapter = fetch_chapter_row(state, input.chapter_id).await.ok().map(|c| crate::types::ChapterType::from_row(&c));
+        Ok(PullKoSyncProgressPayload {
+            client_mutation_id: input.client_mutation_id,
+            chapter,
+            sync_conflict,
+        })
+    }
+
     // ---- Extension ----
 
     /// Mirrors `fetchExtensions` — lists installed extensions & stores from DB.
@@ -1413,60 +1505,6 @@ impl MutationRootB4 {
         })
     }
 
-    // ---- KoSync (Phase 6 wires account service) ----
-
-    async fn connect_ko_sync_account(
-        &self,
-        _ctx: &Context<'_>,
-        input: ConnectKoSyncAccountInput,
-    ) -> async_graphql::Result<KoSyncConnectPayload> {
-        let _ = (input.password, input.server_address, input.username);
-        Ok(KoSyncConnectPayload {
-            client_mutation_id: input.client_mutation_id,
-            message: None,
-            status: KoSyncStatusPayload { is_logged_in: false, server_address: None, username: None },
-        })
-    }
-
-    async fn logout_ko_sync_account(
-        &self,
-        _ctx: &Context<'_>,
-        input: LogoutKoSyncAccountInput,
-    ) -> async_graphql::Result<LogoutKoSyncAccountPayload> {
-        Ok(LogoutKoSyncAccountPayload {
-            client_mutation_id: input.client_mutation_id,
-            status: KoSyncStatusPayload { is_logged_in: false, server_address: None, username: None },
-        })
-    }
-
-    async fn pull_ko_sync_progress(
-        &self,
-        ctx: &Context<'_>,
-        input: PullKoSyncProgressInput,
-    ) -> async_graphql::Result<PullKoSyncProgressPayload> {
-        let state = ctx.data::<GraphQLState>()?;
-        let chapter = crate::types::ChapterType::from_row(&fetch_chapter_row(state, input.chapter_id).await?);
-        Ok(PullKoSyncProgressPayload {
-            chapter: Some(chapter),
-            client_mutation_id: input.client_mutation_id,
-            sync_conflict: None,
-        })
-    }
-
-    async fn push_ko_sync_progress(
-        &self,
-        ctx: &Context<'_>,
-        input: PushKoSyncProgressInput,
-    ) -> async_graphql::Result<PushKoSyncProgressPayload> {
-        let state = ctx.data::<GraphQLState>()?;
-        let chapter = crate::types::ChapterType::from_row(&fetch_chapter_row(state, input.chapter_id).await?);
-        Ok(PushKoSyncProgressPayload {
-            chapter: Some(chapter),
-            client_mutation_id: input.client_mutation_id,
-            success: false,
-        })
-    }
-
     // ---- Update helpers ----
 
     async fn update_category_manga(
@@ -1503,8 +1541,21 @@ impl MutationRootB4 {
 
     // ---- Sync / Cache / Settings / User / WebUI ----
 
-    async fn start_sync(&self, _ctx: &Context<'_>, input: StartSyncInput) -> async_graphql::Result<StartSyncPayload> {
-        Ok(StartSyncPayload { client_mutation_id: input.client_mutation_id, result: StartSyncResult::SyncDisabled })
+    async fn start_sync(&self, ctx: &Context<'_>, input: StartSyncInput) -> async_graphql::Result<StartSyncPayload> {
+        let state = ctx.data::<GraphQLState>()?;
+        let svc = state.sync_yomi.clone();
+        if !svc.enabled() {
+            return Ok(StartSyncPayload { client_mutation_id: input.client_mutation_id, result: StartSyncResult::SyncDisabled });
+        }
+        // Fire-and-forget: the sync cycle runs in the background (matches the
+        // Kotlin GlobalScope.launch semantics). A later query can inspect the
+        // persisted sync timestamp/ETag for status.
+        tokio::spawn(async move {
+            if let Err(e) = svc.sync_now().await {
+                tracing::warn!("sync_yomi cycle failed: {e}");
+            }
+        });
+        Ok(StartSyncPayload { client_mutation_id: input.client_mutation_id, result: StartSyncResult::Success })
     }
 
     async fn clear_cached_images(

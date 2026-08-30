@@ -3357,6 +3357,8 @@ dependencies = [
  "async-trait",
  "chrono",
  "futures",
+ "md-5",
+ "prost",
  "reqwest",
  "serde",
  "serde_json",
@@ -3365,6 +3367,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

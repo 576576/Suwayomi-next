@@ -12,6 +12,8 @@ use suwayomi_domain::manga::manga_list::MangaListService;
 use suwayomi_domain::manga::MangaService;
 use suwayomi_domain::page::PageService;
 use suwayomi_domain::download::DownloadManager;
+use suwayomi_domain::koreader_sync::KoreaderSyncService;
+use suwayomi_domain::sync_yomi::SyncYomiService;
 use suwayomi_domain::source::SourceFetcher;
 
 use crate::updater::UpdateManager;
@@ -31,6 +33,10 @@ pub struct GraphQLState {
     pub update: UpdateManager,
     /// Chapter download manager (queue + worker + event bus).
     pub download: DownloadManager,
+    /// KOReader progress sync (Phase 6).
+    pub koreader: KoreaderSyncService,
+    /// SyncYomi library sync (Phase 6).
+    pub sync_yomi: SyncYomiService,
 }
 
 impl GraphQLState {
@@ -44,6 +50,8 @@ impl GraphQLState {
         let page = PageService::new(db.clone());
         let update = UpdateManager::new(db.clone(), fetcher.clone());
         let download = DownloadManager::new(db.clone(), fetcher);
-        Self { db, config, manga, chapter, category, category_manga, library, manga_list, page, update, download }
+        let koreader = KoreaderSyncService::new(db.clone(), config.clone());
+        let sync_yomi = SyncYomiService::new(db.clone(), config.clone());
+        Self { db, config, manga, chapter, category, category_manga, library, manga_list, page, update, download, koreader, sync_yomi }
     }
 }

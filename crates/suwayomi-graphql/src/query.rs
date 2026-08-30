@@ -7,7 +7,7 @@ use suwayomi_core::schema::{CategoryRow, ChapterRow, MangaRow};
 use suwayomi_domain::sql::bind_placeholders;
 
 use crate::mutation_b4::{
-    BackupRestoreState, BackupRestoreStatus, DownloadStatus, KoSyncStatusPayload, LibraryUpdateStatus, UpdateState,
+    BackupRestoreState, BackupRestoreStatus, DownloadStatus, KoSyncStatusPayloadType, LibraryUpdateStatus, UpdateState,
     ValidateBackupInput, ValidateBackupResult, WebUIUpdateInfo, WebUIUpdateStatus,
 };
 use crate::scalars::{Cursor, LongString};
@@ -1167,13 +1167,29 @@ impl QueryRoot {
     }
 
     /// Mirrors `koSyncStatus()` — Koreader sync (Phase 6 wires accounts).
-    async fn ko_sync_status(&self) -> KoSyncStatusPayload {
-        KoSyncStatusPayload { is_logged_in: false, server_address: None, username: None }
+    async fn ko_sync_status(&self, ctx: &Context<'_>) -> async_graphql::Result<KoSyncStatusPayloadType> {
+        let state = ctx.data::<crate::state::GraphQLState>()?;
+        let status = state.koreader.get_status().await?;
+        Ok(KoSyncStatusPayloadType {
+            is_logged_in: status.is_logged_in,
+            server_address: status.server_address,
+            username: status.username,
+        })
     }
 
     /// Mirrors `lastSyncStatus()` — SyncYomi status.
-    async fn last_sync_status(&self) -> Option<SyncStatus> {
-        None
+    async fn last_sync_status(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<SyncStatus>> {
+        let state = ctx.data::<crate::state::GraphQLState>()?;
+        match state.sync_yomi.last_sync_status().await? {
+            Some(st) => Ok(Some(SyncStatus {
+                backup_restore_id: None,
+                end_date: None,
+                error_message: None,
+                start_date: LongString(st.synced_at * 1000),
+                state: SyncState::Success,
+            })),
+            None => Ok(None),
+        }
     }
 
     /// Mirrors `aboutWebUI()`.

@@ -267,7 +267,12 @@ fn validate_backup_inner(backup: &Backup) -> RestoreSummary {
 /// rows are merged, new rows inserted; chapters upsert on (url, manga).
 pub async fn restore_backup(pool: &PgPool, gz: &[u8]) -> Result<RestoreSummary, BackupError> {
     let backup = decode_gz_backup(gz)?;
-    let mut summary = validate_backup_inner(&backup);
+    restore_backup_proto(pool, &backup).await
+}
+
+/// Restores from an already-decoded `Backup` message (idempotent upserts).
+pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<RestoreSummary, BackupError> {
+    let mut summary = validate_backup_inner(backup);
     let source_names: HashMap<i64, String> = backup.backup_sources.iter().map(|s| (s.source_id, s.name.clone())).collect();
 
     // 1) categories: order -> id (reuse existing by name; mirrors Kotlin's
@@ -468,16 +473,9 @@ fn update_strategy_name(ordinal: i32) -> &'static str {
     }
 }
 
-/// Serializes the current database into a gzipped `Backup` protobuf payload.
-pub async fn create_backup(pool: &PgPool) -> Result<Vec<u8>, BackupError> {
-    let backup = build_backup(pool).await?;
-    let bytes = backup.encode_to_vec();
-
-    use std::io::Write;
-    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    encoder.write_all(&bytes)?;
-    let gz = encoder.finish()?;
-    Ok(gz)
+/// Builds the `Backup` protobuf message from the current database (no encoding).
+pub async fn create_backup_proto(pool: &PgPool) -> Result<Backup, BackupError> {
+    build_backup(pool).await
 }
 
 async fn build_backup(pool: &PgPool) -> Result<Backup, BackupError> {
@@ -605,6 +603,17 @@ pub enum BackupError {
     Io(#[from] std::io::Error),
     #[error("protobuf decode error: {0}")]
     Decode(String),
+}
+
+/// Serializes the current database into a gzipped `Backup` protobuf payload.
+pub async fn create_backup(pool: &PgPool) -> Result<Vec<u8>, BackupError> {
+    let backup = create_backup_proto(pool).await?;
+    let bytes = backup.encode_to_vec();
+    use std::io::Write;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(&bytes)?;
+    let gz = encoder.finish()?;
+    Ok(gz)
 }
 
 #[cfg(test)]

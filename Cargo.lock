@@ -3430,6 +3430,7 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
+ "sqlx",
  "suwayomi-core",
  "suwayomi-domain",
  "suwayomi-graphql",

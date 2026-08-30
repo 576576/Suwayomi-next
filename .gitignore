@@ -29,3 +29,7 @@ tauri-app/src-tauri/gen/
 
 # Node (future WebUI tooling)
 node_modules/
+
+# Phase 7 tooling build outputs
+jvm-sandbox/build/
+tools/h2-dump/build/

@@ -60,6 +60,67 @@ async fn index(State(_s): State<AppState>) -> Result<String, StatusCode> {
     Ok(format!("Suwayomi (next) v{VERSION} — GraphQL at /api/graphql, REST at /api/v1, OPDS at /api/opds/v1.2"))
 }
 
+/// Phase 7: locates the Kotlin H2 database, dumps it with tools/h2-dump and
+/// imports the generated PostgreSQL script into the configured backend.
+async fn import_h2_data(db: &Db, data_dir: &std::path::Path) -> anyhow::Result<()> {
+    use sqlx::Executor;
+
+    // 1) locate the H2 file
+    let h2_file = if data_dir.join("tachidesk.mv.db").exists() {
+        data_dir.join("tachidesk.mv.db")
+    } else {
+        let mut found = None;
+        for entry in std::fs::read_dir(data_dir)? {
+            let e = entry?;
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.ends_with(".mv.db") {
+                found = Some(e.path());
+                break;
+            }
+        }
+        found.ok_or_else(|| anyhow::anyhow!("no *.mv.db found in {}", data_dir.display()))?
+    };
+    let h2_base = h2_file.to_string_lossy().trim_end_matches(".mv.db").to_string();
+    tracing::info!("h2 database found: {}", h2_file.display());
+
+    // 2) resolve the h2-dump jar
+    let jar = std::env::var("SUWAYOMI_H2_DUMP_JAR").ok().map(std::path::PathBuf::from).unwrap_or_else(|| {
+        std::path::PathBuf::from("tools/h2-dump/build/libs/h2-dump.jar")
+    });
+    if !jar.exists() {
+        anyhow::bail!(
+            "h2-dump jar not found at {} — build it with `gradle -p tools/h2-dump build` or set SUWAYOMI_H2_DUMP_JAR",
+            jar.display()
+        );
+    }
+
+    // 3) dump H2 -> SQL
+    let out_sql = std::env::temp_dir().join(format!("suwayomi-h2dump-{}.sql", std::process::id()));
+    let status = std::process::Command::new("java")
+        .arg("-jar")
+        .arg(&jar)
+        .arg(&h2_base)
+        .arg(&out_sql)
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("h2-dump exited with {status}");
+    }
+    let sql = std::fs::read_to_string(&out_sql)?;
+    let _ = std::fs::remove_file(&out_sql);
+
+    // 4) execute statements one by one (FK-safe order is emitted by h2-dump)
+    let mut applied = 0usize;
+    for stmt in sql.split(';').map(str::trim).filter(|s| !s.is_empty() && !s.starts_with("--")) {
+        if stmt.is_empty() {
+            continue;
+        }
+        db.pool().execute(stmt).await?;
+        applied += 1;
+    }
+    tracing::info!("h2-dump import: {applied} statements applied");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -71,6 +132,26 @@ async fn main() -> anyhow::Result<()> {
 
     let config = config_from_env();
     tracing::info!(name = "Suwayomi (next)", version = VERSION, "starting");
+
+    // Phase 7: `--migrate <kotlin-data-dir> [--h2-dump-jar <path>]` — dump the
+    // Kotlin H2 database via tools/h2-dump and import it into the configured
+    // backend, then exit (no HTTP server).
+    let migrate_dir: Option<std::path::PathBuf> = {
+        let mut args = std::env::args().skip(1);
+        let mut dir = None;
+        while let Some(a) = args.next() {
+            match a.as_str() {
+                "--migrate" => dir = args.next().map(std::path::PathBuf::from),
+                "--h2-dump-jar" => {
+                    if let Some(p) = args.next() {
+                        std::env::set_var("SUWAYOMI_H2_DUMP_JAR", p);
+                    }
+                }
+                _ => {}
+            }
+        }
+        dir
+    };
 
     // Database backend (Phase 6): embedded PGlite by default; an explicit
     // `SUWAYOMI_DATABASE_URL` switches to an external PostgreSQL server.
@@ -90,6 +171,13 @@ async fn main() -> anyhow::Result<()> {
     };
     db.migrate().await?;
     tracing::info!(mode = ?db.mode(), "database ready (migrations applied)");
+
+    // Phase 7: import the Kotlin H2 data and stop.
+    if let Some(dir) = migrate_dir {
+        import_h2_data(&db, &dir).await?;
+        tracing::info!("--migrate finished; run `suwayomi-server` normally to serve");
+        return Ok(());
+    }
 
     // Phase 5: launch the JVM extension sandbox when configured.
     // SUWAYOMI_SANDBOX_JAR  -> path to the built sandbox jar (optional)

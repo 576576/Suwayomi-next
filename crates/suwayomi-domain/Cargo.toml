@@ -1,0 +1,19 @@
+[package]
+name = "suwayomi-domain"
+description = "Core business logic (migrated from Suwayomi-Server kotlin suwayomi/tachidesk/manga/impl)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+suwayomi-core = { path = "../suwayomi-core" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+sqlx.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+reqwest.workspace = true
+futures.workspace = true

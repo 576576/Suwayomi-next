@@ -19,3 +19,4 @@ uuid.workspace = true
 prost.workspace = true
 anyhow.workspace = true
 pglite-oxide.workspace = true
+flate2.workspace = true

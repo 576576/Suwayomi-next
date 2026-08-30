@@ -3338,6 +3338,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "flate2",
  "pglite-oxide",
  "prost",
  "serde",

@@ -1024,11 +1024,15 @@ impl MutationRootB4 {
 
     async fn create_backup(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: CreateBackupInput,
     ) -> async_graphql::Result<CreateBackupPayload> {
+        let state = ctx.data::<crate::state::GraphQLState>()?;
+        // Phase 6: real export — gzipped Mihon protobuf backup; the client
+        // downloads it from the REST export/file endpoint (import pending).
         let _ = input.flags;
-        Ok(CreateBackupPayload { client_mutation_id: input.client_mutation_id, url: String::new() })
+        suwayomi_core::backup::create_backup(state.db.pool()).await.map_err(async_graphql::Error::from)?;
+        Ok(CreateBackupPayload { client_mutation_id: input.client_mutation_id, url: "/api/v1/backup/export/file".to_string() })
     }
 
     async fn restore_backup(

@@ -6,6 +6,7 @@
 //! - `eu.kanade.tachiyomi.source.model.*`     → source
 //! - `suwayomi.tachidesk.server.settings.*`   → config
 
+pub mod backup;
 pub mod config;
 pub mod db;
 pub mod models;

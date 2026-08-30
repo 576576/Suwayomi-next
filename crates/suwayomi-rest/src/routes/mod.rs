@@ -1,6 +1,7 @@
 //! Route registration — mirrors `MangaAPI.kt` + `GlobalAPI.kt` endpoint
 //! layout under `/api/v1/`.
 
+pub mod backup;
 pub mod category;
 pub mod chapter;
 pub mod download;
@@ -12,7 +13,6 @@ pub mod source;
 pub mod track;
 pub mod update;
 
-use axum::routing::get;
 use axum::Router;
 
 use crate::state::AppState;
@@ -34,18 +34,5 @@ pub fn api_v1_router() -> Router<AppState> {
         .nest("/download", download::download_router())
         .nest("/update", update::update_router())
         .nest("/track", track::track_router())
-        .nest("/backup", stub_router())
-}
-
-fn stub_router() -> Router<AppState> {
-    use axum::extract::State;
-    use axum::http::StatusCode;
-    use axum::response::{IntoResponse, Response};
-    async fn not_implemented(State(_s): State<AppState>) -> Response {
-        (StatusCode::NOT_IMPLEMENTED, "Not implemented in this phase").into_response()
-    }
-    Router::new().route(
-        "/{*path}",
-        get(not_implemented).post(not_implemented).patch(not_implemented).delete(not_implemented).put(not_implemented),
-    )
+        .nest("/backup", backup::backup_router())
 }

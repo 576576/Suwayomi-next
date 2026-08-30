@@ -184,6 +184,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      # gh release create --generate-notes 需要 git 仓库——publish job 必须
+      # 先 checkout（fetch-depth: 0 拿完整历史生成 changelog）
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           path: artifacts

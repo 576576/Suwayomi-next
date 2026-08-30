@@ -1,9 +1,11 @@
 //! GraphQL object types — field names must match
 //! `docs/graphql/schema-baseline.graphql` exactly.
 
-use async_graphql::{Context, Enum, Object, SimpleObject};
+use async_graphql::{Context, Enum, Interface, Object, SimpleObject};
 use suwayomi_core::db::Db;
-use suwayomi_core::models::{now_epoch_secs, IncludeOrExclude as DomainInclude, MangaStatus as DomainStatus, UpdateStrategy as DomainStrategy};
+use suwayomi_core::models::{
+    now_epoch_secs, IncludeOrExclude as DomainInclude, MangaStatus as DomainStatus, UpdateStrategy as DomainStrategy,
+};
 use suwayomi_core::schema::{CategoryRow, ChapterRow, MangaRow};
 
 use crate::scalars::{Cursor, LongString};
@@ -67,16 +69,146 @@ impl From<DomainInclude> for IncludeOrExclude {
     }
 }
 
-/// MetaType — mirrors `graphql/types/MetaType.kt`.
+/// Mirrors `ContentWarning` enum (source/extension content rating).
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+pub enum ContentWarning {
+    Safe,
+    Mixed,
+    Nsfw,
+}
+
+impl ContentWarning {
+    pub fn from_i32(v: i32) -> Self {
+        match v {
+            1 => Self::Mixed,
+            2 => Self::Nsfw,
+            _ => Self::Safe,
+        }
+    }
+}
+
+/// MetaType — mirrors `graphql/types/MetaType.kt` (interface).
+/// Implemented by GlobalMetaType / MangaMetaType / ChapterMetaType /
+/// CategoryMetaType / SourceMetaType.
+#[derive(Interface, Clone)]
+#[allow(clippy::duplicated_attributes)] // two distinct interface fields, clippy false positive
+#[graphql(field(name = "key", ty = "String"), field(name = "value", ty = "String"))]
+pub enum MetaType {
+    Global(GlobalMetaType),
+    Manga(MangaMetaType),
+    Chapter(ChapterMetaType),
+    Category(CategoryMetaType),
+    Source(SourceMetaType),
+}
+
+/// Mirrors `GlobalMetaType.kt`.
 #[derive(SimpleObject, Clone)]
-pub struct MetaType {
+pub struct GlobalMetaType {
     pub key: String,
     pub value: String,
 }
 
-impl From<(String, String)> for MetaType {
+impl From<(String, String)> for GlobalMetaType {
     fn from((key, value): (String, String)) -> Self {
         Self { key, value }
+    }
+}
+
+/// Mirrors `MangaMetaType.kt` (meta: `[MangaMetaType!]!` on MangaType).
+#[derive(Clone)]
+pub struct MangaMetaType {
+    pub key: String,
+    pub value: String,
+    pub manga_id: i32,
+}
+
+#[Object]
+impl MangaMetaType {
+    async fn key(&self) -> &str {
+        &self.key
+    }
+    async fn value(&self) -> &str {
+        &self.value
+    }
+    async fn manga_id(&self) -> i32 {
+        self.manga_id
+    }
+    async fn manga(&self, ctx: &Context<'_>) -> async_graphql::Result<MangaType> {
+        let state = ctx.data::<GraphQLState>()?;
+        Ok(MangaType::from_row(&fetch_manga_row(state, self.manga_id).await?))
+    }
+}
+
+/// Mirrors `ChapterMetaType.kt` (meta: `[ChapterMetaType!]!` on ChapterType).
+#[derive(Clone)]
+pub struct ChapterMetaType {
+    pub key: String,
+    pub value: String,
+    pub chapter_id: i32,
+}
+
+#[Object]
+impl ChapterMetaType {
+    async fn key(&self) -> &str {
+        &self.key
+    }
+    async fn value(&self) -> &str {
+        &self.value
+    }
+    async fn chapter_id(&self) -> i32 {
+        self.chapter_id
+    }
+}
+
+/// Mirrors `CategoryMetaType.kt` (meta: `[CategoryMetaType!]!` on CategoryType).
+#[derive(Clone)]
+pub struct CategoryMetaType {
+    pub key: String,
+    pub value: String,
+    pub category_id: i32,
+}
+
+#[Object]
+impl CategoryMetaType {
+    async fn key(&self) -> &str {
+        &self.key
+    }
+    async fn value(&self) -> &str {
+        &self.value
+    }
+    async fn category_id(&self) -> i32 {
+        self.category_id
+    }
+    async fn category(&self, ctx: &Context<'_>) -> async_graphql::Result<CategoryType> {
+        let state = ctx.data::<GraphQLState>()?;
+        let sql = bind_placeholders("SELECT * FROM category WHERE id = ?");
+        let row = sqlx::query_as::<_, CategoryRow>(&sql)
+            .bind(self.category_id)
+            .fetch_one(state.db.pool())
+            .await
+            .map_err(async_graphql::Error::from)?;
+        Ok(CategoryType::from(&row))
+    }
+}
+
+/// Mirrors `SourceMetaType.kt` (meta: `[SourceMetaType!]!` on SourceType).
+#[derive(Clone)]
+pub struct SourceMetaType {
+    pub key: String,
+    pub value: String,
+    pub source_id: i64,
+}
+
+#[Object]
+impl SourceMetaType {
+    async fn key(&self) -> &str {
+        &self.key
+    }
+    async fn value(&self) -> &str {
+        &self.value
+    }
+    async fn source_id(&self) -> LongString {
+        LongString(self.source_id)
     }
 }
 
@@ -134,11 +266,7 @@ impl MangaType {
     async fn chapters_of(&self, db: &Db) -> Vec<ChapterRow> {
         let sql = bind_placeholders("SELECT * FROM chapter WHERE manga = ? ORDER BY source_order DESC");
         let pool = db.pool();
-        sqlx::query_as::<_, ChapterRow>(&sql)
-            .bind(self.id)
-            .fetch_all(pool)
-            .await
-            .unwrap_or_default()
+        sqlx::query_as::<_, ChapterRow>(&sql).bind(self.id).fetch_all(pool).await.unwrap_or_default()
     }
 }
 
@@ -231,11 +359,7 @@ impl MangaType {
 
     async fn categories(&self, ctx: &Context<'_>) -> async_graphql::Result<CategoryNodeList> {
         let state = ctx.data::<GraphQLState>()?;
-        let list = state
-            .category_manga
-            .get_manga_categories(self.id)
-            .await
-            .map_err(async_graphql::Error::from)?;
+        let list = state.category_manga.get_manga_categories(self.id).await.map_err(async_graphql::Error::from)?;
         let nodes: Vec<CategoryType> = list
             .iter()
             .map(|c| CategoryType {
@@ -250,14 +374,10 @@ impl MangaType {
         Ok(CategoryNodeList::from_nodes(nodes))
     }
 
-    async fn meta(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<MetaType>> {
+    async fn meta(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<MangaMetaType>> {
         let state = ctx.data::<GraphQLState>()?;
-        let map = state
-            .manga
-            .get_meta_map(self.id)
-            .await
-            .map_err(async_graphql::Error::from)?;
-        Ok(map.into_iter().map(MetaType::from).collect())
+        let map = state.manga.get_meta_map(self.id).await.map_err(async_graphql::Error::from)?;
+        Ok(map.into_iter().map(|(k, v)| MangaMetaType { key: k, value: v, manga_id: self.id }).collect())
     }
 
     async fn source(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<SourceType>> {
@@ -422,24 +542,16 @@ impl ChapterType {
         let state = ctx.data::<GraphQLState>()?;
         Ok(MangaType::from_row(&fetch_manga_row(state, self.manga_id).await?))
     }
-    async fn meta(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<MetaType>> {
+    async fn meta(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<ChapterMetaType>> {
         let state = ctx.data::<GraphQLState>()?;
-        let map = state
-            .chapter
-            .get_meta_map(self.id)
-            .await
-            .map_err(async_graphql::Error::from)?;
-        Ok(map.into_iter().map(MetaType::from).collect())
+        let map = state.chapter.get_meta_map(self.id).await.map_err(async_graphql::Error::from)?;
+        Ok(map.into_iter().map(|(k, v)| ChapterMetaType { key: k, value: v, chapter_id: self.id }).collect())
     }
 }
 
 async fn fetch_manga_row(state: &GraphQLState, id: i32) -> async_graphql::Result<MangaRow> {
     let sql = bind_placeholders("SELECT * FROM manga WHERE id = ?");
-    sqlx::query_as::<_, MangaRow>(&sql)
-        .bind(id)
-        .fetch_one(state.db.pool())
-        .await
-        .map_err(async_graphql::Error::from)
+    sqlx::query_as::<_, MangaRow>(&sql).bind(id).fetch_one(state.db.pool()).await.map_err(async_graphql::Error::from)
 }
 
 /// CategoryType — mirrors `graphql/types/CategoryType.kt`.
@@ -488,11 +600,7 @@ impl CategoryType {
     }
     async fn mangas(&self, ctx: &Context<'_>) -> async_graphql::Result<MangaNodeList> {
         let state = ctx.data::<GraphQLState>()?;
-        let list = state
-            .category_manga
-            .get_category_manga_list(self.id)
-            .await
-            .map_err(async_graphql::Error::from)?;
+        let list = state.category_manga.get_category_manga_list(self.id).await.map_err(async_graphql::Error::from)?;
         let mut nodes = Vec::new();
         for dc in list {
             let sql = bind_placeholders("SELECT * FROM manga WHERE id = ?");
@@ -505,14 +613,10 @@ impl CategoryType {
         }
         Ok(MangaNodeList::from_nodes(nodes))
     }
-    async fn meta(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<MetaType>> {
+    async fn meta(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<CategoryMetaType>> {
         let state = ctx.data::<GraphQLState>()?;
-        let map = state
-            .category
-            .get_meta_map(self.id)
-            .await
-            .map_err(async_graphql::Error::from)?;
-        Ok(map.into_iter().map(MetaType::from).collect())
+        let map = state.category.get_meta_map(self.id).await.map_err(async_graphql::Error::from)?;
+        Ok(map.into_iter().map(|(k, v)| CategoryMetaType { key: k, value: v, category_id: self.id }).collect())
     }
 }
 
@@ -693,6 +797,49 @@ impl TrackRecordNodeList {
                 has_previous_page: false,
             },
             total_count: 0,
+        }
+    }
+}
+
+// ---- GlobalMeta NodeList (Query.metas) ----
+
+#[derive(SimpleObject, Clone)]
+pub struct MetaEdge {
+    pub cursor: Cursor,
+    pub node: GlobalMetaType,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct GlobalMetaNodeList {
+    pub nodes: Vec<GlobalMetaType>,
+    pub edges: Vec<MetaEdge>,
+    pub page_info: PageInfo,
+    pub total_count: i32,
+}
+
+impl GlobalMetaNodeList {
+    pub fn from_nodes(nodes: Vec<GlobalMetaType>) -> Self {
+        let total = nodes.len() as i32;
+        let edges = if nodes.is_empty() {
+            vec![]
+        } else if nodes.len() == 1 {
+            vec![MetaEdge { cursor: Cursor("0".into()), node: nodes[0].clone() }]
+        } else {
+            vec![
+                MetaEdge { cursor: Cursor("0".into()), node: nodes[0].clone() },
+                MetaEdge { cursor: Cursor((nodes.len() - 1).to_string()), node: nodes[nodes.len() - 1].clone() },
+            ]
+        };
+        Self {
+            page_info: PageInfo {
+                start_cursor: Some(Cursor("0".into())),
+                end_cursor: Some(Cursor(total.saturating_sub(1).to_string())),
+                has_next_page: false,
+                has_previous_page: false,
+            },
+            nodes,
+            edges,
+            total_count: total,
         }
     }
 }

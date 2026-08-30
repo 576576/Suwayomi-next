@@ -12,9 +12,7 @@ pub type GraphQLSchema = Schema<QueryRoot, EmptyMutation, EmptySubscription>;
 
 /// Builds the schema with runtime state injected (accessible via `ctx.data`).
 pub fn build_schema(state: GraphQLState) -> GraphQLSchema {
-    Schema::build(QueryRoot, EmptyMutation, EmptySubscription)
-        .data(state)
-        .finish()
+    Schema::build(QueryRoot, EmptyMutation, EmptySubscription).data(state).finish()
 }
 
 /// Mirrors `GraphQL.defineEndpoints()`: POST/GET `/graphql` under `/api`.
@@ -35,7 +33,10 @@ pub fn schema_type_count() -> usize {
     schema_sdl()
         .lines()
         .filter(|l| {
-            l.starts_with("type ") || l.starts_with("enum ") || l.starts_with("input ") || l.starts_with("scalar ")
+            l.starts_with("type ")
+                || l.starts_with("enum ")
+                || l.starts_with("input ")
+                || l.starts_with("scalar ")
                 || l.starts_with("interface ")
         })
         .count()

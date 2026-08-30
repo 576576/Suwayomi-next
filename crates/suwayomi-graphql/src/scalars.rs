@@ -15,10 +15,9 @@ impl ScalarType for LongString {
                 .parse::<i64>()
                 .map(LongString)
                 .map_err(|e| InputValueError::custom(format!("invalid LongString: {e}"))),
-            Value::Number(n) => n
-                .as_i64()
-                .map(LongString)
-                .ok_or_else(|| InputValueError::custom("expected i64 number")),
+            Value::Number(n) => {
+                n.as_i64().map(LongString).ok_or_else(|| InputValueError::custom("expected i64 number"))
+            }
             _ => Err(InputValueError::custom("expected string")),
         }
     }

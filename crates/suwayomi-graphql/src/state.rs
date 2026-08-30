@@ -33,15 +33,6 @@ impl GraphQLState {
         let library = LibraryService::new(db.clone(), manga.clone());
         let manga_list = MangaListService::new(db.clone(), fetcher);
         let page = PageService::new(db.clone());
-        Self {
-            db,
-            manga,
-            chapter,
-            category,
-            category_manga,
-            library,
-            manga_list,
-            page,
-        }
+        Self { db, manga, chapter, category, category_manga, library, manga_list, page }
     }
 }

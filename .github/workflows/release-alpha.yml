@@ -1,0 +1,105 @@
+name: Release-Alpha
+
+# alpha 发布 CI：推送 main 时自动构建 alpha，仅 Windows x64。
+# 手动多通道/多架构发布走 release.yml（workflow_dispatch）。
+#
+# 版本号（见 crates/suwayomi-server/build.rs）：
+# - 内部 versionCode = commit count + 3000（38 次提交 -> 3038）
+# - 外部 versionName = 3.{count/100}.{(count/10)%10}（38 -> 3.0.3，100 -> 3.1.0）
+
+on:
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: 构建 alpha (windows-x64)
+    runs-on: windows-latest
+    env:
+      SUWAYOMI_VERSION_COUNT: ${{ steps.ver.outputs.count }}
+    outputs:
+      version_name: ${{ steps.ver.outputs.version_name }}
+      version_code: ${{ steps.ver.outputs.version_code }}
+      count: ${{ steps.ver.outputs.count }}
+      tag: ${{ steps.ver.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: ver
+        name: 计算版本号
+        shell: bash
+        run: |
+          COUNT="$(git rev-list --count HEAD)"
+          VER_NAME="3.$((COUNT/100)).$(((COUNT/10)%10))"
+          VER_CODE="$((COUNT+3000))"
+          TAG="v${VER_NAME}-alpha.${{ github.run_id }}"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "version_name=$VER_NAME" >> "$GITHUB_OUTPUT"
+          echo "version_code=$VER_CODE" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "alpha build: $VER_NAME (code $VER_CODE, commits $COUNT) -> $TAG"
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - name: 构建
+        run: |
+          cargo build --release -p suwayomi-server --target x86_64-pc-windows-msvc
+      - name: 打包
+        id: pack
+        shell: bash
+        run: |
+          VER="${{ steps.ver.outputs.version_name }}"
+          CH="alpha"
+          TGT="windows-x64"
+          BIN="target/x86_64-pc-windows-msvc/release/suwayomi-server.exe"
+
+          STAGE="dist/SuwayomiNext-${VER}-${CH}-${TGT}"
+          mkdir -p "$STAGE"
+          cp "$BIN" "$STAGE/"
+          printf 'name=%s\nchannel=%s\nversionName=%s\nversionCode=%s\ncommitCount=%s\ntarget=%s\n' \
+            "SuwayomiNext" "$CH" "$VER" "${{ steps.ver.outputs.version_code }}" \
+            "${{ steps.ver.outputs.count }}" "$TGT" > "$STAGE/VERSION.txt"
+          powershell -Command "Compress-Archive -Path 'dist/SuwayomiNext-${VER}-${CH}-${TGT}' -DestinationPath 'dist/SuwayomiNext-${VER}-${CH}-${TGT}.zip' -Force"
+          echo "artifact=dist/SuwayomiNext-${VER}-${CH}-${TGT}.zip" >> "$GITHUB_OUTPUT"
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: SuwayomiNext-${{ steps.ver.outputs.version_name }}-alpha-windows-x64
+          path: ${{ steps.pack.outputs.artifact }}
+
+  publish:
+    name: 发布 alpha (${{ needs.build.outputs.version_name }})
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: 创建 alpha Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+          VER: ${{ needs.build.outputs.version_name }}
+          CODE: ${{ needs.build.outputs.version_code }}
+          COUNT: ${{ needs.build.outputs.count }}
+        run: |
+          gh release create "$TAG" \
+            artifacts/* \
+            --title "SuwayomiNext $VER (alpha)" \
+            --notes "## SuwayomiNext $VER · alpha
+
+- versionName: $VER
+- versionCode: $CODE
+- commits: $COUNT
+- 构建: windows-x64（推送自动触发）" \
+            --prerelease \
+            --generate-notes

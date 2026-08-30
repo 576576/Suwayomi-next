@@ -1,23 +1,20 @@
 name: Release
 
-# 发布通道：
-# - push 到 master          -> alpha，仅 windows-x64 构建
-# - 手动触发（workflow_dispatch）-> 可选 alpha/beta/release + 多选构建目标
+# 手动发布 CI：workflow_dispatch 触发，可选 alpha / beta / release 通道，
+# 多选构建目标（不同架构）。推送自动 alpha 走 release-alpha.yml。
 #
 # 版本号（见 crates/suwayomi-server/build.rs）：
 # - 内部 versionCode = commit count + 3000（38 次提交 -> 3038）
 # - 外部 versionName = 3.{count/100}.{(count/10)%10}（38 -> 3.0.3，100 -> 3.1.0）
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       channel:
         description: 发布通道
         type: choice
         options: [alpha, beta, release]
-        default: alpha
+        default: release
       targets:
         description: 构建目标（可多选）
         type: multi-select
@@ -27,7 +24,7 @@ on:
           - linux-arm64
           - macos-x64
           - macos-arm64
-        default: [windows-x64]
+        default: [windows-x64, linux-x64]
       version_count:
         description: 版本计数（留空自动使用提交数；用于预发布验证）
         type: string
@@ -54,9 +51,7 @@ jobs:
           fetch-depth: 0
       - id: out
         run: |
-          # 通道：手动触发取 input，push 默认 alpha
           CHANNEL="${{ github.event.inputs.channel }}"
-          if [ -z "$CHANNEL" ]; then CHANNEL="alpha"; fi
 
           # 版本计数：手动可覆盖，否则 git 提交数
           COUNT="${{ github.event.inputs.version_count }}"
@@ -74,10 +69,7 @@ jobs:
             PRE="true"
           fi
 
-          # 构建目标：push 仅 windows-x64；手动触发用多选
-          TARGETS="${{ github.event.inputs.targets }}"
-          if [ -z "$TARGETS" ]; then TARGETS='["windows-x64"]'; fi
-          # 转换为 matrix include 对象（os / rust_target / target）
+          TARGETS='${{ github.event.inputs.targets }}'
           INCLUDE="$(python3 - "$TARGETS" <<'PY'
 import json, sys
 mapping = {
@@ -104,7 +96,7 @@ PY
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "prerelease=$PRE" >> "$GITHUB_OUTPUT"
-          echo "构建: $CHANNEL $VER_NAME (code $VER_CODE, commits $COUNT) -> $TAG targets=$TARGETS"
+          echo "手动发布: $CHANNEL $VER_NAME (code $VER_CODE, commits $COUNT) -> $TAG targets=$TARGETS"
 
   build:
     name: 构建 ${{ matrix.target }}
@@ -198,6 +190,6 @@ PY
 - versionName: $VER
 - versionCode: $CODE
 - commits: $COUNT
-- channel: $CH" \
+- channel: $CH（手动触发）" \
             --prerelease="$PRE" \
             --generate-notes

@@ -22,10 +22,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn config_from_env() -> ServerConfig {
     // Pure-PostgreSQL decision (2026-08-30): Rust backend only supports PG.
-    let mut cfg = ServerConfig {
-        database_type: suwayomi_core::config::DatabaseType::Postgresql,
-        ..ServerConfig::default()
-    };
+    let mut cfg =
+        ServerConfig { database_type: suwayomi_core::config::DatabaseType::Postgresql, ..ServerConfig::default() };
     if let Ok(v) = std::env::var("SUWAYOMI_PORT") {
         cfg.port = v.parse().unwrap_or(cfg.port);
     }

@@ -6,7 +6,7 @@ use sqlx::Row;
 use suwayomi_core::schema::{CategoryRow, ChapterRow, MangaRow};
 use suwayomi_domain::sql::bind_placeholders;
 
-use crate::scalars::Cursor;
+use crate::scalars::{Cursor, LongString};
 use crate::state::GraphQLState;
 use crate::types::*;
 
@@ -231,6 +231,39 @@ pub struct MetaFilterInput {
     pub not: Option<Box<MetaFilterInput>>,
     pub or: Option<Vec<MetaFilterInput>>,
     pub value: Option<StringFilterInput>,
+}
+
+/// Mirrors `SourceConditionInput`.
+#[derive(InputObject, Default)]
+pub struct SourceCondition {
+    pub content_warning: Option<ContentWarning>,
+    pub id: Option<LongString>,
+    pub lang: Option<String>,
+    pub name: Option<String>,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+pub enum SourceOrderBy {
+    Id,
+    Name,
+    Lang,
+}
+
+#[derive(InputObject)]
+pub struct SourceOrder {
+    pub by: SourceOrderBy,
+    pub by_type: Option<SortOrder>,
+}
+
+#[derive(InputObject, Default)]
+pub struct SourceFilterInput {
+    pub and: Option<Vec<SourceFilterInput>>,
+    pub content_warning: Option<ContentWarningFilterInput>,
+    pub id: Option<LongFilterInput>,
+    pub lang: Option<StringFilterInput>,
+    pub name: Option<StringFilterInput>,
+    pub not: Option<Box<SourceFilterInput>>,
+    pub or: Option<Vec<SourceFilterInput>>,
 }
 
 /// Root Query object.
@@ -467,6 +500,94 @@ impl QueryRoot {
             })
             .collect();
         Ok(GlobalMetaNodeList::from_nodes(nodes))
+    }
+
+    /// Mirrors `source(id:)` — single source by id.
+    async fn source(&self, ctx: &Context<'_>, id: LongString) -> async_graphql::Result<SourceType> {
+        let state = ctx.data::<GraphQLState>()?;
+        let sql = bind_placeholders("SELECT * FROM source WHERE id = ?");
+        let row = sqlx::query_as::<_, suwayomi_core::schema::SourceRow>(&sql)
+            .bind(id.0)
+            .fetch_optional(state.db.pool())
+            .await
+            .map_err(async_graphql::Error::from)?
+            .ok_or_else(|| async_graphql::Error::new("Source not found"))?;
+        Ok(SourceType::from_row(&row))
+    }
+
+    /// Mirrors `sources(condition:, order:)`.
+    #[allow(clippy::too_many_arguments)]
+    async fn sources(
+        &self,
+        ctx: &Context<'_>,
+        condition: Option<SourceCondition>,
+        filter: Option<SourceFilterInput>,
+        order: Option<Vec<SourceOrder>>,
+        before: Option<Cursor>,
+        after: Option<Cursor>,
+        first: Option<i32>,
+        last: Option<i32>,
+        offset: Option<i32>,
+    ) -> async_graphql::Result<SourceNodeList> {
+        let _ = (filter, before, after, last, offset); // shape parity
+        let state = ctx.data::<GraphQLState>()?;
+        let mut sql = "SELECT * FROM source".to_string();
+        let mut where_clauses: Vec<String> = Vec::new();
+        let mut binds: Vec<BindVal> = Vec::new();
+        if let Some(cond) = condition {
+            if let Some(v) = cond.id {
+                where_clauses.push("id = ?".into());
+                binds.push(BindVal::I64(v.0));
+            }
+            if let Some(v) = &cond.lang {
+                where_clauses.push("lang = ?".into());
+                binds.push(BindVal::Str(v.clone()));
+            }
+            if let Some(v) = &cond.name {
+                where_clauses.push("name ILIKE ?".into());
+                binds.push(BindVal::Str(format!("%{v}%")));
+            }
+            if let Some(v) = cond.content_warning {
+                where_clauses.push("content_warning = ?".into());
+                binds.push(BindVal::I32(v.to_i32()));
+            }
+        }
+        if !where_clauses.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&where_clauses.join(" AND "));
+        }
+        if let Some(orders) = order {
+            if let Some(o) = orders.first() {
+                let col = match o.by {
+                    SourceOrderBy::Id => "id",
+                    SourceOrderBy::Name => "name",
+                    SourceOrderBy::Lang => "lang",
+                };
+                let dir = match o.by_type {
+                    Some(SortOrder::Asc) => "ASC",
+                    _ => "DESC",
+                };
+                sql.push_str(&format!(" ORDER BY {col} {dir}"));
+            }
+        } else {
+            sql.push_str(" ORDER BY name ASC");
+        }
+        if let Some(limit) = first {
+            sql.push_str(&format!(" LIMIT {}", limit.clamp(1, 500)));
+        }
+        let sql = bind_placeholders(&sql);
+        let mut q = sqlx::query_as::<_, suwayomi_core::schema::SourceRow>(&sql);
+        for b in &binds {
+            q = match b {
+                BindVal::I32(x) => q.bind(*x),
+                BindVal::I64(x) => q.bind(*x),
+                BindVal::Bool(x) => q.bind(*x),
+                BindVal::Str(x) => q.bind(x),
+            };
+        }
+        let rows = q.fetch_all(state.db.pool()).await.map_err(async_graphql::Error::from)?;
+        let nodes: Vec<SourceType> = rows.iter().map(SourceType::from_row).collect();
+        Ok(SourceNodeList::from_nodes(nodes))
     }
 
     /// Minimal placeholder for remaining queries (Phase 4 increments).

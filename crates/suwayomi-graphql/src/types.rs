@@ -1,7 +1,7 @@
 //! GraphQL object types — field names must match
 //! `docs/graphql/schema-baseline.graphql` exactly.
 
-use async_graphql::{Context, Enum, Interface, Object, SimpleObject};
+use async_graphql::{Context, Enum, Interface, Object, SimpleObject, Union};
 use suwayomi_core::db::Db;
 use suwayomi_core::models::{
     now_epoch_secs, IncludeOrExclude as DomainInclude, MangaStatus as DomainStatus, UpdateStrategy as DomainStrategy,
@@ -10,6 +10,7 @@ use suwayomi_core::schema::{CategoryRow, ChapterRow, MangaRow};
 
 use crate::scalars::{Cursor, LongString};
 use crate::state::GraphQLState;
+use sqlx::Row;
 use suwayomi_domain::sql::bind_placeholders;
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -83,6 +84,14 @@ impl ContentWarning {
             1 => Self::Mixed,
             2 => Self::Nsfw,
             _ => Self::Safe,
+        }
+    }
+
+    pub fn to_i32(self) -> i32 {
+        match self {
+            Self::Safe => 0,
+            Self::Mixed => 1,
+            Self::Nsfw => 2,
         }
     }
 }
@@ -388,7 +397,7 @@ impl MangaType {
             .fetch_optional(state.db.pool())
             .await
             .map_err(async_graphql::Error::from)?;
-        Ok(row.map(|r| SourceType { id: r.id.to_string(), name: r.name, lang: r.lang }))
+        Ok(row.map(|r| SourceType::from_row(&r)))
     }
 
     async fn track_records(&self) -> TrackRecordNodeList {
@@ -628,14 +637,6 @@ pub struct PageType {
     pub image_url: Option<String>,
 }
 
-/// SourceType — mirrors `graphql/types/SourceType.kt` (minimal).
-#[derive(SimpleObject, Clone)]
-pub struct SourceType {
-    pub id: String,
-    pub name: String,
-    pub lang: String,
-}
-
 // ---- pagination (NodeList) ----
 
 #[derive(SimpleObject, Clone)]
@@ -828,6 +829,496 @@ impl GlobalMetaNodeList {
             vec![
                 MetaEdge { cursor: Cursor("0".into()), node: nodes[0].clone() },
                 MetaEdge { cursor: Cursor((nodes.len() - 1).to_string()), node: nodes[nodes.len() - 1].clone() },
+            ]
+        };
+        Self {
+            page_info: PageInfo {
+                start_cursor: Some(Cursor("0".into())),
+                end_cursor: Some(Cursor(total.saturating_sub(1).to_string())),
+                has_next_page: false,
+                has_previous_page: false,
+            },
+            nodes,
+            edges,
+            total_count: total,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Source / Extension domain types (batch A2)
+// ---------------------------------------------------------------------------
+
+/// Mirrors `SortSelection` (SortFilter.default).
+#[derive(SimpleObject, Clone)]
+pub struct SortSelection {
+    pub ascending: bool,
+    pub index: i32,
+}
+
+/// Mirrors `TriState` (TriStateFilter.default).
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+pub enum TriState {
+    Ignore,
+    Include,
+    Exclude,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct CheckBoxFilter {
+    pub default: bool,
+    pub name: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct GroupFilter {
+    pub filters: Vec<Filter>,
+    pub name: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct HeaderFilter {
+    pub name: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct SelectFilter {
+    pub default: i32,
+    pub name: String,
+    pub values: Vec<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct SeparatorFilter {
+    pub name: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct SortFilter {
+    pub default: Option<SortSelection>,
+    pub name: String,
+    pub values: Vec<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct TextFilter {
+    pub default: String,
+    pub name: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct TriStateFilter {
+    pub default: TriState,
+    pub name: String,
+}
+
+/// Mirrors `union Filter = ...`.
+#[derive(Union, Clone)]
+pub enum Filter {
+    CheckBox(CheckBoxFilter),
+    Group(GroupFilter),
+    Header(HeaderFilter),
+    Select(SelectFilter),
+    Separator(SeparatorFilter),
+    Sort(SortFilter),
+    Text(TextFilter),
+    TriState(TriStateFilter),
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct CheckBoxPreference {
+    pub current_value: Option<bool>,
+    pub default: bool,
+    pub enabled: bool,
+    pub key: Option<String>,
+    pub summary: Option<String>,
+    pub title: Option<String>,
+    pub visible: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct EditTextPreference {
+    pub current_value: Option<String>,
+    pub default: Option<String>,
+    pub dialog_message: Option<String>,
+    pub dialog_title: Option<String>,
+    pub enabled: bool,
+    pub key: Option<String>,
+    pub summary: Option<String>,
+    pub text: Option<String>,
+    pub title: Option<String>,
+    pub visible: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct ListPreference {
+    pub current_value: Option<String>,
+    pub default: Option<String>,
+    pub enabled: bool,
+    pub entries: Vec<String>,
+    pub entry_values: Vec<String>,
+    pub key: Option<String>,
+    pub summary: Option<String>,
+    pub title: Option<String>,
+    pub visible: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct MultiSelectListPreference {
+    pub current_value: Option<Vec<String>>,
+    pub default: Option<Vec<String>>,
+    pub dialog_message: Option<String>,
+    pub dialog_title: Option<String>,
+    pub enabled: bool,
+    pub entries: Vec<String>,
+    pub entry_values: Vec<String>,
+    pub key: Option<String>,
+    pub summary: Option<String>,
+    pub title: Option<String>,
+    pub visible: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct SwitchPreference {
+    pub current_value: Option<bool>,
+    pub default: bool,
+    pub enabled: bool,
+    pub key: Option<String>,
+    pub summary: Option<String>,
+    pub title: Option<String>,
+    pub visible: bool,
+}
+
+/// Mirrors `union Preference = ...`.
+#[derive(Union, Clone)]
+pub enum Preference {
+    CheckBox(CheckBoxPreference),
+    EditText(EditTextPreference),
+    List(ListPreference),
+    MultiSelectList(MultiSelectListPreference),
+    Switch(SwitchPreference),
+}
+
+/// Mirrors `ExtensionType` — built from the `extension` table row.
+#[derive(Clone)]
+pub struct ExtensionType {
+    pub row: suwayomi_core::schema::ExtensionRow,
+}
+
+impl ExtensionType {
+    pub fn proxy_icon_url(pkg_name: &str) -> String {
+        format!("/api/v1/extension/icon/{pkg_name}")
+    }
+}
+
+#[Object]
+impl ExtensionType {
+    async fn apk_name(&self) -> Option<&str> {
+        self.row.apk_name.as_deref()
+    }
+    async fn apk_url(&self) -> Option<&str> {
+        self.row.apk_url.as_deref()
+    }
+    async fn content_warning(&self) -> ContentWarning {
+        ContentWarning::from_i32(self.row.content_warning)
+    }
+    async fn extension_lib(&self) -> Option<&str> {
+        self.row.extension_lib.as_deref()
+    }
+    async fn has_update(&self) -> bool {
+        self.row.has_update
+    }
+    async fn icon_url(&self) -> &str {
+        &self.row.icon_url
+    }
+    async fn is_installed(&self) -> bool {
+        self.row.is_installed
+    }
+    async fn is_nsfw(&self) -> bool {
+        self.row.content_warning >= 1
+    }
+    async fn is_obsolete(&self) -> bool {
+        self.row.is_obsolete
+    }
+    async fn jar_url(&self) -> Option<&str> {
+        self.row.jar_url.as_deref()
+    }
+    async fn lang(&self) -> &str {
+        &self.row.lang
+    }
+    async fn name(&self) -> &str {
+        &self.row.name
+    }
+    async fn pkg_name(&self) -> &str {
+        &self.row.pkg_name
+    }
+    async fn repo(&self) -> Option<&str> {
+        self.row.store_index_url.as_deref()
+    }
+    async fn store_index_url(&self) -> Option<&str> {
+        self.row.store_index_url.as_deref()
+    }
+    async fn version_code(&self) -> i32 {
+        self.row.version_code as i32
+    }
+    async fn version_code_long(&self) -> LongString {
+        LongString(self.row.version_code)
+    }
+    async fn version_name(&self) -> &str {
+        &self.row.version_name
+    }
+    async fn extension_store(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<ExtensionStoreType>> {
+        let Some(idx) = &self.row.store_index_url else { return Ok(None) };
+        let state = ctx.data::<GraphQLState>()?;
+        let sql = bind_placeholders("SELECT * FROM extension_store WHERE index_url = ?");
+        let row = sqlx::query_as::<_, suwayomi_core::schema::ExtensionStoreRow>(&sql)
+            .bind(idx)
+            .fetch_optional(state.db.pool())
+            .await
+            .map_err(async_graphql::Error::from)?;
+        Ok(row.map(ExtensionStoreType::from_row))
+    }
+    async fn source(&self, ctx: &Context<'_>) -> async_graphql::Result<SourceNodeList> {
+        let state = ctx.data::<GraphQLState>()?;
+        let sql = bind_placeholders("SELECT * FROM source WHERE extension = ?");
+        let rows = sqlx::query_as::<_, suwayomi_core::schema::SourceRow>(&sql)
+            .bind(self.row.id)
+            .fetch_all(state.db.pool())
+            .await
+            .map_err(async_graphql::Error::from)?;
+        let nodes: Vec<SourceType> = rows.iter().map(SourceType::from_row).collect();
+        Ok(SourceNodeList::from_nodes(nodes))
+    }
+}
+
+/// Mirrors `ExtensionStoreType`.
+#[derive(Clone)]
+pub struct ExtensionStoreType {
+    pub row: suwayomi_core::schema::ExtensionStoreRow,
+}
+
+impl ExtensionStoreType {
+    pub fn from_row(row: suwayomi_core::schema::ExtensionStoreRow) -> Self {
+        Self { row }
+    }
+}
+
+#[Object]
+impl ExtensionStoreType {
+    async fn badge_label(&self) -> &str {
+        &self.row.badge_label
+    }
+    async fn contact_discord(&self) -> Option<&str> {
+        self.row.contact_discord.as_deref()
+    }
+    async fn contact_website(&self) -> &str {
+        &self.row.contact_website
+    }
+    async fn extension_list_url(&self) -> Option<&str> {
+        self.row.extension_list_url.as_deref()
+    }
+    async fn index_url(&self) -> &str {
+        &self.row.index_url
+    }
+    async fn is_legacy(&self) -> bool {
+        self.row.is_legacy
+    }
+    async fn name(&self) -> &str {
+        &self.row.name
+    }
+    async fn signing_key(&self) -> &str {
+        &self.row.signing_key
+    }
+    async fn extensions(&self, ctx: &Context<'_>) -> async_graphql::Result<ExtensionNodeList> {
+        let state = ctx.data::<GraphQLState>()?;
+        let sql = bind_placeholders("SELECT * FROM extension WHERE store_index_url = ?");
+        let rows = sqlx::query_as::<_, suwayomi_core::schema::ExtensionRow>(&sql)
+            .bind(&self.row.index_url)
+            .fetch_all(state.db.pool())
+            .await
+            .map_err(async_graphql::Error::from)?;
+        let nodes: Vec<ExtensionType> = rows.into_iter().map(|r| ExtensionType { row: r }).collect();
+        Ok(ExtensionNodeList::from_nodes(nodes))
+    }
+}
+
+/// Full SourceType — mirrors `graphql/types/SourceType.kt`.
+#[derive(Clone)]
+pub struct SourceType {
+    pub id: i64,
+    pub name: String,
+    pub lang: String,
+    pub content_warning: i32,
+    pub extension_id: i32,
+    pub extension_row: Option<suwayomi_core::schema::ExtensionRow>,
+}
+
+impl SourceType {
+    pub fn from_row(row: &suwayomi_core::schema::SourceRow) -> Self {
+        Self {
+            id: row.id,
+            name: row.name.clone(),
+            lang: row.lang.clone(),
+            content_warning: row.content_warning,
+            extension_id: row.extension,
+            extension_row: None,
+        }
+    }
+
+    pub fn extension_id(&self) -> i32 {
+        self.extension_id
+    }
+}
+
+#[Object]
+impl SourceType {
+    async fn id(&self) -> LongString {
+        LongString(self.id)
+    }
+    async fn name(&self) -> &str {
+        &self.name
+    }
+    async fn lang(&self) -> &str {
+        &self.lang
+    }
+    async fn content_warning(&self) -> ContentWarning {
+        ContentWarning::from_i32(self.content_warning)
+    }
+    async fn icon_url(&self) -> String {
+        self.extension_row.as_ref().map(|r| ExtensionType::proxy_icon_url(&r.pkg_name)).unwrap_or_default()
+    }
+    async fn is_nsfw(&self) -> bool {
+        self.content_warning >= 1
+    }
+    async fn supports_latest(&self) -> bool {
+        false // extension runtime not loaded yet (Phase 5)
+    }
+    async fn is_configurable(&self) -> bool {
+        false // extension runtime not loaded yet (Phase 5)
+    }
+    async fn display_name(&self) -> &str {
+        &self.name
+    }
+    async fn home_url(&self) -> Option<String> {
+        None // requires HttpSource instance (Phase 5)
+    }
+    async fn base_url(&self) -> Option<String> {
+        None // requires HttpSource instance (Phase 5)
+    }
+    async fn extension(&self, ctx: &Context<'_>) -> async_graphql::Result<ExtensionType> {
+        if let Some(row) = &self.extension_row {
+            return Ok(ExtensionType { row: row.clone() });
+        }
+        let state = ctx.data::<GraphQLState>()?;
+        let sql = bind_placeholders("SELECT * FROM extension WHERE id = ?");
+        let row = sqlx::query_as::<_, suwayomi_core::schema::ExtensionRow>(&sql)
+            .bind(self.extension_id())
+            .fetch_optional(state.db.pool())
+            .await
+            .map_err(async_graphql::Error::from)?;
+        row.map(|r| ExtensionType { row: r }).ok_or_else(|| async_graphql::Error::new("extension not found"))
+    }
+    async fn filters(&self) -> Vec<Filter> {
+        vec![]
+    }
+    async fn manga(&self, ctx: &Context<'_>) -> async_graphql::Result<MangaNodeList> {
+        let state = ctx.data::<GraphQLState>()?;
+        let sql = bind_placeholders("SELECT * FROM manga WHERE source = ? ORDER BY title ASC");
+        let rows = sqlx::query_as::<_, MangaRow>(&sql)
+            .bind(self.id)
+            .fetch_all(state.db.pool())
+            .await
+            .map_err(async_graphql::Error::from)?;
+        let nodes: Vec<MangaType> = rows.iter().map(MangaType::from_row).collect();
+        Ok(MangaNodeList::from_nodes(nodes))
+    }
+    async fn meta(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<SourceMetaType>> {
+        let state = ctx.data::<GraphQLState>()?;
+        let sql = bind_placeholders("SELECT meta_key, value FROM source_meta WHERE source_ref = ?");
+        let rows =
+            sqlx::query(&sql).bind(self.id).fetch_all(state.db.pool()).await.map_err(async_graphql::Error::from)?;
+        Ok(rows
+            .iter()
+            .map(|r| SourceMetaType {
+                key: r.try_get("meta_key").unwrap_or_default(),
+                value: r.try_get("value").unwrap_or_default(),
+                source_id: self.id,
+            })
+            .collect())
+    }
+    async fn preferences(&self) -> Vec<Preference> {
+        vec![]
+    }
+}
+
+// ---- Source / Extension NodeLists ----
+
+#[derive(SimpleObject, Clone)]
+pub struct SourceEdge {
+    pub cursor: Cursor,
+    pub node: SourceType,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct SourceNodeList {
+    pub nodes: Vec<SourceType>,
+    pub edges: Vec<SourceEdge>,
+    pub page_info: PageInfo,
+    pub total_count: i32,
+}
+
+impl SourceNodeList {
+    pub fn from_nodes(nodes: Vec<SourceType>) -> Self {
+        let total = nodes.len() as i32;
+        let edges = if nodes.is_empty() {
+            vec![]
+        } else if nodes.len() == 1 {
+            vec![SourceEdge { cursor: Cursor("0".into()), node: nodes[0].clone() }]
+        } else {
+            vec![
+                SourceEdge { cursor: Cursor("0".into()), node: nodes[0].clone() },
+                SourceEdge { cursor: Cursor((nodes.len() - 1).to_string()), node: nodes[nodes.len() - 1].clone() },
+            ]
+        };
+        Self {
+            page_info: PageInfo {
+                start_cursor: Some(Cursor("0".into())),
+                end_cursor: Some(Cursor(total.saturating_sub(1).to_string())),
+                has_next_page: false,
+                has_previous_page: false,
+            },
+            nodes,
+            edges,
+            total_count: total,
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct ExtensionEdge {
+    pub cursor: Cursor,
+    pub node: ExtensionType,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct ExtensionNodeList {
+    pub nodes: Vec<ExtensionType>,
+    pub edges: Vec<ExtensionEdge>,
+    pub page_info: PageInfo,
+    pub total_count: i32,
+}
+
+impl ExtensionNodeList {
+    pub fn from_nodes(nodes: Vec<ExtensionType>) -> Self {
+        let total = nodes.len() as i32;
+        let edges = if nodes.is_empty() {
+            vec![]
+        } else if nodes.len() == 1 {
+            vec![ExtensionEdge { cursor: Cursor("0".into()), node: nodes[0].clone() }]
+        } else {
+            vec![
+                ExtensionEdge { cursor: Cursor("0".into()), node: nodes[0].clone() },
+                ExtensionEdge { cursor: Cursor((nodes.len() - 1).to_string()), node: nodes[nodes.len() - 1].clone() },
             ]
         };
         Self {

@@ -1,12 +1,12 @@
 //! Suwayomi 桌面壳（Tauri 2）——只负责托盘与设置窗口
 //!
-//! - 无头启动 `suwayomi`（server 二进制）子进程
+//! - 无头启动 `suwayomi-server` 子进程；启动时静默驻托盘（不弹设置窗口）
 //! - 发布布局（exe 同级）：
-//!     suwayomi.exe + suwayomi_launch.bat + webui/ + data/
-//!     data/ 为工作数据目录：autobackup / downloads / local；pglite-data 由 server 自动建在 data 同级
-//!     （不存在时自动创建）
-//! - 系统托盘菜单：打开 WebUI / 打开数据目录 / 设置 / 退出
-//! - 设置窗口：端口（保存后重启 server）、打开数据目录、WebUI 地址
+//!     suwayomi.exe + suwayomi-server.exe + jre/jvm-sandbox.jar + webui/ + data/
+//!     data/ 为工作数据目录（autobackup/downloads/local，可在设置中更换）；
+//!     pglite-data/ 与 extensions/ 由 server 自动建在发布根目录；日志在 logs/
+//! - 系统托盘菜单：启动 Suwayomi / 打开 WebUI / 打开数据目录 / 设置 / 退出
+//! - 设置窗口（暗黑主题）：端口、工作目录、启动打开 WebUI、打开数据目录
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -26,17 +26,21 @@ use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
 #[derive(Serialize, Deserialize, Clone)]
 struct Settings {
     port: u16,
+    /// 自定义工作数据目录（空 = base/data）
+    data_dir: Option<String>,
+    /// 启动时自动打开 WebUI（默认开）
+    open_webui: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { port: 8090 }
+        Self { port: 8090, data_dir: None, open_webui: true }
     }
 }
 
 struct AppState {
     port: AtomicU16,
-    data_dir: PathBuf,
+    data_dir: Mutex<PathBuf>,
     server: Mutex<Option<Child>>,
 }
 
@@ -57,19 +61,29 @@ fn base_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn data_dir() -> PathBuf {
-    base_dir().join("data")
+/// 工作数据目录解析：设置里自定义目录优先，否则 base/data
+fn data_dir_of(s: &Settings) -> PathBuf {
+    match s.data_dir.as_deref() {
+        Some(d) if !d.trim().is_empty() => PathBuf::from(d.trim()),
+        _ => base_dir().join("data"),
+    }
 }
 
+/// settings.json 位于发布根目录（数据目录本身可更换，不能存在数据目录里）
 fn settings_path() -> PathBuf {
-    data_dir().join("settings.json")
+    base_dir().join("settings.json")
 }
 
 fn load_settings() -> Settings {
-    std::fs::read_to_string(settings_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    let text = std::fs::read_to_string(settings_path()).ok()
+        // 兼容旧位置（data/settings.json）
+        .or_else(|| std::fs::read_to_string(base_dir().join("data").join("settings.json")).ok());
+    text.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+fn save_settings_file(settings: &Settings) -> std::io::Result<()> {
+    let json = serde_json::to_string_pretty(settings).expect("serialize settings");
+    std::fs::write(settings_path(), json)
 }
 
 /// Locate the headless server binary:
@@ -178,8 +192,10 @@ fn spawn_server(data: &PathBuf, port: u16) -> Option<Child> {
     let child = Command::new(&bin)
         .current_dir(data)
         .env("SUWAYOMI_PORT", port.to_string())
-        // pglite 数据目录 = data 同级（发布根目录），由 server 自动创建
+        // pglite 数据目录 = 发布根目录，由 server 自动创建
         .env("SUWAYOMI_PGLITE_DATA_DIR", base_dir().join("pglite-data"))
+        // 扩展安装目录 = 发布根目录（与 data/ 同级，也不是 cwd=data 下）
+        .env("SUWAYOMI_EXTENSIONS_DIR", base_dir().join("extensions"))
         .env("SUWAYOMI_WEBUI_DIR", base_dir().join("webui"))
         .stdout(Stdio::from(log_file.try_clone().ok()?))
         .stderr(Stdio::from(log_file))
@@ -208,33 +224,68 @@ fn webui_url(port: u16) -> String {
 
 // ---- 设置窗口 commands ----
 
-#[tauri::command]
-fn get_settings(state: State<AppState>) -> Settings {
-    Settings { port: state.port.load(Ordering::Relaxed) }
+#[derive(Serialize)]
+struct SettingsView {
+    port: u16,
+    /// 当前实际生效的工作目录路径
+    data_dir: String,
+    /// 设置里的自定义目录（空 = 默认 base/data）
+    data_dir_override: String,
+    open_webui: bool,
+    webui_url: String,
 }
 
 #[tauri::command]
-fn save_settings(state: State<AppState>, port: u16) -> Result<String, String> {
+fn get_settings(state: State<AppState>) -> SettingsView {
+    let port = state.port.load(Ordering::Relaxed);
+    let d = state.data_dir.lock().unwrap().clone();
+    let over = load_settings().data_dir.unwrap_or_default();
+    SettingsView {
+        port,
+        data_dir: d.display().to_string(),
+        data_dir_override: over,
+        open_webui: load_settings().open_webui,
+        webui_url: webui_url(port),
+    }
+}
+
+#[tauri::command]
+fn save_settings(
+    state: State<AppState>,
+    port: u16,
+    data_dir: Option<String>,
+    open_webui: bool,
+) -> Result<String, String> {
     let port = port.max(1).min(65535);
-    let settings = Settings { port };
-    std::fs::write(settings_path(), serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    // 端口变更：结束旧 server 并以新端口重启
+    let clean = data_dir.map(|d| d.trim().to_string()).filter(|d| !d.is_empty());
+    let settings = Settings { port, data_dir: clean.clone(), open_webui };
+    save_settings_file(&settings).map_err(|e| format!("写入设置失败: {e}"))?;
+
+    // 新工作目录：创建（含三个子目录）
+    let new_data = data_dir_of(&settings);
+    ensure_data_dirs(&new_data);
+    std::fs::create_dir_all(&new_data).map_err(|e| format!("创建数据目录失败: {e}"))?;
+
+    // 端口/目录变更：结束旧 server 并以新配置重启
     let mut guard = state.server.lock().unwrap();
     if let Some(mut c) = guard.take() {
         let _ = c.kill();
         let _ = c.wait();
     }
-    let child = spawn_server(&state.data_dir, port).ok_or_else(|| "server 启动失败（找不到 suwayomi 可执行文件）".to_string())?;
+    let child = spawn_server(&new_data, port)
+        .ok_or_else(|| "server 启动失败（找不到 suwayomi-server 可执行文件）".to_string())?;
     *guard = Some(child);
     let _ = wait_ready(port, Duration::from_secs(20));
+
     state.port.store(port, Ordering::Relaxed);
+    *state.data_dir.lock().unwrap() = new_data;
     Ok(webui_url(port))
 }
 
 #[tauri::command]
-fn open_data_dir() -> Result<(), String> {
-    open::that(data_dir()).map_err(|e| e.to_string())
+fn open_data_dir(state: State<AppState>) -> Result<(), String> {
+    let d = state.data_dir.lock().unwrap().clone();
+    open::that(d).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -263,9 +314,9 @@ fn main() {
         .setup(|app| {
             let settings = load_settings();
             let port = settings.port;
-            let data = data_dir();
+            let data = data_dir_of(&settings);
             ensure_data_dirs(&data);
-            // 先检测：已有 server 实例（外部启动/bat）则不再重复拉起
+            // 先检测：已有 server 实例（外部启动）则不再重复拉起
             let running = server_running();
             tray_log(&format!("[tray] setup: server_running={running}"));
             let server = if running {
@@ -275,13 +326,18 @@ fn main() {
                 let s = spawn_server(&data, port);
                 tray_log(&format!("[tray] spawn_server result: {}", s.is_some()));
                 if s.is_none() {
-                    tray_log("[tray] WARN: server binary not found (set SUWAYOMI_BIN or place suwayomi next to this exe)");
+                    tray_log("[tray] WARN: server binary not found (set SUWAYOMI_BIN or place suwayomi-server next to this exe)");
                 }
-                let _ = wait_ready(port, Duration::from_secs(20));
+                let ready = wait_ready(port, Duration::from_secs(20));
+                // 启动时自动打开 WebUI（默认开启，设置里可关）
+                if s.is_some() && settings.open_webui && ready {
+                    tray_log("[tray] opening webui at startup");
+                    let _ = open::that(webui_url(port));
+                }
                 s
             };
 
-            // 设置窗口（默认隐藏，托盘菜单唤起）
+            // 设置窗口：静默创建（build 后隐藏，托盘菜单唤起）；暗黑主题跟随
             let _settings_window = WebviewWindowBuilder::new(
                 app,
                 "settings",
@@ -290,9 +346,12 @@ fn main() {
                 ),
             )
             .title("Suwayomi 设置")
-            .inner_size(440.0, 320.0)
+            .inner_size(480.0, 380.0)
             .resizable(false)
+            .theme(Some(tauri::Theme::Dark))
             .build()?;
+            // 启动不显示设置窗口——静默驻托盘
+            let _ = _settings_window.hide();
 
             // 系统托盘：启动Suwayomi（运行中则禁用）→ 打开WebUI → 数据目录 → 设置 → 退出
             let start_item = MenuItem::with_id(app, "start_suwayomi", "启动 Suwayomi", true, None::<&str>)?;
@@ -324,7 +383,8 @@ fn main() {
                         let port = st.port.load(Ordering::Relaxed);
                         let mut guard = st.server.lock().unwrap();
                         if guard.is_none() {
-                            *guard = spawn_server(&st.data_dir, port);
+                            let d = st.data_dir.lock().unwrap().clone();
+                            *guard = spawn_server(&d, port);
                             let _ = wait_ready(port, Duration::from_secs(20));
                         }
                         drop(guard);
@@ -342,7 +402,9 @@ fn main() {
                         let _ = open::that(webui_url(st.port.load(Ordering::Relaxed)));
                     }
                     "open_data" => {
-                        let _ = open::that(data_dir());
+                        let st = app.state::<AppState>();
+                        let d = st.data_dir.lock().unwrap().clone();
+                        let _ = open::that(d);
                     }
                     "settings" => {
                         if let Some(w) = app.get_webview_window("settings") {
@@ -360,7 +422,7 @@ fn main() {
 
             app.manage(AppState {
                 port: AtomicU16::new(port),
-                data_dir: data,
+                data_dir: Mutex::new(data),
                 server: Mutex::new(server),
             });
             Ok(())

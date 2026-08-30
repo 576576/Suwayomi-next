@@ -2,46 +2,100 @@
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
+    <meta name="color-scheme" content="dark light" />
     <title>Suwayomi 设置</title>
     <style>
-      body { font-family: system-ui, "Microsoft YaHei", sans-serif; margin: 0; padding: 16px 20px; background: #f5f6f8; color: #1f2328; }
+      /* 亮色默认（跟随系统 prefers-color-scheme，JS 再兜底） */
+      :root {
+        --bg: #f5f6f8; --fg: #1f2328; --muted: #57606a;
+        --border: #d0d7de; --btn-bg: #fff; --accent: #1f883d; --accent-fg: #fff;
+      }
+      html[data-dark="true"] {
+        --bg: #0d1117; --fg: #e6edf3; --muted: #8b949e;
+        --border: #30363d; --btn-bg: #21262d; --accent: #238636; --accent-fg: #fff;
+      }
+      body { font-family: system-ui, "Microsoft YaHei", sans-serif; margin: 0; padding: 16px 20px; background: var(--bg); color: var(--fg); }
       h3 { margin: 0 0 14px; font-size: 15px; }
-      label { display: block; font-size: 12px; color: #57606a; margin: 10px 0 4px; }
-      input { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 13px; }
-      .row { margin-top: 14px; display: flex; gap: 8px; }
-      button { padding: 6px 14px; border-radius: 6px; border: 1px solid #d0d7de; background: #fff; font-size: 13px; cursor: pointer; }
-      button.primary { background: #1f883d; border-color: #1f883d; color: #fff; }
-      #url { margin-top: 12px; font-size: 12px; color: #57606a; word-break: break-all; }
-      #msg { margin-top: 8px; font-size: 12px; color: #1f883d; min-height: 16px; }
+      label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+      input[type="text"], input[type="number"] {
+        width: 100%; box-sizing: border-box; padding: 6px 8px;
+        border: 1px solid var(--border); border-radius: 6px; font-size: 13px;
+        background: var(--btn-bg); color: var(--fg);
+      }
+      .row { margin-top: 14px; display: flex; gap: 8px; align-items: center; }
+      button {
+        padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border);
+        background: var(--btn-bg); color: var(--fg); font-size: 13px; cursor: pointer;
+      }
+      button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+      .switch { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 13px; color: var(--fg); cursor: pointer; }
+      .switch input { width: auto; }
+      #current { margin-top: 8px; font-size: 12px; color: var(--muted); word-break: break-all; }
+      #url { margin-top: 8px; font-size: 12px; color: var(--muted); word-break: break-all; }
+      #msg { margin-top: 8px; font-size: 12px; color: var(--accent); min-height: 16px; }
+      .hint { font-size: 11px; color: var(--muted); margin-top: 3px; }
     </style>
   </head>
   <body>
     <h3>Suwayomi 设置</h3>
+
     <label for="port">服务器端口</label>
     <input id="port" type="number" min="1" max="65535" />
+
+    <label for="data-dir">工作数据目录（data/）</label>
+    <input id="data-dir" type="text" placeholder="留空 = 可执行文件同级 data/" />
+    <div class="hint" id="current"></div>
+
+    <label class="switch">
+      <input id="open-webui" type="checkbox" /> 启动时自动打开 WebUI
+    </label>
+
     <div class="row">
       <button id="save" class="primary">保存并重启服务器</button>
       <button id="open-data">打开数据目录</button>
     </div>
     <div id="url"></div>
     <div id="msg"></div>
+
     <script>
       const { invoke } = window.__TAURI__.core;
+
+      // 暗黑模式：优先跟随系统 prefers-color-scheme；查不到（不支持）则默认暗黑
+      function applyTheme() {
+        let dark = true;
+        if (window.matchMedia) {
+          const mq = window.matchMedia("(prefers-color-scheme: dark)");
+          if (mq && mq.matches !== undefined) dark = mq.matches;
+        }
+        document.documentElement.setAttribute("data-dark", dark ? "true" : "false");
+      }
+      applyTheme();
+      if (window.matchMedia) {
+        window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
+      }
+
       window.addEventListener("DOMContentLoaded", async () => {
         try {
           const s = await invoke("get_settings");
           document.getElementById("port").value = s.port;
-          document.getElementById("url").textContent = "WebUI: " + (await invoke("webui_url_cmd"));
+          document.getElementById("data-dir").value = s.data_dir_override || "";
+          document.getElementById("current").textContent = "当前目录: " + s.data_dir;
+          document.getElementById("open-webui").checked = s.open_webui;
+          document.getElementById("url").textContent = "WebUI: " + s.webui_url;
         } catch (e) {
           document.getElementById("msg").textContent = "读取设置失败: " + e;
         }
       });
+
       document.getElementById("save").onclick = async () => {
         const p = parseInt(document.getElementById("port").value, 10);
         if (!p || p < 1 || p > 65535) { document.getElementById("msg").textContent = "端口无效"; return; }
+        const dd = document.getElementById("data-dir").value.trim();
+        const ow = document.getElementById("open-webui").checked;
         try {
-          const url = await invoke("save_settings", { port: p });
+          const url = await invoke("save_settings", { port: p, dataDir: dd, openWebui: ow });
           document.getElementById("url").textContent = "WebUI: " + url;
+          document.getElementById("current").textContent = "当前目录: " + (dd || "（默认 data/）");
           document.getElementById("msg").textContent = "已保存并重启服务器";
         } catch (e) {
           document.getElementById("msg").textContent = "保存失败: " + e;

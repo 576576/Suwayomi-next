@@ -3,11 +3,14 @@
 
 pub mod category;
 pub mod chapter;
+pub mod download;
 pub mod extension;
 pub mod global;
 pub mod manga;
 pub mod meta_handler;
 pub mod source;
+pub mod track;
+pub mod update;
 
 use axum::routing::get;
 use axum::Router;
@@ -25,12 +28,13 @@ pub fn api_v1_router() -> Router<AppState> {
         .nest("/meta", global::meta_router())
         .nest("/settings", global::settings_router())
         .nest("/webview", global::webview_router())
-        // Phase 6 stubs — endpoints registered with matching routes returning 501
+        // Phase 6: implemented controllers (track/update/downloads backed by
+        // DB or queue-manager contract; backup still stubbed until protobuf).
+        .nest("/downloads", download::downloads_router())
+        .nest("/download", download::download_router())
+        .nest("/update", update::update_router())
+        .nest("/track", track::track_router())
         .nest("/backup", stub_router())
-        .nest("/downloads", stub_router())
-        .nest("/download", stub_router())
-        .nest("/update", stub_router())
-        .nest("/track", stub_router())
 }
 
 fn stub_router() -> Router<AppState> {

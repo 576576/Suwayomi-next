@@ -53,6 +53,7 @@ impl RepoEntry {
                 name: e.name,
                 pkg: e.package_name,
                 apk: e.resources.apk_url,
+                icon: e.resources.icon_url,
                 jar: e.resources.jar_url,
                 lang: e.lang,
                 version_name: e.version_name,
@@ -121,6 +122,8 @@ struct RepoResources {
     #[serde(default)]
     apk_url: Option<String>,
     #[serde(default)]
+    icon_url: Option<String>,
+    #[serde(default)]
     jar_url: Option<String>,
 }
 
@@ -132,6 +135,8 @@ pub struct RepoIndexEntry {
     pub pkg: String,
     #[serde(default)]
     pub apk: Option<String>,
+    #[serde(default)]
+    pub icon: Option<String>,
     #[serde(default)]
     pub jar: Option<String>,
     #[serde(default)]
@@ -259,12 +264,13 @@ impl ExtensionStoreService {
             let content_warning = if e.nsfw { 1 } else { 0 };
             sqlx::query(
                 "INSERT INTO suwayomi.extension \
-                 (apk_name, store_index_url, name, pkg_name, apk_url, jar_url, version_name, version_code, lang, content_warning, is_installed, has_update, is_obsolete, class_name) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, FALSE, $12, '') \
+                 (apk_name, store_index_url, name, pkg_name, apk_url, icon_url, jar_url, version_name, version_code, lang, content_warning, is_installed, has_update, is_obsolete, class_name) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, FALSE, $13, '') \
                  ON CONFLICT (pkg_name) DO UPDATE SET \
                    apk_name = EXCLUDED.apk_name, store_index_url = EXCLUDED.store_index_url, \
-                   name = EXCLUDED.name, apk_url = EXCLUDED.apk_url, jar_url = EXCLUDED.jar_url, \
-                   version_name = EXCLUDED.version_name, version_code = EXCLUDED.version_code, \
+                   name = EXCLUDED.name, apk_url = EXCLUDED.apk_url, icon_url = EXCLUDED.icon_url, \
+                   jar_url = EXCLUDED.jar_url, version_name = EXCLUDED.version_name, \
+                   version_code = EXCLUDED.version_code, \
                    lang = EXCLUDED.lang, content_warning = EXCLUDED.content_warning, \
                    is_obsolete = EXCLUDED.is_obsolete, \
                    has_update = (EXCLUDED.version_code > suwayomi.extension.version_code AND suwayomi.extension.is_installed)",
@@ -274,6 +280,7 @@ impl ExtensionStoreService {
             .bind(&e.name)
             .bind(&e.pkg)
             .bind(&e.apk)
+            .bind(&e.icon)
             .bind(&e.jar)
             .bind(&e.version_name)
             .bind(e.version_code)
@@ -814,6 +821,7 @@ fn parse_mihon_extension(p: &mut PbReader) -> PbResult<Option<RepoIndexEntry>> {
     let mut name = String::new();
     let mut pkg = String::new();
     let mut apk_url: Option<String> = None;
+    let mut icon_url: Option<String> = None;
     let mut version_name = String::new();
     let mut version_code = 0i64;
     let mut nsfw = false;
@@ -829,10 +837,10 @@ fn parse_mihon_extension(p: &mut PbReader) -> PbResult<Option<RepoIndexEntry>> {
                 let mut rp = PbReader { d: res, i: 0 };
                 while rp.i < res.len() {
                     let (rf, rwt) = rp.key()?;
-                    if rf == 1 && rwt == 2 {
-                        apk_url = Some(rp.string()?);
-                    } else {
-                        rp.skip(rwt)?;
+                    match (rf, rwt) {
+                        (1, 2) => apk_url = Some(rp.string()?),
+                        (2, 2) => icon_url = Some(rp.string()?),
+                        _ => rp.skip(rwt)?,
                     }
                 }
             }
@@ -889,6 +897,7 @@ fn parse_mihon_extension(p: &mut PbReader) -> PbResult<Option<RepoIndexEntry>> {
         name,
         pkg,
         apk: apk_url,
+        icon: icon_url,
         jar: None,
         lang,
         version_name,

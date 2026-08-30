@@ -131,6 +131,10 @@ impl HttpSandboxFetcher {
             base_url: base_url.into(),
             client: reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(5))
+                // 本地回环绝不走代理：reqwest 默认读取 HTTP_PROXY/HTTPS_PROXY 等
+                // 环境变量（Clash 常设置），会把 127.0.0.1:8091 也转发到代理，
+                // 代理无法连接该端口返回 502 Bad Gateway（install reload 失败）。
+                .no_proxy()
                 .build()
                 .expect("reqwest client"),
         }
@@ -346,7 +350,34 @@ impl SandboxProcess {
         if let Ok(proxy) = std::env::var("SUWAYOMI_SANDBOX_PROXY") {
             cmd.env("SUWAYOMI_SANDBOX_PROXY", proxy);
         }
-        cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        // Windows：server 自身无控制台（windows_subsystem=windows），spawn 的
+        // java 是 console 程序，默认会新建一个终端窗口——用 CREATE_NO_WINDOW
+        // 静默启动，并把 JVM 输出落到日志目录便于诊断。
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        let stdio = match std::env::var("SUWAYOMI_LOGS_DIR") {
+            Ok(dir) => {
+                let dir = std::path::PathBuf::from(dir);
+                let _ = std::fs::create_dir_all(&dir);
+                std::fs::OpenOptions::new().create(true).append(true).open(dir.join("sandbox.log")).ok()
+            }
+            Err(_) => None,
+        };
+        match stdio {
+            Some(f) => {
+                let clone = f.try_clone().ok();
+                cmd.stdout(std::process::Stdio::from(f));
+                if let Some(c) = clone {
+                    cmd.stderr(std::process::Stdio::from(c));
+                }
+            }
+            None => {
+                cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            }
+        }
         let child = cmd.spawn().map_err(|e| DomainError::Sandbox(format!("spawn sandbox: {e}")))?;
         let base = format!("http://127.0.0.1:{port}");
         let fetcher = HttpSandboxFetcher::new(base.clone());

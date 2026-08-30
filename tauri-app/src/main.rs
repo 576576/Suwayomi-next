@@ -196,6 +196,8 @@ fn spawn_server(data: &PathBuf, port: u16) -> Option<Child> {
         .env("SUWAYOMI_PGLITE_DATA_DIR", base_dir().join("pglite-data"))
         // 扩展安装目录 = 发布根目录（与 data/ 同级，也不是 cwd=data 下）
         .env("SUWAYOMI_EXTENSIONS_DIR", base_dir().join("extensions"))
+        // 日志目录（server + JVM 沙盒输出统一落位）
+        .env("SUWAYOMI_LOGS_DIR", logs.clone())
         .env("SUWAYOMI_WEBUI_DIR", base_dir().join("webui"))
         .stdout(Stdio::from(log_file.try_clone().ok()?))
         .stderr(Stdio::from(log_file))

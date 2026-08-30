@@ -15,3 +15,15 @@ target/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# Local databases / data dirs (Phase 7 tooling outputs)
+data/
+*.db
+*.db.mv.db
+
+# Tauri build outputs
+tauri-app/src-tauri/target/
+tauri-app/src-tauri/gen/
+
+# Node (future WebUI tooling)
+node_modules/

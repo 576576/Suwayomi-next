@@ -1,0 +1,26 @@
+[package]
+name = "suwayomi-server"
+description = "Suwayomi server binary (mirrors Suwayomi-Server Main.kt + server/JavalinSetup.kt + App.kt)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "suwayomi-server"
+path = "src/main.rs"
+
+[dependencies]
+suwayomi-core = { path = "../suwayomi-core" }
+suwayomi-domain = { path = "../suwayomi-domain" }
+suwayomi-rest = { path = "../suwayomi-rest" }
+suwayomi-graphql = { path = "../suwayomi-graphql" }
+suwayomi-opds = { path = "../suwayomi-opds" }
+axum.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+clap = { version = "4", features = ["derive"] }

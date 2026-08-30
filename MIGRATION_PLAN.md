@@ -421,8 +421,8 @@ H2 使用 JVM 专有 MVStore 文件格式，**Rust 侧无法直接读取**。兼
 | M1 | Phase 1 | 模型/表/迁移测试通过；可读既有 PG 库 | ✅ 模型/schema/db/source 完成；PG 集成测试（Docker postgres:16）12 项全绿 |
 | M2 | Phase 2 | domain 测试通过；与 Kotlin 行为比对一致 | ✅ 2026-08-30：domain 服务 + 10 集成测试（含 Kotlin 移植断言），27 测试全绿 |
 | M3 | Phase 3 | REST 端点全量集成测试通过 | 🔄 下一步 |
-| M4 | Phase 4 | GraphQL schema diff 无 breaking；查询测试通过 | 🔄 2026-08-30：核心查询 12/33 + Mutation 27/82，类型 172/363 |
-| M5 | Phase 5 | 扩展端到端跑通 | ⬜ |
+| M4 | Phase 4 | GraphQL schema diff 无 breaking；查询测试通过 | ✅ 2026-08-30：Query 33/33、Mutation 82/82、Subscription 6/6，类型 351/363 |
+| M5 | Phase 5 | 扩展端到端跑通 | 🔄 2026-08-30：进程桥接链路（拉起/health/IPC）打通；真实扩展加载下一增量 |
 | M6 | Phase 6 | 外围功能测试通过 | ⬜ |
 | M7 | Phase 7 | 真实数据迁移无丢失；发布产物可用 | ⬜ |
 

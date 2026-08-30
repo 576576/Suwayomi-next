@@ -851,100 +851,124 @@ impl MutationRootB4 {
 
     async fn start_downloader(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: StartDownloaderInput,
     ) -> async_graphql::Result<StartDownloaderPayload> {
+        let state = ctx.data::<crate::state::GraphQLState>()?;
+        state.download.start().await;
         Ok(StartDownloaderPayload {
             client_mutation_id: input.client_mutation_id,
-            download_status: DownloadStatus::idle(),
+            download_status: download_status(state).await?,
         })
     }
 
     async fn stop_downloader(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: StopDownloaderInput,
     ) -> async_graphql::Result<StopDownloaderPayload> {
+        let state = ctx.data::<crate::state::GraphQLState>()?;
+        state.download.stop().await;
         Ok(StopDownloaderPayload {
             client_mutation_id: input.client_mutation_id,
-            download_status: DownloadStatus::idle(),
+            download_status: download_status(state).await?,
         })
     }
 
     async fn clear_downloader(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: ClearDownloaderInput,
     ) -> async_graphql::Result<ClearDownloaderPayload> {
+        let state = ctx.data::<crate::state::GraphQLState>()?;
+        state.download.clear().await;
         Ok(ClearDownloaderPayload {
             client_mutation_id: input.client_mutation_id,
-            download_status: DownloadStatus::idle(),
+            download_status: download_status(state).await?,
         })
     }
 
     async fn enqueue_chapter_download(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: EnqueueChapterDownloadInput,
     ) -> async_graphql::Result<EnqueueChapterDownloadPayload> {
+        let state = ctx.data::<crate::state::GraphQLState>()?;
+        state.download.enqueue_chapter(input.id).await.map_err(async_graphql::Error::from)?;
         Ok(EnqueueChapterDownloadPayload {
             client_mutation_id: input.client_mutation_id,
-            download_status: DownloadStatus::idle(),
+            download_status: download_status(state).await?,
         })
     }
 
     async fn enqueue_chapter_downloads(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: EnqueueChapterDownloadsInput,
     ) -> async_graphql::Result<EnqueueChapterDownloadsPayload> {
+        let state = ctx.data::<crate::state::GraphQLState>()?;
+        for id in &input.ids {
+            let _ = state.download.enqueue_chapter(*id).await;
+        }
         Ok(EnqueueChapterDownloadsPayload {
             client_mutation_id: input.client_mutation_id,
-            download_status: DownloadStatus::idle(),
+            download_status: download_status(state).await?,
         })
     }
 
     async fn dequeue_chapter_download(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: DequeueChapterDownloadInput,
     ) -> async_graphql::Result<DequeueChapterDownloadPayload> {
+        let state = ctx.data::<crate::state::GraphQLState>()?;
+        let _ = state.download.dequeue_chapter(input.id).await;
         Ok(DequeueChapterDownloadPayload {
             client_mutation_id: input.client_mutation_id,
-            download_status: DownloadStatus::idle(),
+            download_status: download_status(state).await?,
         })
     }
 
     async fn dequeue_chapter_downloads(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: DequeueChapterDownloadsInput,
     ) -> async_graphql::Result<DequeueChapterDownloadsPayload> {
+        let state = ctx.data::<crate::state::GraphQLState>()?;
+        for id in &input.ids {
+            let _ = state.download.dequeue_chapter(*id).await;
+        }
         Ok(DequeueChapterDownloadsPayload {
             client_mutation_id: input.client_mutation_id,
-            download_status: DownloadStatus::idle(),
+            download_status: download_status(state).await?,
         })
     }
 
     async fn reorder_chapter_download(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: ReorderChapterDownloadInput,
     ) -> async_graphql::Result<ReorderChapterDownloadPayload> {
+        let state = ctx.data::<crate::state::GraphQLState>()?;
+        state.download.reorder(input.chapter_id, input.to.max(0) as usize).await;
         Ok(ReorderChapterDownloadPayload {
             client_mutation_id: input.client_mutation_id,
-            download_status: DownloadStatus::idle(),
+            download_status: download_status(state).await?,
         })
     }
 
     async fn reorder_chapter_downloads(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: ReorderChapterDownloadsInput,
     ) -> async_graphql::Result<ReorderChapterDownloadsPayload> {
+        let state = ctx.data::<crate::state::GraphQLState>()?;
+        for r in &input.reorders {
+            state.download.reorder(r.chapter_id, r.to.max(0) as usize).await;
+        }
         Ok(ReorderChapterDownloadsPayload {
             client_mutation_id: input.client_mutation_id,
-            download_status: DownloadStatus::idle(),
+            download_status: download_status(state).await?,
         })
     }
 
@@ -1590,4 +1614,36 @@ async fn fetch_track_record_row(state: &GraphQLState, id: i32) -> async_graphql:
         .fetch_one(state.db.pool())
         .await
         .map_err(async_graphql::Error::from)
+}
+
+/// Builds the GraphQL `DownloadStatus` from the download manager snapshot.
+pub(crate) async fn download_status(state: &GraphQLState) -> async_graphql::Result<DownloadStatus> {
+    use suwayomi_domain::download::JobState;
+    let jobs = state.download.snapshot().await;
+    let mut queue = Vec::with_capacity(jobs.len());
+    for (i, job) in jobs.iter().enumerate() {
+        let chapter = fetch_chapter_row(state, job.chapter_id).await?;
+        let manga: suwayomi_core::schema::MangaRow = sqlx::query_as("SELECT * FROM manga WHERE id = $1")
+            .bind(job.manga_id)
+            .fetch_one(state.db.pool())
+            .await
+            .map_err(async_graphql::Error::from)?;
+        queue.push(DownloadType {
+            position: i as i32,
+            progress: job.progress,
+            state: match job.state {
+                JobState::Queued => DownloadState::Queued,
+                JobState::Downloading => DownloadState::Downloading,
+                JobState::Finished => DownloadState::Finished,
+                JobState::Error => DownloadState::Error,
+            },
+            tries: job.tries,
+            chapter: crate::types::ChapterType::from_row(&chapter),
+            manga: crate::types::MangaType::from_row(&manga),
+        });
+    }
+    Ok(DownloadStatus {
+        queue,
+        state: if state.download.is_running() { DownloaderState::Started } else { DownloaderState::Stopped },
+    })
 }

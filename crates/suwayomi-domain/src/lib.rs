@@ -4,6 +4,7 @@
 //! behind the `SourceFetcher` trait and get a real implementation in Phase 5.
 
 pub mod category;
+pub mod download;
 pub mod chapter;
 pub mod error;
 pub mod manga;

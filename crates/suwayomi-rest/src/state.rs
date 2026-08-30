@@ -7,6 +7,7 @@ use suwayomi_core::db::Db;
 use suwayomi_domain::category::category_manga::CategoryMangaService;
 use suwayomi_domain::category::CategoryService;
 use suwayomi_domain::chapter::ChapterService;
+use suwayomi_domain::download::DownloadManager;
 use suwayomi_domain::manga::library::LibraryService;
 use suwayomi_domain::manga::manga_list::MangaListService;
 use suwayomi_domain::manga::MangaService;
@@ -26,6 +27,8 @@ pub struct AppState {
     pub library: LibraryService,
     pub manga_list: MangaListService,
     pub page: PageService,
+    /// Chapter download manager (queue + worker + event bus).
+    pub download: DownloadManager,
 }
 
 impl AppState {
@@ -37,6 +40,7 @@ impl AppState {
         let library = LibraryService::new(db.clone(), manga.clone());
         let manga_list = MangaListService::new(db.clone(), fetcher.clone());
         let page = PageService::new(db.clone());
-        Self { db, config, fetcher, manga, chapter, category, category_manga, library, manga_list, page }
+        let download = DownloadManager::new(db.clone(), fetcher.clone());
+        Self { db, config, fetcher, manga, chapter, category, category_manga, library, manga_list, page, download }
     }
 }

@@ -11,6 +11,7 @@ use suwayomi_domain::manga::library::LibraryService;
 use suwayomi_domain::manga::manga_list::MangaListService;
 use suwayomi_domain::manga::MangaService;
 use suwayomi_domain::page::PageService;
+use suwayomi_domain::download::DownloadManager;
 use suwayomi_domain::source::SourceFetcher;
 
 use crate::updater::UpdateManager;
@@ -28,6 +29,8 @@ pub struct GraphQLState {
     pub page: PageService,
     /// Library updater with a broadcast event bus (Phase 6).
     pub update: UpdateManager,
+    /// Chapter download manager (queue + worker + event bus).
+    pub download: DownloadManager,
 }
 
 impl GraphQLState {
@@ -39,7 +42,8 @@ impl GraphQLState {
         let library = LibraryService::new(db.clone(), manga.clone());
         let manga_list = MangaListService::new(db.clone(), fetcher.clone());
         let page = PageService::new(db.clone());
-        let update = UpdateManager::new(db.clone(), fetcher);
-        Self { db, config, manga, chapter, category, category_manga, library, manga_list, page, update }
+        let update = UpdateManager::new(db.clone(), fetcher.clone());
+        let download = DownloadManager::new(db.clone(), fetcher);
+        Self { db, config, manga, chapter, category, category_manga, library, manga_list, page, update, download }
     }
 }

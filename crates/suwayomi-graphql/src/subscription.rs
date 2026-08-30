@@ -36,24 +36,60 @@ pub struct SubscriptionRoot;
 
 #[Subscription(name = "Subscription")]
 impl SubscriptionRoot {
-    /// Mirrors `downloadChanged` (deprecated).
-    async fn download_changed(&self, _ctx: &Context<'_>) -> impl Stream<Item = crate::mutation_b4::DownloadStatus> {
-        stream::once(async { crate::mutation_b4::DownloadStatus::idle() })
-    }
-
-    /// Mirrors `downloadStatusChanged(input:)`.
-    async fn download_status_changed(
-        &self,
-        _ctx: &Context<'_>,
-        _input: DownloadChangedInput,
-    ) -> impl Stream<Item = DownloadUpdates> {
-        stream::once(async {
-            DownloadUpdates {
-                initial: Some(vec![]),
-                omitted_updates: false,
-                state: crate::mutation_b4::DownloaderState::Stopped,
+    /// Mirrors `downloadChanged` (deprecated). Streams live queue snapshots.
+    async fn download_changed(&self, ctx: &Context<'_>) -> impl Stream<Item = crate::mutation_b4::DownloadStatus> {
+        let state = match ctx.data::<crate::state::GraphQLState>() {
+            Ok(s) => s.clone(),
+            Err(_) => return futures::stream::empty().boxed(),
+        };
+        let rx = state.download.subscribe();
+        futures::stream::unfold((state.clone(), rx), |(state, mut rx)| async move {
+            loop {
+                match rx.recv().await {
+                    Ok(_) => {
+                        let status = crate::mutation_b4::download_status(&state).await.ok()?;
+                        return Some((status, (state.clone(), rx)));
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                }
             }
         })
+        .boxed()
+    }
+
+    /// Mirrors `downloadStatusChanged(input:)`. Streams live queue snapshots
+    /// from the download manager's broadcast channel.
+    async fn download_status_changed(
+        &self,
+        ctx: &Context<'_>,
+        _input: DownloadChangedInput,
+    ) -> impl Stream<Item = DownloadUpdates> {
+        let state = match ctx.data::<crate::state::GraphQLState>() {
+            Ok(s) => s.clone(),
+            Err(_) => return futures::stream::empty().boxed(),
+        };
+        let rx = state.download.subscribe();
+        futures::stream::unfold((state.clone(), rx), |(state, mut rx)| async move {
+            loop {
+                match rx.recv().await {
+                    Ok(_) => {
+                        let status = crate::mutation_b4::download_status(&state).await.ok()?;
+                        return Some((
+                            DownloadUpdates {
+                                initial: Some(status.queue),
+                                omitted_updates: false,
+                                state: status.state,
+                            },
+                            (state.clone(), rx),
+                        ));
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                }
+            }
+        })
+        .boxed()
     }
 
     /// Mirrors `webUIUpdateStatusChange`.

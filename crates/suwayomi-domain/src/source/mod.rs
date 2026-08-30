@@ -30,6 +30,17 @@ pub trait SourceFetcher: Send + Sync {
     async fn get_latest_updates(&self, source_id: i64, page: u32) -> crate::error::Result<MangasPage>;
     async fn search_manga(&self, source_id: i64, query: &str, page: u32) -> crate::error::Result<MangasPage>;
 
+    /// Page list for a chapter (used by the download manager). Defaults to
+    /// "not implemented" until the JVM sandbox exposes `getChapterPages`.
+    async fn fetch_pages(
+        &self,
+        _source_id: i64,
+        _manga_url: &str,
+        _chapter_url: &str,
+    ) -> crate::error::Result<Vec<suwayomi_core::source::SourcePage>> {
+        Err(crate::error::DomainError::Source("fetch_pages not implemented (Phase 6)".into()))
+    }
+
     /// Whether the source provides a latest listing
     fn supports_latest(&self, source_id: i64) -> bool;
 }

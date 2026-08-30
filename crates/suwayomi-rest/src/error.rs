@@ -31,6 +31,7 @@ impl From<suwayomi_domain::error::DomainError> for ApiError {
             suwayomi_domain::error::DomainError::Source(m) => ApiError::Internal(m),
             suwayomi_domain::error::DomainError::Db(e) => ApiError::Internal(e.to_string()),
             suwayomi_domain::error::DomainError::DbSetup(e) => ApiError::Internal(e.to_string()),
+            suwayomi_domain::error::DomainError::Sandbox(e) => ApiError::Internal(e),
         }
     }
 }

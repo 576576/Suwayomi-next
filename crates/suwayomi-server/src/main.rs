@@ -80,7 +80,26 @@ async fn main() -> anyhow::Result<()> {
     db.migrate().await?;
     tracing::info!("database ready (migrations applied)");
 
-    let fetcher: Arc<dyn SourceFetcher> = Arc::new(StubFetcher);
+    // Phase 5: launch the JVM extension sandbox when configured.
+    // SUWAYOMI_SANDBOX_JAR  -> path to the built sandbox jar (optional)
+    // SUWAYOMI_SANDBOX_PORT -> sandbox HTTP port (default 4569)
+    // SUWAYOMI_EXTENSIONS_DIR -> directory holding extension jars (default ./extensions)
+    let mut sandbox_guard: Option<suwayomi_domain::source::sandbox::SandboxProcess> = None;
+    if let Ok(jar) = std::env::var("SUWAYOMI_SANDBOX_JAR") {
+        let port = std::env::var("SUWAYOMI_SANDBOX_PORT").unwrap_or_else(|_| "4569".into());
+        let proc = suwayomi_domain::source::sandbox::SandboxProcess::start(&jar, &port).await;
+        match proc {
+            Ok(p) => {
+                tracing::info!("jvm sandbox connected at 127.0.0.1:{port}");
+                sandbox_guard = Some(p);
+            }
+            Err(e) => tracing::warn!("jvm sandbox failed to start: {e}; falling back to StubFetcher"),
+        }
+    }
+
+    let fetcher: Arc<dyn SourceFetcher> =
+        if let Some(guard) = &sandbox_guard { Arc::new(guard.fetcher()) } else { Arc::new(StubFetcher) };
+    let _ = sandbox_guard; // keep process alive for the server lifetime
     let graphql_state = suwayomi_graphql::GraphQLState::new(db.clone(), config.clone(), fetcher.clone());
     let schema = suwayomi_graphql::schema::build_schema(graphql_state);
     tracing::info!("graphql schema ready ({} type definitions)", suwayomi_graphql::schema::schema_type_count());

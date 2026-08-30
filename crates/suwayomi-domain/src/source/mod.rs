@@ -4,6 +4,8 @@
 //! `SourceFetcher` is the seam where the JVM sandbox (Phase 5) plugs in.
 //! `LocalSource` semantics (ID, file handling) are reserved here.
 
+pub mod sandbox;
+
 use async_trait::async_trait;
 use suwayomi_core::source::{MangasPage, SChapter, SManga};
 

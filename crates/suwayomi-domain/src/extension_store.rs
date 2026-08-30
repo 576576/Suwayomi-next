@@ -244,9 +244,15 @@ impl ExtensionStoreService {
         let bytes = resp.bytes().await.map_err(DomainError::from)?;
         // some repos serve gzip regardless of accept-encoding
         let bytes = decompress_gzip_if_needed(&bytes);
-        let index: RepoIndex =
-            serde_json::from_slice(&bytes).map_err(|e| DomainError::Source(format!("repo index parse: {e}")))?;
-        let entries = index.entries();
+        // Mihon 协议仓库（index.pb，gzip protobuf）与 Tachiyomi 仓库（index.json）分流
+        let entries: Vec<RepoIndexEntry> = if url.ends_with("index.pb") {
+            parse_mihon_pb_index(&bytes)
+                .map_err(|e| DomainError::Source(format!("mihon repo index parse: {e}")))?
+        } else {
+            let index: RepoIndex = serde_json::from_slice(&bytes)
+                .map_err(|e| DomainError::Source(format!("repo index parse: {e}")))?;
+            index.entries()
+        };
         let pool = self.db.pool();
         let mut n = 0usize;
         for e in entries {
@@ -499,7 +505,7 @@ fn remove_matching_apks(dir: &Path, pkg: &str) -> Result<()> {
 }
 
 fn normalize_index_url(url: &str) -> String {
-    if url.ends_with("index.json") {
+    if url.ends_with("index.json") || url.ends_with("index.pb") {
         url.to_string()
     } else {
         format!("{}/index.json", url.trim_end_matches('/'))
@@ -695,5 +701,291 @@ mod tests {
 
         sb_srv.await.unwrap();
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+
+// ----------------------------------------------------------------------
+// Mihon 扩展仓库协议（index.pb）——gzip 压缩的 protobuf
+//
+// 协议（对齐 mihon `NetworkExtensionStore`，字段号为 protobuf 编号）：
+//   Index:           1=name, 2=badge, 3=signingKey, 4=contact, 101=extensionList
+//   ExtensionList:   1=repeated Extension
+//   Extension:       1=name, 2=packageName, 3=resources, 4=extensionLib,
+//                    5=versionCode(int64), 6=versionName, 7=contentWarning(enum),
+//                    8=repeated Source
+//   Resources:       1=apkUrl, 2=iconUrl
+//   Source:          1=id(int64), 2=name, 3=language, 4=homeUrl, 5=mirrorUrls, 7=message
+// ----------------------------------------------------------------------
+
+/// protobuf 解析的错误类型（避免与 crate 的单参数 Result 别名冲突）
+type PbResult<T> = std::result::Result<T, String>;
+
+/// 极简 protobuf wire-format 读取器（只读不解码，够用且零依赖）。
+struct PbReader<'a> {
+    d: &'a [u8],
+    i: usize,
+}
+
+impl<'a> PbReader<'a> {
+    fn varint(&mut self) -> PbResult<u64> {
+        let mut r = 0u64;
+        let mut shift = 0u32;
+        loop {
+            let b = *self.d.get(self.i).ok_or("protobuf: unexpected eof")?;
+            self.i += 1;
+            r |= u64::from(b & 0x7f) << shift;
+            if b & 0x80 == 0 {
+                return Ok(r);
+            }
+            shift += 7;
+            if shift >= 64 {
+                return Err("protobuf: varint overflow".into());
+            }
+        }
+    }
+
+    /// 返回 (field_number, wire_type)
+    fn key(&mut self) -> PbResult<(u64, u64)> {
+        let k = self.varint()?;
+        Ok((k >> 3, k & 7))
+    }
+
+    fn skip(&mut self, wt: u64) -> PbResult<()> {
+        match wt {
+            0 => {
+                self.varint()?;
+            }
+            1 => self.i += 8,
+            2 => {
+                let len = self.varint()? as usize;
+                self.i += len;
+            }
+            5 => self.i += 4,
+            _ => return Err(format!("protobuf: unsupported wire type {wt}")),
+        }
+        Ok(())
+    }
+
+    fn len_delimited(&mut self) -> PbResult<&'a [u8]> {
+        let len = self.varint()? as usize;
+        let end = self.i + len;
+        let seg = self.d.get(self.i..end).ok_or("protobuf: len exceeds data")?;
+        self.i = end;
+        Ok(seg)
+    }
+
+    fn string(&mut self) -> PbResult<String> {
+        Ok(String::from_utf8_lossy(self.len_delimited()?).into_owned())
+    }
+}
+
+/// 解析 Mihon index.pb → 复用 Tachiyomi 的 RepoIndexEntry 结构。
+fn parse_mihon_pb_index(bytes: &[u8]) -> PbResult<Vec<RepoIndexEntry>> {
+    let bytes = decompress_gzip_if_needed(bytes);
+    let mut p = PbReader { d: &bytes, i: 0 };
+    let mut out = Vec::new();
+    while p.i < bytes.len() {
+        let (f, wt) = p.key()?;
+        match f {
+            // extensionList（101）
+            101 if wt == 2 => {
+                let list = p.len_delimited()?;
+                let mut lp = PbReader { d: list, i: 0 };
+                while lp.i < list.len() {
+                    let (lf, lwt) = lp.key()?;
+                    if lf == 1 && lwt == 2 {
+                        if let Some(e) = parse_mihon_extension(&mut lp)? {
+                            out.push(e);
+                        }
+                    } else {
+                        lp.skip(lwt)?;
+                    }
+                }
+            }
+            _ => p.skip(wt)?,
+        }
+    }
+    Ok(out)
+}
+
+fn parse_mihon_extension(p: &mut PbReader) -> PbResult<Option<RepoIndexEntry>> {
+    let body = p.len_delimited()?;
+    let mut b = PbReader { d: body, i: 0 };
+    let mut name = String::new();
+    let mut pkg = String::new();
+    let mut apk_url: Option<String> = None;
+    let mut version_name = String::new();
+    let mut version_code = 0i64;
+    let mut nsfw = false;
+    let mut langs: Vec<String> = Vec::new();
+    let mut sources = Vec::new();
+    while b.i < body.len() {
+        let (f, wt) = b.key()?;
+        match f {
+            1 => name = b.string()?,
+            2 => pkg = b.string()?,
+            3 if wt == 2 => {
+                let res = b.len_delimited()?;
+                let mut rp = PbReader { d: res, i: 0 };
+                while rp.i < res.len() {
+                    let (rf, rwt) = rp.key()?;
+                    if rf == 1 && rwt == 2 {
+                        apk_url = Some(rp.string()?);
+                    } else {
+                        rp.skip(rwt)?;
+                    }
+                }
+            }
+            4 => {
+                let _ = b.len_delimited()?; // extensionLib，忽略
+            }
+            5 => version_code = b.varint()? as i64,
+            6 => version_name = b.string()?,
+            7 => nsfw = b.varint()? >= 2, // ContentWarning: MIXED=2 / NSFW=3
+            8 if wt == 2 => {
+                let src = b.len_delimited()?;
+                let mut sp = PbReader { d: src, i: 0 };
+                let mut sname = String::new();
+                let mut slang = String::new();
+                let mut sid = 0i64;
+                let mut sbase = String::new();
+                while sp.i < src.len() {
+                    let (sf, swt) = sp.key()?;
+                    match sf {
+                        1 => sid = sp.varint()? as i64,
+                        2 => sname = sp.string()?,
+                        3 => {
+                            slang = sp.string()?;
+                            langs.push(slang.clone());
+                        }
+                        4 => sbase = sp.string()?,
+                        _ => sp.skip(swt)?,
+                    }
+                }
+                sources.push(RepoSource {
+                    name: sname,
+                    lang: slang,
+                    id: sid.to_string(),
+                    base_url: sbase,
+                    version_id: 0,
+                    obsolete: false,
+                });
+            }
+            _ => b.skip(wt)?,
+        }
+    }
+    if name.is_empty() || pkg.is_empty() {
+        return Ok(None);
+    }
+    // 语言：单源语言用该语言，多语言扩展归为 "all"（对齐 mihon 客户端）
+    let lang = if langs.len() == 1 {
+        langs.remove(0)
+    } else if !langs.is_empty() {
+        "all".to_string()
+    } else {
+        String::new()
+    };
+    Ok(Some(RepoIndexEntry {
+        name,
+        pkg,
+        apk: apk_url,
+        jar: None,
+        lang,
+        version_name,
+        version_code,
+        nsfw,
+        obsolete: false,
+        has_readme: false,
+        sources,
+    }))
+}
+
+#[cfg(test)]
+mod mihon_pb_tests {
+    use super::*;
+
+    fn encode_varint(mut v: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let b = (v & 0x7f) as u8;
+            v >>= 7;
+            if v == 0 {
+                out.push(b);
+                break;
+            }
+            out.push(b | 0x80);
+        }
+        out
+    }
+
+    fn tag(field: u64, wt: u64) -> Vec<u8> {
+        encode_varint((field << 3) | wt)
+    }
+
+    fn ld(field: u64, payload: &[u8]) -> Vec<u8> {
+        let mut out = tag(field, 2);
+        out.extend(encode_varint(payload.len() as u64));
+        out.extend(payload);
+        out
+    }
+
+    fn field_str(field: u64, s: &str) -> Vec<u8> {
+        ld(field, s.as_bytes())
+    }
+
+    fn make_ext(name: &str, pkg: &str, ver_name: &str, ver_code: i64, cw: u64, lang: &str, apk_url: &str) -> Vec<u8> {
+        let mut res = Vec::new();
+        res.extend(field_str(1, apk_url));
+        let mut src = Vec::new();
+        // Source: f3 = language
+        src.extend(tag(3, 2));
+        let sn = lang.as_bytes();
+        src.extend(encode_varint(sn.len() as u64));
+        src.extend(sn);
+        let mut e = Vec::new();
+        e.extend(field_str(1, name));
+        e.extend(field_str(2, pkg));
+        e.extend(ld(3, &res));
+        e.extend(tag(5, 0));
+        e.extend(encode_varint(ver_code as u64));
+        e.extend(field_str(6, ver_name));
+        e.extend(tag(7, 0));
+        e.extend(encode_varint(cw));
+        e.extend(ld(8, &src));
+        e
+    }
+
+    #[test]
+    fn parses_mihon_index_pb() {
+        let e1 = make_ext("TestSrc", "eu.kanade.tachiyomi.extension.en.testsrc", "1.2.3", 42, 1, "en", "https://x/a.apk");
+        let e2 = make_ext("Multi", "eu.kanade.tachiyomi.extension.all.multi", "2.0", 7, 3, "zh", "https://x/b.apk");
+        let mut list = Vec::new();
+        list.extend(ld(1, &e1));
+        list.extend(ld(1, &e2));
+        let mut index = Vec::new();
+        index.extend(field_str(1, "TestRepo"));
+        index.extend(ld(101, &list));
+
+        let mut gz = Vec::new();
+        {
+            use std::io::Write;
+            let mut enc = flate2::write::GzEncoder::new(&mut gz, flate2::Compression::default());
+            enc.write_all(&index).unwrap();
+            enc.finish().unwrap();
+        }
+
+        let entries = parse_mihon_pb_index(&gz).expect("parse");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "TestSrc");
+        assert_eq!(entries[0].pkg, "eu.kanade.tachiyomi.extension.en.testsrc");
+        assert_eq!(entries[0].version_name, "1.2.3");
+        assert_eq!(entries[0].version_code, 42);
+        assert_eq!(entries[0].lang, "en");
+        assert!(!entries[0].nsfw);
+        assert_eq!(entries[0].apk.as_deref(), Some("https://x/a.apk"));
+        assert_eq!(entries[0].sources.len(), 1);
+        assert_eq!(entries[0].sources[0].lang, "en");
+        assert!(entries[1].nsfw);
+        assert_eq!(entries[1].lang, "zh");
     }
 }

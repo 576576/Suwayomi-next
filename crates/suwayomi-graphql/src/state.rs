@@ -13,6 +13,8 @@ use suwayomi_domain::manga::MangaService;
 use suwayomi_domain::page::PageService;
 use suwayomi_domain::source::SourceFetcher;
 
+use crate::updater::UpdateManager;
+
 #[derive(Clone)]
 pub struct GraphQLState {
     pub db: Db,
@@ -24,6 +26,8 @@ pub struct GraphQLState {
     pub library: LibraryService,
     pub manga_list: MangaListService,
     pub page: PageService,
+    /// Library updater with a broadcast event bus (Phase 6).
+    pub update: UpdateManager,
 }
 
 impl GraphQLState {
@@ -33,8 +37,9 @@ impl GraphQLState {
         let category = CategoryService::new(db.clone());
         let category_manga = CategoryMangaService::new(db.clone());
         let library = LibraryService::new(db.clone(), manga.clone());
-        let manga_list = MangaListService::new(db.clone(), fetcher);
+        let manga_list = MangaListService::new(db.clone(), fetcher.clone());
         let page = PageService::new(db.clone());
-        Self { db, config, manga, chapter, category, category_manga, library, manga_list, page }
+        let update = UpdateManager::new(db.clone(), fetcher);
+        Self { db, config, manga, chapter, category, category_manga, library, manga_list, page, update }
     }
 }

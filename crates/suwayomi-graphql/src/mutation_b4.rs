@@ -986,21 +986,37 @@ impl MutationRootB4 {
 
     async fn update_library(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: UpdateLibraryInput,
     ) -> async_graphql::Result<UpdateLibraryPayload> {
-        let _ = input.categories;
+        let state = ctx.data::<crate::state::GraphQLState>()?;
+        // Phase 6: run the real updater in the background; events stream to
+        // the `libraryUpdateStatusChanged` subscription.
+        state.update.start(input.categories).await;
+        let running = state.update.is_running().await;
         Ok(UpdateLibraryPayload {
             client_mutation_id: input.client_mutation_id,
-            update_status: LibraryUpdateStatus::idle(),
+            update_status: LibraryUpdateStatus {
+                category_updates: vec![],
+                jobs_info: UpdaterJobsInfoType {
+                    finished_jobs: 0,
+                    is_running: running,
+                    skipped_categories_count: 0,
+                    skipped_mangas_count: 0,
+                    total_jobs: 0,
+                },
+                manga_updates: vec![],
+            },
         })
     }
 
     async fn update_stop(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: UpdateStopInput,
     ) -> async_graphql::Result<UpdateStopPayload> {
+        let state = ctx.data::<crate::state::GraphQLState>()?;
+        state.update.stop().await;
         Ok(UpdateStopPayload { client_mutation_id: input.client_mutation_id })
     }
 

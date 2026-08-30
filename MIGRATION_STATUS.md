@@ -140,4 +140,5 @@
 - **Phase 5 骨架已完成**：jvm-sandbox（Kotlin 2.2.20 + JDK HttpServer 零依赖）+ HttpSandboxFetcher（reqwest）+ SandboxProcess 生命周期；Rust 拉起 JVM→health→HTTP IPC 链路端到端验证通过；真实扩展加载（ChildFirstClassLoader + 完整接口）为下一增量
 - **Phase 6 第一批完成**：REST track（list 真实现）/update（recentChapters 真实现 + summary）/downloads（队列契约）端点；backup 保留 stub
 - **Phase 6 OPDS 完成**：suwayomi-opds 全量 feed（根导航/OpenSearch 描述/历史/库系列含交叉过滤+排序 facet/探索来源+来源在线浏览（走 SourceFetcher）/库来源/分类/流派/状态/语言导航/库更新/系列章节/章节元数据/not-found）；手写 XML writer（无外部依赖）+ 扁平 FromRow repository；挂载 `/api/opds/v1.2`（19 端点，认证随主 router）；集成测试 7 项（嵌入式 PGlite，含 XML 结构断言）+ 4568 HTTP 冒烟通过；踩坑：COUNT 聚合查询误带 ORDER BY 触发 PG 错误→嵌入式会话终止（已拆分 where/order）
-- 下一步：Phase 6 剩余（下载管理器、备份 protobuf、同步、WebSocket 推送、真实扩展加载）→ Phase 7
+- **Phase 6 库更新器 + 广播通道完成**：`suwayomi-graphql::updater`（UpdateManager：broadcast 事件总线 + 后台任务逐部遍历库内漫画，经 SourceFetcher 拉取章节、ON CONFLICT 插入新章节、更新 manga 时间戳/version，流式发出 LibraryUpdateStatus 快照）；`updateLibrary`/`updateStop` mutation 接真实管理；`libraryUpdateStatusChanged` 订阅改为广播流；GraphQLState 注入 update 管理器；库内测试 2 项（fake fetcher 插 2 章 + 事件流断言；源错误标记 Failed）全绿。注：独立 tests/ 二进制在 Windows 上被系统级 740 拦截（内容启发式），测试移入 lib `#[cfg(test)]` 规避
+- 下一步：Phase 6 剩余（下载管理器、备份 protobuf、同步、真实扩展加载）→ Phase 7

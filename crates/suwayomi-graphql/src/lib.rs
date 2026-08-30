@@ -11,5 +11,6 @@ pub mod state;
 pub mod subscription;
 pub mod track;
 pub mod types;
+pub mod updater;
 
 pub use state::GraphQLState;

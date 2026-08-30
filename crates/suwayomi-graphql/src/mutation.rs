@@ -1,7 +1,7 @@
 //! Mutation root — mirrors `graphql/mutations/*.kt`.
 //! Batch B1: Category + Meta mutations (DB-driven; fully implemented).
 
-use async_graphql::{Context, InputObject, Object, SimpleObject};
+use async_graphql::{Context, Enum, InputObject, Object, SimpleObject};
 use sqlx::Row;
 use std::collections::HashMap;
 
@@ -477,6 +477,175 @@ pub struct DeleteSourceMetasPayload {
     pub client_mutation_id: Option<String>,
     pub metas: Vec<SourceMetaType>,
     pub sources: Vec<SourceType>,
+}
+
+// ---------------------------------------------------------------------------
+// B3: Manga/Chapter mutations
+// ---------------------------------------------------------------------------
+
+#[derive(InputObject)]
+pub struct UpdateMangaPatchInput {
+    pub in_library: Option<bool>,
+}
+
+#[derive(InputObject)]
+pub struct UpdateMangaInput {
+    pub client_mutation_id: Option<String>,
+    pub id: i32,
+    pub patch: UpdateMangaPatchInput,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct UpdateMangaPayload {
+    pub client_mutation_id: Option<String>,
+    pub manga: MangaType,
+}
+
+#[derive(InputObject)]
+pub struct UpdateMangasInput {
+    pub client_mutation_id: Option<String>,
+    pub ids: Vec<i32>,
+    pub patch: UpdateMangaPatchInput,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct UpdateMangasPayload {
+    pub client_mutation_id: Option<String>,
+    pub mangas: Vec<MangaType>,
+}
+
+#[derive(InputObject)]
+pub struct UpdateChapterPatchInput {
+    pub is_bookmarked: Option<bool>,
+    pub is_read: Option<bool>,
+    pub last_page_read: Option<i32>,
+}
+
+#[derive(InputObject)]
+pub struct UpdateChapterInput {
+    pub client_mutation_id: Option<String>,
+    pub id: i32,
+    pub patch: UpdateChapterPatchInput,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct UpdateChapterPayload {
+    pub chapter: ChapterType,
+    pub client_mutation_id: Option<String>,
+}
+
+#[derive(InputObject)]
+pub struct UpdateChaptersInput {
+    pub client_mutation_id: Option<String>,
+    pub ids: Vec<i32>,
+    pub patch: UpdateChapterPatchInput,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct UpdateChaptersPayload {
+    pub chapters: Vec<ChapterType>,
+    pub client_mutation_id: Option<String>,
+}
+
+#[derive(InputObject)]
+pub struct FetchMangaInput {
+    pub client_mutation_id: Option<String>,
+    pub id: i32,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct FetchMangaPayload {
+    pub client_mutation_id: Option<String>,
+    pub manga: MangaType,
+}
+
+#[derive(InputObject)]
+pub struct FetchMangaAndChaptersInput {
+    pub client_mutation_id: Option<String>,
+    pub fetch_chapters: bool,
+    pub fetch_manga: bool,
+    pub id: i32,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct FetchMangaAndChaptersPayload {
+    pub chapters: Vec<ChapterType>,
+    pub client_mutation_id: Option<String>,
+    pub manga: MangaType,
+}
+
+#[derive(InputObject)]
+pub struct FetchChaptersInput {
+    pub client_mutation_id: Option<String>,
+    pub manga_id: i32,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct FetchChaptersPayload {
+    pub chapters: Vec<ChapterType>,
+    pub client_mutation_id: Option<String>,
+}
+
+#[derive(InputObject)]
+pub struct FetchChapterPagesInput {
+    pub chapter_id: i32,
+    pub client_mutation_id: Option<String>,
+    pub format: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct SyncConflictInfoType {
+    pub device_name: String,
+    pub remote_page: i32,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct FetchChapterPagesPayload {
+    pub chapter: ChapterType,
+    pub client_mutation_id: Option<String>,
+    pub pages: Vec<String>,
+    pub sync_conflict: Option<SyncConflictInfoType>,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+pub enum FetchSourceMangaType {
+    Search,
+    Popular,
+    Latest,
+}
+
+#[derive(InputObject)]
+pub struct FilterChangeInput {
+    pub check_box_state: Option<bool>,
+    pub position: Option<i32>,
+    pub sort_state: Option<SortSelectionInput>,
+    pub state: Option<i32>,
+    pub text_state: Option<String>,
+    pub tri_state: Option<TriState>,
+}
+
+#[derive(InputObject)]
+pub struct SortSelectionInput {
+    pub ascending: bool,
+    pub index: i32,
+}
+
+#[derive(InputObject)]
+pub struct FetchSourceMangaInput {
+    pub client_mutation_id: Option<String>,
+    pub filters: Option<Vec<FilterChangeInput>>,
+    pub page: i32,
+    pub query: Option<String>,
+    pub source: LongString,
+    #[graphql(name = "type")]
+    pub r#type: FetchSourceMangaType,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct FetchSourceMangaPayload {
+    pub client_mutation_id: Option<String>,
+    pub has_next_page: bool,
+    pub mangas: Vec<MangaType>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1105,6 +1274,190 @@ impl MutationRoot {
         Ok(DeleteSourceMetaPayload { client_mutation_id: input.client_mutation_id, meta: old, source })
     }
 
+    // ---- B3: Manga / Chapter ----
+
+    async fn update_manga(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateMangaInput,
+    ) -> async_graphql::Result<UpdateMangaPayload> {
+        let state = ctx.data::<GraphQLState>()?;
+        if let Some(in_library) = input.patch.in_library {
+            if in_library {
+                state.library.add_manga_to_library(input.id).await.map_err(async_graphql::Error::from)?;
+            } else {
+                state.library.remove_manga_from_library(input.id).await.map_err(async_graphql::Error::from)?;
+            }
+        }
+        let manga = MangaType::from_row(&fetch_manga_row(state, input.id).await?);
+        Ok(UpdateMangaPayload { client_mutation_id: input.client_mutation_id, manga })
+    }
+
+    async fn update_mangas(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateMangasInput,
+    ) -> async_graphql::Result<UpdateMangasPayload> {
+        let state = ctx.data::<GraphQLState>()?;
+        if let Some(in_library) = input.patch.in_library {
+            for id in &input.ids {
+                if in_library {
+                    state.library.add_manga_to_library(*id).await.map_err(async_graphql::Error::from)?;
+                } else {
+                    state.library.remove_manga_from_library(*id).await.map_err(async_graphql::Error::from)?;
+                }
+            }
+        }
+        let mut mangas = Vec::new();
+        for id in &input.ids {
+            mangas.push(MangaType::from_row(&fetch_manga_row(state, *id).await?));
+        }
+        Ok(UpdateMangasPayload { client_mutation_id: input.client_mutation_id, mangas })
+    }
+
+    async fn update_chapter(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateChapterInput,
+    ) -> async_graphql::Result<UpdateChapterPayload> {
+        let state = ctx.data::<GraphQLState>()?;
+        apply_chapter_patch(state, &[input.id], &input.patch).await?;
+        let chapter = ChapterType::from_row(&fetch_chapter_row(state, input.id).await?);
+        Ok(UpdateChapterPayload { chapter, client_mutation_id: input.client_mutation_id })
+    }
+
+    async fn update_chapters(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateChaptersInput,
+    ) -> async_graphql::Result<UpdateChaptersPayload> {
+        let state = ctx.data::<GraphQLState>()?;
+        apply_chapter_patch(state, &input.ids, &input.patch).await?;
+        let mut chapters = Vec::new();
+        for id in &input.ids {
+            chapters.push(ChapterType::from_row(&fetch_chapter_row(state, *id).await?));
+        }
+        Ok(UpdateChaptersPayload { chapters, client_mutation_id: input.client_mutation_id })
+    }
+
+    async fn fetch_manga(&self, ctx: &Context<'_>, input: FetchMangaInput) -> async_graphql::Result<FetchMangaPayload> {
+        let state = ctx.data::<GraphQLState>()?;
+        let dc = state.manga.get_manga(input.id, true).await.map_err(async_graphql::Error::from)?;
+        let manga = MangaType::from_row(&fetch_manga_row(state, dc.id).await?);
+        Ok(FetchMangaPayload { client_mutation_id: input.client_mutation_id, manga })
+    }
+
+    async fn fetch_chapters(
+        &self,
+        ctx: &Context<'_>,
+        input: FetchChaptersInput,
+    ) -> async_graphql::Result<FetchChaptersPayload> {
+        let state = ctx.data::<GraphQLState>()?;
+        let list = state.chapter.get_chapter_list(input.manga_id, true).await.map_err(async_graphql::Error::from)?;
+        let chapters = list
+            .iter()
+            .map(|c| ChapterType {
+                id: c.id,
+                url: c.url.clone(),
+                name: c.name.clone(),
+                upload_date: c.upload_date,
+                chapter_number: c.chapter_number,
+                scanlator: c.scanlator.clone(),
+                manga_id: c.manga_id,
+                read: c.read,
+                bookmarked: c.bookmarked,
+                last_page_read: c.last_page_read,
+                last_read_at: c.last_read_at,
+                source_order: c.index,
+                fetched_at: c.fetched_at,
+                real_url: c.real_url.clone(),
+                downloaded: c.downloaded,
+                page_count: c.page_count,
+            })
+            .collect();
+        Ok(FetchChaptersPayload { chapters, client_mutation_id: input.client_mutation_id })
+    }
+
+    async fn fetch_manga_and_chapters(
+        &self,
+        ctx: &Context<'_>,
+        input: FetchMangaAndChaptersInput,
+    ) -> async_graphql::Result<FetchMangaAndChaptersPayload> {
+        let state = ctx.data::<GraphQLState>()?;
+        let manga = if input.fetch_manga {
+            let dc = state.manga.get_manga(input.id, true).await.map_err(async_graphql::Error::from)?;
+            MangaType::from_row(&fetch_manga_row(state, dc.id).await?)
+        } else {
+            MangaType::from_row(&fetch_manga_row(state, input.id).await?)
+        };
+        let chapters = if input.fetch_chapters {
+            let list = state.chapter.get_chapter_list(input.id, true).await.map_err(async_graphql::Error::from)?;
+            list.iter()
+                .map(|c| ChapterType {
+                    id: c.id,
+                    url: c.url.clone(),
+                    name: c.name.clone(),
+                    upload_date: c.upload_date,
+                    chapter_number: c.chapter_number,
+                    scanlator: c.scanlator.clone(),
+                    manga_id: c.manga_id,
+                    read: c.read,
+                    bookmarked: c.bookmarked,
+                    last_page_read: c.last_page_read,
+                    last_read_at: c.last_read_at,
+                    source_order: c.index,
+                    fetched_at: c.fetched_at,
+                    real_url: c.real_url.clone(),
+                    downloaded: c.downloaded,
+                    page_count: c.page_count,
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+        Ok(FetchMangaAndChaptersPayload { chapters, client_mutation_id: input.client_mutation_id, manga })
+    }
+
+    async fn fetch_chapter_pages(
+        &self,
+        ctx: &Context<'_>,
+        input: FetchChapterPagesInput,
+    ) -> async_graphql::Result<FetchChapterPagesPayload> {
+        let state = ctx.data::<GraphQLState>()?;
+        let chapter = ChapterType::from_row(&fetch_chapter_row(state, input.chapter_id).await?);
+        let sql = bind_placeholders("SELECT url, image_url FROM page WHERE chapter = ? ORDER BY index ASC");
+        let rows = sqlx::query(&sql)
+            .bind(input.chapter_id)
+            .fetch_all(state.db.pool())
+            .await
+            .map_err(async_graphql::Error::from)?;
+        let mut pages = Vec::new();
+        for row in &rows {
+            let url: String = row.try_get("url").unwrap_or_default();
+            let image_url: Option<String> = row.try_get("image_url").ok();
+            pages.push(image_url.unwrap_or(url));
+        }
+        Ok(FetchChapterPagesPayload {
+            chapter,
+            client_mutation_id: input.client_mutation_id,
+            pages,
+            sync_conflict: None,
+        })
+    }
+
+    async fn fetch_source_manga(
+        &self,
+        _ctx: &Context<'_>,
+        input: FetchSourceMangaInput,
+    ) -> async_graphql::Result<FetchSourceMangaPayload> {
+        let _ = (input.filters, input.page, input.query, input.source, input.r#type);
+        Ok(FetchSourceMangaPayload {
+            client_mutation_id: input.client_mutation_id,
+            has_next_page: false,
+            mangas: vec![],
+        })
+    }
+
     async fn delete_source_metas(
         &self,
         ctx: &Context<'_>,
@@ -1184,6 +1537,18 @@ async fn apply_category_patch(
             patch.include_in_update.map(|v| v as i32),
             patch.include_in_download.map(|v| v as i32),
         )
+        .await
+        .map_err(async_graphql::Error::from)
+}
+
+async fn apply_chapter_patch(
+    state: &GraphQLState,
+    ids: &[i32],
+    patch: &UpdateChapterPatchInput,
+) -> async_graphql::Result<()> {
+    state
+        .chapter
+        .modify_chapters_by_ids(ids, patch.is_read, patch.is_bookmarked, patch.last_page_read)
         .await
         .map_err(async_graphql::Error::from)
 }

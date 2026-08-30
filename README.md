@@ -81,8 +81,8 @@ SUWAYOMI_SANDBOX_PROXY=127.0.0.1:7890 \   # 可选：出境代理（访问被墙
 
 ## 关键文档
 
-- `MIGRATION_PLAN.md` — 分阶段迁移计划（含决策记录 R1–R8）
-- `MIGRATION_STATUS.md` — 逐文件迁移追踪
+- `docs/migration/MIGRATION_PLAN.md` — 分阶段迁移计划（含决策记录 R1–R8）
+- `docs/migration/MIGRATION_STATUS.md` — 逐文件迁移追踪
 - `docs/user-guide.md` — 用户指南（配置/迁移/备份/OPDS/Docker）
 - `docs/api/rest-endpoints-baseline.md` — REST v1 端点兼容基线
 - `docs/graphql/README.md` — GraphQL schema 基线说明

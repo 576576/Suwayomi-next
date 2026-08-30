@@ -1,0 +1,4 @@
+# Windows 本机：schannel 证书吊销检查在离线/代理环境下报 CRYPT_E_REVOCATION_OFFLINE，
+# 导致 crates.io 下载失败。关闭吊销检查（仅影响 Windows schannel；Linux CI 不使用该选项）。
+[http]
+check-revoke = false

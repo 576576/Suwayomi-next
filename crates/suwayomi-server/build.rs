@@ -34,4 +34,17 @@ fn main() {
     // the count changes on every commit, so always re-run
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=SUWAYOMI_VERSION_COUNT");
+
+    // Windows: embed the executable icon (generated from assets/images/icon.png).
+    #[cfg(windows)]
+    {
+        let icon = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/images/icon.ico");
+        let mut res = winres::WindowsResource::new();
+        res.set_icon(&icon.to_string_lossy());
+        if let Err(e) = res.compile() {
+            panic!("embed icon failed: {e}");
+        }
+        println!("cargo:rerun-if-changed={}", icon.display());
+    }
 }

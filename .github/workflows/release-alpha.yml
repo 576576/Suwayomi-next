@@ -1,4 +1,4 @@
-name: Release-Alpha
+name: Auto build
 
 # alpha 发布 CI：推送 main / dev 时自动构建 alpha，仅 Windows x64。
 # 手动多通道/多架构发布走 release.yml（workflow_dispatch）。

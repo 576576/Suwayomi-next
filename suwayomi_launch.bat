@@ -17,7 +17,8 @@ if not exist "data\downloads"  mkdir "data\downloads"
 if not exist "data\local"      mkdir "data\local"
 
 echo [suwayomi] 启动服务器 (127.0.0.1:%PORT%) ...
-start "Suwayomi Server" /min "%~dp0suwayomi.exe"
+rem 隐藏窗口启动（start /min 会残留最小化 cmd 窗口）
+powershell -NoProfile -Command "Start-Process -FilePath '%~dp0suwayomi.exe' -WorkingDirectory '%~dp0' -WindowStyle Hidden"
 
 echo [suwayomi] 等待服务器就绪...
 :wait

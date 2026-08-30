@@ -66,6 +66,9 @@ jobs:
           STAGE="dist/Suwayomi-${VER}-${TGT}"
           mkdir -p "$STAGE"
           cp "$BIN" "$STAGE/"
+          # 桌面壳（Tauri 托盘+设置）
+          cargo build --release --manifest-path tauri-app/Cargo.toml
+          cp tauri-app/target/release/suwayomi-tray.exe "$STAGE/" 2>/dev/null || true
 
           # ---- 捆绑 WebUI（fork release 产物）+ 启动脚本 + data 目录 ----
           WEBUI_ZIP=$(curl -s "https://api.github.com/repos/576576/Suwayomi-WebUI/releases/latest" | python3 -c "import json,sys; d=json.load(sys.stdin); print([a['browser_download_url'] for a in d.get('assets',[]) if a['name'].endswith('.zip')][0])")

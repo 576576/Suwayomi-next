@@ -126,6 +126,8 @@ jobs:
         include: ${{ fromJson(needs.prep.outputs.targets) }}
     env:
       SUWAYOMI_VERSION_COUNT: ${{ needs.prep.outputs.count }}
+      # 手动发布注入外部版本号 3.y.z（build.rs 优先用这个；Auto build 无此变量则用 r{code}）
+      SUWAYOMI_VERSION_NAME: ${{ needs.prep.outputs.version_name }}
     steps:
       - uses: actions/checkout@v4
         with:

@@ -132,8 +132,7 @@ async fn main() -> anyhow::Result<()> {
     let cli_args: Vec<String> = std::env::args().skip(1).collect();
     if cli_args.iter().any(|a| a == "-v" || a == "--version") {
         println!("Suwayomi {VERSION}");
-        println!("versionCode: {VERSION_CODE}");
-        println!("commitCount: {VERSION_COUNT}");
+        println!("{}", env!("CARGO_PKG_REPOSITORY"));
         return Ok(());
     }
 

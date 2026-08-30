@@ -1,7 +1,9 @@
 //! Versioning: the release number is derived from the commit count.
 //!
 //! - internal version code = commit count + 3000  (e.g. 38 commits -> 3038)
-//! - version name          = r{versionCode}       (38 -> r3038)
+//! - version name, two modes:
+//!   1. `SUWAYOMI_VERSION_NAME` env (manual release.yml injects `3.y.z`)
+//!   2. default `r{versionCode}` (Auto build / local, 38 -> r3038)
 //!
 //! The count comes from, in priority order:
 //!   1. `SUWAYOMI_VERSION_COUNT` (injected by CI — matches `git rev-list --count HEAD`)
@@ -26,7 +28,11 @@ fn main() {
         .unwrap_or(38);
 
     let version_code = count + 3000;
-    let version_name = format!("r{version_code}");
+    // 手动 release（release.yml）注入 3.y.z；Auto build / 本地默认 r{versionCode}
+    let version_name = std::env::var("SUWAYOMI_VERSION_NAME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("r{version_code}"));
 
     println!("cargo:rustc-env=SUWAYOMI_VERSION_NAME={version_name}");
     println!("cargo:rustc-env=SUWAYOMI_VERSION_CODE={version_code}");
@@ -34,6 +40,7 @@ fn main() {
     // the count changes on every commit, so always re-run
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=SUWAYOMI_VERSION_COUNT");
+    println!("cargo:rerun-if-env-changed=SUWAYOMI_VERSION_NAME");
 
     // Windows: embed the executable icon (generated from assets/images/icon.png).
     #[cfg(windows)]

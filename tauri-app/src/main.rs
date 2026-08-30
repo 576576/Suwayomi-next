@@ -3,7 +3,7 @@
 //! - 无头启动 `suwayomi`（server 二进制）子进程
 //! - 发布布局（exe 同级）：
 //!     suwayomi.exe + suwayomi_launch.bat + webui/ + data/
-//!     data/ 为工作数据目录：autobackup / downloads / local / pglite-data
+//!     data/ 为工作数据目录：autobackup / downloads / local；pglite-data 由 server 自动建在 data 同级
 //!     （不存在时自动创建）
 //! - 系统托盘菜单：打开 WebUI / 打开数据目录 / 设置 / 退出
 //! - 设置窗口：端口（保存后重启 server）、打开数据目录、WebUI 地址
@@ -117,9 +117,10 @@ fn wait_ready(port: u16, timeout: Duration) -> bool {
     false
 }
 
-/// 工作数据目录（不存在时创建）
+/// 工作数据目录（不存在时创建）。pglite-data 不在此列——
+/// server 启动时会在 data 同级（发布根目录）自动创建。
 fn ensure_data_dirs(data: &PathBuf) {
-    for d in ["autobackup", "downloads", "local", "pglite-data"] {
+    for d in ["autobackup", "downloads", "local"] {
         let _ = std::fs::create_dir_all(data.join(d));
     }
 }
@@ -135,7 +136,8 @@ fn spawn_server(data: &PathBuf, port: u16) -> Option<Child> {
     let child = Command::new(&bin)
         .current_dir(data)
         .env("SUWAYOMI_PORT", port.to_string())
-        .env("SUWAYOMI_PGLITE_DATA_DIR", data.join("pglite-data"))
+        // pglite 数据目录 = data 同级（发布根目录），由 server 自动创建
+        .env("SUWAYOMI_PGLITE_DATA_DIR", base_dir().join("pglite-data"))
         .env("SUWAYOMI_WEBUI_DIR", base_dir().join("webui"))
         .stdout(Stdio::from(log_file.try_clone().ok()?))
         .stderr(Stdio::from(log_file))

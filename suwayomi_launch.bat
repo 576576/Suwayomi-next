@@ -15,7 +15,6 @@ rem 工作数据目录（不存在时创建）
 if not exist "data\autobackup" mkdir "data\autobackup"
 if not exist "data\downloads"  mkdir "data\downloads"
 if not exist "data\local"      mkdir "data\local"
-if not exist "data\pglite-data" mkdir "data\pglite-data"
 
 echo [suwayomi] 启动服务器 (127.0.0.1:%PORT%) ...
 start "Suwayomi Server" /min "%~dp0suwayomi.exe"

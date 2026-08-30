@@ -11,8 +11,8 @@ Suwayomi（Kotlin/JVM）的 Rust 重写版。目标：保持既有数据、Graph
 | 2 | 核心业务逻辑（domain） | 🟢 完成 |
 | 3 | REST API v1 | 🟢 完成 |
 | 4 | GraphQL API | 🟢 完成 |
-| 5 | 扩展桥接层（JVM 沙盒） | 🔶 进程桥接完成，真实扩展加载增量 |
-| 6 | 外围功能（下载/更新/备份/Tracker/OPDS/同步/Tauri 壳） | 🔶 OPDS/下载器/更新器/备份完成，同步增量 |
+| 5 | 扩展桥接层（JVM 沙盒） | 🟢 完成 |
+| 6 | 外围功能（下载/更新/备份/Tracker/OPDS/同步/Tauri 壳） | 🟢 完成 |
 | 7 | 数据迁移工具与发布 | 🟢 h2-dump/--migrate/备份导入/Docker/文档完成 |
 
 ## 快速开始
@@ -110,6 +110,17 @@ cargo clippy --workspace --all-targets -- -D warnings
 - **外部 APK**：GraphQL `installExternalExtension`（multipart 上传）走 sandbox `/inspect` 解析元数据后安装。
 - **代理**：仓库/APK 下载复用 `SUWAYOMI_SANDBOX_PROXY` 出境代理。
 - 实测（keiyoushi 仓库）：刷新 **1381** 个扩展；安装 nhentai → sandbox 热加载 **22 源** → DB 注册 → popular **18 部真实漫画**；卸载后 sandbox 0 源、DB 清空。
+
+## 桌面壳（Tauri，tauri-app/）
+
+无头 `suwayomi` 服务端 + Tauri 2 桌面壳（独立工程，不进 workspace）：
+
+- 启动时自动拉起 `suwayomi` 子进程（查找顺序：`SUWAYOMI_BIN` → 壳同目录 → PATH），
+  数据落在系统应用数据目录（Windows: `%APPDATA%\com.suwayomi.tray`，含 `pglite-data/` 与 `server.log`）
+- 主窗口 WebView 加载 `http://127.0.0.1:8090` 的 WebUI；关闭窗口驻留托盘
+- 系统托盘菜单：**打开 WebUI** / **打开数据目录** / **退出**（退出时结束 server 子进程）
+- 构建：`cd tauri-app && cargo build --release`（产物 `tauri-app/target/release/suwayomi-tray.exe`；
+  将 `suwayomi.exe` 放在同目录即可运行；bundle 安装器未启用）
 
 ## Docker
 

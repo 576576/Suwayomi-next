@@ -1,0 +1,20 @@
+[package]
+name = "suwayomi-tray"
+version = "0.1.0"
+description = "Suwayomi 桌面壳：无头 server + 系统托盘 + WebUI 窗口（Tauri 2）"
+edition = "2021"
+
+# 独立于根 workspace（tauri 依赖树庞大，避免拖慢主项目构建/CI）
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+open = "5"
+
+[profile.release]
+strip = true

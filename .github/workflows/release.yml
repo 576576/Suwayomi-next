@@ -165,16 +165,15 @@ jobs:
           if [ "${{ matrix.os }}" = "windows-latest" ]; then BIN="${BIN}.exe"; fi
 
           STAGE="dist/SuwayomiNext-${VER}-${CH}-${TGT}"
-          mkdir -p "$STAGE"
-          cp "$BIN" "$STAGE/"
+          mkdir -p "$STAGE/bin"
+          cp "$BIN" "$STAGE/bin/"
           # 桌面壳仅 Windows（Tauri 在 linux/macOS runner 缺 webkit 依赖）
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
             cargo build --release --manifest-path tauri-app/Cargo.toml
             cp tauri-app/target/release/suwayomi.exe "$STAGE/" 2>/dev/null || true
-            # 扩展沙盒（JVM，Kotlin fat jar）——放 jre/ 子目录，server 自动查找
+            # 扩展沙盒（JVM，Kotlin fat jar）——放 bin/（server 自动查找）
             cd jvm-sandbox && ./gradlew -q jar --no-daemon && cd ..
-            mkdir -p "$STAGE/jre"
-            cp jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar "$STAGE/jre/jvm-sandbox.jar"
+            cp jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar "$STAGE/bin/jvm-sandbox.jar"
           fi
 
           # ---- 捆绑 WebUI（fork release 产物）+ 启动脚本 + data 目录 ----

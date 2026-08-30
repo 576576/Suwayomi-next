@@ -69,16 +69,15 @@ jobs:
 
           # 产物命名：Suwayomi-r3046-windows-x64.zip（无 Next、无 -alpha 后缀）
           STAGE="dist/Suwayomi-${VER}-${TGT}"
-          mkdir -p "$STAGE"
-          cp "$BIN" "$STAGE/"
+          mkdir -p "$STAGE/bin"
+          cp "$BIN" "$STAGE/bin/"
           # 桌面壳（Tauri 托盘+设置）
           cargo build --release --manifest-path tauri-app/Cargo.toml
           cp tauri-app/target/release/suwayomi.exe "$STAGE/" 2>/dev/null || true
 
-          # 扩展沙盒（JVM，Kotlin fat jar）——放 jre/ 子目录，server 自动查找
+          # 扩展沙盒（JVM，Kotlin fat jar）——放 bin/（server 自动查找）
           cd jvm-sandbox && ./gradlew -q jar --no-daemon && cd ..
-          mkdir -p "$STAGE/jre"
-          cp jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar "$STAGE/jre/jvm-sandbox.jar"
+          cp jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar "$STAGE/bin/jvm-sandbox.jar"
 
           # ---- 捆绑 WebUI（fork release 产物）+ 启动脚本 + data 目录 ----
           WEBUI_ZIP=$(curl -s "https://api.github.com/repos/576576/Suwayomi-WebUI/releases/latest" | python3 -c "import json,sys; d=json.load(sys.stdin); print([a['browser_download_url'] for a in d.get('assets',[]) if a['name'].endswith('.zip')][0])")

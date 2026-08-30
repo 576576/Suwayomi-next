@@ -101,8 +101,15 @@ fn find_server_bin() -> Option<PathBuf> {
         Ok(exe) => {
             tray_log(&format!("[tray] current_exe: {}", exe.display()));
             if let Some(dir) = exe.parent() {
-                for name in ["suwayomi-server.exe", "suwayomi-server", "suwayomi.exe", "suwayomi"] {
-                    let cand = dir.join(name);
+                // 发布布局：server 在 bin/ 子目录（suwayomi-server.exe）；旧布局同目录
+                for cand in [
+                    dir.join("bin").join("suwayomi-server.exe"),
+                    dir.join("bin").join("suwayomi-server"),
+                    dir.join("suwayomi-server.exe"),
+                    dir.join("suwayomi-server"),
+                    dir.join("suwayomi.exe"),
+                    dir.join("suwayomi"),
+                ] {
                     tray_log(&format!("[tray] find_server_bin: cand {} is_file={}", cand.display(), cand.is_file()));
                     if cand.is_file() {
                         return Some(cand);

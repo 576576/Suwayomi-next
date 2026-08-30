@@ -384,8 +384,8 @@ impl AboutServerPayload {
         Self {
             build_time: LongString(0),
             build_type: "release".into(),
-            discord: "https://discord.gg/v5Bq5Wr".into(),
-            github: "https://github.com/Suwayomi".into(),
+            discord: "https://qm.qq.com/q/aq1PDjhjMc".into(),
+            github: "https://github.com/576576/Suwayomi-next".into(),
             name: "Suwayomi (next)".into(),
             platform_info: PlatformInfo {
                 arch,

@@ -1,9 +1,0 @@
-ci: 修复 Windows runner 默认 shell 执行 bash 语法
-
-release-alpha.yml 构建步骤（行内 SUWAYOMI_VERSION_COUNT=... 注入）未声明
-shell: bash——Windows runner 默认 shell 会把 VAR=val 当命令名解析，报
-'The term ... is not recognized as a name of a cmdlet'。补 shell: bash
-（ver/打包步骤原本就有）。release.yml 矩阵构建步骤同样补 shell: bash，
-防止后续添加 bash 特有写法。
-
-actionlint v1.7.12 两个 workflow 全 PASS

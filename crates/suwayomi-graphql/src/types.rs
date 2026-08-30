@@ -10,6 +10,7 @@ use suwayomi_core::schema::{CategoryRow, ChapterRow, MangaRow};
 
 use crate::scalars::{Cursor, LongString};
 use crate::state::GraphQLState;
+use crate::track::TrackRecordNodeList;
 use sqlx::Row;
 use suwayomi_domain::sql::bind_placeholders;
 
@@ -766,41 +767,7 @@ impl CategoryNodeList {
     }
 }
 
-/// TrackRecordNodeList — minimal (Phase 6 fills records).
-#[derive(SimpleObject, Clone)]
-pub struct TrackRecordNodeList {
-    pub nodes: Vec<TrackRecordType>,
-    pub edges: Vec<TrackRecordEdge>,
-    pub page_info: PageInfo,
-    pub total_count: i32,
-}
-
-#[derive(SimpleObject, Clone)]
-pub struct TrackRecordType {
-    pub id: i32,
-}
-
-#[derive(SimpleObject, Clone)]
-pub struct TrackRecordEdge {
-    pub cursor: Cursor,
-    pub node: TrackRecordType,
-}
-
-impl TrackRecordNodeList {
-    pub fn empty() -> Self {
-        Self {
-            nodes: vec![],
-            edges: vec![],
-            page_info: PageInfo {
-                start_cursor: None,
-                end_cursor: None,
-                has_next_page: false,
-                has_previous_page: false,
-            },
-            total_count: 0,
-        }
-    }
-}
+/// TrackRecordNodeList — full implementation lives in `track.rs`.
 
 // ---- GlobalMeta NodeList (Query.metas) ----
 
@@ -1319,6 +1286,50 @@ impl ExtensionNodeList {
             vec![
                 ExtensionEdge { cursor: Cursor("0".into()), node: nodes[0].clone() },
                 ExtensionEdge { cursor: Cursor((nodes.len() - 1).to_string()), node: nodes[nodes.len() - 1].clone() },
+            ]
+        };
+        Self {
+            page_info: PageInfo {
+                start_cursor: Some(Cursor("0".into())),
+                end_cursor: Some(Cursor(total.saturating_sub(1).to_string())),
+                has_next_page: false,
+                has_previous_page: false,
+            },
+            nodes,
+            edges,
+            total_count: total,
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct ExtensionStoreEdge {
+    pub cursor: Cursor,
+    pub node: ExtensionStoreType,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct ExtensionStoreNodeList {
+    pub nodes: Vec<ExtensionStoreType>,
+    pub edges: Vec<ExtensionStoreEdge>,
+    pub page_info: PageInfo,
+    pub total_count: i32,
+}
+
+impl ExtensionStoreNodeList {
+    pub fn from_nodes(nodes: Vec<ExtensionStoreType>) -> Self {
+        let total = nodes.len() as i32;
+        let edges = if nodes.is_empty() {
+            vec![]
+        } else if nodes.len() == 1 {
+            vec![ExtensionStoreEdge { cursor: Cursor("0".into()), node: nodes[0].clone() }]
+        } else {
+            vec![
+                ExtensionStoreEdge { cursor: Cursor("0".into()), node: nodes[0].clone() },
+                ExtensionStoreEdge {
+                    cursor: Cursor((nodes.len() - 1).to_string()),
+                    node: nodes[nodes.len() - 1].clone(),
+                },
             ]
         };
         Self {

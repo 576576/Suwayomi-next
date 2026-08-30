@@ -7,6 +7,7 @@ pub mod scalars;
 pub mod schema;
 pub mod settings;
 pub mod state;
+pub mod track;
 pub mod types;
 
 pub use state::GraphQLState;

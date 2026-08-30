@@ -9,6 +9,7 @@ use suwayomi_domain::sql::bind_placeholders;
 use crate::scalars::{Cursor, LongString};
 use crate::settings::{AboutServerPayload, SettingsType};
 use crate::state::GraphQLState;
+use crate::track::{SearchTrackerPayload, TrackRecordNodeList, TrackRecordType, TrackerNodeList, TrackerType};
 use crate::types::*;
 
 enum BindVal {
@@ -265,6 +266,134 @@ pub struct SourceFilterInput {
     pub name: Option<StringFilterInput>,
     pub not: Option<Box<SourceFilterInput>>,
     pub or: Option<Vec<SourceFilterInput>>,
+}
+
+#[derive(InputObject, Default)]
+pub struct ExtensionCondition {
+    pub lang: Option<String>,
+    pub name: Option<String>,
+    pub pkg_name: Option<String>,
+    pub is_installed: Option<bool>,
+    pub is_obsolete: Option<bool>,
+    pub has_update: Option<bool>,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+pub enum ExtensionOrderBy {
+    PkgName,
+    Name,
+    ApkName,
+}
+
+#[derive(InputObject)]
+pub struct ExtensionOrder {
+    pub by: ExtensionOrderBy,
+    pub by_type: Option<SortOrder>,
+}
+
+#[derive(InputObject, Default)]
+pub struct ExtensionFilterInput {
+    pub and: Option<Vec<ExtensionFilterInput>>,
+    pub lang: Option<StringFilterInput>,
+    pub name: Option<StringFilterInput>,
+    pub not: Option<Box<ExtensionFilterInput>>,
+    pub or: Option<Vec<ExtensionFilterInput>>,
+    pub pkg_name: Option<StringFilterInput>,
+}
+
+#[derive(InputObject, Default)]
+pub struct ExtensionStoreCondition {
+    pub id: Option<i32>,
+    pub index_url: Option<String>,
+    pub name: Option<String>,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+pub enum ExtensionStoreOrderBy {
+    Name,
+    IndexUrl,
+}
+
+#[derive(InputObject)]
+pub struct ExtensionStoreOrder {
+    pub by: ExtensionStoreOrderBy,
+    pub by_type: Option<SortOrder>,
+}
+
+#[derive(InputObject, Default)]
+pub struct ExtensionStoreFilterInput {
+    pub and: Option<Vec<ExtensionStoreFilterInput>>,
+    pub index_url: Option<StringFilterInput>,
+    pub name: Option<StringFilterInput>,
+    pub not: Option<Box<ExtensionStoreFilterInput>>,
+    pub or: Option<Vec<ExtensionStoreFilterInput>>,
+}
+
+#[derive(InputObject, Default)]
+pub struct TrackerCondition {
+    pub id: Option<i32>,
+    pub is_logged_in: Option<bool>,
+    pub name: Option<String>,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+pub enum TrackerOrderBy {
+    Id,
+    Name,
+    IsLoggedIn,
+}
+
+#[derive(InputObject)]
+pub struct TrackerOrder {
+    pub by: TrackerOrderBy,
+    pub by_type: Option<SortOrder>,
+}
+
+#[derive(InputObject, Default)]
+pub struct TrackRecordCondition {
+    pub id: Option<i32>,
+    pub manga_id: Option<i32>,
+    pub tracker_id: Option<i32>,
+    pub remote_id: Option<LongString>,
+    pub title: Option<String>,
+    pub status: Option<i32>,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+pub enum TrackRecordOrderBy {
+    Id,
+    MangaId,
+    TrackerId,
+    RemoteId,
+    Title,
+    LastChapterRead,
+    TotalChapters,
+    Score,
+    StartDate,
+    FinishDate,
+    Private,
+}
+
+#[derive(InputObject)]
+pub struct TrackRecordOrder {
+    pub by: TrackRecordOrderBy,
+    pub by_type: Option<SortOrder>,
+}
+
+#[derive(InputObject, Default)]
+pub struct TrackRecordFilterInput {
+    pub and: Option<Vec<TrackRecordFilterInput>>,
+    pub manga_id: Option<IntFilterInput>,
+    pub not: Option<Box<TrackRecordFilterInput>>,
+    pub or: Option<Vec<TrackRecordFilterInput>>,
+    pub title: Option<StringFilterInput>,
+    pub tracker_id: Option<IntFilterInput>,
+}
+
+#[derive(InputObject)]
+pub struct SearchTrackerInput {
+    pub query: String,
+    pub tracker_id: i32,
 }
 
 /// Root Query object.
@@ -589,6 +718,311 @@ impl QueryRoot {
         let rows = q.fetch_all(state.db.pool()).await.map_err(async_graphql::Error::from)?;
         let nodes: Vec<SourceType> = rows.iter().map(SourceType::from_row).collect();
         Ok(SourceNodeList::from_nodes(nodes))
+    }
+
+    /// Mirrors `extension(pkgName:)` — single extension.
+    async fn extension(&self, ctx: &Context<'_>, pkg_name: String) -> async_graphql::Result<ExtensionType> {
+        let state = ctx.data::<GraphQLState>()?;
+        let sql = bind_placeholders("SELECT * FROM extension WHERE pkg_name = ?");
+        let row = sqlx::query_as::<_, suwayomi_core::schema::ExtensionRow>(&sql)
+            .bind(&pkg_name)
+            .fetch_optional(state.db.pool())
+            .await
+            .map_err(async_graphql::Error::from)?
+            .ok_or_else(|| async_graphql::Error::new("Extension not found"))?;
+        Ok(ExtensionType { row })
+    }
+
+    /// Mirrors `extensions(condition:, order:)`.
+    #[allow(clippy::too_many_arguments)]
+    async fn extensions(
+        &self,
+        ctx: &Context<'_>,
+        condition: Option<ExtensionCondition>,
+        filter: Option<ExtensionFilterInput>,
+        order: Option<Vec<ExtensionOrder>>,
+        before: Option<Cursor>,
+        after: Option<Cursor>,
+        first: Option<i32>,
+        last: Option<i32>,
+        offset: Option<i32>,
+    ) -> async_graphql::Result<ExtensionNodeList> {
+        let _ = (filter, before, after, last, offset); // shape parity
+        let state = ctx.data::<GraphQLState>()?;
+        let mut sql = "SELECT * FROM extension".to_string();
+        let mut where_clauses: Vec<String> = Vec::new();
+        let mut binds: Vec<BindVal> = Vec::new();
+        if let Some(cond) = condition {
+            if let Some(v) = &cond.lang {
+                where_clauses.push("lang = ?".into());
+                binds.push(BindVal::Str(v.clone()));
+            }
+            if let Some(v) = &cond.name {
+                where_clauses.push("name ILIKE ?".into());
+                binds.push(BindVal::Str(format!("%{v}%")));
+            }
+            if let Some(v) = &cond.pkg_name {
+                where_clauses.push("pkg_name = ?".into());
+                binds.push(BindVal::Str(v.clone()));
+            }
+            if let Some(v) = cond.is_installed {
+                where_clauses.push("is_installed = ?".into());
+                binds.push(BindVal::Bool(v));
+            }
+            if let Some(v) = cond.is_obsolete {
+                where_clauses.push("is_obsolete = ?".into());
+                binds.push(BindVal::Bool(v));
+            }
+            if let Some(v) = cond.has_update {
+                where_clauses.push("has_update = ?".into());
+                binds.push(BindVal::Bool(v));
+            }
+        }
+        if !where_clauses.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&where_clauses.join(" AND "));
+        }
+        if let Some(orders) = order {
+            if let Some(o) = orders.first() {
+                let col = match o.by {
+                    ExtensionOrderBy::PkgName => "pkg_name",
+                    ExtensionOrderBy::Name => "name",
+                    ExtensionOrderBy::ApkName => "apk_name",
+                };
+                let dir = match o.by_type {
+                    Some(SortOrder::Asc) => "ASC",
+                    _ => "DESC",
+                };
+                sql.push_str(&format!(" ORDER BY {col} {dir}"));
+            }
+        } else {
+            sql.push_str(" ORDER BY name ASC");
+        }
+        if let Some(limit) = first {
+            sql.push_str(&format!(" LIMIT {}", limit.clamp(1, 500)));
+        }
+        let sql = bind_placeholders(&sql);
+        let mut q = sqlx::query_as::<_, suwayomi_core::schema::ExtensionRow>(&sql);
+        for b in &binds {
+            q = match b {
+                BindVal::I32(x) => q.bind(*x),
+                BindVal::I64(x) => q.bind(*x),
+                BindVal::Bool(x) => q.bind(*x),
+                BindVal::Str(x) => q.bind(x),
+            };
+        }
+        let rows = q.fetch_all(state.db.pool()).await.map_err(async_graphql::Error::from)?;
+        let nodes: Vec<ExtensionType> = rows.into_iter().map(|row| ExtensionType { row }).collect();
+        Ok(ExtensionNodeList::from_nodes(nodes))
+    }
+
+    /// Mirrors `extensionStore(indexUrl:)`.
+    async fn extension_store(&self, ctx: &Context<'_>, index_url: String) -> async_graphql::Result<ExtensionStoreType> {
+        let state = ctx.data::<GraphQLState>()?;
+        let sql = bind_placeholders("SELECT * FROM extension_store WHERE index_url = ?");
+        let row = sqlx::query_as::<_, suwayomi_core::schema::ExtensionStoreRow>(&sql)
+            .bind(&index_url)
+            .fetch_optional(state.db.pool())
+            .await
+            .map_err(async_graphql::Error::from)?
+            .ok_or_else(|| async_graphql::Error::new("ExtensionStore not found"))?;
+        Ok(ExtensionStoreType::from_row(row))
+    }
+
+    /// Mirrors `extensionStores(condition:, order:)`.
+    #[allow(clippy::too_many_arguments)]
+    async fn extension_stores(
+        &self,
+        ctx: &Context<'_>,
+        condition: Option<ExtensionStoreCondition>,
+        filter: Option<ExtensionStoreFilterInput>,
+        _order: Option<Vec<ExtensionStoreOrder>>,
+        before: Option<Cursor>,
+        after: Option<Cursor>,
+        first: Option<i32>,
+        last: Option<i32>,
+        offset: Option<i32>,
+    ) -> async_graphql::Result<ExtensionStoreNodeList> {
+        let _ = (filter, before, after, last, offset); // shape parity
+        let state = ctx.data::<GraphQLState>()?;
+        let mut sql = "SELECT * FROM extension_store".to_string();
+        let mut where_clauses: Vec<String> = Vec::new();
+        let mut binds: Vec<BindVal> = Vec::new();
+        if let Some(cond) = condition {
+            if let Some(v) = &cond.index_url {
+                where_clauses.push("index_url = ?".into());
+                binds.push(BindVal::Str(v.clone()));
+            }
+            if let Some(v) = &cond.name {
+                where_clauses.push("name ILIKE ?".into());
+                binds.push(BindVal::Str(format!("%{v}%")));
+            }
+        }
+        if !where_clauses.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&where_clauses.join(" AND "));
+        }
+        if let Some(limit) = first {
+            sql.push_str(&format!(" LIMIT {}", limit.clamp(1, 500)));
+        }
+        let sql = bind_placeholders(&sql);
+        let mut q = sqlx::query_as::<_, suwayomi_core::schema::ExtensionStoreRow>(&sql);
+        for b in &binds {
+            q = match b {
+                BindVal::Str(x) => q.bind(x),
+                _ => unreachable!("extension_store has only string conditions"),
+            };
+        }
+        let rows = q.fetch_all(state.db.pool()).await.map_err(async_graphql::Error::from)?;
+        let nodes: Vec<ExtensionStoreType> = rows.into_iter().map(ExtensionStoreType::from_row).collect();
+        Ok(ExtensionStoreNodeList::from_nodes(nodes))
+    }
+
+    /// Mirrors `tracker(id:)` — single tracker metadata.
+    async fn tracker(&self, _ctx: &Context<'_>, id: i32) -> async_graphql::Result<TrackerType> {
+        TrackerType::by_id(id, false).ok_or_else(|| async_graphql::Error::new("Tracker not found"))
+    }
+
+    /// Mirrors `trackers(condition:, order:)`.
+    #[allow(clippy::too_many_arguments)]
+    async fn trackers(
+        &self,
+        _ctx: &Context<'_>,
+        condition: Option<TrackerCondition>,
+        order: Option<Vec<TrackerOrder>>,
+        before: Option<Cursor>,
+        after: Option<Cursor>,
+        first: Option<i32>,
+        last: Option<i32>,
+        offset: Option<i32>,
+    ) -> async_graphql::Result<TrackerNodeList> {
+        let _ = (order, before, after, last, offset); // shape parity
+        let mut nodes = TrackerType::all();
+        if let Some(cond) = condition {
+            nodes.retain(|t| {
+                cond.id.map(|v| v == t.id).unwrap_or(true)
+                    && cond.is_logged_in.map(|v| v == t.is_logged_in).unwrap_or(true)
+                    && cond.name.as_ref().map(|v| &t.name == v).unwrap_or(true)
+            });
+        }
+        if let Some(limit) = first {
+            nodes.truncate(limit.clamp(0, 500) as usize);
+        }
+        Ok(TrackerNodeList::from_nodes(nodes))
+    }
+
+    /// Mirrors `trackRecord(id:)`.
+    async fn track_record(&self, ctx: &Context<'_>, id: i32) -> async_graphql::Result<TrackRecordType> {
+        let state = ctx.data::<GraphQLState>()?;
+        let sql = bind_placeholders("SELECT * FROM track_record WHERE id = ?");
+        let row = sqlx::query_as::<_, suwayomi_core::schema::TrackRecordRow>(&sql)
+            .bind(id)
+            .fetch_optional(state.db.pool())
+            .await
+            .map_err(async_graphql::Error::from)?
+            .ok_or_else(|| async_graphql::Error::new("TrackRecord not found"))?;
+        Ok(TrackRecordType::from_row(&row))
+    }
+
+    /// Mirrors `trackRecords(condition:, order:)`.
+    #[allow(clippy::too_many_arguments)]
+    async fn track_records(
+        &self,
+        ctx: &Context<'_>,
+        condition: Option<TrackRecordCondition>,
+        filter: Option<TrackRecordFilterInput>,
+        order: Option<Vec<TrackRecordOrder>>,
+        before: Option<Cursor>,
+        after: Option<Cursor>,
+        first: Option<i32>,
+        last: Option<i32>,
+        offset: Option<i32>,
+    ) -> async_graphql::Result<TrackRecordNodeList> {
+        let _ = (filter, before, after, last, offset); // shape parity
+        let state = ctx.data::<GraphQLState>()?;
+        let mut sql = "SELECT * FROM track_record".to_string();
+        let mut where_clauses: Vec<String> = Vec::new();
+        let mut binds: Vec<BindVal> = Vec::new();
+        if let Some(cond) = condition {
+            if let Some(v) = cond.id {
+                where_clauses.push("id = ?".into());
+                binds.push(BindVal::I32(v));
+            }
+            if let Some(v) = cond.manga_id {
+                where_clauses.push("manga_id = ?".into());
+                binds.push(BindVal::I32(v));
+            }
+            if let Some(v) = cond.tracker_id {
+                where_clauses.push("sync_id = ?".into());
+                binds.push(BindVal::I32(v));
+            }
+            if let Some(v) = cond.remote_id {
+                where_clauses.push("remote_id = ?".into());
+                binds.push(BindVal::I64(v.0));
+            }
+            if let Some(v) = &cond.title {
+                where_clauses.push("title ILIKE ?".into());
+                binds.push(BindVal::Str(format!("%{v}%")));
+            }
+            if let Some(v) = cond.status {
+                where_clauses.push("status = ?".into());
+                binds.push(BindVal::I32(v));
+            }
+        }
+        if !where_clauses.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&where_clauses.join(" AND "));
+        }
+        if let Some(orders) = order {
+            if let Some(o) = orders.first() {
+                let col = match o.by {
+                    TrackRecordOrderBy::Id => "id",
+                    TrackRecordOrderBy::MangaId => "manga_id",
+                    TrackRecordOrderBy::TrackerId => "sync_id",
+                    TrackRecordOrderBy::RemoteId => "remote_id",
+                    TrackRecordOrderBy::Title => "title",
+                    TrackRecordOrderBy::LastChapterRead => "last_chapter_read",
+                    TrackRecordOrderBy::TotalChapters => "total_chapters",
+                    TrackRecordOrderBy::Score => "score",
+                    TrackRecordOrderBy::StartDate => "start_date",
+                    TrackRecordOrderBy::FinishDate => "finish_date",
+                    TrackRecordOrderBy::Private => "private",
+                };
+                let dir = match o.by_type {
+                    Some(SortOrder::Asc) => "ASC",
+                    _ => "DESC",
+                };
+                sql.push_str(&format!(" ORDER BY {col} {dir}"));
+            }
+        } else {
+            sql.push_str(" ORDER BY id ASC");
+        }
+        if let Some(limit) = first {
+            sql.push_str(&format!(" LIMIT {}", limit.clamp(1, 500)));
+        }
+        let sql = bind_placeholders(&sql);
+        let mut q = sqlx::query_as::<_, suwayomi_core::schema::TrackRecordRow>(&sql);
+        for b in &binds {
+            q = match b {
+                BindVal::I32(x) => q.bind(*x),
+                BindVal::I64(x) => q.bind(*x),
+                BindVal::Bool(x) => q.bind(*x),
+                BindVal::Str(x) => q.bind(x),
+            };
+        }
+        let rows = q.fetch_all(state.db.pool()).await.map_err(async_graphql::Error::from)?;
+        let nodes: Vec<TrackRecordType> = rows.iter().map(TrackRecordType::from_row).collect();
+        Ok(TrackRecordNodeList::from_nodes(nodes))
+    }
+
+    /// Mirrors `searchTracker(input:)` — tracker API search (Phase 6 wires login).
+    async fn search_tracker(
+        &self,
+        _ctx: &Context<'_>,
+        input: SearchTrackerInput,
+    ) -> async_graphql::Result<SearchTrackerPayload> {
+        let _ = input;
+        Ok(SearchTrackerPayload { track_searches: vec![] })
     }
 
     /// Mirrors `settings()` — full settings registry.

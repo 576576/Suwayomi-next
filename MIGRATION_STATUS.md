@@ -144,4 +144,9 @@
 - **Phase 6 备份导出完成（protobuf）**：`suwayomi-core::backup`（手写 prost 消息，字段号对齐 kotlinx @ProtoNumber 0.x 格式：Backup/Manga/Chapter/Category/Source/Tracking/History/ServerSettings；`create_backup` 从库构建 → encode → gzip）；REST `/api/v1/backup/export`（octet-stream 流式 gzip proto）与 `/export/file`（attachment .tachibk）真实现，替换最后一个 501 stub；import/validate 保留 501 待后续；GraphQL `createBackup` 返回下载 URL；测试 2 项（roundtrip 保留漫画/章节/分类/来源断言 + 空库有效）；clippy 0 告警、workspace 43 集成测试通过。注：prost-build 需 protoc（未安装），改用手写 `#[derive(prost::Message)]` 免 build.rs
 - **Phase 6 下载管理器完成**：domain DownloadManager（FIFO 队列 + worker + broadcast 事件总线；SourceFetcher 增 fetch_pages 默认方法）；REST /api/v1/downloads(/) 接真实；GraphQL 8 个 download mutations + download 订阅接真实；测试 3 项 + 冒烟
 - **Phase 7 完成**：h2-dump（Kotlin，H2→PG 脚本：camelCase→snake、FK 依赖序、幂等）+ `--migrate <dir>` CLI（端到端验证 H2 库→嵌入式 PG→GraphQL 查得数据）+ 备份导入/校验（REST import/validate 真实现）+ Dockerfile（trixie 运行镜像，容器内 Embedded 启动验证）+ docs/user-guide.md + README 更新
-- 剩余：Phase 6 同步（SyncYomi/Koreader）、真实扩展加载（jvm-sandbox ChildFirstClassLoader）→ 后续增量
+- **Phase 6 真实扩展加载完成**（f187efc）：jvm-sandbox 端到端——dex2jar→ChildFirst 类加载→
+  BytecodeFixer（ASM 修复 R8 破坏的 clinit/合成构造器）→ injekt-koin 注入 → 反射驱动；
+  nhentai（keiyoushi v1.4.10）实测：22 源、popular 18 部、详情/章节/71 页图片 URL 全通；
+  Rust HttpSandboxFetcher 实现 fetch_pages + camelCase DTO + env 透传；默认端口 8091
+  （Windows 4501-4900 被 Hyper-V 动态保留）；库内 e2e 测试（无 sandbox 自动 SKIP）
+- 剩余：Phase 6 同步（SyncYomi/Koreader）、扩展库安装/源注册管理 → 后续增量

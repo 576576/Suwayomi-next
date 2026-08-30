@@ -95,6 +95,12 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+## 同步（Phase 6）
+
+- **KOReader**：GraphQL `connectKoSyncAccount` / `pushKoSyncProgress` / `pullKoSyncProgress` / `koSyncStatus`。凭据存 `global_meta`；章节 `koreader_hash` 为 `md5("<manga title> - <chapter name>")`（FILENAME 校验和）。
+- **SyncYomi**：GraphQL `startSync` / `lastSyncStatus`。配置见 ServerConfig：`syncYomiEnabled` / `syncYomiHost` / `syncYomiApiKey`（另有 6 项 `syncData*` 数据范围与 `syncInterval`）。同步以 Mihon Backup protobuf + ETag（If-None-Match/If-Match）在 `{host}/api/sync/content` 上 pull → restore → push。
+- **version 触发器**：`migrations/pg-only/0002_*` 是 `SyncYomiTriggers.kt` 的 PostgreSQL 移植（manga/chapter/category 变更自动 bump version，`is_syncing` 豁免）。嵌入式 pglite 不支持 PL/pgSQL，仅外部 PostgreSQL 应用（`Db::migrate` 自动分流）。
+
 ## Docker
 
 ```bash

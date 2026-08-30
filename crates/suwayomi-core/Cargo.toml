@@ -1,0 +1,19 @@
+[package]
+name = "suwayomi-core"
+description = "Domain models, database schema and source API abstractions (migrated from Suwayomi-Server kotlin manga/model + server/database)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+sqlx.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+prost.workspace = true

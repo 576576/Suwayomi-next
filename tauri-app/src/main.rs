@@ -167,11 +167,13 @@ fn ensure_data_dirs(data: &PathBuf) {
 
 fn spawn_server(data: &PathBuf, port: u16) -> Option<Child> {
     let bin = find_server_bin()?;
-    let log = data.join("server.log");
+    // 日志统一放发布根目录 logs/（不混入 data/ 工作数据目录）
+    let logs = base_dir().join("logs");
+    let _ = std::fs::create_dir_all(&logs);
     let log_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&log)
+        .open(logs.join("server.log"))
         .ok()?;
     let child = Command::new(&bin)
         .current_dir(data)
@@ -187,12 +189,14 @@ fn spawn_server(data: &PathBuf, port: u16) -> Option<Child> {
     Some(child)
 }
 
-/// 调试日志：写入 data/tray.log（release GUI 无控制台，eprintln 不可见）
+/// 调试日志：写入 logs/tray.log（release GUI 无控制台，eprintln 不可见）
 fn tray_log(msg: &str) {
+    let dir = base_dir().join("logs");
+    let _ = std::fs::create_dir_all(&dir);
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(data_dir().join("tray.log"))
+        .open(dir.join("tray.log"))
     {
         let _ = writeln!(f, "{msg}");
     }

@@ -77,7 +77,8 @@ fn resolve_webui_dir() -> std::path::PathBuf {
 }
 
 /// Resolves the JVM extension sandbox jar: `SUWAYOMI_SANDBOX_JAR` env, else the
-/// `jvm-sandbox.jar` bundled next to this executable (发布布局：exe 同级）。
+/// `jvm-sandbox.jar` bundled next to this executable, else the `jre/` subfolder
+/// (发布布局：exe 同级 jvm-sandbox.jar 或 jre/jvm-sandbox.jar）。
 fn resolve_sandbox_jar() -> Option<std::path::PathBuf> {
     if let Ok(jar) = std::env::var("SUWAYOMI_SANDBOX_JAR") {
         if !jar.is_empty() {
@@ -89,9 +90,10 @@ fn resolve_sandbox_jar() -> Option<std::path::PathBuf> {
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let cand = dir.join("jvm-sandbox.jar");
-            if cand.is_file() {
-                return Some(cand);
+            for cand in [dir.join("jvm-sandbox.jar"), dir.join("jre").join("jvm-sandbox.jar")] {
+                if cand.is_file() {
+                    return Some(cand);
+                }
             }
         }
     }

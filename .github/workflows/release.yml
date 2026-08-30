@@ -170,10 +170,11 @@ jobs:
           # 桌面壳仅 Windows（Tauri 在 linux/macOS runner 缺 webkit 依赖）
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
             cargo build --release --manifest-path tauri-app/Cargo.toml
-            cp tauri-app/target/release/suwayomi-tray.exe "$STAGE/" 2>/dev/null || true
-            # 扩展沙盒（JVM，Kotlin fat jar）——server 自动查找 exe 同级 jvm-sandbox.jar
+            cp tauri-app/target/release/suwayomi.exe "$STAGE/" 2>/dev/null || true
+            # 扩展沙盒（JVM，Kotlin fat jar）——放 jre/ 子目录，server 自动查找
             cd jvm-sandbox && ./gradlew -q jar --no-daemon && cd ..
-            cp jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar "$STAGE/jvm-sandbox.jar"
+            mkdir -p "$STAGE/jre"
+            cp jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar "$STAGE/jre/jvm-sandbox.jar"
           fi
 
           # ---- 捆绑 WebUI（fork release 产物）+ 启动脚本 + data 目录 ----
@@ -182,7 +183,6 @@ jobs:
           mkdir -p "$STAGE/webui"
           python3 -c "import zipfile; zipfile.ZipFile('webui.zip').extractall('$STAGE/webui')"
           rm -f webui.zip
-          cp suwayomi_launch.bat "$STAGE/" 2>/dev/null || true
           mkdir -p "$STAGE/data/autobackup" "$STAGE/data/downloads" "$STAGE/data/local"
 
           if [ "${{ matrix.os }}" = "windows-latest" ]; then

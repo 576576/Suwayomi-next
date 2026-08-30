@@ -113,19 +113,22 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ## 桌面壳与发布布局（Tauri，tauri-app/）
 
-无头 `suwayomi` 服务端 + Tauri 2 桌面壳（独立工程，不进 workspace）。发布布局（zip 内）：
+无头 `suwayomi-server` 服务端 + Tauri 2 桌面壳（独立工程，不进 workspace）。发布布局（zip 内）：
 
 ```
-suwayomi-server.exe     无头服务器（自带 WebUI 静态托管；单实例）
-suwayomi-tray.exe      桌面壳：托盘 + 设置窗口
-suwayomi_launch.bat    启动脚本：拉起服务器 → 等就绪 → 打开浏览器 WebUI
-webui/                 Suwayomi-WebUI 构建产物（CI 自动捆绑官方最新 release）
-data/                  工作数据目录（不存在时自动创建）
-  ├─ autobackup/  downloads/  local/  pglite-data/
+suwayomi-server.exe   无头服务器（自带 WebUI 静态托管；单实例）
+suwayomi.exe          桌面壳：托盘 + 设置窗口（自动拉起无头服务器）
+jre/jvm-sandbox.jar   扩展沙盒（JVM，server 自动查找）
+webui/                Suwayomi-WebUI 构建产物（CI 自动捆绑 fork 最新 release）
+data/                 工作数据目录（不存在时自动创建）
+  ├─ autobackup/  downloads/  local/
+pglite-data/          嵌入式数据库（server 自动创建于发布根目录）
+logs/                 server.log / tray.log（运行时日志）
 ```
 
 - **server 静态托管**：`SUWAYOMI_WEBUI_DIR` env 或 exe 同级 `webui/`（index.html 存在即启用 SPA 托管，根路径/静态资源/前端路由全通）
-- **托盘菜单**：打开 WebUI / 打开数据目录 / 设置 / 退出（退出结束 server 子进程）
+- **扩展沙盒**：`SUWAYOMI_SANDBOX_JAR` env 或 exe 同级 `jvm-sandbox.jar` / `jre/jvm-sandbox.jar`（自动查找；安装扩展需 jar，需 JDK）
+- **托盘菜单**：启动 Suwayomi / 打开 WebUI / 打开数据目录 / 设置 / 退出（退出结束 server 子进程）
 - **设置窗口**：端口（保存即重启 server）、打开数据目录、WebUI 地址
 - 构建：`cd tauri-app && cargo build --release`；`suwayomi -v` 显示版本与仓库
 

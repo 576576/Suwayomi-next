@@ -73,11 +73,12 @@ jobs:
           cp "$BIN" "$STAGE/"
           # 桌面壳（Tauri 托盘+设置）
           cargo build --release --manifest-path tauri-app/Cargo.toml
-          cp tauri-app/target/release/suwayomi-tray.exe "$STAGE/" 2>/dev/null || true
+          cp tauri-app/target/release/suwayomi.exe "$STAGE/" 2>/dev/null || true
 
-          # 扩展沙盒（JVM，Kotlin fat jar）——server 自动查找 exe 同级 jvm-sandbox.jar
+          # 扩展沙盒（JVM，Kotlin fat jar）——放 jre/ 子目录，server 自动查找
           cd jvm-sandbox && ./gradlew -q jar --no-daemon && cd ..
-          cp jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar "$STAGE/jvm-sandbox.jar"
+          mkdir -p "$STAGE/jre"
+          cp jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar "$STAGE/jre/jvm-sandbox.jar"
 
           # ---- 捆绑 WebUI（fork release 产物）+ 启动脚本 + data 目录 ----
           WEBUI_ZIP=$(curl -s "https://api.github.com/repos/576576/Suwayomi-WebUI/releases/latest" | python3 -c "import json,sys; d=json.load(sys.stdin); print([a['browser_download_url'] for a in d.get('assets',[]) if a['name'].endswith('.zip')][0])")
@@ -85,7 +86,6 @@ jobs:
           mkdir -p "$STAGE/webui"
           python3 -c "import zipfile; zipfile.ZipFile('webui.zip').extractall('$STAGE/webui')"
           rm -f webui.zip
-          cp suwayomi_launch.bat "$STAGE/" 2>/dev/null || true
           mkdir -p "$STAGE/data/autobackup" "$STAGE/data/downloads" "$STAGE/data/local"
           powershell -Command "Compress-Archive -Path 'dist/Suwayomi-${VER}-${TGT}' -DestinationPath 'dist/Suwayomi-${VER}-${TGT}.zip' -Force"
           echo "artifact=dist/Suwayomi-${VER}-${TGT}.zip" >> "$GITHUB_OUTPUT"

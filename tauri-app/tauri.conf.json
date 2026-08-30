@@ -7,7 +7,7 @@
     "frontendDist": "../tauri-app/frontend"
   },
   "app": {
-    "withGlobalTauri": false,
+    "withGlobalTauri": true,
     "windows": [],
     "security": {
       "csp": null

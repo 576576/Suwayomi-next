@@ -111,16 +111,23 @@ cargo clippy --workspace --all-targets -- -D warnings
 - **代理**：仓库/APK 下载复用 `SUWAYOMI_SANDBOX_PROXY` 出境代理。
 - 实测（keiyoushi 仓库）：刷新 **1381** 个扩展；安装 nhentai → sandbox 热加载 **22 源** → DB 注册 → popular **18 部真实漫画**；卸载后 sandbox 0 源、DB 清空。
 
-## 桌面壳（Tauri，tauri-app/）
+## 桌面壳与发布布局（Tauri，tauri-app/）
 
-无头 `suwayomi` 服务端 + Tauri 2 桌面壳（独立工程，不进 workspace）：
+无头 `suwayomi` 服务端 + Tauri 2 桌面壳（独立工程，不进 workspace）。发布布局（zip 内）：
 
-- 启动时自动拉起 `suwayomi` 子进程（查找顺序：`SUWAYOMI_BIN` → 壳同目录 → PATH），
-  数据落在系统应用数据目录（Windows: `%APPDATA%\com.suwayomi.tray`，含 `pglite-data/` 与 `server.log`）
-- 主窗口 WebView 加载 `http://127.0.0.1:8090` 的 WebUI；关闭窗口驻留托盘
-- 系统托盘菜单：**打开 WebUI** / **打开数据目录** / **退出**（退出时结束 server 子进程）
-- 构建：`cd tauri-app && cargo build --release`（产物 `tauri-app/target/release/suwayomi-tray.exe`；
-  将 `suwayomi.exe` 放在同目录即可运行；bundle 安装器未启用）
+```
+suwayomi.exe           无头服务器（自带 WebUI 静态托管）
+suwayomi-tray.exe      桌面壳：托盘 + 设置窗口
+suwayomi_launch.bat    启动脚本：拉起服务器 → 等就绪 → 打开浏览器 WebUI
+webui/                 Suwayomi-WebUI 构建产物（CI 自动捆绑官方最新 release）
+data/                  工作数据目录（不存在时自动创建）
+  ├─ autobackup/  downloads/  local/  pglite-data/
+```
+
+- **server 静态托管**：`SUWAYOMI_WEBUI_DIR` env 或 exe 同级 `webui/`（index.html 存在即启用 SPA 托管，根路径/静态资源/前端路由全通）
+- **托盘菜单**：打开 WebUI / 打开数据目录 / 设置 / 退出（退出结束 server 子进程）
+- **设置窗口**：端口（保存即重启 server）、打开数据目录、WebUI 地址
+- 构建：`cd tauri-app && cargo build --release`；`suwayomi -v` 显示版本与仓库
 
 ## Docker
 

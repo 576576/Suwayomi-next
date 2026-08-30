@@ -32,10 +32,18 @@ pub struct AppState {
     pub download: DownloadManager,
     /// Extension store: repo refresh + online install.
     pub extension_store: ExtensionStoreService,
+    /// Bundled WebUI static directory (SPA hosting; empty = disabled).
+    pub webui_dir: std::path::PathBuf,
 }
 
 impl AppState {
-    pub fn new(db: Db, config: ServerConfig, fetcher: Arc<dyn SourceFetcher>, sandbox_base: Option<String>) -> Self {
+    pub fn new(
+        db: Db,
+        config: ServerConfig,
+        fetcher: Arc<dyn SourceFetcher>,
+        sandbox_base: Option<String>,
+        webui_dir: std::path::PathBuf,
+    ) -> Self {
         let manga = MangaService::new(db.clone(), fetcher.clone());
         let chapter = ChapterService::new(db.clone(), fetcher.clone());
         let category = CategoryService::new(db.clone());
@@ -45,6 +53,6 @@ impl AppState {
         let page = PageService::new(db.clone());
         let download = DownloadManager::new(db.clone(), fetcher.clone());
         let extension_store = ExtensionStoreService::new(db.clone(), sandbox_base);
-        Self { db, config, fetcher, manga, chapter, category, category_manga, library, manga_list, page, download, extension_store }
+        Self { db, config, fetcher, manga, chapter, category, category_manga, library, manga_list, page, download, extension_store, webui_dir }
     }
 }

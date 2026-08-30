@@ -2,10 +2,52 @@
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
-    <title>Suwayomi</title>
+    <title>Suwayomi 设置</title>
+    <style>
+      body { font-family: system-ui, "Microsoft YaHei", sans-serif; margin: 0; padding: 16px 20px; background: #f5f6f8; color: #1f2328; }
+      h3 { margin: 0 0 14px; font-size: 15px; }
+      label { display: block; font-size: 12px; color: #57606a; margin: 10px 0 4px; }
+      input { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 13px; }
+      .row { margin-top: 14px; display: flex; gap: 8px; }
+      button { padding: 6px 14px; border-radius: 6px; border: 1px solid #d0d7de; background: #fff; font-size: 13px; cursor: pointer; }
+      button.primary { background: #1f883d; border-color: #1f883d; color: #fff; }
+      #url { margin-top: 12px; font-size: 12px; color: #57606a; word-break: break-all; }
+      #msg { margin-top: 8px; font-size: 12px; color: #1f883d; min-height: 16px; }
+    </style>
   </head>
   <body>
-    <!-- 占位前端：窗口实际加载无头 server 的 WebUI（http://127.0.0.1:8090）。 -->
-    <p>Suwayomi 桌面壳正在启动服务器，请稍候…</p>
+    <h3>Suwayomi 设置</h3>
+    <label for="port">服务器端口</label>
+    <input id="port" type="number" min="1" max="65535" />
+    <div class="row">
+      <button id="save" class="primary">保存并重启服务器</button>
+      <button id="open-data">打开数据目录</button>
+    </div>
+    <div id="url"></div>
+    <div id="msg"></div>
+    <script>
+      const { invoke } = window.__TAURI__.core;
+      window.addEventListener("DOMContentLoaded", async () => {
+        try {
+          const s = await invoke("get_settings");
+          document.getElementById("port").value = s.port;
+          document.getElementById("url").textContent = "WebUI: " + (await invoke("webui_url_cmd"));
+        } catch (e) {
+          document.getElementById("msg").textContent = "读取设置失败: " + e;
+        }
+      });
+      document.getElementById("save").onclick = async () => {
+        const p = parseInt(document.getElementById("port").value, 10);
+        if (!p || p < 1 || p > 65535) { document.getElementById("msg").textContent = "端口无效"; return; }
+        try {
+          const url = await invoke("save_settings", { port: p });
+          document.getElementById("url").textContent = "WebUI: " + url;
+          document.getElementById("msg").textContent = "已保存并重启服务器";
+        } catch (e) {
+          document.getElementById("msg").textContent = "保存失败: " + e;
+        }
+      };
+      document.getElementById("open-data").onclick = () => invoke("open_data_dir");
+    </script>
   </body>
 </html>

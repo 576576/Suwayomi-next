@@ -11,6 +11,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::middleware;
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use suwayomi_core::config::ServerConfig;
@@ -50,15 +51,96 @@ fn config_from_env() -> ServerConfig {
     cfg
 }
 
+/// Resolves the bundled WebUI directory: `SUWAYOMI_WEBUI_DIR` env, else the
+/// `webui/` folder next to the executable (发布布局：exe 同级 webui/）。
+/// Returns empty path when neither exists.
+fn resolve_webui_dir() -> std::path::PathBuf {
+    let from_env = std::env::var("SUWAYOMI_WEBUI_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("webui"));
+    if from_env.join("index.html").is_file() {
+        return from_env;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let cand = dir.join("webui");
+            if cand.join("index.html").is_file() {
+                return cand;
+            }
+        }
+    }
+    std::path::PathBuf::new()
+}
+
 fn build_router(state: AppState, graphql_schema: suwayomi_graphql::schema::GraphQLSchema) -> Router {
-    Router::new()
-        .route("/", get(index))
-        .route("/api/v1", get(index))
+    let api = Router::new()
         .nest("/api/v1", suwayomi_rest::routes::api_v1_router())
         .nest("/api", suwayomi_graphql::schema::graphql_router(graphql_schema))
-        .nest("/api/opds/v1.2", suwayomi_opds::router::opds_router())
-        .layer(middleware::from_fn_with_state(state.clone(), suwayomi_rest::auth::require_auth))
-        .with_state(state)
+        .nest("/api/opds/v1.2", suwayomi_opds::router::opds_router());
+
+    let auth = middleware::from_fn_with_state(state.clone(), suwayomi_rest::auth::require_auth);
+    if state.webui_dir.join("index.html").is_file() {
+        tracing::info!("webui static hosting from {}", state.webui_dir.display());
+        Router::new()
+            .merge(api)
+            .fallback(webui_fallback)
+            .layer(auth)
+            .with_state(state)
+    } else {
+        Router::new()
+            .route("/", get(index))
+            .route("/api/v1", get(index))
+            .merge(api)
+            .layer(auth)
+            .with_state(state)
+    }
+}
+
+/// Serves the bundled WebUI: static files when present, otherwise the SPA
+/// `index.html` (client-side routing). Mirrors a classic SPA hosting setup.
+async fn webui_fallback(State(state): State<AppState>, uri: axum::http::Uri) -> Response {
+    let dir = &state.webui_dir;
+    let rel = uri.path().trim_start_matches('/');
+    let candidate = if rel.is_empty() {
+        dir.join("index.html")
+    } else {
+        dir.join(rel)
+    };
+    let file = if candidate.is_file() {
+        candidate
+    } else {
+        dir.join("index.html")
+    };
+    match tokio::fs::read(&file).await {
+        Ok(bytes) => {
+            let ct = webui_content_type(&file);
+            Response::builder()
+                .header(axum::http::header::CONTENT_TYPE, ct)
+                .body(axum::body::Body::from(bytes))
+                .expect("build response")
+        }
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+fn webui_content_type(path: &std::path::Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js") | Some("mjs") => "text/javascript",
+        Some("css") => "text/css",
+        Some("json") => "application/json",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("svg") => "image/svg+xml",
+        Some("ico") => "image/x-icon",
+        Some("webp") => "image/webp",
+        Some("woff") => "font/woff",
+        Some("woff2") => "font/woff2",
+        Some("ttf") => "font/ttf",
+        Some("wasm") => "application/wasm",
+        Some("txt") => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    }
 }
 
 async fn index(State(_s): State<AppState>) -> Result<String, StatusCode> {
@@ -220,7 +302,7 @@ async fn main() -> anyhow::Result<()> {
     let graphql_state = suwayomi_graphql::GraphQLState::new(db.clone(), config.clone(), fetcher.clone(), sandbox_base.clone());
     let schema = suwayomi_graphql::schema::build_schema(graphql_state);
     tracing::info!("graphql schema ready ({} type definitions)", suwayomi_graphql::schema::schema_type_count());
-    let state = AppState::new(db, config.clone(), fetcher, sandbox_base);
+    let state = AppState::new(db, config.clone(), fetcher, sandbox_base, resolve_webui_dir());
     let app = build_router(state, schema);
 
     // Bind with automatic port fallback. On Windows the configured port may be

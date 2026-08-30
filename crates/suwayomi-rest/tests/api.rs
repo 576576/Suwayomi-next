@@ -39,7 +39,7 @@ async fn setup() -> Option<(Router, sqlx::postgres::PgPool)> {
     }
     let pool = db.pool().clone();
     let fetcher: Arc<dyn suwayomi_domain::source::SourceFetcher> = Arc::new(StubFetcher);
-    let state = AppState::new(db, ServerConfig::default(), fetcher, None);
+    let state = AppState::new(db, ServerConfig::default(), fetcher, None, std::path::PathBuf::new());
     Some((api_v1_router().with_state(state), pool))
 }
 

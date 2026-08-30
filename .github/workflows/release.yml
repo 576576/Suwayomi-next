@@ -1,7 +1,8 @@
 name: Release
 
 # 手动发布 CI：workflow_dispatch 触发，可选 alpha / beta / release 通道，
-# 多选构建目标（不同架构）。推送自动 alpha 走 release-alpha.yml。
+# 以勾选方式多选构建目标（GitHub 无 multi-select 输入，用 boolean 复选）。
+# 推送自动 alpha 走 release-alpha.yml。
 #
 # 版本号（见 crates/suwayomi-server/build.rs）：
 # - 内部 versionCode = commit count + 3000（38 次提交 -> 3038）
@@ -15,16 +16,26 @@ on:
         type: choice
         options: [alpha, beta, release]
         default: release
-      targets:
-        description: 构建目标（可多选）
-        type: multi-select
-        options:
-          - windows-x64
-          - linux-x64
-          - linux-arm64
-          - macos-x64
-          - macos-arm64
-        default: [windows-x64, linux-x64]
+      build_windows_x64:
+        description: Windows x64
+        type: boolean
+        default: true
+      build_linux_x64:
+        description: Linux x64
+        type: boolean
+        default: true
+      build_linux_arm64:
+        description: Linux arm64
+        type: boolean
+        default: false
+      build_macos_x64:
+        description: macOS x64
+        type: boolean
+        default: false
+      build_macos_arm64:
+        description: macOS arm64
+        type: boolean
+        default: false
       version_count:
         description: 版本计数（留空自动使用提交数；用于预发布验证）
         type: string
@@ -69,23 +80,30 @@ jobs:
             PRE="true"
           fi
 
-          TARGETS='${{ github.event.inputs.targets }}'
-          INCLUDE="$(python3 - "$TARGETS" <<'PY'
-import json, sys
-mapping = {
-    "windows-x64": ("windows-latest", "x86_64-pc-windows-msvc"),
-    "linux-x64":   ("ubuntu-latest",  "x86_64-unknown-linux-gnu"),
-    "linux-arm64": ("ubuntu-latest",  "aarch64-unknown-linux-gnu"),
-    "macos-x64":   ("macos-13",       "x86_64-apple-darwin"),
-    "macos-arm64": ("macos-14",       "aarch64-apple-darwin"),
-}
-sel = json.loads(sys.argv[1])
-inc = [{"target": t, "os": mapping[t][0], "rust_target": mapping[t][1]} for t in sel if t in mapping]
-print(json.dumps(inc))
-PY
-)"
+          # 勾选输入 -> JSON 目标列表（boolean 在 github.event.inputs 中是 "true"/"false"）
+          SEL=""
+          [ "${{ github.event.inputs.build_windows_x64 }}" = "true" ] && SEL="$SEL windows-x64"
+          [ "${{ github.event.inputs.build_linux_x64 }}" = "true" ] && SEL="$SEL linux-x64"
+          [ "${{ github.event.inputs.build_linux_arm64 }}" = "true" ] && SEL="$SEL linux-arm64"
+          [ "${{ github.event.inputs.build_macos_x64 }}" = "true" ] && SEL="$SEL macos-x64"
+          [ "${{ github.event.inputs.build_macos_arm64 }}" = "true" ] && SEL="$SEL macos-arm64"
+
+          INCLUDE="$(python3 - "$SEL" <<'PY'
+          import json, sys
+          mapping = {
+              "windows-x64": ("windows-latest", "x86_64-pc-windows-msvc"),
+              "linux-x64":   ("ubuntu-latest",  "x86_64-unknown-linux-gnu"),
+              "linux-arm64": ("ubuntu-latest",  "aarch64-unknown-linux-gnu"),
+              "macos-x64":   ("macos-13",       "x86_64-apple-darwin"),
+              "macos-arm64": ("macos-14",       "aarch64-apple-darwin"),
+          }
+          sel = sys.argv[1].split()
+          inc = [{"target": t, "os": mapping[t][0], "rust_target": mapping[t][1]} for t in sel if t in mapping]
+          print(json.dumps(inc))
+          PY
+          )"
           if [ -z "$INCLUDE" ] || [ "$INCLUDE" = "[]" ]; then
-            echo "::error::无效的构建目标: $TARGETS"
+            echo "::error::未选择任何构建目标"
             exit 1
           fi
 
@@ -96,7 +114,7 @@ PY
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "prerelease=$PRE" >> "$GITHUB_OUTPUT"
-          echo "手动发布: $CHANNEL $VER_NAME (code $VER_CODE, commits $COUNT) -> $TAG targets=$TARGETS"
+          echo "手动发布: $CHANNEL $VER_NAME (code $VER_CODE, commits $COUNT) -> $TAG targets=$SEL"
 
   build:
     name: 构建 ${{ matrix.target }}
@@ -186,10 +204,9 @@ PY
             artifacts/* \
             --title "SuwayomiNext $VER ($CH)" \
             --notes "## SuwayomiNext $VER · $CH
-
-- versionName: $VER
-- versionCode: $CODE
-- commits: $COUNT
-- channel: $CH（手动触发）" \
+          - versionName: $VER
+          - versionCode: $CODE
+          - commits: $COUNT
+          - channel: $CH（手动触发）" \
             --prerelease="$PRE" \
             --generate-notes

@@ -1,6 +1,6 @@
 name: Release-Alpha
 
-# alpha 发布 CI：推送 main 时自动构建 alpha，仅 Windows x64。
+# alpha 发布 CI：推送 main / dev 时自动构建 alpha，仅 Windows x64。
 # 手动多通道/多架构发布走 release.yml（workflow_dispatch）。
 #
 # 版本号（见 crates/suwayomi-server/build.rs）：
@@ -9,7 +9,7 @@ name: Release-Alpha
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
 
 env:
   CARGO_TERM_COLOR: always
@@ -18,8 +18,6 @@ jobs:
   build:
     name: 构建 alpha (windows-x64)
     runs-on: windows-latest
-    env:
-      SUWAYOMI_VERSION_COUNT: ${{ steps.ver.outputs.count }}
     outputs:
       version_name: ${{ steps.ver.outputs.version_name }}
       version_code: ${{ steps.ver.outputs.version_code }}
@@ -48,8 +46,10 @@ jobs:
           targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
       - name: 构建
+        # NB: job 级 env 不能引用 steps context，这里在命令内联注入
         run: |
-          cargo build --release -p suwayomi-server --target x86_64-pc-windows-msvc
+          SUWAYOMI_VERSION_COUNT="${{ steps.ver.outputs.count }}" \
+            cargo build --release -p suwayomi-server --target x86_64-pc-windows-msvc
       - name: 打包
         id: pack
         shell: bash
@@ -96,10 +96,9 @@ jobs:
             artifacts/* \
             --title "SuwayomiNext $VER (alpha)" \
             --notes "## SuwayomiNext $VER · alpha
-
-- versionName: $VER
-- versionCode: $CODE
-- commits: $COUNT
-- 构建: windows-x64（推送自动触发）" \
+          - versionName: $VER
+          - versionCode: $CODE
+          - commits: $COUNT
+          - 构建: windows-x64（推送 main/dev 自动触发）" \
             --prerelease \
             --generate-notes

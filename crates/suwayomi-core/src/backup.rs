@@ -206,6 +206,268 @@ pub struct BackupServerSettings {
 // export
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// import / validate
+// ---------------------------------------------------------------------------
+
+/// Summary of a backup restore/validate run.
+#[derive(Debug, Clone, Default)]
+pub struct RestoreSummary {
+    pub restored_manga: usize,
+    pub restored_categories: usize,
+    pub restored_chapters: usize,
+    pub missing_sources: Vec<String>,
+    pub mangas_missing_sources: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+/// Decodes a gzipped `Backup` protobuf payload.
+pub fn decode_gz_backup(gz: &[u8]) -> Result<Backup, BackupError> {
+    use std::io::Read;
+    let mut decoder = flate2::read::GzDecoder::new(gz);
+    let mut raw = Vec::new();
+    decoder.read_to_end(&mut raw)?;
+    Backup::decode(raw.as_slice()).map_err(|e| BackupError::Decode(e.to_string()))
+}
+
+/// Validates a backup without touching the database (missing sources/trackers).
+pub async fn validate_backup(gz: &[u8]) -> Result<RestoreSummary, BackupError> {
+    let backup = decode_gz_backup(gz)?;
+    Ok(validate_backup_inner(&backup))
+}
+
+fn validate_backup_inner(backup: &Backup) -> RestoreSummary {
+    let available: std::collections::HashSet<i64> = backup.backup_sources.iter().map(|s| s.source_id).collect();
+    let missing: Vec<i64> = backup
+        .backup_manga
+        .iter()
+        .map(|m| m.source)
+        .filter(|s| !available.contains(s))
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let name_of = |sid: i64| backup.backup_sources.iter().find(|s| s.source_id == sid).map(|s| s.name.clone()).unwrap_or_else(|| sid.to_string());
+    let mangas_missing: Vec<String> = backup
+        .backup_manga
+        .iter()
+        .filter(|m| missing.contains(&m.source))
+        .map(|m| format!("{} [{}]", m.title, name_of(m.source)))
+        .collect();
+    RestoreSummary {
+        missing_sources: missing.iter().map(|s| name_of(*s)).collect(),
+        mangas_missing_sources: mangas_missing,
+        ..Default::default()
+    }
+}
+
+/// Restores a gzipped backup into the database.
+///
+/// Semantics mirror `ProtoBackupImport.performRestore` + `BackupMangaHandler`:
+/// categories are matched/created by name, manga by (url, source) — existing
+/// rows are merged, new rows inserted; chapters upsert on (url, manga).
+pub async fn restore_backup(pool: &PgPool, gz: &[u8]) -> Result<RestoreSummary, BackupError> {
+    let backup = decode_gz_backup(gz)?;
+    let mut summary = validate_backup_inner(&backup);
+    let source_names: HashMap<i64, String> = backup.backup_sources.iter().map(|s| (s.source_id, s.name.clone())).collect();
+
+    // 1) categories: order -> id (reuse existing by name; mirrors Kotlin's
+    //    `BackupCategory.order`-keyed mapping used by BackupManga.categories)
+    let mut category_mapping: HashMap<i32, i32> = HashMap::new(); // category order -> db id
+    for (idx, c) in backup.backup_categories.iter().enumerate() {
+        let existing: Option<i32> = sqlx::query_scalar("SELECT id FROM category WHERE name = $1").bind(&c.name).fetch_optional(pool).await?;
+        let id = match existing {
+            Some(id) => id,
+            None => {
+                let id: i32 = sqlx::query_scalar("INSERT INTO category (name, sort_order) VALUES ($1, $2) RETURNING id")
+                    .bind(&c.name)
+                    .bind(c.order)
+                    .fetch_one(pool)
+                    .await?;
+                summary.restored_categories += 1;
+                id
+            }
+        };
+        let _ = idx;
+        category_mapping.insert(c.order, id);
+    }
+
+    // 2) ensure an extension row exists (source.extension FK — a violation
+    //    would terminate the embedded session)
+    let ext_id: i32 = match sqlx::query_scalar::<_, i32>("SELECT id FROM extension ORDER BY id LIMIT 1").fetch_optional(pool).await? {
+        Some(id) => id,
+        None => sqlx::query_scalar(
+            "INSERT INTO extension (name, pkg_name, version_name, version_code, lang, content_warning) \
+             VALUES ('restored', 'org.suwayomi.restored', '0.0.0', 0, 'en', 0) RETURNING id",
+        )
+        .fetch_one(pool)
+        .await?,
+    };
+
+    // 3) restore each manga
+    for m in &backup.backup_manga {
+        // ensure source exists
+        let source_exists: bool = sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM source WHERE id = $1)")
+            .bind(m.source)
+            .fetch_one(pool)
+            .await?;
+        if !source_exists {
+            let name = source_names.get(&m.source).cloned().unwrap_or_else(|| format!("source-{}", m.source));
+            sqlx::query("INSERT INTO source (id, name, lang, extension) VALUES ($1, $2, 'en', $3)")
+                .bind(m.source)
+                .bind(name)
+                .bind(ext_id)
+                .execute(pool)
+                .await?;
+        }
+
+        // find-or-insert manga by (url, source)
+        let existing: Option<i32> = sqlx::query_scalar("SELECT id FROM manga WHERE url = $1 AND source = $2")
+            .bind(&m.url)
+            .bind(m.source)
+            .fetch_optional(pool)
+            .await?;
+        let manga_id = match existing {
+            Some(id) => {
+                sqlx::query(
+                    "UPDATE manga SET artist = COALESCE($1, artist), author = COALESCE($2, author), \
+                     description = COALESCE($3, description), genre = COALESCE(NULLIF($4, ''), genre), \
+                     status = $5, thumbnail_url = COALESCE($6, thumbnail_url), update_strategy = $7, \
+                     in_library = $8 OR in_library, in_library_at = $9, last_modified_at = $10, \
+                     version = $11, initialized = initialized OR $12 WHERE id = $13",
+                )
+                .bind(&m.artist)
+                .bind(&m.author)
+                .bind(&m.description)
+                .bind(m.genre.join(", "))
+                .bind(m.status)
+                .bind(&m.thumbnail_url)
+                .bind(update_strategy_name(m.update_strategy))
+                .bind(m.favorite)
+                .bind(m.date_added / 1000)
+                .bind(m.last_modified_at)
+                .bind(m.version)
+                .bind(m.description.is_some())
+                .bind(id)
+                .execute(pool)
+                .await?;
+                id
+            }
+            None => {
+                let id: i32 = sqlx::query_scalar(
+                    "INSERT INTO manga (url, title, artist, author, description, genre, status, thumbnail_url, \
+                     update_strategy, source, initialized, in_library, in_library_at, last_modified_at, version) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING id",
+                )
+                .bind(&m.url)
+                .bind(&m.title)
+                .bind(&m.artist)
+                .bind(&m.author)
+                .bind(&m.description)
+                .bind(m.genre.join(", "))
+                .bind(m.status)
+                .bind(&m.thumbnail_url)
+                .bind(update_strategy_name(m.update_strategy))
+                .bind(m.source)
+                .bind(m.description.is_some())
+                .bind(m.favorite)
+                .bind(m.date_added / 1000)
+                .bind(m.last_modified_at)
+                .bind(m.version)
+                .fetch_one(pool)
+                .await?;
+                summary.restored_manga += 1;
+                id
+            }
+        };
+
+        // chapters (upsert on (url, manga))
+        let mut chapter_ids: Vec<i32> = Vec::new();
+        for ch in &m.chapters {
+            let existing_ch: Option<i32> = sqlx::query_scalar("SELECT id FROM chapter WHERE url = $1 AND manga = $2")
+                .bind(&ch.url)
+                .bind(manga_id)
+                .fetch_optional(pool)
+                .await?;
+            match existing_ch {
+                Some(cid) => {
+                    sqlx::query(
+                        "UPDATE chapter SET name = $1, scanlator = $2, read = $3, bookmark = $4, last_page_read = $5, \
+                         date_upload = $6, chapter_number = $7, source_order = $8, last_modified_at = $9, version = $10 WHERE id = $11",
+                    )
+                    .bind(&ch.name)
+                    .bind(&ch.scanlator)
+                    .bind(ch.read)
+                    .bind(ch.bookmark)
+                    .bind(ch.last_page_read)
+                    .bind(ch.date_upload)
+                    .bind(ch.chapter_number)
+                    .bind(ch.source_order)
+                    .bind(ch.last_modified_at)
+                    .bind(ch.version)
+                    .bind(cid)
+                    .execute(pool)
+                    .await?;
+                    chapter_ids.push(cid);
+                }
+                None => {
+                    let cid: i32 = sqlx::query_scalar(
+                        "INSERT INTO chapter (url, name, scanlator, read, bookmark, last_page_read, date_upload, \
+                         chapter_number, source_order, manga) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
+                    )
+                    .bind(&ch.url)
+                    .bind(&ch.name)
+                    .bind(&ch.scanlator)
+                    .bind(ch.read)
+                    .bind(ch.bookmark)
+                    .bind(ch.last_page_read)
+                    .bind(ch.date_upload)
+                    .bind(ch.chapter_number)
+                    .bind(ch.source_order)
+                    .bind(manga_id)
+                    .fetch_one(pool)
+                    .await?;
+                    summary.restored_chapters += 1;
+                    chapter_ids.push(cid);
+                }
+            }
+        }
+
+        // category membership (backup index -> db id via mapping)
+        for cidx in &m.categories {
+            if let Some(db_cat) = category_mapping.get(cidx) {
+                let _ = sqlx::query("INSERT INTO category_manga (category, manga) VALUES ($1, $2) ON CONFLICT (manga, category) DO NOTHING")
+                    .bind(db_cat)
+                    .bind(manga_id)
+                    .execute(pool)
+                    .await;
+            }
+        }
+
+        // history: match chapter by url, apply last_page_read / last_read_at
+        for h in &m.history {
+            let _ = sqlx::query("UPDATE chapter SET last_page_read = $1, last_read_at = $2 WHERE url = $3 AND manga = $4")
+                .bind(h.last_read as i32)
+                .bind(h.read_at / 1000)
+                .bind(&h.url)
+                .bind(manga_id)
+                .execute(pool)
+                .await;
+        }
+
+        let _ = chapter_ids;
+    }
+
+    Ok(summary)
+}
+
+/// Maps the 0.x update-strategy ordinal back to the DB enum name.
+fn update_strategy_name(ordinal: i32) -> &'static str {
+    match ordinal {
+        1 => "ALWAYS_FETCH",
+        _ => "ALWAYS_UPDATE",
+    }
+}
+
 /// Serializes the current database into a gzipped `Backup` protobuf payload.
 pub async fn create_backup(pool: &PgPool) -> Result<Vec<u8>, BackupError> {
     let backup = build_backup(pool).await?;
@@ -262,8 +524,14 @@ async fn build_backup(pool: &PgPool) -> Result<Backup, BackupError> {
                 meta: HashMap::new(),
             })
             .collect();
-        let category_ids: Vec<i32> =
-            sqlx::query_scalar("SELECT category FROM category_manga WHERE manga = $1").bind(m.id).fetch_all(pool).await?;
+        // BackupManga.categories stores the category ORDER (not id) —
+        // mirrors Kotlin: `categoryMapping[it]` keys on `BackupCategory.order`.
+        let category_orders: Vec<i32> = sqlx::query_scalar(
+            "SELECT c.sort_order FROM category_manga cm JOIN category c ON c.id = cm.category WHERE cm.manga = $1",
+        )
+        .bind(m.id)
+        .fetch_all(pool)
+        .await?;
         let genres: Vec<String> = m
             .genre
             .as_deref()
@@ -282,10 +550,10 @@ async fn build_backup(pool: &PgPool) -> Result<Backup, BackupError> {
             genre: genres,
             status: m.status,
             thumbnail_url: m.thumbnail_url.clone(),
-            date_added: m.in_library_at,
+            date_added: m.in_library_at * 1000, // Kotlin exports epoch MILLISECONDS
             viewer: 0,
             chapters: backup_chapters,
-            categories: category_ids,
+            categories: category_orders,
             tracking: vec![],
             favorite: m.in_library,
             chapter_flags: 0,
@@ -335,6 +603,8 @@ pub enum BackupError {
     Sqlx(#[from] sqlx::Error),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("protobuf decode error: {0}")]
+    Decode(String),
 }
 
 #[cfg(test)]
@@ -409,5 +679,71 @@ mod tests {
         decoder.read_to_end(&mut raw).expect("gunzip");
         let backup = Backup::decode(raw.as_slice()).expect("decode proto");
         assert!(backup.backup_manga.is_empty());
+    }
+
+    /// Export → wipe → restore on a fresh DB: data must round-trip.
+    #[tokio::test]
+    async fn export_restore_roundtrip() {
+        let db = seed().await;
+        let gz = create_backup(db.pool()).await.expect("create backup");
+
+        // restore into a fresh embedded database
+        let fresh = Db::connect_embedded(None).await.expect("connect fresh");
+        fresh.migrate().await.expect("migrate fresh");
+        let summary = restore_backup(fresh.pool(), &gz).await.expect("restore");
+
+        assert_eq!(summary.restored_manga, 1);
+        assert_eq!(summary.restored_chapters, 1);
+        assert!(summary.missing_sources.is_empty(), "sources included in backup");
+
+        // verify content
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM manga").fetch_one(fresh.pool()).await.expect("count manga");
+        assert_eq!(n, 1);
+        let title: String = sqlx::query_scalar("SELECT title FROM manga WHERE id = 1").fetch_one(fresh.pool()).await.expect("title");
+        assert_eq!(title, "Backup Manga");
+        let in_lib: bool = sqlx::query_scalar("SELECT in_library FROM manga WHERE id = 1").fetch_one(fresh.pool()).await.expect("in_library");
+        assert!(in_lib, "favorite manga restored as in-library");
+        let ch: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chapter WHERE manga = 1").fetch_one(fresh.pool()).await.expect("count chapters");
+        assert_eq!(ch, 1);
+        let cm: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM category_manga WHERE manga = 1").fetch_one(fresh.pool()).await.expect("count cm");
+        assert_eq!(cm, 1, "category membership restored");
+        let cat: String = sqlx::query_scalar("SELECT name FROM category WHERE id = 1").fetch_one(fresh.pool()).await.expect("category");
+        assert_eq!(cat, "Cat");
+        let src: String = sqlx::query_scalar("SELECT name FROM source WHERE id = 1").fetch_one(fresh.pool()).await.expect("source");
+        assert_eq!(src, "MangaDex");
+    }
+
+    /// A backup whose source is missing must be reported, not crash.
+    #[tokio::test]
+    async fn restore_reports_missing_source() {
+        let mut manga = BackupManga {
+            source: 999,
+            url: "/m/x".into(),
+            title: "Orphan".into(),
+            favorite: true,
+            ..Default::default()
+        };
+        manga.update_strategy = 0;
+        let backup = Backup {
+            backup_manga: vec![manga],
+            ..Default::default()
+        };
+        let raw = backup.encode_to_vec();
+        use std::io::Write;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(&raw).expect("write");
+        let gz = enc.finish().expect("gz");
+
+        let summary = validate_backup(&gz).await.expect("validate");
+        assert_eq!(summary.missing_sources, vec!["999".to_string()]);
+        assert_eq!(summary.mangas_missing_sources.len(), 1);
+
+        // restore still works: source gets auto-created as a placeholder
+        let db = Db::connect_embedded(None).await.expect("connect");
+        db.migrate().await.expect("migrate");
+        let s = restore_backup(db.pool(), &gz).await.expect("restore");
+        assert_eq!(s.restored_manga, 1);
+        let src_name: Option<String> = sqlx::query_scalar("SELECT name FROM source WHERE id = 999").fetch_one(db.pool()).await.expect("src");
+        assert_eq!(src_name.as_deref(), Some("source-999"));
     }
 }

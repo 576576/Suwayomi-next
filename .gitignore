@@ -34,5 +34,7 @@ node_modules/
 jvm-sandbox/build/
 tools/h2-dump/build/
 tools/h2-dump/.gradle/
-jvm-sandbox/libs/
+jvm-sandbox/libs/*
+!jvm-sandbox/libs/AndroidCompat-1.0.jar
 .workbuddy/
+extensions

@@ -76,6 +76,28 @@ fn resolve_webui_dir() -> std::path::PathBuf {
     std::path::PathBuf::new()
 }
 
+/// Resolves the JVM extension sandbox jar: `SUWAYOMI_SANDBOX_JAR` env, else the
+/// `jvm-sandbox.jar` bundled next to this executable (发布布局：exe 同级）。
+fn resolve_sandbox_jar() -> Option<std::path::PathBuf> {
+    if let Ok(jar) = std::env::var("SUWAYOMI_SANDBOX_JAR") {
+        if !jar.is_empty() {
+            let p = std::path::PathBuf::from(jar);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let cand = dir.join("jvm-sandbox.jar");
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    None
+}
+
 fn build_router(state: AppState, graphql_schema: suwayomi_graphql::schema::GraphQLSchema) -> Router {
     let api = Router::new()
         .nest("/api/v1", suwayomi_rest::routes::api_v1_router())
@@ -304,17 +326,20 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Phase 5: launch the JVM extension sandbox when configured.
-    // SUWAYOMI_SANDBOX_JAR  -> path to the built sandbox jar (optional)
+    // SUWAYOMI_SANDBOX_JAR  -> path to the built sandbox jar (optional; falls back
+    //                          to `jvm-sandbox.jar` next to this executable, the
+    //                          bundled layout used by the desktop tray / CI zips)
     // SUWAYOMI_SANDBOX_PORT -> sandbox HTTP port (default 8091; 4501-4900 is
     //                          reserved by Windows for Hyper-V dynamic ports)
     // SUWAYOMI_EXTENSIONS_DIR -> directory holding extension jars (default ./extensions)
     let mut sandbox_guard: Option<suwayomi_domain::source::sandbox::SandboxProcess> = None;
-    if let Ok(jar) = std::env::var("SUWAYOMI_SANDBOX_JAR") {
+    if let Some(jar) = resolve_sandbox_jar() {
         let port = std::env::var("SUWAYOMI_SANDBOX_PORT").unwrap_or_else(|_| "8091".into());
-        let proc = suwayomi_domain::source::sandbox::SandboxProcess::start(&jar, &port).await;
+        let jar_str = jar.to_string_lossy().into_owned();
+        let proc = suwayomi_domain::source::sandbox::SandboxProcess::start(&jar_str, &port).await;
         match proc {
             Ok(p) => {
-                tracing::info!("jvm sandbox connected at 127.0.0.1:{port}");
+                tracing::info!("jvm sandbox connected at 127.0.0.1:{port} (jar: {jar_str})");
                 sandbox_guard = Some(p);
             }
             Err(e) => tracing::warn!("jvm sandbox failed to start: {e}; falling back to StubFetcher"),

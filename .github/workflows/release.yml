@@ -160,9 +160,6 @@ jobs:
           STAGE="dist/SuwayomiNext-${VER}-${CH}-${TGT}"
           mkdir -p "$STAGE"
           cp "$BIN" "$STAGE/"
-          printf 'name=%s\nchannel=%s\nversionName=%s\nversionCode=%s\ncommitCount=%s\ntarget=%s\n' \
-            "SuwayomiNext" "$CH" "$VER" "${{ needs.prep.outputs.version_code }}" \
-            "${{ needs.prep.outputs.count }}" "$TGT" > "$STAGE/VERSION.txt"
 
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
             powershell -Command "Compress-Archive -Path 'dist/SuwayomiNext-${VER}-${CH}-${TGT}' -DestinationPath 'dist/SuwayomiNext-${VER}-${CH}-${TGT}.zip' -Force"

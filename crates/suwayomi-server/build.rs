@@ -1,7 +1,7 @@
 //! Versioning: the release number is derived from the commit count.
 //!
 //! - internal version code = commit count + 3000  (e.g. 38 commits -> 3038)
-//! - external version name  = 3.{count/100}.{(count/10)%10}  (38 -> 3.0.3, 100 -> 3.1.0)
+//! - version name          = r{versionCode}       (38 -> r3038)
 //!
 //! The count comes from, in priority order:
 //!   1. `SUWAYOMI_VERSION_COUNT` (injected by CI — matches `git rev-list --count HEAD`)
@@ -26,7 +26,7 @@ fn main() {
         .unwrap_or(38);
 
     let version_code = count + 3000;
-    let version_name = format!("3.{}.{}", count / 100, (count / 10) % 10);
+    let version_name = format!("r{version_code}");
 
     println!("cargo:rustc-env=SUWAYOMI_VERSION_NAME={version_name}");
     println!("cargo:rustc-env=SUWAYOMI_VERSION_CODE={version_code}");

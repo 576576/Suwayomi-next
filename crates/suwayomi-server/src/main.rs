@@ -18,11 +18,12 @@ use suwayomi_core::db::Db;
 use suwayomi_domain::source::{SourceFetcher, StubFetcher};
 use suwayomi_rest::AppState;
 
-/// External release version — `3.{count/100}.{(count/10)%10}` (see build.rs).
-/// 38 commits -> 3.0.3, 100 -> 3.1.0.
+/// Build version name — `r{versionCode}` (see build.rs), e.g. r3050.
 pub const VERSION: &str = env!("SUWAYOMI_VERSION_NAME");
 /// Internal version code — commit count + 3000 (see build.rs).
 pub const VERSION_CODE: &str = env!("SUWAYOMI_VERSION_CODE");
+/// Commit count baked in at build time (see build.rs).
+pub const VERSION_COUNT: &str = env!("SUWAYOMI_VERSION_COUNT");
 
 fn config_from_env() -> ServerConfig {
     // Pure-PostgreSQL decision (2026-08-30): Rust backend only supports PG.
@@ -127,6 +128,15 @@ async fn import_h2_data(db: &Db, data_dir: &std::path::Path) -> anyhow::Result<(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // `-v` / `--version`：打印版本信息后退出（替代打包产物里的 VERSION.txt）
+    let cli_args: Vec<String> = std::env::args().skip(1).collect();
+    if cli_args.iter().any(|a| a == "-v" || a == "--version") {
+        println!("Suwayomi {VERSION}");
+        println!("versionCode: {VERSION_CODE}");
+        println!("commitCount: {VERSION_COUNT}");
+        return Ok(());
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

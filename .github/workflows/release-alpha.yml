@@ -66,9 +66,6 @@ jobs:
           STAGE="dist/Suwayomi-${VER}-${TGT}"
           mkdir -p "$STAGE"
           cp "$BIN" "$STAGE/"
-          printf 'name=%s\nchannel=%s\nversionName=%s\nversionCode=%s\ncommitCount=%s\ntarget=%s\n' \
-            "Suwayomi" "$CH" "$VER" "${{ steps.ver.outputs.version_code }}" \
-            "${{ steps.ver.outputs.count }}" "$TGT" > "$STAGE/VERSION.txt"
           powershell -Command "Compress-Archive -Path 'dist/Suwayomi-${VER}-${TGT}' -DestinationPath 'dist/Suwayomi-${VER}-${TGT}.zip' -Force"
           echo "artifact=dist/Suwayomi-${VER}-${TGT}.zip" >> "$GITHUB_OUTPUT"
       - name: 上传构建产物

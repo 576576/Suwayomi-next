@@ -17,3 +17,5 @@ async-trait.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 prost.workspace = true
+anyhow.workspace = true
+pglite-oxide.workspace = true

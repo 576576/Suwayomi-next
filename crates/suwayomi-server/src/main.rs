@@ -71,14 +71,24 @@ async fn main() -> anyhow::Result<()> {
     let config = config_from_env();
     tracing::info!(name = "Suwayomi (next)", version = VERSION, "starting");
 
-    let db_url = if config.database_url.is_empty() {
-        "postgres://postgres:postgres@localhost:5432/postgres".to_string()
+    // Database backend (Phase 6): embedded PGlite by default; an explicit
+    // `SUWAYOMI_DATABASE_URL` switches to an external PostgreSQL server.
+    //   SUWAYOMI_PGLITE_DATA_DIR   -> embedded data directory
+    //                                (default ./pglite-data; "" = ephemeral)
+    let db = if config.database_url.is_empty() {
+        let data_dir = match std::env::var("SUWAYOMI_PGLITE_DATA_DIR") {
+            Ok(v) if !v.is_empty() => Some(std::path::PathBuf::from(v)),
+            Ok(_) => None, // explicitly empty -> ephemeral (tests/dev)
+            Err(_) => Some(std::path::PathBuf::from("pglite-data")),
+        };
+        tracing::info!("database backend: embedded PGlite (set SUWAYOMI_DATABASE_URL to use external PostgreSQL)");
+        Db::connect_embedded(data_dir.as_deref()).await?
     } else {
-        config.database_url.clone()
+        tracing::info!("database backend: external PostgreSQL at {}", config.database_url);
+        Db::connect(&config.database_url).await?
     };
-    let db = Db::connect(&db_url).await?;
     db.migrate().await?;
-    tracing::info!("database ready (migrations applied)");
+    tracing::info!(mode = ?db.mode(), "database ready (migrations applied)");
 
     // Phase 5: launch the JVM extension sandbox when configured.
     // SUWAYOMI_SANDBOX_JAR  -> path to the built sandbox jar (optional)

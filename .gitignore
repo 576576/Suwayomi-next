@@ -18,6 +18,8 @@ target/
 
 # Local databases / data dirs (Phase 7 tooling outputs)
 data/
+# Embedded PGlite data directory (default backend, Phase 6)
+pglite-data/
 *.db
 *.db.mv.db
 

@@ -46,7 +46,9 @@ jobs:
           targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
       - name: 构建
-        # NB: job 级 env 不能引用 steps context，这里在命令内联注入
+        # NB: 该步骤使用 bash 语法（行内 env 注入），Windows runner 上必须显式
+        # 声明 shell: bash（否则默认 PowerShell 会把 VAR=val 当命令名解析报错）
+        shell: bash
         run: |
           SUWAYOMI_VERSION_COUNT="${{ steps.ver.outputs.count }}" \
             cargo build --release -p suwayomi-server --target x86_64-pc-windows-msvc

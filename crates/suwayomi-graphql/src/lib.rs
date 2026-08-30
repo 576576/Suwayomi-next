@@ -2,6 +2,7 @@
 //! Compatibility target: `docs/graphql/schema-baseline.graphql` (359 types).
 
 pub mod mutation;
+pub mod mutation_b4;
 pub mod query;
 pub mod scalars;
 pub mod schema;

@@ -74,7 +74,7 @@
 | CategoryController.kt | routes/category.rs | ✅ |
 | SourceController.kt | routes/source.rs | 🔄 列表/详情/搜索走 fetcher；preferences/filters 骨架 |
 | ExtensionController.kt | routes/extension.rs | 🔄 列表可用；安装/卸载待 Phase 5 沙盒 |
-| BackupController.kt / DownloadController.kt / UpdateController.kt / TrackController.kt | routes/*.rs | 🔄 路由注册（501 stub），Phase 6 实现 |
+| BackupController.kt / DownloadController.kt / UpdateController.kt / TrackController.kt | routes/*.rs | 🔄 track/update/downloads 已真实现（Phase 6 第一批）；backup 仍 501（protobuf） |
 | GlobalAPI.kt（meta/settings/webview） | routes/global.rs + meta_handler.rs | ✅ |
 | global/GlobalAPI.kt + controller/（GlobalMetaController、SettingsController、WebViewController） | routes/global.rs | ⬜ |
 
@@ -137,4 +137,5 @@
 - **Phase 4 已启动（核心骨架）**：async-graphql 7 集成（自定义标量 LongString/Duration/Cursor、MangaType/ChapterType/CategoryType/PageType/SourceType/MetaType、NodeList 分页、mangas 条件过滤+排序+分页、计算字段 unread/download/bookmark/chapters/categories/meta）；挂载 /api/graphql（GET/POST）端到端查询验证通过（枚举值/NodeList/过滤/计算字段与 Kotlin 一致）；当前 28 类型，基线 359 待增量补全；27 单元测试全绿；clippy -D warnings 通过
 - **Phase 4 已完成**：Query 33/33、Mutation 82/82、Subscription 6/6 字段全齐；类型 351/363（缺失 14 均为孤立声明类型，客户端不可达不影响）；27 单元测试全绿
 - **Phase 5 骨架已完成**：jvm-sandbox（Kotlin 2.2.20 + JDK HttpServer 零依赖）+ HttpSandboxFetcher（reqwest）+ SandboxProcess 生命周期；Rust 拉起 JVM→health→HTTP IPC 链路端到端验证通过；真实扩展加载（ChildFirstClassLoader + 完整接口）为下一增量
-- 下一步：Phase 5 增量（真实扩展加载）→ Phase 6（下载/更新/备份 protobuf/OPDS/同步 + REST 端点真实现）
+- **Phase 6 第一批完成**：REST track（list 真实现）/update（recentChapters 真实现 + summary）/downloads（队列契约）端点；backup 保留 stub
+- 下一步：Phase 6 剩余（OPDS、下载管理器、备份 protobuf、同步、WebSocket 推送、真实扩展加载）→ Phase 7

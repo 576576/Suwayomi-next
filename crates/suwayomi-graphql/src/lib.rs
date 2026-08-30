@@ -4,6 +4,7 @@
 pub mod query;
 pub mod scalars;
 pub mod schema;
+pub mod settings;
 pub mod state;
 pub mod types;
 

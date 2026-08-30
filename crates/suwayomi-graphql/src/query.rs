@@ -1,12 +1,13 @@
 //! Query root — mirrors `graphql/queries/*.kt`.
 //! Core queries implemented; remaining queries land in later increments.
 
-use async_graphql::{Context, Enum, InputObject, Object, SimpleObject};
+use async_graphql::{Context, Enum, InputObject, Object};
 use sqlx::Row;
 use suwayomi_core::schema::{CategoryRow, ChapterRow, MangaRow};
 use suwayomi_domain::sql::bind_placeholders;
 
 use crate::scalars::{Cursor, LongString};
+use crate::settings::{AboutServerPayload, SettingsType};
 use crate::state::GraphQLState;
 use crate::types::*;
 
@@ -590,9 +591,15 @@ impl QueryRoot {
         Ok(SourceNodeList::from_nodes(nodes))
     }
 
-    /// Minimal placeholder for remaining queries (Phase 4 increments).
+    /// Mirrors `settings()` — full settings registry.
+    async fn settings(&self, ctx: &Context<'_>) -> async_graphql::Result<SettingsType> {
+        let state = ctx.data::<GraphQLState>()?;
+        Ok(SettingsType::from_config(&state.config))
+    }
+
+    /// Mirrors `aboutServer()` — full payload.
     async fn about_server(&self) -> AboutServerPayload {
-        AboutServerPayload { name: "Suwayomi (next)".into(), version: env!("CARGO_PKG_VERSION").into() }
+        AboutServerPayload::current()
     }
 }
 
@@ -737,13 +744,6 @@ async fn fetch_chapters(state: &GraphQLState, sql: &str, binds: &[String]) -> as
     }
     let rows = q.fetch_all(state.db.pool()).await.map_err(async_graphql::Error::from)?;
     Ok(rows)
-}
-
-/// Minimal payloads for unimplemented queries.
-#[derive(SimpleObject, Clone)]
-pub struct AboutServerPayload {
-    pub name: String,
-    pub version: String,
 }
 
 #[allow(dead_code)]

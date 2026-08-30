@@ -21,7 +21,11 @@ use suwayomi_rest::AppState;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn config_from_env() -> ServerConfig {
-    let mut cfg = ServerConfig::default();
+    // Pure-PostgreSQL decision (2026-08-30): Rust backend only supports PG.
+    let mut cfg = ServerConfig {
+        database_type: suwayomi_core::config::DatabaseType::Postgresql,
+        ..ServerConfig::default()
+    };
     if let Ok(v) = std::env::var("SUWAYOMI_PORT") {
         cfg.port = v.parse().unwrap_or(cfg.port);
     }
@@ -79,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("database ready (migrations applied)");
 
     let fetcher: Arc<dyn SourceFetcher> = Arc::new(StubFetcher);
-    let graphql_state = suwayomi_graphql::GraphQLState::new(db.clone(), fetcher.clone());
+    let graphql_state = suwayomi_graphql::GraphQLState::new(db.clone(), config.clone(), fetcher.clone());
     let schema = suwayomi_graphql::schema::build_schema(graphql_state);
     tracing::info!("graphql schema ready ({} type definitions)", suwayomi_graphql::schema::schema_type_count());
     let state = AppState::new(db, config.clone(), fetcher);

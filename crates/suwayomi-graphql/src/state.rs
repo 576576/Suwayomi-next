@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use suwayomi_core::config::ServerConfig;
 use suwayomi_core::db::Db;
 use suwayomi_domain::category::category_manga::CategoryMangaService;
 use suwayomi_domain::category::CategoryService;
@@ -15,6 +16,7 @@ use suwayomi_domain::source::SourceFetcher;
 #[derive(Clone)]
 pub struct GraphQLState {
     pub db: Db,
+    pub config: ServerConfig,
     pub manga: MangaService,
     pub chapter: ChapterService,
     pub category: CategoryService,
@@ -25,7 +27,7 @@ pub struct GraphQLState {
 }
 
 impl GraphQLState {
-    pub fn new(db: Db, fetcher: Arc<dyn SourceFetcher>) -> Self {
+    pub fn new(db: Db, config: ServerConfig, fetcher: Arc<dyn SourceFetcher>) -> Self {
         let manga = MangaService::new(db.clone(), fetcher.clone());
         let chapter = ChapterService::new(db.clone(), fetcher.clone());
         let category = CategoryService::new(db.clone());
@@ -33,6 +35,6 @@ impl GraphQLState {
         let library = LibraryService::new(db.clone(), manga.clone());
         let manga_list = MangaListService::new(db.clone(), fetcher);
         let page = PageService::new(db.clone());
-        Self { db, manga, chapter, category, category_manga, library, manga_list, page }
+        Self { db, config, manga, chapter, category, category_manga, library, manga_list, page }
     }
 }

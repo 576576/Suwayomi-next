@@ -67,17 +67,12 @@ jobs:
           mkdir -p "$STAGE"
           cp "$BIN" "$STAGE/"
 
-          # ---- 捆绑 WebUI（fork 源码构建）+ 启动脚本 + data 目录 ----
-          git clone --depth 1 https://github.com/576576/Suwayomi-WebUI.git webui-src
-          cd webui-src
-          corepack enable
-          pnpm install --frozen-lockfile
-          pnpm setup-env-files
-          pnpm vite build
-          cd ..
+          # ---- 捆绑 WebUI（fork release 产物）+ 启动脚本 + data 目录 ----
+          WEBUI_ZIP=$(curl -s "https://api.github.com/repos/576576/Suwayomi-WebUI/releases/latest" | python3 -c "import json,sys; d=json.load(sys.stdin); print([a['browser_download_url'] for a in d.get('assets',[]) if a['name'].endswith('.zip')][0])")
+          curl -sL -o webui.zip "$WEBUI_ZIP"
           mkdir -p "$STAGE/webui"
-          cp -r webui-src/build/. "$STAGE/webui/"
-          rm -rf webui-src
+          python3 -c "import zipfile; zipfile.ZipFile('webui.zip').extractall('$STAGE/webui')"
+          rm -f webui.zip
           cp suwayomi_launch.bat "$STAGE/" 2>/dev/null || true
           mkdir -p "$STAGE/data/autobackup" "$STAGE/data/downloads" "$STAGE/data/local"
           powershell -Command "Compress-Archive -Path 'dist/Suwayomi-${VER}-${TGT}' -DestinationPath 'dist/Suwayomi-${VER}-${TGT}.zip' -Force"

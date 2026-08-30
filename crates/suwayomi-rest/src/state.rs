@@ -8,6 +8,7 @@ use suwayomi_domain::category::category_manga::CategoryMangaService;
 use suwayomi_domain::category::CategoryService;
 use suwayomi_domain::chapter::ChapterService;
 use suwayomi_domain::download::DownloadManager;
+use suwayomi_domain::extension_store::ExtensionStoreService;
 use suwayomi_domain::manga::library::LibraryService;
 use suwayomi_domain::manga::manga_list::MangaListService;
 use suwayomi_domain::manga::MangaService;
@@ -29,10 +30,12 @@ pub struct AppState {
     pub page: PageService,
     /// Chapter download manager (queue + worker + event bus).
     pub download: DownloadManager,
+    /// Extension store: repo refresh + online install.
+    pub extension_store: ExtensionStoreService,
 }
 
 impl AppState {
-    pub fn new(db: Db, config: ServerConfig, fetcher: Arc<dyn SourceFetcher>) -> Self {
+    pub fn new(db: Db, config: ServerConfig, fetcher: Arc<dyn SourceFetcher>, sandbox_base: Option<String>) -> Self {
         let manga = MangaService::new(db.clone(), fetcher.clone());
         let chapter = ChapterService::new(db.clone(), fetcher.clone());
         let category = CategoryService::new(db.clone());
@@ -41,6 +44,7 @@ impl AppState {
         let manga_list = MangaListService::new(db.clone(), fetcher.clone());
         let page = PageService::new(db.clone());
         let download = DownloadManager::new(db.clone(), fetcher.clone());
-        Self { db, config, fetcher, manga, chapter, category, category_manga, library, manga_list, page, download }
+        let extension_store = ExtensionStoreService::new(db.clone(), sandbox_base);
+        Self { db, config, fetcher, manga, chapter, category, category_manga, library, manga_list, page, download, extension_store }
     }
 }

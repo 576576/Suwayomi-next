@@ -38,6 +38,8 @@ fun main() {
     server.createContext("/health") { router.health(it) }
     server.createContext("/extensions") { router.extensions(it) }
     server.createContext("/sources") { router.sources(it) }
+    server.createContext("/reload") { router.reload(it) }
+    server.createContext("/inspect") { router.inspect(it) }
     server.createContext("/source/") { router.sourceDispatch(it) }
     server.executor = null
     server.start()

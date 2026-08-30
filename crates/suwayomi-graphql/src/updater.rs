@@ -330,7 +330,7 @@ mod tests {
     #[tokio::test]
     async fn updater_inserts_chapters_and_emits_events() {
         let (db, fetcher) = setup().await;
-        let state = GraphQLState::new(db.clone(), ServerConfig::default(), Arc::new(fetcher));
+        let state = GraphQLState::new(db.clone(), ServerConfig::default(), Arc::new(fetcher), None);
         let mut rx = state.update.subscribe();
 
         state.update.start(None).await;
@@ -371,7 +371,7 @@ mod tests {
     #[tokio::test]
     async fn updater_marks_manga_failed_when_source_errors() {
         let (db, _fetcher) = setup().await;
-        let state = GraphQLState::new(db.clone(), ServerConfig::default(), Arc::new(suwayomi_domain::source::StubFetcher));
+        let state = GraphQLState::new(db.clone(), ServerConfig::default(), Arc::new(suwayomi_domain::source::StubFetcher), None);
         let mut rx = state.update.subscribe();
         state.update.start(None).await;
 

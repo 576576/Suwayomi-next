@@ -12,6 +12,7 @@ use suwayomi_domain::manga::manga_list::MangaListService;
 use suwayomi_domain::manga::MangaService;
 use suwayomi_domain::page::PageService;
 use suwayomi_domain::download::DownloadManager;
+use suwayomi_domain::extension_store::ExtensionStoreService;
 use suwayomi_domain::koreader_sync::KoreaderSyncService;
 use suwayomi_domain::sync_yomi::SyncYomiService;
 use suwayomi_domain::source::SourceFetcher;
@@ -37,10 +38,12 @@ pub struct GraphQLState {
     pub koreader: KoreaderSyncService,
     /// SyncYomi library sync (Phase 6).
     pub sync_yomi: SyncYomiService,
+    /// Extension store: repo refresh + online install (Phase 6).
+    pub extension_store: ExtensionStoreService,
 }
 
 impl GraphQLState {
-    pub fn new(db: Db, config: ServerConfig, fetcher: Arc<dyn SourceFetcher>) -> Self {
+    pub fn new(db: Db, config: ServerConfig, fetcher: Arc<dyn SourceFetcher>, sandbox_base: Option<String>) -> Self {
         let manga = MangaService::new(db.clone(), fetcher.clone());
         let chapter = ChapterService::new(db.clone(), fetcher.clone());
         let category = CategoryService::new(db.clone());
@@ -52,6 +55,7 @@ impl GraphQLState {
         let download = DownloadManager::new(db.clone(), fetcher);
         let koreader = KoreaderSyncService::new(db.clone(), config.clone());
         let sync_yomi = SyncYomiService::new(db.clone(), config.clone());
-        Self { db, config, manga, chapter, category, category_manga, library, manga_list, page, update, download, koreader, sync_yomi }
+        let extension_store = ExtensionStoreService::new(db.clone(), sandbox_base);
+        Self { db, config, manga, chapter, category, category_manga, library, manga_list, page, update, download, koreader, sync_yomi, extension_store }
     }
 }

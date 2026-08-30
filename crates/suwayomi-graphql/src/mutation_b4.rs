@@ -406,12 +406,6 @@ pub struct LogoutKoSyncAccountPayload {
     pub status: KoSyncStatusPayloadType,
 }
 
-#[derive(SimpleObject)]
-pub struct SyncConflictInfoType {
-    pub device_name: String,
-    pub remote_page: i32,
-}
-
 #[derive(InputObject)]
 pub struct ConnectKoSyncAccountInput {
     pub client_mutation_id: Option<String>,
@@ -448,7 +442,7 @@ pub struct PullKoSyncProgressInput {
 pub struct PullKoSyncProgressPayload {
     pub client_mutation_id: Option<String>,
     pub chapter: Option<crate::types::ChapterType>,
-    pub sync_conflict: Option<SyncConflictInfoType>,
+    pub sync_conflict: Option<crate::mutation::SyncConflictInfoType>,
 }
 
 #[derive(InputObject)]
@@ -1381,7 +1375,7 @@ impl MutationRootB4 {
         let mut sync_conflict = None;
         if let Some(r) = &result {
             if r.is_conflict {
-                sync_conflict = Some(SyncConflictInfoType { device_name: r.device.clone(), remote_page: r.page_read });
+                sync_conflict = Some(crate::mutation::SyncConflictInfoType { device_name: r.device.clone(), remote_page: r.page_read });
             }
             if r.should_update {
                 sqlx::query("UPDATE suwayomi.chapter SET last_page_read = $1, last_read_at = $2 WHERE id = $3")
@@ -1402,13 +1396,20 @@ impl MutationRootB4 {
 
     // ---- Extension ----
 
-    /// Mirrors `fetchExtensions` — lists installed extensions & stores from DB.
+    /// Mirrors `fetchExtensions` — refreshes the repo indexes, syncs the
+    /// sandbox's loaded sources, then lists extensions & stores from DB.
     async fn fetch_extensions(
         &self,
         ctx: &Context<'_>,
         input: FetchExtensionsInput,
     ) -> async_graphql::Result<FetchExtensionsPayload> {
         let state = ctx.data::<GraphQLState>()?;
+        let store = state.extension_store.clone();
+        // refresh repo indexes (best-effort: a failing repo shouldn't block)
+        let _ = store.refresh_stores().await;
+        if store.sandbox_available() {
+            let _ = store.sync_sources().await;
+        }
         let exts = sqlx::query_as::<_, suwayomi_core::schema::ExtensionRow>("SELECT * FROM extension")
             .fetch_all(state.db.pool())
             .await
@@ -1426,29 +1427,64 @@ impl MutationRootB4 {
 
     async fn update_extension(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: UpdateExtensionInput,
     ) -> async_graphql::Result<UpdateExtensionPayload> {
-        let _ = (input.id, input.patch);
-        Ok(UpdateExtensionPayload { client_mutation_id: input.client_mutation_id, extension: None })
+        let state = ctx.data::<GraphQLState>()?;
+        apply_extension_patch(state, std::slice::from_ref(&input.id), &input.patch).await?;
+        let ext = fetch_extension_by_pkg(state, &input.id).await?;
+        Ok(UpdateExtensionPayload { client_mutation_id: input.client_mutation_id, extension: ext.map(|r| crate::types::ExtensionType { row: r }) })
     }
 
     async fn update_extensions(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: UpdateExtensionsInput,
     ) -> async_graphql::Result<UpdateExtensionsPayload> {
-        let _ = (input.ids, input.patch);
-        Ok(UpdateExtensionsPayload { client_mutation_id: input.client_mutation_id, extensions: vec![] })
+        let state = ctx.data::<GraphQLState>()?;
+        apply_extension_patch(state, &input.ids, &input.patch).await?;
+        let exts = fetch_extensions_by_pkg(state, &input.ids).await?;
+        Ok(UpdateExtensionsPayload {
+            client_mutation_id: input.client_mutation_id,
+            extensions: exts.into_iter().map(|r| crate::types::ExtensionType { row: r }).collect(),
+        })
     }
 
     async fn install_external_extension(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: InstallExternalExtensionInput,
     ) -> async_graphql::Result<InstallExternalExtensionPayload> {
-        let _ = input.extension_file;
-        Err(async_graphql::Error::new("external extension install requires the JVM sandbox (Phase 5)"))
+        let state = ctx.data::<GraphQLState>()?;
+        let mut upload = input.extension_file.value(ctx)?;
+        let mut bytes = Vec::new();
+        use std::io::Read as _;
+        upload
+            .content
+            .read_to_end(&mut bytes)
+            .map_err(|e| async_graphql::Error::new(format!("read upload: {e}")))?;
+        if bytes.is_empty() {
+            return Err(async_graphql::Error::new("empty apk upload"));
+        }
+        state.extension_store.install_external(&bytes).await.map_err(async_graphql::Error::from)?;
+        let meta = state
+            .extension_store
+            .sync_sources()
+            .await
+            .map_err(async_graphql::Error::from)?;
+        let _ = meta;
+        // resolve the freshly installed package (inspect told us the name;
+        // simplest: the newest is_installed row without a store link)
+        let ext = sqlx::query_as::<_, suwayomi_core::schema::ExtensionRow>(
+            "SELECT * FROM suwayomi.extension WHERE is_installed AND apk_url IS NULL ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_optional(state.db.pool())
+        .await
+        .map_err(async_graphql::Error::from)?;
+        Ok(InstallExternalExtensionPayload {
+            client_mutation_id: input.client_mutation_id,
+            extension: crate::types::ExtensionType { row: ext.ok_or_else(|| async_graphql::Error::new("extension not registered"))? },
+        })
     }
 
     /// Mirrors `addExtensionStore` — inserts the store row.
@@ -1697,4 +1733,54 @@ pub(crate) async fn download_status(state: &GraphQLState) -> async_graphql::Resu
         queue,
         state: if state.download.is_running() { DownloaderState::Started } else { DownloaderState::Stopped },
     })
+
+
+}
+
+/// Applies an extension patch (install / uninstall / update) for the given
+/// pkg names — mirrors Kotlin `ExtensionMutation.updateExtensions`.
+async fn apply_extension_patch(
+    state: &GraphQLState,
+    pkgs: &[String],
+    patch: &UpdateExtensionPatchInput,
+) -> async_graphql::Result<()> {
+    let svc = state.extension_store.clone();
+    for pkg in pkgs {
+        let row: Option<suwayomi_core::schema::ExtensionRow> =
+            sqlx::query_as("SELECT * FROM suwayomi.extension WHERE pkg_name = $1")
+                .bind(pkg)
+                .fetch_optional(state.db.pool())
+                .await
+                .map_err(async_graphql::Error::from)?;
+        let Some(row) = row else { continue };
+        if (patch.install == Some(true) && !row.is_installed)
+            || (patch.update == Some(true) && row.has_update)
+        {
+            svc.install(pkg).await.map_err(async_graphql::Error::from)?;
+        } else if patch.uninstall == Some(true) && row.is_installed {
+            svc.uninstall(pkg).await.map_err(async_graphql::Error::from)?;
+        }
+    }
+    Ok(())
+}
+
+async fn fetch_extension_by_pkg(state: &GraphQLState, pkg: &str) -> async_graphql::Result<Option<suwayomi_core::schema::ExtensionRow>> {
+    sqlx::query_as("SELECT * FROM suwayomi.extension WHERE pkg_name = $1")
+        .bind(pkg)
+        .fetch_optional(state.db.pool())
+        .await
+        .map_err(async_graphql::Error::from)
+}
+
+async fn fetch_extensions_by_pkg(
+    state: &GraphQLState,
+    pkgs: &[String],
+) -> async_graphql::Result<Vec<suwayomi_core::schema::ExtensionRow>> {
+    let mut out = Vec::new();
+    for p in pkgs {
+        if let Some(r) = fetch_extension_by_pkg(state, p).await? {
+            out.push(r);
+        }
+    }
+    Ok(out)
 }

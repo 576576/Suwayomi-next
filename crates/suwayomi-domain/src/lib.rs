@@ -5,6 +5,7 @@
 
 pub mod category;
 pub mod download;
+pub mod extension_store;
 pub mod koreader_sync;
 pub mod chapter;
 pub mod error;

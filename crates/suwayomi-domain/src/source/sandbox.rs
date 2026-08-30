@@ -103,9 +103,23 @@ pub struct SandboxExtension {
     pub version_name: String,
     #[serde(default)]
     pub class_name: String,
+    /// Sources this extension provides (id/name/lang) — links a sandbox
+    /// source back to the extension package for registration.
+    #[serde(default)]
+    pub sources: Vec<SandboxSourceRef>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxSourceRef {
+    pub id: i64,
+    pub name: String,
+    #[serde(default)]
+    pub lang: String,
 }
 
 /// Fetches manga/chapter data from the JVM sandbox over HTTP.
+#[derive(Clone)]
 pub struct HttpSandboxFetcher {
     base_url: String,
     client: reqwest::Client,
@@ -147,6 +161,30 @@ impl HttpSandboxFetcher {
     pub async fn list_sources(&self) -> Result<Vec<SandboxSourceInfo>> {
         let r = self.client.get(format!("{}/sources", self.base_url)).send().await.map_err(DomainError::from)?;
         r.json::<Vec<SandboxSourceInfo>>().await.map_err(DomainError::from)
+    }
+
+    /// Asks the sandbox to rescan its extensions directory (hot reload).
+    pub async fn reload(&self) -> Result<()> {
+        let r = self.client.post(format!("{}/reload", self.base_url)).send().await.map_err(DomainError::from)?;
+        if !r.status().is_success() {
+            return Err(DomainError::Sandbox(format!("sandbox reload failed: {}", r.status())));
+        }
+        Ok(())
+    }
+
+    /// Parses an uploaded APK (raw bytes) and returns its extension metadata.
+    pub async fn inspect(&self, apk: &[u8]) -> Result<SandboxExtension> {
+        let r = self
+            .client
+            .post(format!("{}/inspect", self.base_url))
+            .body(apk.to_vec())
+            .send()
+            .await
+            .map_err(DomainError::from)?;
+        if !r.status().is_success() {
+            return Err(DomainError::Sandbox(format!("sandbox inspect failed: {}", r.status())));
+        }
+        r.json::<SandboxExtension>().await.map_err(DomainError::from)
     }
 
     async fn fetch_mangas_page(&self, source_id: i64, params: &[(&str, String)]) -> Result<MangasPage> {

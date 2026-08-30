@@ -155,4 +155,11 @@
   PG 版 SyncYomiTriggers（migrations/pg-only/0002_*，plpgsql 触发器，嵌入式 pglite 不支持
   故仅外部 PG 应用，Db::migrate 自动分流 + advisory lock 串行化）；version_bump 语义测试
   （DATABASE_URL 存在时真跑，否则 SKIP）；core backup 拆 create_backup_proto/restore_backup_proto
-- 剩余：扩展库在线安装/源注册管理 → 后续增量
+- **扩展库在线安装 + 源注册管理完成**（Phase 6 收口）：extension_store.rs 服务——
+  仓库索引刷新（v1 数组 / keiyoushi v2 对象双格式，versionCode 字符串兼容）、APK 下载安装/
+  更新/卸载（文件命名 tachiyomi-{lang}.{pkg}-v{ver}.apk，短包名匹配清理）、sandbox 热加载
+  （/reload + /inspect 端点）、源注册同步（source id 来自扩展 getId 稳定值）；
+  GraphQL updateExtension/updateExtensions/installExternalExtension 真实现 +
+  REST /install /update /uninstall /refresh /icon 代理；SandboxProcess 生命周期修复
+  （let _sandbox 保持进程存活）；真实 keiyoushi 仓库实测：刷新 1381 扩展、
+  安装 nhentai → sandbox 22 源 → DB 注册 → popular 18 部漫画 → 卸载清零

@@ -197,13 +197,17 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    let sandbox_base = sandbox_guard.as_ref().map(|g| g.fetcher().base_url().to_string());
     let fetcher: Arc<dyn SourceFetcher> =
         if let Some(guard) = &sandbox_guard { Arc::new(guard.fetcher()) } else { Arc::new(StubFetcher) };
-    let _ = sandbox_guard; // keep process alive for the server lifetime
-    let graphql_state = suwayomi_graphql::GraphQLState::new(db.clone(), config.clone(), fetcher.clone());
+    // NB: `let _x = sandbox_guard` (NOT `let _ = ...`) keeps the process alive
+    // for the whole server lifetime — `let _ =` would drop it immediately and
+    // kill the JVM in Drop.
+    let _sandbox = sandbox_guard;
+    let graphql_state = suwayomi_graphql::GraphQLState::new(db.clone(), config.clone(), fetcher.clone(), sandbox_base.clone());
     let schema = suwayomi_graphql::schema::build_schema(graphql_state);
     tracing::info!("graphql schema ready ({} type definitions)", suwayomi_graphql::schema::schema_type_count());
-    let state = AppState::new(db, config.clone(), fetcher);
+    let state = AppState::new(db, config.clone(), fetcher, sandbox_base);
     let app = build_router(state, schema);
 
     let addr: SocketAddr = format!("{}:{}", config.ip, config.port).parse()?;

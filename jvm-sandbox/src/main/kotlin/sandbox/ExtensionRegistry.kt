@@ -31,6 +31,17 @@ class ExtensionRegistry(private val rootDir: Path) {
         }
     }
 
+    /** Drops all loaded extensions/sources and rescans the directory (hot reload). */
+    fun reload() {
+        extensions.clear()
+        sources.clear()
+        scan()
+        println("sandbox: reload complete — ${extensions.size} extension(s), ${sources.size} source(s)")
+    }
+
+    /** Parses an arbitrary APK without installing it (used for external installs). */
+    fun inspect(apk: Path): ExtensionInfo? = readApkInfo(apk)
+
     private fun loadApk(apk: Path) {
         val info = readApkInfo(apk) ?: return
         val loaded = loader.load(apk, info.className, info.extensionId)

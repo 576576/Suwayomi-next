@@ -22,6 +22,37 @@ class Router(private val registry: ExtensionRegistry) {
         ex.respond(200, registry.toSourcesJson())
     }
 
+    /** POST /reload — rescans the extensions directory (install/uninstall hook). */
+    fun reload(ex: HttpExchange) {
+        try {
+            registry.reload()
+            ex.respond(200, """{"ok":true,"extensions":${registry.extensions.size},"sources":${registry.sources.size}}""")
+        } catch (t: Throwable) {
+            ex.respond(500, """{"error":${jsonStr(t.message ?: t.toString())}}""")
+        }
+    }
+
+    /** POST /inspect — parse an uploaded APK (body bytes) and return its metadata. */
+    fun inspect(ex: HttpExchange) {
+        try {
+            val bytes = ex.requestBody.readBytes()
+            val tmp = java.nio.file.Files.createTempFile("ext-inspect-", ".apk")
+            java.nio.file.Files.write(tmp, bytes)
+            val info = registry.inspect(tmp) ?: run {
+                java.nio.file.Files.deleteIfExists(tmp)
+                ex.respond(400, """{"error":"not a tachiyomi extension (missing tachiyomi.extension.class)"}""")
+                return
+            }
+            java.nio.file.Files.deleteIfExists(tmp)
+            ex.respond(
+                200,
+                """{"pkgName":${jsonStr(info.pkgName)},"name":${jsonStr(info.name)},"lang":${jsonStr(info.lang)},"versionName":${jsonStr(info.versionName)},"className":${jsonStr(info.className)},"extensionId":${info.extensionId}}""",
+            )
+        } catch (t: Throwable) {
+            ex.respond(500, """{"error":${jsonStr(t.message ?: t.toString())}}""")
+        }
+    }
+
     fun sourceDispatch(ex: HttpExchange) {
         val path = ex.requestURI.rawPath
         val segments = path.removePrefix("/source/").split("/").filter { it.isNotBlank() }

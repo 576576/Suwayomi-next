@@ -17,6 +17,8 @@ use suwayomi_domain::source::SourceFetcher;
 pub struct AppState {
     pub db: Db,
     pub config: ServerConfig,
+    /// Extension source fetcher (stub until the JVM sandbox loads real extensions).
+    pub fetcher: Arc<dyn SourceFetcher>,
     pub manga: MangaService,
     pub chapter: ChapterService,
     pub category: CategoryService,
@@ -33,8 +35,8 @@ impl AppState {
         let category = CategoryService::new(db.clone());
         let category_manga = CategoryMangaService::new(db.clone());
         let library = LibraryService::new(db.clone(), manga.clone());
-        let manga_list = MangaListService::new(db.clone(), fetcher);
+        let manga_list = MangaListService::new(db.clone(), fetcher.clone());
         let page = PageService::new(db.clone());
-        Self { db, config, manga, chapter, category, category_manga, library, manga_list, page }
+        Self { db, config, fetcher, manga, chapter, category, category_manga, library, manga_list, page }
     }
 }

@@ -9,7 +9,11 @@ repository.workspace = true
 [dependencies]
 suwayomi-core = { path = "../suwayomi-core" }
 suwayomi-domain = { path = "../suwayomi-domain" }
+suwayomi-rest = { path = "../suwayomi-rest" }
 axum.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+chrono.workspace = true

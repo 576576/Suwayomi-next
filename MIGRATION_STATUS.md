@@ -139,4 +139,5 @@
 - **Phase 4 已完成**：Query 33/33、Mutation 82/82、Subscription 6/6 字段全齐；类型 351/363（缺失 14 均为孤立声明类型，客户端不可达不影响）；27 单元测试全绿
 - **Phase 5 骨架已完成**：jvm-sandbox（Kotlin 2.2.20 + JDK HttpServer 零依赖）+ HttpSandboxFetcher（reqwest）+ SandboxProcess 生命周期；Rust 拉起 JVM→health→HTTP IPC 链路端到端验证通过；真实扩展加载（ChildFirstClassLoader + 完整接口）为下一增量
 - **Phase 6 第一批完成**：REST track（list 真实现）/update（recentChapters 真实现 + summary）/downloads（队列契约）端点；backup 保留 stub
-- 下一步：Phase 6 剩余（OPDS、下载管理器、备份 protobuf、同步、WebSocket 推送、真实扩展加载）→ Phase 7
+- **Phase 6 OPDS 完成**：suwayomi-opds 全量 feed（根导航/OpenSearch 描述/历史/库系列含交叉过滤+排序 facet/探索来源+来源在线浏览（走 SourceFetcher）/库来源/分类/流派/状态/语言导航/库更新/系列章节/章节元数据/not-found）；手写 XML writer（无外部依赖）+ 扁平 FromRow repository；挂载 `/api/opds/v1.2`（19 端点，认证随主 router）；集成测试 7 项（嵌入式 PGlite，含 XML 结构断言）+ 4568 HTTP 冒烟通过；踩坑：COUNT 聚合查询误带 ORDER BY 触发 PG 错误→嵌入式会话终止（已拆分 where/order）
+- 下一步：Phase 6 剩余（下载管理器、备份 protobuf、同步、WebSocket 推送、真实扩展加载）→ Phase 7

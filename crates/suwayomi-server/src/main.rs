@@ -51,12 +51,13 @@ fn build_router(state: AppState, graphql_schema: suwayomi_graphql::schema::Graph
         .route("/api/v1", get(index))
         .nest("/api/v1", suwayomi_rest::routes::api_v1_router())
         .nest("/api", suwayomi_graphql::schema::graphql_router(graphql_schema))
+        .nest("/api/opds/v1.2", suwayomi_opds::router::opds_router())
         .layer(middleware::from_fn_with_state(state.clone(), suwayomi_rest::auth::require_auth))
         .with_state(state)
 }
 
 async fn index(State(_s): State<AppState>) -> Result<String, StatusCode> {
-    Ok(format!("Suwayomi (next) v{VERSION} — GraphQL at /api/graphql, REST at /api/v1, OPDS/WebUI in Phase 6"))
+    Ok(format!("Suwayomi (next) v{VERSION} — GraphQL at /api/graphql, REST at /api/v1, OPDS at /api/opds/v1.2"))
 }
 
 #[tokio::main]

@@ -49,10 +49,10 @@ cache/                统一磁盘缓存根（SUWAYOMI_CACHE_DIR 可覆盖，默
   ├─ extensions/icons/  扩展图标缓存（按内容类型存 .png/.jpg/.webp）
   ├─ extensions/index/  仓库索引本地缓存（{repo}/index.pb|json）
   └─ trackers/          追踪源图标缓存（MAL/Anilist/Bangumi logo 等）
-data/                 工作数据目录（不存在时自动创建）
-  ├─ autobackup/  downloads/  local/
+data/                 默认数据目录（Tachiyomi 兼容形式）
+  └─ autobackup/  downloads/  local/
 pglite-data/          嵌入式数据库（server 自动创建于发布根目录）
-logs/                 server.log / tray.log / sandbox.log（运行时日志）
+logs/                 运行时日志
 ```
 
 带 Electron 桌面壳的产物为 `Suwayomi-{version}-{platform}-{arch}_wElectron.zip`——在标准版
@@ -76,9 +76,8 @@ logs/                 server.log / tray.log / sandbox.log（运行时日志）
 5. **端口**：默认 8090；启动时若被占用自动顺延。与桌面壳同用时以托盘设置为准。
 6. **日志**：`logs/` 下 server/tray/sandbox 三个日志文件，排查问题优先看这里。
 
-> 版本命名：自动构建产物为 `r{versionCode}`（如 `r3124`，versionCode = commit 数 + 3000）；
-> 手动 release 用 `3.y.z`。托盘 exe 的 Windows 版本资源为 `3.{x}.{y}`（同一 versionCode 的
-> 前三位拆分，如 `3.1.2`）。关于页显示 server 真实版本与构建时间。
+> 版本命名：自动构建产物版本为 `r{versionCode}`（versionCode = commit 数 + 3000）；
+> 手动 beta/release 版本为 `3.y.z`（versionCode 的前三位拆分）。
 
 ## 从 Kotlin 版迁移
 

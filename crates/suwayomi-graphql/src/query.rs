@@ -1240,10 +1240,15 @@ impl QueryRoot {
         }
     }
 
-    /// Mirrors `aboutWebUI()`.
+    /// Mirrors `aboutWebUI()` — the locally deployed WebUI version
+    /// (from `<webui_dir>/revision`, written on every webui sync/update).
     #[graphql(name = "aboutWebUI")]
-    async fn about_web_ui(&self) -> AboutWebUI {
-        AboutWebUI { channel: WebUIChannel::Stable, tag: String::new(), update_timestamp: LongString(0) }
+    async fn about_web_ui(&self, ctx: &Context<'_>) -> AboutWebUI {
+        let tag = ctx
+            .data::<GraphQLState>()
+            .map(|s| local_webui_version(&s.webui_dir))
+            .unwrap_or_default();
+        AboutWebUI { channel: WebUIChannel::Stable, tag, update_timestamp: LongString(0) }
     }
 
     /// Mirrors `checkForServerUpdates()`.
@@ -1251,17 +1256,37 @@ impl QueryRoot {
         vec![]
     }
 
-    /// Mirrors `checkForWebUIUpdate()`.
+    /// Mirrors `checkForWebUIUpdate()` — compares the deployed revision with
+    /// the latest 576576/Suwayomi-WebUI release. Empty tag on network failure
+    /// (the WebUI then shows "unable to check for updates").
     #[graphql(name = "checkForWebUIUpdate")]
-    async fn check_for_web_ui_update(&self) -> WebUIUpdateCheck {
-        WebUIUpdateCheck { channel: WebUIChannel::Stable, tag: String::new(), update_available: false }
+    async fn check_for_web_ui_update(&self, ctx: &Context<'_>) -> WebUIUpdateCheck {
+        let current = ctx
+            .data::<GraphQLState>()
+            .map(|s| local_webui_version(&s.webui_dir))
+            .unwrap_or_default();
+        match fetch_latest_webui_release().await {
+            Ok((latest, _)) => WebUIUpdateCheck {
+                channel: WebUIChannel::Stable,
+                tag: latest.clone(),
+                update_available: !latest.is_empty() && tag_to_num(&latest) > tag_to_num(&current),
+            },
+            Err(e) => {
+                tracing::warn!("checkForWebUIUpdate failed: {e}");
+                WebUIUpdateCheck { channel: WebUIChannel::Stable, tag: String::new(), update_available: false }
+            }
+        }
     }
 
     /// Mirrors `getWebUIUpdateStatus()`.
     #[graphql(name = "getWebUIUpdateStatus")]
-    async fn get_web_ui_update_status(&self) -> WebUIUpdateStatus {
+    async fn get_web_ui_update_status(&self, ctx: &Context<'_>) -> WebUIUpdateStatus {
+        let tag = ctx
+            .data::<GraphQLState>()
+            .map(|s| local_webui_version(&s.webui_dir))
+            .unwrap_or_default();
         WebUIUpdateStatus {
-            info: WebUIUpdateInfo { channel: WebUIChannel::Stable, tag: String::new() },
+            info: WebUIUpdateInfo { channel: WebUIChannel::Stable, tag },
             progress: 0,
             state: UpdateState::Idle,
         }
@@ -2276,4 +2301,108 @@ impl MangaStatusExt for MangaStatus {
 
 trait MangaStatusExt {
     fn to_i32(&self) -> i32;
+}
+
+/// Locally deployed WebUI version from `<webui_dir>/revision` (e.g. `r3482`).
+pub(crate) fn local_webui_version(dir: &std::path::Path) -> String {
+    std::fs::read_to_string(dir.join("revision"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
+/// `r3482` → 3482 for numeric comparison (plain string compare breaks on
+/// `r349` vs `r3480`).
+fn tag_to_num(tag: &str) -> i64 {
+    tag.chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .unwrap_or(0)
+}
+
+/// Proxy candidates for GitHub API calls (api.github.com often 403s on direct
+/// connections from CN networks). Tries env proxy first, then common local
+/// proxy ports (Clash/Clash Verge/v2ray), then direct.
+fn github_proxy_candidates() -> Vec<Option<String>> {
+    let mut out = Vec::new();
+    for key in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
+        if let Ok(v) = std::env::var(key) {
+            if !v.trim().is_empty() {
+                out.push(Some(v));
+            }
+        }
+    }
+    for port in [7890u16, 7897, 10809, 1080] {
+        out.push(Some(format!("http://127.0.0.1:{port}")));
+    }
+    out.push(None); // direct last
+    out
+}
+
+/// GET with the proxy fallback chain; returns the first successful response.
+pub(crate) async fn github_get_with_fallback(url: &str) -> Result<reqwest::Response, String> {
+    let mut last_err = String::new();
+    for proxy in github_proxy_candidates() {
+        let mut builder = reqwest::Client::builder().user_agent("Suwayomi-next/1.0");
+        if let Some(p) = proxy.as_deref() {
+            match reqwest::Proxy::all(p) {
+                Ok(proxy) => {
+                    builder = builder.proxy(proxy);
+                }
+                Err(e) => {
+                    last_err = format!("proxy {p}: {e}");
+                    continue;
+                }
+            }
+        }
+        let client = match builder.build() {
+            Ok(c) => c,
+            Err(e) => {
+                last_err = e.to_string();
+                continue;
+            }
+        };
+        match client.get(url).send().await {
+            Ok(resp) if resp.status().is_success() => return Ok(resp),
+            Ok(resp) => last_err = format!("{} {}", url, resp.status()),
+            Err(e) => last_err = format!("{url}: {e}"),
+        }
+    }
+    Err(last_err)
+}
+
+/// Latest 576576/Suwayomi-WebUI release: `(tag, asset_download_url)`.
+///
+/// Prefers the HTML `releases/latest` page (follows the redirect to
+/// `/releases/tag/{tag}` and reads the tag from the final URL) — the GitHub
+/// *API* is rate-limited (403 `API rate limit exceeded`) on shared/CN exit
+/// IPs, while the website is not. The download URL is then derived from the
+/// known asset naming scheme `Suwayomi-WebUI-{tag}.zip`. Falls back to the
+/// API only if the page fetch fails entirely.
+pub(crate) async fn fetch_latest_webui_release() -> Result<(String, String), String> {
+    // 1) HTML page: tag from the redirect target URL
+    if let Ok(resp) = github_get_with_fallback("https://github.com/576576/Suwayomi-WebUI/releases/latest").await {
+        if let Some(tag) = resp.url().path_segments().and_then(|mut s| s.next_back()) {
+            let tag = tag.to_string();
+            if !tag.is_empty() && tag != "latest" {
+                let url = format!("https://github.com/576576/Suwayomi-WebUI/releases/download/{tag}/Suwayomi-WebUI-{tag}.zip");
+                return Ok((tag, url));
+            }
+        }
+    }
+    // 2) API fallback
+    let resp = github_get_with_fallback("https://api.github.com/repos/576576/Suwayomi-WebUI/releases/latest").await?;
+    let j: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let tag = j["tag_name"].as_str().unwrap_or("").to_string();
+    let url = j["assets"]
+        .as_array()
+        .and_then(|a| a.first())
+        .and_then(|a| a["browser_download_url"].as_str())
+        .unwrap_or("")
+        .to_string();
+    if tag.is_empty() || url.is_empty() {
+        return Err("no release asset".into());
+    }
+    Ok((tag, url))
 }

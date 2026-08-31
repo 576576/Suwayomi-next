@@ -10,6 +10,7 @@ use suwayomi_domain::meta::{MetaService, MetaTable};
 use suwayomi_domain::sql::bind_placeholders;
 
 use crate::query::SortOrder;
+use crate::query::{fetch_latest_webui_release, local_webui_version};
 use crate::scalars::{DurationScalar, LongString};
 use crate::settings::{
     AuthMode, CbzMediaType, GraphqlDatabaseType, KoreaderSyncChecksumMethod, KoreaderSyncConflictStrategy,
@@ -1785,27 +1786,73 @@ impl MutationRootB4 {
     #[graphql(name = "updateWebUI")]
     async fn update_web_ui(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: WebUIUpdateInput,
     ) -> async_graphql::Result<WebUIUpdatePayload> {
+        let state = ctx.data::<GraphQLState>()?;
+        let dir = state.webui_dir.clone();
+        let outcome = update_webui_dir(&dir).await;
+        let (tag, progress, state) = match outcome {
+            Ok(tag) => (tag, 100, UpdateState::Finished),
+            Err(e) => {
+                tracing::error!("updateWebUI failed: {e}");
+                (String::new(), 0, UpdateState::Error)
+            }
+        };
         Ok(WebUIUpdatePayload {
             client_mutation_id: input.client_mutation_id,
             update_status: WebUIUpdateStatus {
-                info: WebUIUpdateInfo { channel: crate::settings::WebUIChannel::Stable, tag: String::new() },
-                progress: 0,
-                state: UpdateState::Idle,
+                info: WebUIUpdateInfo { channel: crate::settings::WebUIChannel::Stable, tag },
+                progress,
+                state,
             },
         })
     }
 
     #[graphql(name = "resetWebUIUpdateStatus")]
-    async fn reset_web_ui_update_status(&self, _ctx: &Context<'_>) -> async_graphql::Result<WebUIUpdateStatus> {
+    async fn reset_web_ui_update_status(&self, ctx: &Context<'_>) -> async_graphql::Result<WebUIUpdateStatus> {
+        let tag = ctx
+            .data::<GraphQLState>()
+            .map(|s| local_webui_version(&s.webui_dir))
+            .unwrap_or_default();
         Ok(WebUIUpdateStatus {
-            info: WebUIUpdateInfo { channel: crate::settings::WebUIChannel::Stable, tag: String::new() },
+            info: WebUIUpdateInfo { channel: crate::settings::WebUIChannel::Stable, tag },
             progress: 0,
             state: UpdateState::Idle,
         })
     }
+}
+
+/// Downloads the latest 576576/Suwayomi-WebUI zip, extracts it to a temp dir
+/// and atomically swaps it into `dir` (backup old dir, rename new dir in,
+/// best-effort cleanup). Writes `<dir>/revision` so `aboutWebUI` and the next
+/// update check see the new version.
+async fn update_webui_dir(dir: &std::path::Path) -> Result<String, String> {
+    let (tag, url) = fetch_latest_webui_release().await?;
+    let resp = crate::query::github_get_with_fallback(&url).await.map_err(|e| format!("download: {e}"))?;
+    let bytes = resp.bytes().await.map_err(|e| format!("read: {e}"))?;
+
+    let tmp = std::env::temp_dir().join(format!("suwayomi-webui-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).map_err(|e| format!("tmp: {e}"))?;
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| format!("zip: {e}"))?;
+    archive.extract(&tmp).map_err(|e| format!("extract: {e}"))?;
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let old = dir.with_extension(format!("old-{ts}"));
+    if dir.exists() {
+        std::fs::rename(dir, &old).map_err(|e| format!("backup: {e}"))?;
+    }
+    if let Err(e) = std::fs::rename(&tmp, dir) {
+        let _ = std::fs::rename(&old, dir); // roll back
+        return Err(format!("swap: {e}"));
+    }
+    let _ = std::fs::remove_dir_all(&old);
+    let _ = std::fs::write(dir.join("revision"), &tag);
+    Ok(tag)
 }
 
 async fn fetch_chapter_row(state: &GraphQLState, id: i32) -> async_graphql::Result<suwayomi_core::schema::ChapterRow> {

@@ -40,10 +40,18 @@ pub struct GraphQLState {
     pub sync_yomi: SyncYomiService,
     /// Extension store: repo refresh + online install (Phase 6).
     pub extension_store: ExtensionStoreService,
+    /// WebUI static dir — version check reads `<dir>/revision`, updates swap the dir.
+    pub webui_dir: std::path::PathBuf,
 }
 
 impl GraphQLState {
-    pub fn new(db: Db, config: ServerConfig, fetcher: Arc<dyn SourceFetcher>, sandbox_base: Option<String>) -> Self {
+    pub fn new(
+        db: Db,
+        config: ServerConfig,
+        fetcher: Arc<dyn SourceFetcher>,
+        sandbox_base: Option<String>,
+        webui_dir: std::path::PathBuf,
+    ) -> Self {
         let manga = MangaService::new(db.clone(), fetcher.clone());
         let chapter = ChapterService::new(db.clone(), fetcher.clone());
         let category = CategoryService::new(db.clone());
@@ -56,6 +64,6 @@ impl GraphQLState {
         let koreader = KoreaderSyncService::new(db.clone(), config.clone());
         let sync_yomi = SyncYomiService::new(db.clone(), config.clone());
         let extension_store = ExtensionStoreService::new(db.clone(), sandbox_base);
-        Self { db, config, manga, chapter, category, category_manga, library, manga_list, page, update, download, koreader, sync_yomi, extension_store }
+        Self { db, config, manga, chapter, category, category_manga, library, manga_list, page, update, download, koreader, sync_yomi, extension_store, webui_dir }
     }
 }

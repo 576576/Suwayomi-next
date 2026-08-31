@@ -20,6 +20,8 @@ thiserror.workspace = true
 futures.workspace = true
 sqlx.workspace = true
 chrono.workspace = true
+reqwest.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true

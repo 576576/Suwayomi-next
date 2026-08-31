@@ -495,7 +495,7 @@ async fn main() -> anyhow::Result<()> {
     // for the whole server lifetime — `let _ =` would drop it immediately and
     // kill the JVM in Drop.
     let _sandbox = sandbox_guard;
-    let graphql_state = suwayomi_graphql::GraphQLState::new(db.clone(), config.clone(), fetcher.clone(), sandbox_base.clone());
+    let graphql_state = suwayomi_graphql::GraphQLState::new(db.clone(), config.clone(), fetcher.clone(), sandbox_base.clone(), resolve_webui_dir());
     let schema = suwayomi_graphql::schema::build_schema(graphql_state);
     tracing::info!("graphql schema ready ({} type definitions)", suwayomi_graphql::schema::schema_type_count());
     let state = AppState::new(db, config.clone(), fetcher, sandbox_base, resolve_webui_dir());

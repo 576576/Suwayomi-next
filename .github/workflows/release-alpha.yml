@@ -72,8 +72,8 @@ jobs:
           STAGE_EL="dist/Suwayomi-${VER}-${TGT}_wElectron"
           mkdir -p "$STAGE/bin"
           cp "$BIN" "$STAGE/bin/"
-          # 桌面壳（Tauri 托盘+设置）
-          cargo build --release --manifest-path tauri-app/Cargo.toml
+          # 桌面壳（Tauri 托盘+设置）——build-tray.sh 注入真实版本号到 Windows 资源
+          bash tauri-app/build-tray.sh
           cp tauri-app/target/release/suwayomi.exe "$STAGE/" 2>/dev/null || true
 
           # 扩展沙盒（JVM，Kotlin fat jar）——放 bin/（server 自动查找）

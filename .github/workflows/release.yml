@@ -179,7 +179,8 @@ jobs:
           cp "$BIN" "$STAGE/bin/"
           # 桌面壳仅 Windows（Tauri 在 linux/macOS runner 缺 webkit 依赖）
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cargo build --release --manifest-path tauri-app/Cargo.toml
+            # 桌面壳（Tauri 托盘）——build-tray.sh 注入真实版本号到 Windows 资源
+            bash tauri-app/build-tray.sh
             cp tauri-app/target/release/suwayomi.exe "$STAGE/" 2>/dev/null || true
             # 扩展沙盒（JVM，Kotlin fat jar）——放 bin/（server 自动查找）
             cd jvm-sandbox && ./gradlew -q jar --no-daemon && cd ..

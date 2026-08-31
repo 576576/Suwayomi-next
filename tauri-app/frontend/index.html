@@ -42,12 +42,16 @@
     <label for="port">服务器端口</label>
     <input id="port" type="number" min="1" max="65535" />
 
-    <label for="data-dir">工作数据目录（data/）</label>
-    <input id="data-dir" type="text" placeholder="留空 = 可执行文件同级 data/" />
+    <label for="data-dir">工作数据目录</label>
+    <input id="data-dir" type="text" placeholder="默认" />
     <div class="hint" id="current"></div>
 
     <label class="switch">
       <input id="open-webui" type="checkbox" /> 启动时自动打开 WebUI
+    </label>
+
+    <label class="switch">
+      <input id="prefer-electron" type="checkbox" /> 有 Electron 时优先使用
     </label>
 
     <div class="row">
@@ -81,6 +85,7 @@
           document.getElementById("data-dir").value = s.data_dir_override || "";
           document.getElementById("current").textContent = "当前目录: " + s.data_dir;
           document.getElementById("open-webui").checked = s.open_webui;
+          document.getElementById("prefer-electron").checked = s.prefer_electron;
           document.getElementById("url").textContent = "WebUI: " + s.webui_url;
         } catch (e) {
           document.getElementById("msg").textContent = "读取设置失败: " + e;
@@ -92,10 +97,11 @@
         if (!p || p < 1 || p > 65535) { document.getElementById("msg").textContent = "端口无效"; return; }
         const dd = document.getElementById("data-dir").value.trim();
         const ow = document.getElementById("open-webui").checked;
+        const pe = document.getElementById("prefer-electron").checked;
         try {
-          const url = await invoke("save_settings", { port: p, dataDir: dd, openWebui: ow });
+          const url = await invoke("save_settings", { port: p, dataDir: dd, openWebui: ow, preferElectron: pe });
           document.getElementById("url").textContent = "WebUI: " + url;
-          document.getElementById("current").textContent = "当前目录: " + (dd || "（默认 data/）");
+          document.getElementById("current").textContent = "当前目录: " + (dd || "默认");
           document.getElementById("msg").textContent = "已保存并重启服务器";
         } catch (e) {
           document.getElementById("msg").textContent = "保存失败: " + e;

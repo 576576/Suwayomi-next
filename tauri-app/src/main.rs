@@ -26,15 +26,17 @@ use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
 #[derive(Serialize, Deserialize, Clone)]
 struct Settings {
     port: u16,
-    /// 自定义工作数据目录（空 = base/data）
+    /// 自定义工作数据目录（空 = 默认 base/data）
     data_dir: Option<String>,
     /// 启动时自动打开 WebUI（默认开）
     open_webui: bool,
+    /// 有 Electron 壳时优先用 Electron 打开 WebUI（默认开）
+    prefer_electron: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { port: 8090, data_dir: None, open_webui: true }
+        Self { port: 8090, data_dir: None, open_webui: true, prefer_electron: true }
     }
 }
 
@@ -42,6 +44,8 @@ struct AppState {
     port: AtomicU16,
     data_dir: Mutex<PathBuf>,
     server: Mutex<Option<Child>>,
+    /// Electron 壳进程（_wElectron 产物启动的桌面窗口），退出托盘时一并关闭
+    electron: Mutex<Option<Child>>,
     /// true = 「隐藏托盘」退出：只退出托盘进程，server 保持后台运行；
     /// Drop 时跳过一切 server 清理（不 POST shutdown、不强杀、不 wait）。
     keep_server_on_exit: AtomicBool,
@@ -61,6 +65,10 @@ impl Drop for AppState {
         let port = self.port.load(Ordering::Relaxed);
         if server_running(port) {
             request_graceful_shutdown(port);
+        }
+        // Electron 壳随托盘退出一并关闭（只释放句柄不阻塞）
+        if let Some(mut c) = self.electron.lock().unwrap().take() {
+            let _ = c.kill();
         }
         // 只释放 Child 句柄，不 kill / 不 wait：server 作为独立进程继续完成
         // 优雅关闭（Windows 父进程退出不会自动终止子进程）。
@@ -290,6 +298,75 @@ fn webui_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}")
 }
 
+// ---- Electron 桌面壳（_wElectron 产物）----
+
+/// Electron 运行时：_wElectron 产物内置 `electron/electron.exe`（解压后的
+/// electron v44.1.0 win32-x64 完整目录）。普通产物无此目录 → 回退系统浏览器。
+fn electron_exe() -> Option<PathBuf> {
+    let cand = base_dir().join("electron").join("electron.exe");
+    if cand.is_file() { Some(cand) } else { None }
+}
+
+/// 打开 WebUI：设置了「有 Electron 时优先使用」且存在 Electron 壳 → 启动
+/// Electron 窗口（通过 SUWAYOMI_WEBUI_URL 环境变量传入本地 server 地址；
+/// electron.exe 无参启动会自动加载 resources/app 里的应用入口）；否则用
+/// 系统默认浏览器。
+fn launch_webui(state: &AppState, prefer_electron: bool, port: u16) {
+    if prefer_electron {
+        if let Some(exe) = electron_exe() {
+            tray_log(&format!("[tray] launching electron shell: {}", exe.display()));
+            match Command::new(&exe)
+                .env("SUWAYOMI_WEBUI_URL", webui_url(port))
+                .spawn()
+            {
+                Ok(child) => {
+                    *state.electron.lock().unwrap() = Some(child);
+                    return;
+                }
+                Err(e) => tray_log(&format!("[tray] electron spawn failed: {e}")),
+            }
+        }
+    }
+    tray_log("[tray] opening webui in system browser");
+    let _ = open::that(webui_url(port));
+}
+
+/// 关闭 Electron 壳：先杀本进程持有的 Child；再兜底枚举命令行指向本发布
+/// 目录 electron\ 的 electron.exe 进程（防外部启动/句柄丢失）。
+fn kill_electron_processes() {
+    use sysinfo::{ProcessesToUpdate, System};
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    let base = base_dir().join("electron");
+    let base_str = base.to_string_lossy().to_lowercase();
+    let ids: Vec<_> = sys
+        .processes()
+        .values()
+        .filter(|p| {
+            let n = p.name().to_string_lossy();
+            n.eq_ignore_ascii_case("electron.exe")
+                && p.cmd().iter().any(|c| {
+                    let s = c.to_string_lossy().to_lowercase();
+                    s.contains(&base_str) || s.contains("suwayomi")
+                })
+        })
+        .map(|p| p.pid())
+        .collect();
+    for id in ids {
+        tray_log(&format!("[tray] killing electron pid {id}"));
+        if let Some(p) = sys.process(id) {
+            let _ = p.kill();
+        }
+    }
+}
+
+fn kill_owned_electron(state: &AppState) {
+    if let Some(mut c) = state.electron.lock().unwrap().take() {
+        let _ = c.kill();
+    }
+    kill_electron_processes();
+}
+
 // ---- 设置窗口 commands ----
 
 #[derive(Serialize)]
@@ -300,6 +377,7 @@ struct SettingsView {
     /// 设置里的自定义目录（空 = 默认 base/data）
     data_dir_override: String,
     open_webui: bool,
+    prefer_electron: bool,
     webui_url: String,
 }
 
@@ -307,12 +385,14 @@ struct SettingsView {
 fn get_settings(state: State<AppState>) -> SettingsView {
     let port = state.port.load(Ordering::Relaxed);
     let d = state.data_dir.lock().unwrap().clone();
-    let over = load_settings().data_dir.unwrap_or_default();
+    let loaded = load_settings();
+    let over = loaded.data_dir.unwrap_or_default();
     SettingsView {
         port,
         data_dir: d.display().to_string(),
         data_dir_override: over,
-        open_webui: load_settings().open_webui,
+        open_webui: loaded.open_webui,
+        prefer_electron: loaded.prefer_electron,
         webui_url: webui_url(port),
     }
 }
@@ -323,10 +403,11 @@ fn save_settings(
     port: u16,
     data_dir: Option<String>,
     open_webui: bool,
+    prefer_electron: bool,
 ) -> Result<String, String> {
     let port = port.max(1).min(65535);
     let clean = data_dir.map(|d| d.trim().to_string()).filter(|d| !d.is_empty());
-    let settings = Settings { port, data_dir: clean.clone(), open_webui };
+    let settings = Settings { port, data_dir: clean.clone(), open_webui, prefer_electron };
     save_settings_file(&settings).map_err(|e| format!("写入设置失败: {e}"))?;
 
     // 新工作目录：创建（含三个子目录）
@@ -336,6 +417,8 @@ fn save_settings(
 
     // 端口/目录变更：优雅结束旧 server 并以新配置重启（不残留 postgres）
     stop_server_gracefully(state.port.load(Ordering::Relaxed));
+    // Electron 窗口指向旧端口/旧目录，一并关闭（用户可重新打开 WebUI）
+    kill_owned_electron(&state);
     let mut guard = state.server.lock().unwrap();
     if let Some(mut c) = guard.take() {
         let _ = c.wait();
@@ -387,9 +470,9 @@ fn main() {
             // 先检测：已有 server 实例（外部启动）则不再重复拉起
             let running = server_running(port);
             tray_log(&format!("[tray] setup: server_running={running}"));
-            let server = if running {
+            let (server, ready) = if running {
                 tray_log("[tray] server already running; not starting another");
-                None
+                (None, false)
             } else {
                 let s = spawn_server(&data, port);
                 tray_log(&format!("[tray] spawn_server result: {}", s.is_some()));
@@ -397,12 +480,7 @@ fn main() {
                     tray_log("[tray] WARN: server binary not found (set SUWAYOMI_BIN or place suwayomi-server next to this exe)");
                 }
                 let ready = wait_ready(port, Duration::from_secs(20));
-                // 启动时自动打开 WebUI（默认开启，设置里可关）
-                if s.is_some() && settings.open_webui && ready {
-                    tray_log("[tray] opening webui at startup");
-                    let _ = open::that(webui_url(port));
-                }
-                s
+                (s, ready)
             };
 
             // 设置窗口：静默创建（build 后隐藏，托盘菜单唤起）；暗黑主题跟随
@@ -468,7 +546,9 @@ fn main() {
                     }
                     "open_webui" => {
                         let st = app.state::<AppState>();
-                        let _ = open::that(webui_url(st.port.load(Ordering::Relaxed)));
+                        let port = st.port.load(Ordering::Relaxed);
+                        let loaded = load_settings();
+                        launch_webui(&st, loaded.prefer_electron, port);
                     }
                     "open_data" => {
                         let st = app.state::<AppState>();
@@ -492,22 +572,33 @@ fn main() {
                     "quit" => {
                         // 托盘立刻关闭（视觉上不等待）：只发优雅关闭请求，
                         // server 在后台自行收尾（pg_ctl stop postgres、杀 JVM
-                        // 沙盒）后退出；AppState::drop 同样不阻塞。
+                        // 沙盒）后退出；AppState::drop 同样不阻塞。Electron 壳
+                        // 窗口随退出一并关闭。
                         let st = app.state::<AppState>();
                         let port = st.port.load(Ordering::Relaxed);
                         request_graceful_shutdown(port);
+                        kill_owned_electron(&st);
                         app.exit(0);
                     }
                     _ => {}
                 })
                 .build(app)?;
 
+            let started = server.is_some();
             app.manage(AppState {
                 port: AtomicU16::new(port),
                 data_dir: Mutex::new(data),
                 server: Mutex::new(server),
+                electron: Mutex::new(None),
                 keep_server_on_exit: AtomicBool::new(false),
             });
+
+            // 启动时自动打开 WebUI（默认开启，设置里可关；有 Electron 则优先
+            // 用 Electron 壳打开）——放在 manage 之后，launch_webui 需要 state。
+            if started && settings.open_webui && ready {
+                let st = app.state::<AppState>();
+                launch_webui(&st, settings.prefer_electron, port);
+            }
             Ok(())
         })
         .on_window_event(|window, event| {

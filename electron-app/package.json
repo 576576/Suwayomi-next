@@ -1,0 +1,7 @@
+{
+  "name": "suwayomi-electron",
+  "version": "0.1.0",
+  "description": "Suwayomi WebUI desktop shell (Electron)",
+  "main": "main.js",
+  "private": true
+}

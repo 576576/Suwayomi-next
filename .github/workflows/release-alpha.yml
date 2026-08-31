@@ -69,6 +69,7 @@ jobs:
 
           # 产物命名：Suwayomi-r3046-windows-x64.zip（无 Next、无 -alpha 后缀）
           STAGE="dist/Suwayomi-${VER}-${TGT}"
+          STAGE_EL="dist/Suwayomi-${VER}-${TGT}_wElectron"
           mkdir -p "$STAGE/bin"
           cp "$BIN" "$STAGE/bin/"
           # 桌面壳（Tauri 托盘+设置）
@@ -87,12 +88,27 @@ jobs:
           rm -f webui.zip
           mkdir -p "$STAGE/data/autobackup" "$STAGE/data/downloads" "$STAGE/data/local"
           powershell -Command "Compress-Archive -Path 'dist/Suwayomi-${VER}-${TGT}' -DestinationPath 'dist/Suwayomi-${VER}-${TGT}.zip' -Force"
+
+          # ---- 带 Electron 壳的产物（_wElectron，桌面窗口化 WebUI）----
+          # 复制普通产物为基底，附加 electron v44.1.0 win32-x64 运行时 + 应用入口
+          cp -r "$STAGE" "$STAGE_EL"
+          ELECTRON_VER="v44.1.0"
+          curl -sL -o electron.zip "https://github.com/electron/electron/releases/download/${ELECTRON_VER}/electron-${ELECTRON_VER}-win32-x64.zip"
+          mkdir -p "$STAGE_EL/electron/resources/app"
+          python3 -c "import zipfile; zipfile.ZipFile('electron.zip').extractall('$STAGE_EL/electron')"
+          cp electron-app/main.js electron-app/package.json "$STAGE_EL/electron/resources/app/"
+          rm -f electron.zip
+          powershell -Command "Compress-Archive -Path 'dist/Suwayomi-${VER}-${TGT}_wElectron' -DestinationPath 'dist/Suwayomi-${VER}-${TGT}_wElectron.zip' -Force"
+
           echo "artifact=dist/Suwayomi-${VER}-${TGT}.zip" >> "$GITHUB_OUTPUT"
+          echo "artifact_el=dist/Suwayomi-${VER}-${TGT}_wElectron.zip" >> "$GITHUB_OUTPUT"
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: Suwayomi-${{ steps.ver.outputs.version_name }}-windows-x64
-          path: ${{ steps.pack.outputs.artifact }}
+          path: |
+            dist/Suwayomi-${{ steps.ver.outputs.version_name }}-windows-x64.zip
+            dist/Suwayomi-${{ steps.ver.outputs.version_name }}-windows-x64_wElectron.zip
 
   publish:
     name: 发布 alpha (${{ needs.build.outputs.version_name }})
@@ -125,6 +141,8 @@ jobs:
           - versionName: $VER
           - versionCode: $CODE
           - commits: $COUNT
-          - 构建: windows-x64（推送 main/dev 自动触发）" \
+          - 构建: windows-x64（推送 main/dev 自动触发）
+          - 产物: Suwayomi-${VER}-windows-x64.zip（标准版）
+          - 产物: Suwayomi-${VER}-windows-x64_wElectron.zip（内置 Electron 桌面壳）" \
             --prerelease \
             --generate-notes

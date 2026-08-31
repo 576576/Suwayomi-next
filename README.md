@@ -50,6 +50,12 @@ pglite-data/          嵌入式数据库（server 自动创建于发布根目录
 logs/                 server.log / tray.log / sandbox.log（运行时日志）
 ```
 
+带 Electron 桌面壳的产物为 `Suwayomi-r{code}-windows-x64_wElectron.zip`——在标准版
+基础上多一个 `electron/` 目录（electron v44.1.0 win32-x64 运行时 + 应用入口）。托盘
+设置「有 Electron 时优先使用」（默认开）开启后，打开 WebUI 将启动 Electron 窗口
+（`electron/electron.exe --url=http://127.0.0.1:{port}`）而非系统浏览器；托盘退出时
+会一并关闭 Electron 进程。
+
 ### 使用方法
 
 1. **启动**：双击 `suwayomi.exe`（静默托盘，无终端窗口），托盘菜单：

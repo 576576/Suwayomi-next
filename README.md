@@ -13,7 +13,7 @@ Suwayomi（Kotlin/JVM）的 Rust 重写版。目标：保持既有数据、Graph
 | 4 | GraphQL API | 🟢 完成 |
 | 5 | 扩展桥接层（JVM 沙盒） | 🟢 完成 |
 | 6 | 外围功能（下载/更新/备份/Tracker/OPDS/同步/Tauri 壳） | 🟢 完成 |
-| 7 | 数据迁移工具与发布 | 🟢 h2-dump/--migrate/备份导入/Docker/文档完成 |
+| 7 | 数据迁移工具与发布 | 🟢 完成 |
 
 **API 兼容性状态**：REST v1 端点基线见 `docs/api/rest-endpoints-baseline.md`，GraphQL
 schema 基线见 `docs/graphql/README.md`，与 Kotlin 原版保持行为兼容（详见
@@ -22,7 +22,7 @@ schema 基线见 `docs/graphql/README.md`，与 Kotlin 原版保持行为兼容�
 ## 快速开始（源码构建）
 
 ```bash
-# 构建 + 启动（默认端口 8090，内置嵌入式 Oliphaunt PostgreSQL 18，零外部依赖；Windows 上 4501-4900 可能被 Hyper-V 保留，启动失败时自动顺延端口）
+# 构建 + 启动（默认端口 8090，内置嵌入式 Oliphaunt PostgreSQL 18，零外部依赖；启动失败时自动顺延端口）
 cargo run --release -p suwayomi-server
 ```
 
@@ -32,25 +32,30 @@ cargo run --release -p suwayomi-server
 
 ## Release 目录结构与用法
 
-GitHub Release 提供 `Suwayomi-r{code}-windows-x64.zip` 等平台压缩包，解压后即开即用：
+GitHub Release 提供 `Suwayomi-{version}-{platform}-{arch}.zip` 等平台压缩包，解压后即开即用：
+
+> 若发布没有你想要的平台构建，可Fork该仓库后手动运行Release构建，构建参数支持一键配置
 
 ```
-suwayomi.exe          桌面壳（Tauri 托盘）：启动/WebUI/数据目录/设置/退出
+suwayomi.exe          桌面壳（Tauri 托盘）：启动/重启/WebUI/数据目录/设置/退出
 bin/
-  ├─ suwayomi-server.exe   无头服务器（自带 WebUI 静态托管；单实例）
-  ├─ jvm-sandbox.jar       扩展沙盒（JVM，server 自动查找；安装扩展需 JDK）
-  └─ extensions/           已安装扩展的转换产物 jar（dex2jar 输出，自动生成）
+  ├─ suwayomi-server.exe   无头服务器（核心 Suwayomi-server, 单实例）
+  ├─ jvm-sandbox.jar       扩展沙盒（JVM-server, 需要系统 JDK 21, 已计划捆绑JDK）
+  └─ extensions/*.jar      已安装扩展（dex2jar 输出，自动生成）
 webui/                Suwayomi-WebUI 构建产物（CI 自动捆绑 fork 最新 release）
-extensions/           扩展下载目录：仅存放 APK（tachiyomi-{lang}.{pkg}-v{ver}.apk）
-                      ├─ index/  仓库索引本地缓存（extensions/index/{repo}/index.pb|json）
-                      └─ *.apk   已安装/已下载的扩展包
+                      └─ revision  当前部署的 WebUI 版本（r3487 等，关于页/更新检查读取）
+extensions/           扩展下载目录：仅存放扩展安装包 APK（tachiyomi-*.apk）
+cache/                统一磁盘缓存根（SUWAYOMI_CACHE_DIR 可覆盖，默认发布根下）
+  ├─ extensions/icons/  扩展图标缓存（按内容类型存 .png/.jpg/.webp）
+  ├─ extensions/index/  仓库索引本地缓存（{repo}/index.pb|json）
+  └─ trackers/          追踪源图标缓存（MAL/Anilist/Bangumi logo 等）
 data/                 工作数据目录（不存在时自动创建）
   ├─ autobackup/  downloads/  local/
 pglite-data/          嵌入式数据库（server 自动创建于发布根目录）
 logs/                 server.log / tray.log / sandbox.log（运行时日志）
 ```
 
-带 Electron 桌面壳的产物为 `Suwayomi-r{code}-windows-x64_wElectron.zip`——在标准版
+带 Electron 桌面壳的产物为 `Suwayomi-{version}-{platform}-{arch}_wElectron.zip`——在标准版
 基础上多一个 `electron/` 目录（electron v44.1.0 win32-x64 运行时 + 应用入口）。托盘
 设置「有 Electron 时优先使用」（默认开）开启后，打开 WebUI 将启动 Electron 窗口
 （`electron/electron.exe --url=http://127.0.0.1:{port}`）而非系统浏览器；托盘退出时
@@ -59,10 +64,10 @@ logs/                 server.log / tray.log / sandbox.log（运行时日志）
 ### 使用方法
 
 1. **启动**：双击 `suwayomi.exe`（静默托盘，无终端窗口），托盘菜单：
-   - 启动 Suwayomi — 拉起/重启无头服务器
+   - 启动 / 重启 Suwayomi — 未运行时拉起；运行中显示「重启」（优雅关闭后重新拉起，含嵌入式数据库）
    - 打开 WebUI — 浏览器打开 `http://127.0.0.1:{port}`
    - 打开数据目录 / 设置（端口、数据目录、WebUI 地址，保存即重启 server）
-   - 退出 — 结束托盘与 server 子进程
+   - 退出 — 结束托盘与 server 子进程（嵌入式 postgres 一并关停）
 2. **命令行方式**：直接运行 `bin/suwayomi-server.exe`（`-v` 显示版本与仓库地址）。
 3. **添加扩展仓库**：WebUI 扩展页添加仓库索引 URL（支持 Mihon `index.pb` 与
    Tachiyomi `index.json`，如 keiyoushi），刷新后在线安装扩展。
@@ -71,7 +76,9 @@ logs/                 server.log / tray.log / sandbox.log（运行时日志）
 5. **端口**：默认 8090；启动时若被占用自动顺延。与桌面壳同用时以托盘设置为准。
 6. **日志**：`logs/` 下 server/tray/sandbox 三个日志文件，排查问题优先看这里。
 
-> 版本命名：自动构建产物为 `r{versionCode}`（如 `r3075`）；手动 release 用 `3.y.z`。
+> 版本命名：自动构建产物为 `r{versionCode}`（如 `r3124`，versionCode = commit 数 + 3000）；
+> 手动 release 用 `3.y.z`。托盘 exe 的 Windows 版本资源为 `3.{x}.{y}`（同一 versionCode 的
+> 前三位拆分，如 `3.1.2`）。关于页显示 server 真实版本与构建时间。
 
 ## 从 Kotlin 版迁移
 

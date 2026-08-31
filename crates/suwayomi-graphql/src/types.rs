@@ -1000,8 +1000,10 @@ impl ExtensionType {
     async fn has_update(&self) -> bool {
         self.row.has_update
     }
-    async fn icon_url(&self) -> &str {
-        &self.row.icon_url
+    async fn icon_url(&self) -> String {
+        // 返回服务器代理端点（下载扩展图标并缓存）而非原始远程 URL——
+        // WebUI 会拼 baseUrl 前缀，远程完整 URL 会被破坏导致图标加载失败。
+        ExtensionType::proxy_icon_url(&self.row.pkg_name)
     }
     async fn is_installed(&self) -> bool {
         self.row.is_installed

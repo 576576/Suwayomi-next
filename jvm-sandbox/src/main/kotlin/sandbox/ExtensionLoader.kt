@@ -129,7 +129,14 @@ fun findMethod(cls: Class<*>, name: String, vararg paramTypes: Class<*>): java.l
     try {
         cls.getMethod(name, *paramTypes)
     } catch (e: NoSuchMethodException) {
-        null
+        // `getMethod` requires exact parameter types. Extension methods often
+        // declare interfaces (SManga) while we hold the impl class (SMangaImpl),
+        // so fall back to name+arity and validate assignability.
+        cls.methods.firstOrNull { m ->
+            m.name == name &&
+                m.parameterCount == paramTypes.size &&
+                m.parameterTypes.indices.all { i -> m.parameterTypes[i].isAssignableFrom(paramTypes[i]) }
+        }
     }
 
 fun callGetter(obj: Any, getterName: String): Any? {

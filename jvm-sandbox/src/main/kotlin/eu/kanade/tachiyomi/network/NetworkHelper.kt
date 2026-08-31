@@ -88,13 +88,12 @@ class NetworkHelper() {
             val httpLoggingInterceptor =
                 HttpLoggingInterceptor(
                     object : HttpLoggingInterceptor.Logger {
-                        val logger = KotlinLogging.logger { }
-
                         override fun log(message: String) {
-                            logger.debug { message }
+                            System.err.println("[okhttp] $message")
                         }
                     },
                 ).apply {
+                    // BODY 级日志：排查扩展实际拿到的页面（封面 data-cfsrc 等）。
                     level = HttpLoggingInterceptor.Level.BASIC
                 }
             builder.addNetworkInterceptor(httpLoggingInterceptor)

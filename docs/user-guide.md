@@ -30,7 +30,8 @@ cargo run --release -p suwayomi-server
 | `SUWAYOMI_AUTH_USERNAME` / `SUWAYOMI_AUTH_PASSWORD` | — | 认证凭据 |
 | `SUWAYOMI_SANDBOX_JAR` | — | JVM 扩展沙盒 jar 路径（未设置则扩展源不可用） |
 | `SUWAYOMI_SANDBOX_PORT` | `4569` | 沙盒 HTTP 端口 |
-| `SUWAYOMI_EXTENSIONS_DIR` | `./extensions` | 扩展 jar 目录 |
+| `SUWAYOMI_EXTENSIONS_DIR` | `./extensions` | 扩展 APK 目录（只放 APK） |
+| `SUWAYOMI_JAR_DIR` | `<extensions>/../bin/extensions` | dex2jar 转换产物 jar 目录 |
 | `SUWAYOMI_H2_DUMP_JAR` | `tools/h2-dump/build/libs/h2-dump.jar` | `--migrate` 用的导出工具 jar |
 
 ## 从 Kotlin 版迁移（Phase 7）

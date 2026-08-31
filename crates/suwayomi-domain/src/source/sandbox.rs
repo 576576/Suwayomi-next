@@ -382,21 +382,20 @@ fn spawn_java(jar_path: &str, port: &str) -> std::io::Result<std::process::Child
     cmd.arg("-jar").arg(jar_path).env("SUWAYOMI_SANDBOX_PORT", port);
     // Pass through the extensions directory (default ./extensions) and an
     // optional outbound proxy (e.g. Clash) for geo-blocked sources.
-    if let Ok(dir) = std::env::var("SUWAYOMI_EXTENSIONS_DIR") {
-        cmd.env("SUWAYOMI_EXTENSIONS_DIR", &dir);
-        // Converted jars go to <extensions>/../bin/extensions by default
-        // (release layout keeps only APKs under extensions/), overridable
-        // with SUWAYOMI_JAR_DIR.
-        if std::env::var("SUWAYOMI_JAR_DIR").is_err() {
-            let ext = std::path::Path::new(&dir);
-            let jar_dir = ext
-                .parent()
-                .map(|p| p.join("bin").join("extensions"))
-                .unwrap_or_else(|| std::path::PathBuf::from("bin/extensions"));
-            cmd.env("SUWAYOMI_JAR_DIR", jar_dir);
-        }
-    }
+    let ext_dir = std::env::var("SUWAYOMI_EXTENSIONS_DIR").unwrap_or_else(|_| "./extensions".to_string());
+    cmd.env("SUWAYOMI_EXTENSIONS_DIR", &ext_dir);
+    // Converted jars always go to <extensions>/../bin/extensions by default
+    // (release layout keeps only APKs under extensions/), overridable with
+    // SUWAYOMI_JAR_DIR. Computed unconditionally — the sandbox must never
+    // fall back to writing dex2jar output into the APK dir.
     if let Ok(jar_dir) = std::env::var("SUWAYOMI_JAR_DIR") {
+        cmd.env("SUWAYOMI_JAR_DIR", jar_dir);
+    } else {
+        let ext = std::path::Path::new(&ext_dir);
+        let jar_dir = ext
+            .parent()
+            .map(|p| p.join("bin").join("extensions"))
+            .unwrap_or_else(|| std::path::PathBuf::from("bin/extensions"));
         cmd.env("SUWAYOMI_JAR_DIR", jar_dir);
     }
     if let Ok(proxy) = std::env::var("SUWAYOMI_SANDBOX_PROXY") {

@@ -28,7 +28,9 @@ fun main() {
     val extensionsDir = System.getenv("SUWAYOMI_EXTENSIONS_DIR") ?: "extensions"
     // Converted jars live in a separate directory (bin/extensions in the
     // release layout) so the extensions dir only holds the downloaded APKs.
-    val jarDir = System.getenv("SUWAYOMI_JAR_DIR") ?: extensionsDir
+    val jarDir = System.getenv("SUWAYOMI_JAR_DIR")
+        ?: Paths.get(extensionsDir).parent?.resolve("bin/extensions")?.toString()
+        ?: "bin/extensions"
     Files.createDirectories(Paths.get(extensionsDir))
     Files.createDirectories(Paths.get(jarDir))
 

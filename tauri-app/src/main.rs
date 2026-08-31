@@ -13,7 +13,7 @@
 use std::io::Write;
 use std::net::TcpStream;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -42,17 +42,25 @@ struct AppState {
     port: AtomicU16,
     data_dir: Mutex<PathBuf>,
     server: Mutex<Option<Child>>,
+    /// true = 「隐藏托盘」退出：只退出托盘进程，server 保持后台运行；
+    /// Drop 时跳过一切 server 清理（不 POST shutdown、不强杀、不 wait）。
+    keep_server_on_exit: AtomicBool,
 }
 
 impl Drop for AppState {
     fn drop(&mut self) {
+        if self.keep_server_on_exit.load(Ordering::Relaxed) {
+            // 隐藏托盘：server 继续运行。`Child` drop 只释放句柄不杀进程，
+            // server 的日志文件句柄由 server 自身持有，不受影响。
+            return;
+        }
         // 非菜单退出（托盘被系统关闭等）：先请求优雅关闭，等 server 自
         // 行收尾（停 postgres/沙盒），超时才强杀兜底。
         let port = self.port.load(Ordering::Relaxed);
-        if server_running() {
+        if server_running(port) {
             request_graceful_shutdown(port);
             let deadline = Instant::now() + Duration::from_secs(6);
-            while Instant::now() < deadline && server_running() {
+            while Instant::now() < deadline && server_running(port) {
                 std::thread::sleep(Duration::from_millis(200));
             }
         }
@@ -144,15 +152,22 @@ fn find_server_bin() -> Option<PathBuf> {
 
 const SERVER_PROC_NAMES: [&str; 2] = ["suwayomi-server.exe", "suwayomi-server"];
 
-/// 是否已有 suwayomi-server 进程在运行
-fn server_running() -> bool {
+/// 是否已有 suwayomi-server 在运行。双检测兜底：
+/// 1) 进程名匹配（sysinfo 枚举，个别情况下可能漏判/竞态）；
+/// 2) 端口探测——server 就绪后端口必然可连，作为最终判定。
+/// 两者任一命中即视为「已有实例」，避免重复 spawn。
+fn server_running(port: u16) -> bool {
     use sysinfo::{ProcessesToUpdate, System};
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All, true);
-    sys.processes().values().any(|p| {
+    let by_name = sys.processes().values().any(|p| {
         let n = p.name().to_string_lossy();
         SERVER_PROC_NAMES.iter().any(|x| n == *x)
-    })
+    });
+    if by_name {
+        return true;
+    }
+    TcpStream::connect(("127.0.0.1", port)).is_ok()
 }
 
 /// 杀掉所有 suwayomi-server 进程（含外部启动的）
@@ -196,13 +211,13 @@ fn request_graceful_shutdown(port: u16) {
 /// 优雅停掉 server：先请求 shutdown，等待进程自然退出（graceful），超时再强杀
 /// 兜底（强杀会残留 oliphaunt postgres 子进程，server 下次启动时自愈清理）。
 fn stop_server_gracefully(port: u16) {
-    if !server_running() {
+    if !server_running(port) {
         return;
     }
     request_graceful_shutdown(port);
     for _ in 0..12 {
         std::thread::sleep(Duration::from_millis(500));
-        if !server_running() {
+        if !server_running(port) {
             tray_log("[tray] server exited gracefully");
             return;
         }
@@ -371,7 +386,7 @@ fn main() {
             let data = data_dir_of(&settings);
             ensure_data_dirs(&data);
             // 先检测：已有 server 实例（外部启动）则不再重复拉起
-            let running = server_running();
+            let running = server_running(port);
             tray_log(&format!("[tray] setup: server_running={running}"));
             let server = if running {
                 tray_log("[tray] server already running; not starting another");
@@ -407,19 +422,20 @@ fn main() {
             // 启动不显示设置窗口——静默驻托盘
             let _ = _settings_window.hide();
 
-            // 系统托盘：启动Suwayomi（运行中则禁用）→ 打开WebUI → 数据目录 → 设置 → 退出
+            // 系统托盘：启动Suwayomi（运行中则禁用）→ 打开WebUI → 数据目录 → 设置 → 隐藏托盘 → 退出
             let start_item = MenuItem::with_id(app, "start_suwayomi", "启动 Suwayomi", true, None::<&str>)?;
             let open_webui = MenuItem::with_id(app, "open_webui", "打开 WebUI", true, None::<&str>)?;
             let open_data = MenuItem::with_id(app, "open_data", "打开数据目录", true, None::<&str>)?;
             let settings_item = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
+            let hide_tray = MenuItem::with_id(app, "hide_tray", "隐藏托盘（保留服务）", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let menu = Menu::with_items(
                 app,
-                &[&start_item, &open_webui, &open_data, &settings_item, &quit],
+                &[&start_item, &open_webui, &open_data, &settings_item, &hide_tray, &quit],
             )?;
 
             // 根据当前 server 状态刷新「启动 Suwayomi」项
-            let running = server_running();
+            let running = server_running(port);
             let _ = start_item.set_enabled(!running);
             let _ = start_item.set_text(if running { "Suwayomi 运行中" } else { "启动 Suwayomi" });
 
@@ -430,11 +446,11 @@ fn main() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "start_suwayomi" => {
-                        if server_running() {
-                            return;
-                        }
                         let st = app.state::<AppState>();
                         let port = st.port.load(Ordering::Relaxed);
+                        if server_running(port) {
+                            return;
+                        }
                         let mut guard = st.server.lock().unwrap();
                         if guard.is_none() {
                             let d = st.data_dir.lock().unwrap().clone();
@@ -466,6 +482,14 @@ fn main() {
                             let _ = w.set_focus();
                         }
                     }
+                    "hide_tray" => {
+                        // 只退出托盘进程，server 保持后台运行（下次打开
+                        // suwayomi.exe 时会检测到已有实例而跳过重复启动）。
+                        tray_log("[tray] hide_tray: keeping server running, exiting tray");
+                        let st = app.state::<AppState>();
+                        st.keep_server_on_exit.store(true, Ordering::Relaxed);
+                        app.exit(0);
+                    }
                     "quit" => {
                         // 优雅关闭：先 POST /api/v1/shutdown 让 server 自行收尾
                         // （pg_ctl stop postgres、杀 JVM 沙盒），等待退出；超时
@@ -483,6 +507,7 @@ fn main() {
                 port: AtomicU16::new(port),
                 data_dir: Mutex::new(data),
                 server: Mutex::new(server),
+                keep_server_on_exit: AtomicBool::new(false),
             });
             Ok(())
         })

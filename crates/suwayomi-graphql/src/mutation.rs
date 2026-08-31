@@ -1730,6 +1730,12 @@ async fn seed_local_pages(
 }
 
 async fn fetch_source_type(state: &GraphQLState, id: i64) -> async_graphql::Result<SourceType> {
+    // 本地源（LOCAL_SOURCE_ID=0）不在 source 表，由 sources resolver 合成——
+    // 直接返回合成条目，避免 fetch_one 对不存在的行报
+    // "no rows returned"（如 WebUI 置顶源 isPinned 走 setSourceMetas）。
+    if id == suwayomi_domain::source::LOCAL_SOURCE_ID {
+        return Ok(SourceType::local_source());
+    }
     let sql = bind_placeholders("SELECT * FROM source WHERE id = ?");
     let row = sqlx::query_as::<_, suwayomi_core::schema::SourceRow>(&sql)
         .bind(id)

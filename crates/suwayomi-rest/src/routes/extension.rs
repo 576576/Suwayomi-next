@@ -54,20 +54,33 @@ async fn icon(State(s): State<AppState>, Path(pkg): Path<String>) -> ApiResult<a
             .map_err(ApiError::from)?;
     let url = icon_url.filter(|u| !u.is_empty()).ok_or_else(|| ApiError::NotFound("no icon".into()))?;
 
-    // 磁盘缓存：<SUWAYOMI_EXTENSIONS_DIR>/icons/{pkg}.img，避免每次请求都
-    // 回源下载远程扩展图标。首次下载后写入，之后直接命中。
-    let ext_dir = std::env::var("SUWAYOMI_EXTENSIONS_DIR").unwrap_or_else(|_| "./extensions".to_string());
-    let cache_dir = std::path::Path::new(&ext_dir).join("icons");
-    let cache_file = cache_dir.join(format!("{pkg}.img"));
-    let bytes = if cache_file.is_file() {
-        std::fs::read(&cache_file).map_err(|e| ApiError::Internal(e.to_string()))?
-    } else {
-        // proxy the remote icon
-        let resp = reqwest::get(&url).await.map_err(|e| ApiError::Internal(format!("icon fetch: {e}")))?;
-        let bytes = resp.bytes().await.map_err(|e| ApiError::Internal(format!("icon read: {e}")))?;
-        let _ = std::fs::create_dir_all(&cache_dir);
-        let _ = std::fs::write(&cache_file, &bytes);
-        bytes.to_vec()
+    // 磁盘缓存：<cache>/extensions/icons/{pkg}.{png|jpg|webp}（按内容类型定扩展名，
+    // 避免回源下载）。统一缓存根见 cache_root()。
+    let cache_dir = crate::routes::cache_root().join("extensions").join("icons");
+    // 读取：依次尝试常见图标扩展名；均无则下载并落盘
+    let mut bytes: Option<Vec<u8>> = None;
+    for ext in ["png", "jpg", "webp"] {
+        let cand = cache_dir.join(format!("{pkg}.{ext}"));
+        if cand.is_file() {
+            bytes = Some(std::fs::read(&cand).map_err(|e| ApiError::Internal(e.to_string()))?);
+            break;
+        }
+    }
+    let bytes = match bytes {
+        Some(b) => b,
+        None => {
+            let resp = reqwest::get(&url).await.map_err(|e| ApiError::Internal(format!("icon fetch: {e}")))?;
+            let b = resp.bytes().await.map_err(|e| ApiError::Internal(format!("icon read: {e}")))?;
+            let b = b.to_vec();
+            let _ = std::fs::create_dir_all(&cache_dir);
+            let ext = match guess_content_type(&b) {
+                "image/jpeg" => "jpg",
+                "image/webp" => "webp",
+                _ => "png",
+            };
+            let _ = std::fs::write(cache_dir.join(format!("{pkg}.{ext}")), &b);
+            b
+        }
     };
     let ctype = guess_content_type(&bytes);
     let resp = axum::response::Response::builder()

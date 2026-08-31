@@ -449,7 +449,7 @@ impl SandboxProcess {
                 // kill the old JVM so the port is released
                 {
                     let mut guard = child.lock().unwrap();
-                    let _ = fetch_child_kill(&mut *guard);
+                    let _ = fetch_child_kill(&mut guard);
                 }
                 // wait for the port to free up (bind probe)
                 let port_num = port.parse::<u16>().unwrap_or(8091);
@@ -505,7 +505,7 @@ impl Drop for SandboxProcess {
     fn drop(&mut self) {
         self.monitor.abort();
         let mut guard = self.child.lock().unwrap();
-        let _ = fetch_child_kill(&mut *guard);
+        let _ = fetch_child_kill(&mut guard);
     }
 }
 

@@ -51,7 +51,7 @@ echo [4/6] Assembling %STAGE% ...
 mkdir "%STAGE%\bin"
 copy /y tauri-app\target\release\suwayomi.exe "%STAGE%\" >nul
 copy /y target\release\suwayomi-server.exe "%STAGE%\bin\" >nul
-copy /y jvm-sandbox\build\libs\suwayomi-jvm-sandbox.jar "%STAGE%\bin\" >nul
+copy /y jvm-sandbox\build\libs\suwayomi-jvm-sandbox.jar "%STAGE%\bin\jvm-sandbox.jar" >nul
 
 REM [5/6] bundle WebUI (fork latest release) + data dirs
 echo [5/6] Downloading WebUI (fork latest release) ...

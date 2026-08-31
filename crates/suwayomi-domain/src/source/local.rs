@@ -459,7 +459,10 @@ pub fn scan_local_source(root: &Path) -> Vec<SManga> {
             .or_else(|| archive_meta.as_ref().and_then(|m| m.manga_title.clone()))
             .unwrap_or_else(|| name.clone());
         let cover = dir.join("cover.jpg");
-        let thumbnail_url = cover.is_file().then(|| format!("local/{name}/cover.jpg"));
+        // 根相对路径（前导斜杠）：WebUI getValidImgUrlFor 拼接 `baseUrl + thumbnailUrl`，
+        // 无前导斜杠会拼出 `http://hostlocal/...`（缺 /）导致封面加载失败；
+        // 与阅读器 pages 的 `/local/...` 修复保持一致。
+        let thumbnail_url = cover.is_file().then(|| format!("/local/{name}/cover.jpg"));
         let status = details
             .as_ref()
             .and_then(|d| d.status.as_deref())
@@ -549,7 +552,7 @@ mod tests {
         assert_eq!(mangas[0].author.as_deref(), Some("A"));
         assert_eq!(mangas[0].genre.as_deref(), Some("g1, g2"));
         assert_eq!(mangas[0].status, 2);
-        assert_eq!(mangas[0].thumbnail_url.as_deref(), Some("local/My Manga/cover.jpg"));
+        assert_eq!(mangas[0].thumbnail_url.as_deref(), Some("/local/My Manga/cover.jpg"));
         assert!(local_manga_dir(&tmp, "My Manga").is_some());
 
         std::fs::remove_dir_all(&tmp).ok();

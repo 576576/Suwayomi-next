@@ -1132,6 +1132,38 @@ impl SourceType {
         }
     }
 
+    /// Synthetic entry for the local source — id `0` (`Sources.LOCAL_SOURCE_ID`
+    /// in the WebUI), grouped under "Other" via `lang = OTHER`.
+    pub fn local_source() -> Self {
+        use suwayomi_core::schema::ExtensionRow;
+        Self {
+            id: suwayomi_domain::source::LOCAL_SOURCE_ID,
+            name: "Local".to_string(),
+            lang: "OTHER".to_string(),
+            content_warning: 0,
+            extension_id: -1,
+            extension_row: Some(ExtensionRow {
+                id: -1,
+                apk_name: None,
+                store_index_url: None,
+                icon_url: String::new(),
+                name: "Local".to_string(),
+                pkg_name: "local".to_string(),
+                apk_url: None,
+                jar_url: None,
+                extension_lib: None,
+                version_name: String::new(),
+                version_code: 0,
+                lang: "OTHER".to_string(),
+                content_warning: 0,
+                is_installed: true,
+                has_update: false,
+                is_obsolete: false,
+                class_name: String::new(),
+            }),
+        }
+    }
+
     pub fn extension_id(&self) -> i32 {
         self.extension_id
     }

@@ -3,11 +3,18 @@
 //! return Kotlin-compatible defaults until Phase 6 services land.
 
 use async_graphql::{Context, Enum, InputObject, Object, SimpleObject};
+use std::collections::HashMap;
 
 use suwayomi_core::schema::TrackRecordRow;
+use suwayomi_domain::meta::{MetaService, MetaTable};
 use suwayomi_domain::sql::bind_placeholders;
 
-use crate::scalars::LongString;
+use crate::query::SortOrder;
+use crate::scalars::{DurationScalar, LongString};
+use crate::settings::{
+    AuthMode, CbzMediaType, GraphqlDatabaseType, KoreaderSyncChecksumMethod, KoreaderSyncConflictStrategy,
+    WebUIChannel, WebUIFlavor, WebUIInterface,
+};
 use crate::state::GraphQLState;
 use crate::track::{TrackRecordType, TrackerType};
 use crate::types::{CategoryType, ChapterType, ExtensionStoreType, ExtensionType, MangaType};
@@ -779,18 +786,118 @@ pub struct WebUIUpdatePayload {
     pub update_status: WebUIUpdateStatus,
 }
 
-/// Mirrors `PartialSettingsTypeInput` — core mutable settings (Phase 6
-/// extends to the full registry).
+/// Mirrors `SettingsDownloadConversionHeaderTypeInput` (WebUI r3474).
+#[derive(InputObject, Clone, Default)]
+pub struct SettingsDownloadConversionHeaderTypeInput {
+    pub name: String,
+    pub value: String,
+}
+
+/// Mirrors `SettingsDownloadConversionTypeInput` (WebUI r3474).
+#[derive(InputObject, Clone, Default)]
+pub struct SettingsDownloadConversionTypeInput {
+    pub call_timeout: Option<DurationScalar>,
+    pub compression_level: Option<f64>,
+    pub connect_timeout: Option<DurationScalar>,
+    pub headers: Option<Vec<SettingsDownloadConversionHeaderTypeInput>>,
+    pub mime_type: String,
+    pub target: String,
+}
+
+/// Mirrors `PartialSettingsTypeInput` — the full mutable settings surface of
+/// the upstream WebUI (77 fields), aligned with `graphql-base.types.ts`.
 #[derive(InputObject, Default)]
 pub struct PartialSettingsTypeInput {
-    pub auth_mode: Option<crate::settings::AuthMode>,
+    pub auth_mode: Option<AuthMode>,
     pub auth_password: Option<String>,
     pub auth_username: Option<String>,
+    pub auto_backup_include_categories: Option<bool>,
+    pub auto_backup_include_chapters: Option<bool>,
+    pub auto_backup_include_client_data: Option<bool>,
+    pub auto_backup_include_history: Option<bool>,
+    pub auto_backup_include_manga: Option<bool>,
+    pub auto_backup_include_server_settings: Option<bool>,
+    pub auto_backup_include_tracking: Option<bool>,
+    pub auto_download_ignore_re_uploads: Option<bool>,
+    pub auto_download_new_chapters: Option<bool>,
+    pub auto_download_new_chapters_limit: Option<i32>,
+    pub backup_interval: Option<i32>,
+    pub backup_path: Option<String>,
+    #[graphql(name = "backupTTL")]
+    pub backup_ttl: Option<i32>,
+    pub backup_time: Option<String>,
+    pub database_password: Option<String>,
+    pub database_type: Option<GraphqlDatabaseType>,
+    pub database_url: Option<String>,
+    pub database_username: Option<String>,
+    pub debug_logs_enabled: Option<bool>,
     pub download_as_cbz: Option<bool>,
+    pub download_conversions: Option<Vec<SettingsDownloadConversionTypeInput>>,
     pub downloads_path: Option<String>,
-    pub port: Option<i32>,
-    pub ip: Option<String>,
+    pub electron_path: Option<String>,
+    pub exclude_completed: Option<bool>,
+    pub exclude_entry_with_unread_chapters: Option<bool>,
+    pub exclude_not_started: Option<bool>,
+    pub exclude_unread_chapters: Option<bool>,
+    pub flare_solverr_as_response_fallback: Option<bool>,
+    pub flare_solverr_enabled: Option<bool>,
+    pub flare_solverr_session_name: Option<String>,
+    pub flare_solverr_session_ttl: Option<i32>,
+    pub flare_solverr_timeout: Option<i32>,
+    pub flare_solverr_url: Option<String>,
+    pub global_update_interval: Option<f64>,
     pub initial_open_in_browser_enabled: Option<bool>,
+    pub ip: Option<String>,
+    pub jwt_audience: Option<String>,
+    pub jwt_refresh_expiry: Option<DurationScalar>,
+    pub jwt_token_expiry: Option<DurationScalar>,
+    pub kcef_enabled: Option<bool>,
+    pub koreader_sync_checksum_method: Option<KoreaderSyncChecksumMethod>,
+    pub koreader_sync_percentage_tolerance: Option<f64>,
+    pub koreader_sync_strategy_backward: Option<KoreaderSyncConflictStrategy>,
+    pub koreader_sync_strategy_forward: Option<KoreaderSyncConflictStrategy>,
+    pub local_source_path: Option<String>,
+    pub max_log_file_size: Option<String>,
+    pub max_log_files: Option<i32>,
+    pub max_log_folder_size: Option<String>,
+    pub max_sources_in_parallel: Option<i32>,
+    pub opds_cbz_mimetype: Option<CbzMediaType>,
+    pub opds_chapter_sort_order: Option<SortOrder>,
+    pub opds_enable_page_read_progress: Option<bool>,
+    pub opds_items_per_page: Option<i32>,
+    pub opds_mark_as_read_on_download: Option<bool>,
+    pub opds_show_only_downloaded_chapters: Option<bool>,
+    pub opds_show_only_unread_chapters: Option<bool>,
+    pub opds_skip_chapter_metadata_feed: Option<bool>,
+    pub opds_use_binary_file_sizes: Option<bool>,
+    pub port: Option<i32>,
+    pub serve_conversions: Option<Vec<SettingsDownloadConversionTypeInput>>,
+    pub socks_proxy_enabled: Option<bool>,
+    pub socks_proxy_host: Option<String>,
+    pub socks_proxy_password: Option<String>,
+    pub socks_proxy_port: Option<String>,
+    pub socks_proxy_username: Option<String>,
+    pub socks_proxy_version: Option<i32>,
+    pub sync_data_categories: Option<bool>,
+    pub sync_data_chapters: Option<bool>,
+    pub sync_data_history: Option<bool>,
+    pub sync_data_manga: Option<bool>,
+    pub sync_data_tracking: Option<bool>,
+    pub sync_interval: Option<DurationScalar>,
+    pub sync_yomi_api_key: Option<String>,
+    pub sync_yomi_enabled: Option<bool>,
+    pub sync_yomi_host: Option<String>,
+    pub system_tray_enabled: Option<bool>,
+    pub update_mangas: Option<bool>,
+    pub use_hikari_connection_pool: Option<bool>,
+    #[graphql(name = "webUIChannel")]
+    pub webui_channel: Option<WebUIChannel>,
+    #[graphql(name = "webUIFlavor")]
+    pub webui_flavor: Option<WebUIFlavor>,
+    #[graphql(name = "webUIInterface")]
+    pub webui_interface: Option<WebUIInterface>,
+    #[graphql(name = "webUIUpdateCheckInterval")]
+    pub webui_update_check_interval: Option<f64>,
 }
 
 
@@ -1633,7 +1740,19 @@ impl MutationRootB4 {
         input: SetSettingsInput,
     ) -> async_graphql::Result<SetSettingsPayload> {
         let state = ctx.data::<GraphQLState>()?;
-        let _ = input.settings; // Phase 6 wires the mutable settings registry
+        // Persist the submitted (non-None) settings as a JSON blob under the
+        // `settings` global_meta key so saves survive restarts. The settings
+        // query overlays this blob on top of the env-derived defaults.
+        let json = partial_settings_to_json(&input.settings);
+        let json_str = serde_json::to_string(&json).unwrap_or_else(|_| "{}".to_string());
+        let mut m = HashMap::new();
+        m.insert("settings".to_string(), json_str);
+        let mut by_ref = HashMap::new();
+        by_ref.insert(0i64, m);
+        MetaService::new(state.db.clone())
+            .modify(MetaTable::Global, &by_ref)
+            .await
+            .map_err(async_graphql::Error::from)?;
         Ok(SetSettingsPayload {
             client_mutation_id: input.client_mutation_id,
             settings: crate::settings::SettingsType::from_config(&state.config),
@@ -1783,4 +1902,178 @@ async fn fetch_extensions_by_pkg(
         }
     }
     Ok(out)
+}
+
+/// Serializes the submitted (non-None) settings into a JSON object keyed by
+/// the upstream camelCase field names, for persistence under global_meta.
+fn partial_settings_to_json(s: &PartialSettingsTypeInput) -> serde_json::Value {
+    use crate::scalars::format_iso8601_duration;
+    use serde_json::{json, Map, Value};
+
+    let mut m = Map::new();
+    macro_rules! put {
+        ($k:expr, $v:expr) => {
+            if let Some(v) = $v {
+                m.insert($k.to_string(), json!(v));
+            }
+        };
+    }
+
+    put!("authMode", s.auth_mode.map(|v| match v {
+        AuthMode::None => "NONE",
+        AuthMode::BasicAuth => "BASIC_AUTH",
+        AuthMode::SimpleLogin => "SIMPLE_LOGIN",
+        AuthMode::UiLogin => "UI_LOGIN",
+    }));
+    put!("authPassword", s.auth_password.clone());
+    put!("authUsername", s.auth_username.clone());
+    put!("autoBackupIncludeCategories", s.auto_backup_include_categories);
+    put!("autoBackupIncludeChapters", s.auto_backup_include_chapters);
+    put!("autoBackupIncludeClientData", s.auto_backup_include_client_data);
+    put!("autoBackupIncludeHistory", s.auto_backup_include_history);
+    put!("autoBackupIncludeManga", s.auto_backup_include_manga);
+    put!("autoBackupIncludeServerSettings", s.auto_backup_include_server_settings);
+    put!("autoBackupIncludeTracking", s.auto_backup_include_tracking);
+    put!("autoDownloadIgnoreReUploads", s.auto_download_ignore_re_uploads);
+    put!("autoDownloadNewChapters", s.auto_download_new_chapters);
+    put!("autoDownloadNewChaptersLimit", s.auto_download_new_chapters_limit);
+    put!("backupInterval", s.backup_interval);
+    put!("backupPath", s.backup_path.clone());
+    put!("backupTTL", s.backup_ttl);
+    put!("backupTime", s.backup_time.clone());
+    put!("databasePassword", s.database_password.clone());
+    put!("databaseType", s.database_type.map(|v| match v {
+        GraphqlDatabaseType::H2 => "H2",
+        GraphqlDatabaseType::Postgresql => "POSTGRESQL",
+    }));
+    put!("databaseUrl", s.database_url.clone());
+    put!("databaseUsername", s.database_username.clone());
+    put!("debugLogsEnabled", s.debug_logs_enabled);
+    put!("downloadAsCbz", s.download_as_cbz);
+    put!(
+        "downloadConversions",
+        s.download_conversions.as_ref().map(|cs| cs.iter().map(conversion_to_json).collect::<Vec<_>>())
+    );
+    put!("downloadsPath", s.downloads_path.clone());
+    put!("electronPath", s.electron_path.clone());
+    put!("excludeCompleted", s.exclude_completed);
+    put!("excludeEntryWithUnreadChapters", s.exclude_entry_with_unread_chapters);
+    put!("excludeNotStarted", s.exclude_not_started);
+    put!("excludeUnreadChapters", s.exclude_unread_chapters);
+    put!("flareSolverrAsResponseFallback", s.flare_solverr_as_response_fallback);
+    put!("flareSolverrEnabled", s.flare_solverr_enabled);
+    put!("flareSolverrSessionName", s.flare_solverr_session_name.clone());
+    put!("flareSolverrSessionTtl", s.flare_solverr_session_ttl);
+    put!("flareSolverrTimeout", s.flare_solverr_timeout);
+    put!("flareSolverrUrl", s.flare_solverr_url.clone());
+    put!("globalUpdateInterval", s.global_update_interval);
+    put!("initialOpenInBrowserEnabled", s.initial_open_in_browser_enabled);
+    put!("ip", s.ip.clone());
+    put!("jwtAudience", s.jwt_audience.clone());
+    put!("jwtRefreshExpiry", s.jwt_refresh_expiry.map(|d| format_iso8601_duration(d.0)));
+    put!("jwtTokenExpiry", s.jwt_token_expiry.map(|d| format_iso8601_duration(d.0)));
+    put!("kcefEnabled", s.kcef_enabled);
+    put!("koreaderSyncChecksumMethod", s.koreader_sync_checksum_method.map(|v| match v {
+        KoreaderSyncChecksumMethod::Binary => "BINARY",
+        KoreaderSyncChecksumMethod::Filename => "FILENAME",
+    }));
+    put!("koreaderSyncPercentageTolerance", s.koreader_sync_percentage_tolerance);
+    put!("koreaderSyncStrategyBackward", s.koreader_sync_strategy_backward.map(|v| match v {
+        KoreaderSyncConflictStrategy::Prompt => "PROMPT",
+        KoreaderSyncConflictStrategy::KeepLocal => "KEEP_LOCAL",
+        KoreaderSyncConflictStrategy::KeepRemote => "KEEP_REMOTE",
+        KoreaderSyncConflictStrategy::Disabled => "DISABLED",
+    }));
+    put!("koreaderSyncStrategyForward", s.koreader_sync_strategy_forward.map(|v| match v {
+        KoreaderSyncConflictStrategy::Prompt => "PROMPT",
+        KoreaderSyncConflictStrategy::KeepLocal => "KEEP_LOCAL",
+        KoreaderSyncConflictStrategy::KeepRemote => "KEEP_REMOTE",
+        KoreaderSyncConflictStrategy::Disabled => "DISABLED",
+    }));
+    put!("localSourcePath", s.local_source_path.clone());
+    put!("maxLogFileSize", s.max_log_file_size.clone());
+    put!("maxLogFiles", s.max_log_files);
+    put!("maxLogFolderSize", s.max_log_folder_size.clone());
+    put!("maxSourcesInParallel", s.max_sources_in_parallel);
+    put!("opdsCbzMimetype", s.opds_cbz_mimetype.map(|v| match v {
+        CbzMediaType::Modern => "MODERN",
+        CbzMediaType::Legacy => "LEGACY",
+        CbzMediaType::Compatible => "COMPATIBLE",
+    }));
+    put!("opdsChapterSortOrder", s.opds_chapter_sort_order.map(|v| match v {
+        SortOrder::Asc => "ASC",
+        SortOrder::Desc => "DESC",
+    }));
+    put!("opdsEnablePageReadProgress", s.opds_enable_page_read_progress);
+    put!("opdsItemsPerPage", s.opds_items_per_page);
+    put!("opdsMarkAsReadOnDownload", s.opds_mark_as_read_on_download);
+    put!("opdsShowOnlyDownloadedChapters", s.opds_show_only_downloaded_chapters);
+    put!("opdsShowOnlyUnreadChapters", s.opds_show_only_unread_chapters);
+    put!("opdsSkipChapterMetadataFeed", s.opds_skip_chapter_metadata_feed);
+    put!("opdsUseBinaryFileSizes", s.opds_use_binary_file_sizes);
+    put!("port", s.port);
+    put!(
+        "serveConversions",
+        s.serve_conversions.as_ref().map(|cs| cs.iter().map(conversion_to_json).collect::<Vec<_>>())
+    );
+    put!("socksProxyEnabled", s.socks_proxy_enabled);
+    put!("socksProxyHost", s.socks_proxy_host.clone());
+    put!("socksProxyPassword", s.socks_proxy_password.clone());
+    put!("socksProxyPort", s.socks_proxy_port.clone());
+    put!("socksProxyUsername", s.socks_proxy_username.clone());
+    put!("socksProxyVersion", s.socks_proxy_version);
+    put!("syncDataCategories", s.sync_data_categories);
+    put!("syncDataChapters", s.sync_data_chapters);
+    put!("syncDataHistory", s.sync_data_history);
+    put!("syncDataManga", s.sync_data_manga);
+    put!("syncDataTracking", s.sync_data_tracking);
+    put!("syncInterval", s.sync_interval.map(|d| format_iso8601_duration(d.0)));
+    put!("syncYomiApiKey", s.sync_yomi_api_key.clone());
+    put!("syncYomiEnabled", s.sync_yomi_enabled);
+    put!("syncYomiHost", s.sync_yomi_host.clone());
+    put!("systemTrayEnabled", s.system_tray_enabled);
+    put!("updateMangas", s.update_mangas);
+    put!("useHikariConnectionPool", s.use_hikari_connection_pool);
+    put!("webUIChannel", s.webui_channel.map(|v| match v {
+        WebUIChannel::Bundled => "BUNDLED",
+        WebUIChannel::Stable => "STABLE",
+        WebUIChannel::Preview => "PREVIEW",
+    }));
+    put!("webUIFlavor", s.webui_flavor.map(|v| match v {
+        WebUIFlavor::Webui => "WEBUI",
+        WebUIFlavor::Vui => "VUI",
+        WebUIFlavor::Custom => "CUSTOM",
+    }));
+    put!("webUIInterface", s.webui_interface.map(|v| match v {
+        WebUIInterface::Browser => "BROWSER",
+        WebUIInterface::Electron => "ELECTRON",
+    }));
+    put!("webUIUpdateCheckInterval", s.webui_update_check_interval);
+
+    Value::Object(m)
+}
+
+fn conversion_to_json(c: &SettingsDownloadConversionTypeInput) -> serde_json::Value {
+    use crate::scalars::format_iso8601_duration;
+    use serde_json::{json, Value};
+
+    Value::Object(
+        [
+            Some(("callTimeout".to_string(), json!(c.call_timeout.map(|d| format_iso8601_duration(d.0))))),
+            Some(("compressionLevel".to_string(), json!(c.compression_level))),
+            Some(("connectTimeout".to_string(), json!(c.connect_timeout.map(|d| format_iso8601_duration(d.0))))),
+            Some((
+                "headers".to_string(),
+                json!(c.headers.as_ref().map(|hs| hs
+                    .iter()
+                    .map(|h| json!({ "name": h.name, "value": h.value }))
+                    .collect::<Vec<_>>())),
+            )),
+            Some(("mimeType".to_string(), json!(c.mime_type))),
+            Some(("target".to_string(), json!(c.target))),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+    )
 }

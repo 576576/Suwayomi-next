@@ -5,7 +5,7 @@
 use async_graphql::{Enum, SimpleObject};
 use suwayomi_core::config::{DatabaseType as CoreDatabaseType, ServerConfig};
 
-use crate::scalars::{DurationScalar, LongString};
+use crate::scalars::{parse_iso8601_duration, DurationScalar, LongString};
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 pub enum AuthMode {
@@ -106,7 +106,7 @@ pub struct SettingsDownloadConversionType {
 /// Mirrors `SettingsDownloadConversionHeaderType`.
 #[derive(SimpleObject, Clone)]
 pub struct SettingsDownloadConversionHeaderType {
-    pub key: String,
+    pub name: String,
     pub value: String,
 }
 
@@ -131,6 +131,7 @@ pub struct SettingsType {
     pub auto_download_new_chapters_limit: i32,
     pub backup_interval: i32,
     pub backup_path: String,
+    #[graphql(name = "backupTTL")]
     pub backup_ttl: i32,
     pub backup_time: String,
     #[graphql(deprecation = "Removed - prefer authMode")]
@@ -332,6 +333,218 @@ impl SettingsType {
             webui_update_check_interval: 0.0,
         }
     }
+
+    /// Applies persisted overrides (the `settings` global_meta JSON blob
+    /// written by `setSettings`) on top of the env-derived defaults, so saved
+    /// values are reflected by the `settings` query.
+    pub fn apply_overrides(&mut self, o: &serde_json::Value) {
+        use serde_json::Value;
+        self.auth_mode = match o.get("authMode").and_then(Value::as_str) {
+            Some("BASIC_AUTH") => AuthMode::BasicAuth,
+            Some("SIMPLE_LOGIN") => AuthMode::SimpleLogin,
+            Some("UI_LOGIN") => AuthMode::UiLogin,
+            Some("NONE") => AuthMode::None,
+            _ => self.auth_mode,
+        };
+        self.auth_password = ov_str(o, "authPassword", self.auth_password.clone());
+        self.auth_username = ov_str(o, "authUsername", self.auth_username.clone());
+        self.auto_backup_include_categories = ov_bool(o, "autoBackupIncludeCategories", self.auto_backup_include_categories);
+        self.auto_backup_include_chapters = ov_bool(o, "autoBackupIncludeChapters", self.auto_backup_include_chapters);
+        self.auto_backup_include_client_data = ov_bool(o, "autoBackupIncludeClientData", self.auto_backup_include_client_data);
+        self.auto_backup_include_history = ov_bool(o, "autoBackupIncludeHistory", self.auto_backup_include_history);
+        self.auto_backup_include_manga = ov_bool(o, "autoBackupIncludeManga", self.auto_backup_include_manga);
+        self.auto_backup_include_server_settings =
+            ov_bool(o, "autoBackupIncludeServerSettings", self.auto_backup_include_server_settings);
+        self.auto_backup_include_tracking = ov_bool(o, "autoBackupIncludeTracking", self.auto_backup_include_tracking);
+        self.auto_download_ignore_re_uploads = ov_bool(o, "autoDownloadIgnoreReUploads", self.auto_download_ignore_re_uploads);
+        self.auto_download_new_chapters = ov_bool(o, "autoDownloadNewChapters", self.auto_download_new_chapters);
+        self.auto_download_new_chapters_limit = ov_i32(o, "autoDownloadNewChaptersLimit", self.auto_download_new_chapters_limit);
+        self.backup_interval = ov_i32(o, "backupInterval", self.backup_interval);
+        self.backup_path = ov_str(o, "backupPath", self.backup_path.clone());
+        self.backup_ttl = ov_i32(o, "backupTTL", self.backup_ttl);
+        self.backup_time = ov_str(o, "backupTime", self.backup_time.clone());
+        self.database_password = ov_str(o, "databasePassword", self.database_password.clone());
+        self.database_type = match o.get("databaseType").and_then(Value::as_str) {
+            Some("H2") => GraphqlDatabaseType::H2,
+            Some("POSTGRESQL") => GraphqlDatabaseType::Postgresql,
+            _ => self.database_type,
+        };
+        self.database_url = ov_str(o, "databaseUrl", self.database_url.clone());
+        self.database_username = ov_str(o, "databaseUsername", self.database_username.clone());
+        self.debug_logs_enabled = ov_bool(o, "debugLogsEnabled", self.debug_logs_enabled);
+        self.download_as_cbz = ov_bool(o, "downloadAsCbz", self.download_as_cbz);
+        self.download_conversions = ov_conversions(o, "downloadConversions");
+        self.downloads_path = ov_str(o, "downloadsPath", self.downloads_path.clone());
+        self.electron_path = ov_str(o, "electronPath", self.electron_path.clone());
+        self.exclude_completed = ov_bool(o, "excludeCompleted", self.exclude_completed);
+        self.exclude_entry_with_unread_chapters =
+            ov_bool(o, "excludeEntryWithUnreadChapters", self.exclude_entry_with_unread_chapters);
+        self.exclude_not_started = ov_bool(o, "excludeNotStarted", self.exclude_not_started);
+        self.exclude_unread_chapters = ov_bool(o, "excludeUnreadChapters", self.exclude_unread_chapters);
+        self.flare_solverr_as_response_fallback =
+            ov_bool(o, "flareSolverrAsResponseFallback", self.flare_solverr_as_response_fallback);
+        self.flare_solverr_enabled = ov_bool(o, "flareSolverrEnabled", self.flare_solverr_enabled);
+        self.flare_solverr_session_name = ov_str(o, "flareSolverrSessionName", self.flare_solverr_session_name.clone());
+        self.flare_solverr_session_ttl = ov_i32(o, "flareSolverrSessionTtl", self.flare_solverr_session_ttl);
+        self.flare_solverr_timeout = ov_i32(o, "flareSolverrTimeout", self.flare_solverr_timeout);
+        self.flare_solverr_url = ov_str(o, "flareSolverrUrl", self.flare_solverr_url.clone());
+        self.global_update_interval = ov_f64(o, "globalUpdateInterval", self.global_update_interval);
+        self.initial_open_in_browser_enabled =
+            ov_bool(o, "initialOpenInBrowserEnabled", self.initial_open_in_browser_enabled);
+        self.ip = ov_str(o, "ip", self.ip.clone());
+        self.jwt_audience = ov_str(o, "jwtAudience", self.jwt_audience.clone());
+        self.jwt_refresh_expiry = ov_dur(o, "jwtRefreshExpiry", self.jwt_refresh_expiry);
+        self.jwt_token_expiry = ov_dur(o, "jwtTokenExpiry", self.jwt_token_expiry);
+        self.kcef_enabled = ov_bool(o, "kcefEnabled", self.kcef_enabled);
+        self.koreader_sync_checksum_method = match o.get("koreaderSyncChecksumMethod").and_then(Value::as_str) {
+            Some("BINARY") => KoreaderSyncChecksumMethod::Binary,
+            Some("FILENAME") => KoreaderSyncChecksumMethod::Filename,
+            _ => self.koreader_sync_checksum_method,
+        };
+        self.koreader_sync_percentage_tolerance =
+            ov_f64(o, "koreaderSyncPercentageTolerance", self.koreader_sync_percentage_tolerance);
+        self.koreader_sync_strategy_backward = ov_conflict(o, "koreaderSyncStrategyBackward", self.koreader_sync_strategy_backward);
+        self.koreader_sync_strategy_forward = ov_conflict(o, "koreaderSyncStrategyForward", self.koreader_sync_strategy_forward);
+        self.local_source_path = ov_str(o, "localSourcePath", self.local_source_path.clone());
+        self.max_log_file_size = ov_str(o, "maxLogFileSize", self.max_log_file_size.clone());
+        self.max_log_files = ov_i32(o, "maxLogFiles", self.max_log_files);
+        self.max_log_folder_size = ov_str(o, "maxLogFolderSize", self.max_log_folder_size.clone());
+        self.max_sources_in_parallel = ov_i32(o, "maxSourcesInParallel", self.max_sources_in_parallel);
+        self.opds_cbz_mimetype = match o.get("opdsCbzMimetype").and_then(Value::as_str) {
+            Some("MODERN") => CbzMediaType::Modern,
+            Some("LEGACY") => CbzMediaType::Legacy,
+            Some("COMPATIBLE") => CbzMediaType::Compatible,
+            _ => self.opds_cbz_mimetype,
+        };
+        self.opds_chapter_sort_order = match o.get("opdsChapterSortOrder").and_then(Value::as_str) {
+            Some("ASC") => crate::query::SortOrder::Asc,
+            Some("DESC") => crate::query::SortOrder::Desc,
+            _ => self.opds_chapter_sort_order,
+        };
+        self.opds_enable_page_read_progress = ov_bool(o, "opdsEnablePageReadProgress", self.opds_enable_page_read_progress);
+        self.opds_items_per_page = ov_i32(o, "opdsItemsPerPage", self.opds_items_per_page);
+        self.opds_mark_as_read_on_download = ov_bool(o, "opdsMarkAsReadOnDownload", self.opds_mark_as_read_on_download);
+        self.opds_show_only_downloaded_chapters =
+            ov_bool(o, "opdsShowOnlyDownloadedChapters", self.opds_show_only_downloaded_chapters);
+        self.opds_show_only_unread_chapters = ov_bool(o, "opdsShowOnlyUnreadChapters", self.opds_show_only_unread_chapters);
+        self.opds_skip_chapter_metadata_feed = ov_bool(o, "opdsSkipChapterMetadataFeed", self.opds_skip_chapter_metadata_feed);
+        self.opds_use_binary_file_sizes = ov_bool(o, "opdsUseBinaryFileSizes", self.opds_use_binary_file_sizes);
+        self.port = ov_i32(o, "port", self.port);
+        self.serve_conversions = ov_conversions(o, "serveConversions");
+        self.socks_proxy_enabled = ov_bool(o, "socksProxyEnabled", self.socks_proxy_enabled);
+        self.socks_proxy_host = ov_str(o, "socksProxyHost", self.socks_proxy_host.clone());
+        self.socks_proxy_password = ov_str(o, "socksProxyPassword", self.socks_proxy_password.clone());
+        self.socks_proxy_port = ov_str(o, "socksProxyPort", self.socks_proxy_port.clone());
+        self.socks_proxy_username = ov_str(o, "socksProxyUsername", self.socks_proxy_username.clone());
+        self.socks_proxy_version = ov_i32(o, "socksProxyVersion", self.socks_proxy_version);
+        self.sync_data_categories = ov_bool(o, "syncDataCategories", self.sync_data_categories);
+        self.sync_data_chapters = ov_bool(o, "syncDataChapters", self.sync_data_chapters);
+        self.sync_data_history = ov_bool(o, "syncDataHistory", self.sync_data_history);
+        self.sync_data_manga = ov_bool(o, "syncDataManga", self.sync_data_manga);
+        self.sync_data_tracking = ov_bool(o, "syncDataTracking", self.sync_data_tracking);
+        self.sync_interval = ov_dur(o, "syncInterval", self.sync_interval);
+        self.sync_yomi_api_key = ov_str(o, "syncYomiApiKey", self.sync_yomi_api_key.clone());
+        self.sync_yomi_enabled = ov_bool(o, "syncYomiEnabled", self.sync_yomi_enabled);
+        self.sync_yomi_host = ov_str(o, "syncYomiHost", self.sync_yomi_host.clone());
+        self.system_tray_enabled = ov_bool(o, "systemTrayEnabled", self.system_tray_enabled);
+        self.update_mangas = ov_bool(o, "updateMangas", self.update_mangas);
+        self.use_hikari_connection_pool = ov_bool(o, "useHikariConnectionPool", self.use_hikari_connection_pool);
+        self.webui_channel = match o.get("webUIChannel").and_then(Value::as_str) {
+            Some("BUNDLED") => WebUIChannel::Bundled,
+            Some("STABLE") => WebUIChannel::Stable,
+            Some("PREVIEW") => WebUIChannel::Preview,
+            _ => self.webui_channel,
+        };
+        self.webui_flavor = match o.get("webUIFlavor").and_then(Value::as_str) {
+            Some("WEBUI") => WebUIFlavor::Webui,
+            Some("VUI") => WebUIFlavor::Vui,
+            Some("CUSTOM") => WebUIFlavor::Custom,
+            _ => self.webui_flavor,
+        };
+        self.webui_interface = match o.get("webUIInterface").and_then(Value::as_str) {
+            Some("BROWSER") => WebUIInterface::Browser,
+            Some("ELECTRON") => WebUIInterface::Electron,
+            _ => self.webui_interface,
+        };
+        self.webui_update_check_interval = ov_f64(o, "webUIUpdateCheckInterval", self.webui_update_check_interval);
+    }
+}
+
+fn ov_str(o: &serde_json::Value, k: &str, d: String) -> String {
+    o.get(k).and_then(serde_json::Value::as_str).map(ToOwned::to_owned).unwrap_or(d)
+}
+
+fn ov_bool(o: &serde_json::Value, k: &str, d: bool) -> bool {
+    o.get(k).and_then(serde_json::Value::as_bool).unwrap_or(d)
+}
+
+fn ov_i32(o: &serde_json::Value, k: &str, d: i32) -> i32 {
+    o.get(k).and_then(serde_json::Value::as_i64).map(|v| v as i32).unwrap_or(d)
+}
+
+fn ov_f64(o: &serde_json::Value, k: &str, d: f64) -> f64 {
+    o.get(k).and_then(serde_json::Value::as_f64).unwrap_or(d)
+}
+
+fn ov_dur(o: &serde_json::Value, k: &str, d: DurationScalar) -> DurationScalar {
+    o.get(k)
+        .and_then(serde_json::Value::as_str)
+        .and_then(parse_iso8601_duration)
+        .map(DurationScalar)
+        .unwrap_or(d)
+}
+
+fn ov_conflict(o: &serde_json::Value, k: &str, d: KoreaderSyncConflictStrategy) -> KoreaderSyncConflictStrategy {
+    match o.get(k).and_then(serde_json::Value::as_str) {
+        Some("PROMPT") => KoreaderSyncConflictStrategy::Prompt,
+        Some("KEEP_LOCAL") => KoreaderSyncConflictStrategy::KeepLocal,
+        Some("KEEP_REMOTE") => KoreaderSyncConflictStrategy::KeepRemote,
+        Some("DISABLED") => KoreaderSyncConflictStrategy::Disabled,
+        _ => d,
+    }
+}
+
+fn ov_conversions(o: &serde_json::Value, k: &str) -> Vec<SettingsDownloadConversionType> {
+    let Some(arr) = o.get(k).and_then(serde_json::Value::as_array) else {
+        return Vec::new();
+    };
+    arr.iter().filter_map(conversion_from_json).collect()
+}
+
+fn conversion_from_json(v: &serde_json::Value) -> Option<SettingsDownloadConversionType> {
+    use serde_json::Value;
+    let obj = v.as_object()?;
+    let mime_type = obj.get("mimeType")?.as_str()?.to_string();
+    let target = obj.get("target")?.as_str()?.to_string();
+    let header = |x: &Value| -> Option<SettingsDownloadConversionHeaderType> {
+        let h = x.as_object()?;
+        Some(SettingsDownloadConversionHeaderType {
+            name: h.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
+            value: h.get("value").and_then(Value::as_str).unwrap_or("").to_string(),
+        })
+    };
+    Some(SettingsDownloadConversionType {
+        call_timeout: obj
+            .get("callTimeout")
+            .and_then(Value::as_str)
+            .and_then(parse_iso8601_duration)
+            .map(DurationScalar)
+            .unwrap_or_default(),
+        compression_level: obj.get("compressionLevel").and_then(Value::as_f64),
+        connect_timeout: obj
+            .get("connectTimeout")
+            .and_then(Value::as_str)
+            .and_then(parse_iso8601_duration)
+            .map(DurationScalar)
+            .unwrap_or_default(),
+        headers: obj
+            .get("headers")
+            .and_then(Value::as_array)
+            .map(|hs| hs.iter().filter_map(header).collect())
+            .unwrap_or_default(),
+        mime_type,
+        target,
+    })
 }
 
 // ---------------------------------------------------------------------------

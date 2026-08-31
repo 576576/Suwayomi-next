@@ -24,6 +24,11 @@ impl MangaListService {
         Self { db, fetcher }
     }
 
+    /// Expose the underlying fetcher (search needs to bypass get_manga_list).
+    pub fn fetcher(&self) -> &Arc<dyn SourceFetcher> {
+        &self.fetcher
+    }
+
     /// Mirrors `MangasPage.insertOrUpdate(sourceId)`.
     /// Inserts new manga rows, updates existing non-library rows, returns ids in input order.
     pub async fn insert_or_update(&self, source_id: i64, mangas: &[SManga]) -> Result<Vec<i32>> {

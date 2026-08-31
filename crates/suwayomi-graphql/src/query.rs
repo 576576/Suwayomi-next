@@ -21,6 +21,7 @@ enum BindVal {
     I32(i32),
     I64(i64),
     Bool(bool),
+    F64(f64),
     Str(String),
 }
 
@@ -38,6 +39,9 @@ pub struct MangaCondition {
     pub description: Option<String>,
     pub in_library: Option<bool>,
     pub status: Option<MangaStatus>,
+    /// Restrict to manga belonging to the given categories
+    /// (WebUI library screen sends `categoryIds`).
+    pub category_ids: Option<Vec<i32>>,
 }
 
 /// Mirrors `MangaOrderBy` from `MangaQuery.kt`.
@@ -131,7 +135,9 @@ macro_rules! scalar_filter_input {
 
 scalar_filter_input!(BooleanFilterInput, bool);
 scalar_filter_input!(IntFilterInput, i32);
-scalar_filter_input!(LongFilterInput, i64);
+// Upstream `LongFilterInput` wraps `LongString` (accepts String or Number),
+// so clients send e.g. `notEqualToAll: ["0"]` for epoch-second longs.
+scalar_filter_input!(LongFilterInput, LongString);
 scalar_filter_input!(DoubleFilterInput, f64);
 scalar_filter_input!(MangaStatusFilterInput, MangaStatus);
 scalar_filter_input!(ContentWarningFilterInput, ContentWarning);
@@ -548,9 +554,9 @@ impl QueryRoot {
         last: Option<i32>,
         offset: Option<i32>,
     ) -> async_graphql::Result<MangaNodeList> {
-        let _ = (filter, before, last, offset); // shape parity; applied incrementally
+        let _ = (before, last, offset); // cursor/offset pagination applied incrementally
         let state = ctx.data::<GraphQLState>()?;
-        let rows = query_mangas(state, condition.as_ref(), order.as_ref(), first, after.as_ref()).await?;
+        let rows = query_mangas(state, condition.as_ref(), filter.as_ref(), order.as_ref(), first, after.as_ref()).await?;
         let nodes: Vec<MangaType> = rows.iter().map(MangaType::from_row).collect();
         Ok(MangaNodeList::from_nodes(nodes))
     }
@@ -632,31 +638,9 @@ impl QueryRoot {
         last: Option<i32>,
         offset: Option<i32>,
     ) -> async_graphql::Result<ChapterNodeList> {
-        let _ = (filter, order, before, after, first, last, offset); // shape parity
+        let _ = (before, after, last); // cursor pagination not yet wired; first/offset used
         let state = ctx.data::<GraphQLState>()?;
-        let mut sql = "SELECT * FROM chapter".to_string();
-        let mut binds: Vec<String> = Vec::new();
-        let cond = condition.unwrap_or_default();
-        let mut where_clauses: Vec<&str> = Vec::new();
-        if let Some(v) = cond.manga_id {
-            where_clauses.push("manga = ?");
-            binds.push(v.to_string());
-        }
-        if let Some(v) = cond.id {
-            where_clauses.push("id = ?");
-            binds.push(v.to_string());
-        }
-        if let Some(v) = cond.source_order {
-            where_clauses.push("source_order = ?");
-            binds.push(v.to_string());
-        }
-        if !where_clauses.is_empty() {
-            sql.push_str(" WHERE ");
-            sql.push_str(&where_clauses.join(" AND "));
-        }
-        sql.push_str(" ORDER BY source_order DESC");
-        let sql = bind_placeholders(&sql);
-        let rows = fetch_chapters(state, &sql, &binds).await?;
+        let rows = query_chapters(state, condition.as_ref(), filter.as_ref(), order.as_ref(), first, offset).await?;
         let nodes: Vec<ChapterType> = rows.iter().map(ChapterType::from_row).collect();
         Ok(ChapterNodeList::from_nodes(nodes))
     }
@@ -739,6 +723,7 @@ impl QueryRoot {
                 BindVal::I32(x) => q.bind(*x),
                 BindVal::I64(x) => q.bind(*x),
                 BindVal::Bool(x) => q.bind(*x),
+                BindVal::F64(x) => q.bind(*x),
                 BindVal::Str(x) => q.bind(x),
             };
         }
@@ -785,7 +770,7 @@ impl QueryRoot {
         let mut sql = "SELECT * FROM source".to_string();
         let mut where_clauses: Vec<String> = Vec::new();
         let mut binds: Vec<BindVal> = Vec::new();
-        if let Some(cond) = condition {
+        if let Some(cond) = &condition {
             if let Some(v) = cond.id {
                 where_clauses.push("id = ?".into());
                 binds.push(BindVal::I64(v.0));
@@ -807,7 +792,7 @@ impl QueryRoot {
             sql.push_str(" WHERE ");
             sql.push_str(&where_clauses.join(" AND "));
         }
-        if let Some(orders) = order {
+        if let Some(orders) = &order {
             if let Some(o) = orders.first() {
                 let col = match o.by {
                     SourceOrderBy::Id => "id",
@@ -833,11 +818,28 @@ impl QueryRoot {
                 BindVal::I32(x) => q.bind(*x),
                 BindVal::I64(x) => q.bind(*x),
                 BindVal::Bool(x) => q.bind(*x),
+                BindVal::F64(x) => q.bind(*x),
                 BindVal::Str(x) => q.bind(x),
             };
         }
         let rows = q.fetch_all(state.db.pool()).await.map_err(async_graphql::Error::from)?;
-        let nodes: Vec<SourceType> = rows.iter().map(SourceType::from_row).collect();
+        let mut nodes: Vec<SourceType> = rows.iter().map(SourceType::from_row).collect();
+        // Inject the local source (id=0, lang=OTHER — WebUI "Other" group)
+        // unless an explicit condition rules it out.
+        let include_local = match &condition {
+            None => true,
+            Some(c) => {
+                c.id.map(|v| v.0 == suwayomi_domain::source::LOCAL_SOURCE_ID).unwrap_or(true)
+                    && c.lang.as_deref().map(|l| l == "OTHER").unwrap_or(true)
+                    && c.name.as_deref().map(|n| n.to_lowercase().contains("local")).unwrap_or(true)
+            }
+        };
+        if include_local {
+            nodes.push(SourceType::local_source());
+        }
+        if order.is_none() {
+            nodes.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        }
         Ok(SourceNodeList::from_nodes(nodes))
     }
 
@@ -929,6 +931,7 @@ impl QueryRoot {
                 BindVal::I32(x) => q.bind(*x),
                 BindVal::I64(x) => q.bind(*x),
                 BindVal::Bool(x) => q.bind(*x),
+                BindVal::F64(x) => q.bind(*x),
                 BindVal::Str(x) => q.bind(x),
             };
         }
@@ -1128,6 +1131,7 @@ impl QueryRoot {
                 BindVal::I32(x) => q.bind(*x),
                 BindVal::I64(x) => q.bind(*x),
                 BindVal::Bool(x) => q.bind(*x),
+                BindVal::F64(x) => q.bind(*x),
                 BindVal::Str(x) => q.bind(x),
             };
         }
@@ -1237,7 +1241,20 @@ impl QueryRoot {
     /// Mirrors `settings()` — full settings registry.
     async fn settings(&self, ctx: &Context<'_>) -> async_graphql::Result<SettingsType> {
         let state = ctx.data::<GraphQLState>()?;
-        Ok(SettingsType::from_config(&state.config))
+        let mut settings = SettingsType::from_config(&state.config);
+        // Apply persisted overrides (the `settings` global_meta JSON blob
+        // written by setSettings) so saved values survive restarts.
+        let sql = bind_placeholders("SELECT value FROM global_meta WHERE meta_key = ?");
+        if let Ok(row) = sqlx::query(&sql).bind("settings").fetch_optional(state.db.pool()).await {
+            if let Some(row) = row {
+                if let Ok(value) = row.try_get::<String, _>("value") {
+                    if let Ok(blob) = serde_json::from_str::<serde_json::Value>(&value) {
+                        settings.apply_overrides(&blob);
+                    }
+                }
+            }
+        }
+        Ok(settings)
     }
 
     /// Mirrors `aboutServer()` — full payload.
@@ -1276,11 +1293,15 @@ pub enum ChapterOrderBy {
     SourceOrder,
     UploadDate,
     FetchedAt,
+    ChapterNumber,
+    LastReadAt,
+    Name,
 }
 
 async fn query_mangas(
     state: &GraphQLState,
     condition: Option<&MangaCondition>,
+    filter: Option<&MangaFilterInput>,
     order: Option<&Vec<MangaOrder>>,
     first: Option<i32>,
     after: Option<&Cursor>,
@@ -1330,6 +1351,16 @@ async fn query_mangas(
             where_clauses.push("status = ?".into());
             binds.push(BindVal::I32(v.to_i32()));
         }
+        if let Some(ids) = &cond.category_ids {
+            if !ids.is_empty() {
+                let ph = vec!["?"; ids.len()].join(", ");
+                where_clauses.push(format!("id IN (SELECT manga FROM category_manga WHERE category IN ({ph}))"));
+                binds.extend(ids.iter().copied().map(BindVal::I32));
+            }
+        }
+    }
+    if let Some(f) = filter {
+        build_manga_filter(&mut where_clauses, &mut binds, f);
     }
     if let Some(cursor) = after {
         if let Ok(id) = cursor.0.parse::<i32>() {
@@ -1371,6 +1402,7 @@ async fn query_mangas(
             BindVal::I32(x) => q.bind(*x),
             BindVal::I64(x) => q.bind(*x),
             BindVal::Bool(x) => q.bind(*x),
+            BindVal::F64(x) => q.bind(*x),
             BindVal::Str(x) => q.bind(x),
         };
     }
@@ -1378,17 +1410,545 @@ async fn query_mangas(
     Ok(rows)
 }
 
-async fn fetch_chapters(state: &GraphQLState, sql: &str, binds: &[String]) -> async_graphql::Result<Vec<ChapterRow>> {
+async fn fetch_chapters(state: &GraphQLState, sql: &str, binds: &[BindVal]) -> async_graphql::Result<Vec<ChapterRow>> {
     let mut q = sqlx::query_as::<_, ChapterRow>(sql);
     for b in binds {
-        if let Ok(v) = b.parse::<i32>() {
-            q = q.bind(v);
-        } else {
-            q = q.bind(b.as_str());
-        }
+        q = match b {
+            BindVal::I32(x) => q.bind(*x),
+            BindVal::I64(x) => q.bind(*x),
+            BindVal::Bool(x) => q.bind(*x),
+            BindVal::F64(x) => q.bind(*x),
+            BindVal::Str(x) => q.bind(x),
+        };
     }
     let rows = q.fetch_all(state.db.pool()).await.map_err(async_graphql::Error::from)?;
     Ok(rows)
+}
+
+/// Builds a filtered/ordered chapter query. Supports condition, filter
+/// (incl. `lastReadAt.notEqualToAll` / `isNull` used by the WebUI history
+/// page), multi-column order, and first/offset pagination.
+async fn query_chapters(
+    state: &GraphQLState,
+    condition: Option<&ChapterCondition>,
+    filter: Option<&ChapterFilterInput>,
+    order: Option<&Vec<ChapterOrderInput>>,
+    first: Option<i32>,
+    offset: Option<i32>,
+) -> async_graphql::Result<Vec<ChapterRow>> {
+    let mut sql = "SELECT * FROM chapter".to_string();
+    let mut where_clauses: Vec<String> = Vec::new();
+    let mut binds: Vec<BindVal> = Vec::new();
+
+    if let Some(cond) = condition {
+        if let Some(v) = cond.manga_id {
+            where_clauses.push("manga = ?".into());
+            binds.push(BindVal::I32(v));
+        }
+        if let Some(v) = cond.id {
+            where_clauses.push("id = ?".into());
+            binds.push(BindVal::I32(v));
+        }
+        if let Some(v) = cond.source_order {
+            where_clauses.push("source_order = ?".into());
+            binds.push(BindVal::I32(v));
+        }
+    }
+    if let Some(f) = filter {
+        build_chapter_filter(&mut where_clauses, &mut binds, f);
+    }
+    if !where_clauses.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&where_clauses.join(" AND "));
+    }
+    // ordering
+    if let Some(orders) = order {
+        if !orders.is_empty() {
+            let parts: Vec<String> = orders
+                .iter()
+                .map(|o| {
+                    let col = match o.by {
+                        ChapterOrderBy::Id => "id",
+                        ChapterOrderBy::MangaId => "manga",
+                        ChapterOrderBy::SourceOrder => "source_order",
+                        ChapterOrderBy::UploadDate => "date_upload",
+                        ChapterOrderBy::FetchedAt => "fetched_at",
+                        ChapterOrderBy::ChapterNumber => "chapter_number",
+                        ChapterOrderBy::LastReadAt => "last_read_at",
+                        ChapterOrderBy::Name => "name",
+                    };
+                    let dir = match o.by_type {
+                        Some(SortOrder::Asc) => "ASC",
+                        _ => "DESC",
+                    };
+                    format!("{col} {dir}")
+                })
+                .collect();
+            sql.push_str(&format!(" ORDER BY {}", parts.join(", ")));
+        }
+    } else {
+        sql.push_str(" ORDER BY source_order DESC");
+    }
+    if let Some(limit) = first {
+        let limit = limit.clamp(1, 500);
+        sql.push_str(&format!(" LIMIT {limit}"));
+    }
+    if let Some(off) = offset {
+        if off > 0 {
+            sql.push_str(&format!(" OFFSET {off}"));
+        }
+    }
+    let sql = bind_placeholders(&sql);
+    fetch_chapters(state, &sql, &binds).await
+}
+
+/// Numeric (Long/Int/Double) filter ops -> SQL fragments, mirroring the
+/// upstream `FilterInput` semantics.
+trait NumericFilterOps {
+    fn eq(&self) -> Option<BindVal>;
+    fn neq(&self) -> Option<BindVal>;
+    fn neq_all(&self) -> Option<Vec<BindVal>>;
+    fn in_v(&self) -> Option<Vec<BindVal>>;
+    fn not_in_v(&self) -> Option<Vec<BindVal>>;
+    fn gt(&self) -> Option<BindVal>;
+    fn gte(&self) -> Option<BindVal>;
+    fn lt(&self) -> Option<BindVal>;
+    fn lte(&self) -> Option<BindVal>;
+    fn is_null(&self) -> Option<bool>;
+}
+
+impl NumericFilterOps for LongFilterInput {
+    fn eq(&self) -> Option<BindVal> {
+        self.equal_to.map(|v| BindVal::I64(v.0))
+    }
+    fn neq(&self) -> Option<BindVal> {
+        self.not_equal_to.map(|v| BindVal::I64(v.0))
+    }
+    fn neq_all(&self) -> Option<Vec<BindVal>> {
+        self.not_equal_to_all.as_ref().map(|vs| vs.iter().map(|v| BindVal::I64(v.0)).collect())
+    }
+    fn in_v(&self) -> Option<Vec<BindVal>> {
+        self.in_.as_ref().map(|vs| vs.iter().map(|v| BindVal::I64(v.0)).collect())
+    }
+    fn not_in_v(&self) -> Option<Vec<BindVal>> {
+        self.not_in.as_ref().map(|vs| vs.iter().map(|v| BindVal::I64(v.0)).collect())
+    }
+    fn gt(&self) -> Option<BindVal> {
+        self.greater_than.map(|v| BindVal::I64(v.0))
+    }
+    fn gte(&self) -> Option<BindVal> {
+        self.greater_than_or_equal_to.map(|v| BindVal::I64(v.0))
+    }
+    fn lt(&self) -> Option<BindVal> {
+        self.less_than.map(|v| BindVal::I64(v.0))
+    }
+    fn lte(&self) -> Option<BindVal> {
+        self.less_than_or_equal_to.map(|v| BindVal::I64(v.0))
+    }
+    fn is_null(&self) -> Option<bool> {
+        self.is_null
+    }
+}
+
+impl NumericFilterOps for IntFilterInput {
+    fn eq(&self) -> Option<BindVal> {
+        self.equal_to.map(BindVal::I32)
+    }
+    fn neq(&self) -> Option<BindVal> {
+        self.not_equal_to.map(BindVal::I32)
+    }
+    fn neq_all(&self) -> Option<Vec<BindVal>> {
+        self.not_equal_to_all.as_ref().map(|vs| vs.iter().copied().map(BindVal::I32).collect())
+    }
+    fn in_v(&self) -> Option<Vec<BindVal>> {
+        self.in_.as_ref().map(|vs| vs.iter().copied().map(BindVal::I32).collect())
+    }
+    fn not_in_v(&self) -> Option<Vec<BindVal>> {
+        self.not_in.as_ref().map(|vs| vs.iter().copied().map(BindVal::I32).collect())
+    }
+    fn gt(&self) -> Option<BindVal> {
+        self.greater_than.map(BindVal::I32)
+    }
+    fn gte(&self) -> Option<BindVal> {
+        self.greater_than_or_equal_to.map(BindVal::I32)
+    }
+    fn lt(&self) -> Option<BindVal> {
+        self.less_than.map(BindVal::I32)
+    }
+    fn lte(&self) -> Option<BindVal> {
+        self.less_than_or_equal_to.map(BindVal::I32)
+    }
+    fn is_null(&self) -> Option<bool> {
+        self.is_null
+    }
+}
+
+impl NumericFilterOps for DoubleFilterInput {
+    fn eq(&self) -> Option<BindVal> {
+        self.equal_to.map(BindVal::F64)
+    }
+    fn neq(&self) -> Option<BindVal> {
+        self.not_equal_to.map(BindVal::F64)
+    }
+    fn neq_all(&self) -> Option<Vec<BindVal>> {
+        self.not_equal_to_all.as_ref().map(|vs| vs.iter().copied().map(BindVal::F64).collect())
+    }
+    fn in_v(&self) -> Option<Vec<BindVal>> {
+        self.in_.as_ref().map(|vs| vs.iter().copied().map(BindVal::F64).collect())
+    }
+    fn not_in_v(&self) -> Option<Vec<BindVal>> {
+        self.not_in.as_ref().map(|vs| vs.iter().copied().map(BindVal::F64).collect())
+    }
+    fn gt(&self) -> Option<BindVal> {
+        self.greater_than.map(BindVal::F64)
+    }
+    fn gte(&self) -> Option<BindVal> {
+        self.greater_than_or_equal_to.map(BindVal::F64)
+    }
+    fn lt(&self) -> Option<BindVal> {
+        self.less_than.map(BindVal::F64)
+    }
+    fn lte(&self) -> Option<BindVal> {
+        self.less_than_or_equal_to.map(BindVal::F64)
+    }
+    fn is_null(&self) -> Option<bool> {
+        self.is_null
+    }
+}
+
+fn build_numeric_filter<T: NumericFilterOps>(
+    where_clauses: &mut Vec<String>,
+    binds: &mut Vec<BindVal>,
+    col: &str,
+    f: &T,
+) {
+    if let Some(v) = f.eq() {
+        where_clauses.push(format!("{col} = ?"));
+        binds.push(v);
+    }
+    if let Some(v) = f.neq() {
+        where_clauses.push(format!("{col} != ?"));
+        binds.push(v);
+    }
+    if let Some(vs) = f.neq_all() {
+        if !vs.is_empty() {
+            let ph = vec!["?"; vs.len()].join(", ");
+            where_clauses.push(format!("{col} NOT IN ({ph})"));
+            binds.extend(vs);
+        }
+    }
+    if let Some(vs) = f.in_v() {
+        if !vs.is_empty() {
+            let ph = vec!["?"; vs.len()].join(", ");
+            where_clauses.push(format!("{col} IN ({ph})"));
+            binds.extend(vs);
+        }
+    }
+    if let Some(vs) = f.not_in_v() {
+        if !vs.is_empty() {
+            let ph = vec!["?"; vs.len()].join(", ");
+            where_clauses.push(format!("{col} NOT IN ({ph})"));
+            binds.extend(vs);
+        }
+    }
+    if let Some(v) = f.gt() {
+        where_clauses.push(format!("{col} > ?"));
+        binds.push(v);
+    }
+    if let Some(v) = f.gte() {
+        where_clauses.push(format!("{col} >= ?"));
+        binds.push(v);
+    }
+    if let Some(v) = f.lt() {
+        where_clauses.push(format!("{col} < ?"));
+        binds.push(v);
+    }
+    if let Some(v) = f.lte() {
+        where_clauses.push(format!("{col} <= ?"));
+        binds.push(v);
+    }
+    if let Some(null) = f.is_null() {
+        where_clauses.push(if null {
+            format!("{col} IS NULL")
+        } else {
+            format!("{col} IS NOT NULL")
+        });
+    }
+}
+
+fn build_bool_filter(where_clauses: &mut Vec<String>, binds: &mut Vec<BindVal>, col: &str, f: &BooleanFilterInput) {
+    if let Some(v) = f.equal_to {
+        where_clauses.push(format!("{col} = ?"));
+        binds.push(BindVal::Bool(v));
+    }
+    if let Some(v) = f.not_equal_to {
+        where_clauses.push(format!("{col} != ?"));
+        binds.push(BindVal::Bool(v));
+    }
+    if let Some(null) = f.is_null {
+        where_clauses.push(if null {
+            format!("{col} IS NULL")
+        } else {
+            format!("{col} IS NOT NULL")
+        });
+    }
+}
+
+fn build_string_filter(where_clauses: &mut Vec<String>, binds: &mut Vec<BindVal>, col: &str, f: &StringFilterInput) {
+    if let Some(v) = &f.equal_to {
+        where_clauses.push(format!("{col} = ?"));
+        binds.push(BindVal::Str(v.clone()));
+    }
+    if let Some(v) = &f.not_equal_to {
+        where_clauses.push(format!("{col} != ?"));
+        binds.push(BindVal::Str(v.clone()));
+    }
+    if let Some(v) = &f.includes {
+        where_clauses.push(format!("{col} ILIKE ?"));
+        binds.push(BindVal::Str(format!("%{v}%")));
+    }
+    if let Some(v) = &f.starts_with {
+        where_clauses.push(format!("{col} ILIKE ?"));
+        binds.push(BindVal::Str(format!("{v}%")));
+    }
+    if let Some(v) = &f.ends_with {
+        where_clauses.push(format!("{col} ILIKE ?"));
+        binds.push(BindVal::Str(format!("%{v}")));
+    }
+    if let Some(vs) = &f.in_ {
+        if !vs.is_empty() {
+            let ph = vec!["?"; vs.len()].join(", ");
+            where_clauses.push(format!("{col} IN ({ph})"));
+            binds.extend(vs.iter().cloned().map(BindVal::Str));
+        }
+    }
+    if let Some(vs) = &f.not_in {
+        if !vs.is_empty() {
+            let ph = vec!["?"; vs.len()].join(", ");
+            where_clauses.push(format!("{col} NOT IN ({ph})"));
+            binds.extend(vs.iter().cloned().map(BindVal::Str));
+        }
+    }
+    if let Some(null) = f.is_null {
+        where_clauses.push(if null {
+            format!("{col} IS NULL")
+        } else {
+            format!("{col} IS NOT NULL")
+        });
+    }
+}
+
+/// Translates a `ChapterFilterInput` into SQL WHERE fragments (AND-combined,
+/// with `and`/`or`/`not` logical composition).
+fn build_chapter_filter(where_clauses: &mut Vec<String>, binds: &mut Vec<BindVal>, f: &ChapterFilterInput) {
+    if let Some(v) = &f.chapter_number {
+        build_numeric_filter(where_clauses, binds, "chapter_number", v);
+    }
+    if let Some(v) = &f.fetched_at {
+        build_numeric_filter(where_clauses, binds, "fetched_at", v);
+    }
+    if let Some(v) = &f.id {
+        build_numeric_filter(where_clauses, binds, "id", v);
+    }
+    if let Some(v) = &f.in_library {
+        if let Some(b) = v.equal_to {
+            where_clauses.push("manga IN (SELECT id FROM manga WHERE in_library = ?)".into());
+            binds.push(BindVal::Bool(b));
+        }
+    }
+    if let Some(v) = &f.is_bookmarked {
+        build_bool_filter(where_clauses, binds, "bookmark", v);
+    }
+    if let Some(v) = &f.is_downloaded {
+        build_bool_filter(where_clauses, binds, "is_downloaded", v);
+    }
+    if let Some(v) = &f.is_read {
+        build_bool_filter(where_clauses, binds, "read", v);
+    }
+    if let Some(v) = &f.last_page_read {
+        build_numeric_filter(where_clauses, binds, "last_page_read", v);
+    }
+    if let Some(v) = &f.last_read_at {
+        build_numeric_filter(where_clauses, binds, "last_read_at", v);
+    }
+    if let Some(v) = &f.manga_id {
+        build_numeric_filter(where_clauses, binds, "manga", v);
+    }
+    if let Some(v) = &f.name {
+        build_string_filter(where_clauses, binds, "name", v);
+    }
+    if let Some(v) = &f.page_count {
+        build_numeric_filter(where_clauses, binds, "page_count", v);
+    }
+    if let Some(v) = &f.real_url {
+        build_string_filter(where_clauses, binds, "real_url", v);
+    }
+    if let Some(v) = &f.scanlator {
+        build_string_filter(where_clauses, binds, "scanlator", v);
+    }
+    if let Some(v) = &f.source_order {
+        build_numeric_filter(where_clauses, binds, "source_order", v);
+    }
+    if let Some(v) = &f.upload_date {
+        build_numeric_filter(where_clauses, binds, "date_upload", v);
+    }
+    if let Some(v) = &f.url {
+        build_string_filter(where_clauses, binds, "url", v);
+    }
+    // logical composition
+    if let Some(ands) = &f.and {
+        let mut inner: Vec<String> = Vec::new();
+        for sub in ands {
+            let mut sub_binds: Vec<BindVal> = Vec::new();
+            let mut sub_clauses: Vec<String> = Vec::new();
+            build_chapter_filter(&mut sub_clauses, &mut sub_binds, sub);
+            if !sub_clauses.is_empty() {
+                inner.push(format!("({})", sub_clauses.join(" AND ")));
+                binds.extend(sub_binds);
+            }
+        }
+        if !inner.is_empty() {
+            where_clauses.push(format!("({})", inner.join(" AND ")));
+        }
+    }
+    if let Some(ors) = &f.or {
+        let mut inner: Vec<String> = Vec::new();
+        for sub in ors {
+            let mut sub_binds: Vec<BindVal> = Vec::new();
+            let mut sub_clauses: Vec<String> = Vec::new();
+            build_chapter_filter(&mut sub_clauses, &mut sub_binds, sub);
+            if !sub_clauses.is_empty() {
+                inner.push(format!("({})", sub_clauses.join(" AND ")));
+                binds.extend(sub_binds);
+            }
+        }
+        if !inner.is_empty() {
+            where_clauses.push(format!("({})", inner.join(" OR ")));
+        }
+    }
+    if let Some(not) = &f.not {
+        let mut sub_binds: Vec<BindVal> = Vec::new();
+        let mut sub_clauses: Vec<String> = Vec::new();
+        build_chapter_filter(&mut sub_clauses, &mut sub_binds, not);
+        if !sub_clauses.is_empty() {
+            where_clauses.push(format!("NOT ({})", sub_clauses.join(" AND ")));
+            binds.extend(sub_binds);
+        }
+    }
+}
+
+/// Translates a `MangaFilterInput` into SQL WHERE fragments (AND-combined,
+/// with `and`/`or`/`not` logical composition).
+fn build_manga_filter(where_clauses: &mut Vec<String>, binds: &mut Vec<BindVal>, f: &MangaFilterInput) {
+    if let Some(v) = &f.artist {
+        build_string_filter(where_clauses, binds, "artist", v);
+    }
+    if let Some(v) = &f.author {
+        build_string_filter(where_clauses, binds, "author", v);
+    }
+    if let Some(v) = &f.category_id {
+        if let Some(cid) = v.equal_to {
+            where_clauses.push("id IN (SELECT manga FROM category_manga WHERE category = ?)".into());
+            binds.push(BindVal::I32(cid));
+        }
+    }
+    if let Some(v) = &f.chapters_last_fetched_at {
+        build_numeric_filter(where_clauses, binds, "chapters_last_fetched_at", v);
+    }
+    if let Some(v) = &f.description {
+        build_string_filter(where_clauses, binds, "description", v);
+    }
+    if let Some(v) = &f.genre {
+        build_string_filter(where_clauses, binds, "genre", v);
+    }
+    if let Some(v) = &f.id {
+        build_numeric_filter(where_clauses, binds, "id", v);
+    }
+    if let Some(v) = &f.in_library {
+        build_bool_filter(where_clauses, binds, "in_library", v);
+    }
+    if let Some(v) = &f.in_library_at {
+        build_numeric_filter(where_clauses, binds, "in_library_at", v);
+    }
+    if let Some(v) = &f.initialized {
+        build_bool_filter(where_clauses, binds, "initialized", v);
+    }
+    if let Some(v) = &f.last_fetched_at {
+        build_numeric_filter(where_clauses, binds, "last_fetched_at", v);
+    }
+    if let Some(v) = &f.real_url {
+        build_string_filter(where_clauses, binds, "real_url", v);
+    }
+    if let Some(v) = &f.source_id {
+        build_numeric_filter(where_clauses, binds, "source", v);
+    }
+    if let Some(v) = &f.status {
+        // MangaStatusFilterInput — enum filter (equality + null only).
+        if let Some(s) = v.equal_to {
+            where_clauses.push("status = ?".into());
+            binds.push(BindVal::I32(s.to_i32()));
+        }
+        if let Some(s) = v.not_equal_to {
+            where_clauses.push("status != ?".into());
+            binds.push(BindVal::I32(s.to_i32()));
+        }
+        if let Some(null) = v.is_null {
+            where_clauses.push(if null {
+                "status IS NULL".into()
+            } else {
+                "status IS NOT NULL".into()
+            });
+        }
+    }
+    if let Some(v) = &f.thumbnail_url {
+        build_string_filter(where_clauses, binds, "thumbnail_url", v);
+    }
+    if let Some(v) = &f.title {
+        build_string_filter(where_clauses, binds, "title", v);
+    }
+    if let Some(v) = &f.url {
+        build_string_filter(where_clauses, binds, "url", v);
+    }
+    // logical composition
+    if let Some(ands) = &f.and {
+        let mut inner: Vec<String> = Vec::new();
+        for sub in ands {
+            let mut sub_binds: Vec<BindVal> = Vec::new();
+            let mut sub_clauses: Vec<String> = Vec::new();
+            build_manga_filter(&mut sub_clauses, &mut sub_binds, sub);
+            if !sub_clauses.is_empty() {
+                inner.push(format!("({})", sub_clauses.join(" AND ")));
+                binds.extend(sub_binds);
+            }
+        }
+        if !inner.is_empty() {
+            where_clauses.push(format!("({})", inner.join(" AND ")));
+        }
+    }
+    if let Some(ors) = &f.or {
+        let mut inner: Vec<String> = Vec::new();
+        for sub in ors {
+            let mut sub_binds: Vec<BindVal> = Vec::new();
+            let mut sub_clauses: Vec<String> = Vec::new();
+            build_manga_filter(&mut sub_clauses, &mut sub_binds, sub);
+            if !sub_clauses.is_empty() {
+                inner.push(format!("({})", sub_clauses.join(" AND ")));
+                binds.extend(sub_binds);
+            }
+        }
+        if !inner.is_empty() {
+            where_clauses.push(format!("({})", inner.join(" OR ")));
+        }
+    }
+    if let Some(not) = &f.not {
+        let mut sub_binds: Vec<BindVal> = Vec::new();
+        let mut sub_clauses: Vec<String> = Vec::new();
+        build_manga_filter(&mut sub_clauses, &mut sub_binds, not);
+        if !sub_clauses.is_empty() {
+            where_clauses.push(format!("NOT ({})", sub_clauses.join(" AND ")));
+            binds.extend(sub_binds);
+        }
+    }
 }
 
 #[allow(dead_code)]

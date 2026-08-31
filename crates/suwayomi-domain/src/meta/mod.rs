@@ -90,16 +90,13 @@ impl MetaService {
     /// Batch upsert: existing (ref, key) rows get their value updated; missing rows inserted.
     /// Mirrors `modifyMangasMetas` / `modifyCategoriesMetas` / `modifyChaptersMetas`.
     pub async fn modify(&self, table: MetaTable, metas_by_ref: &HashMap<i64, HashMap<String, String>>) -> Result<()> {
-        let ref_col = table.ref_column();
-        let table_name = table.table_name();
-
         for (&ref_id, metas) in metas_by_ref {
             let existing = self.find_existing(table, ref_id).await?; // key -> row id
             for (key, value) in metas {
                 if let Some(row_id) = existing.get(key) {
-                    self.exec_update(table_name, value, *row_id as i64).await?;
+                    self.exec_update(table, value, *row_id as i64).await?;
                 } else {
-                    self.exec_insert(table_name, ref_col, key, value, ref_id).await?;
+                    self.exec_insert(table, key, value, ref_id).await?;
                 }
             }
         }
@@ -132,7 +129,8 @@ impl MetaService {
         Ok(out)
     }
 
-    async fn exec_update(&self, table_name: &str, value: &str, row_id: i64) -> Result<()> {
+    async fn exec_update(&self, table: MetaTable, value: &str, row_id: i64) -> Result<()> {
+        let table_name = table.table_name();
         let sql = bind_placeholders(&format!("UPDATE {table_name} SET value = ? WHERE id = ?"));
         {
             sqlx::query(&sql).bind(value).bind(row_id).execute(self.db.pool()).await?;
@@ -140,10 +138,23 @@ impl MetaService {
         Ok(())
     }
 
-    async fn exec_insert(&self, table_name: &str, ref_col: &str, key: &str, value: &str, ref_id: i64) -> Result<()> {
-        let sql = bind_placeholders(&format!("INSERT INTO {table_name} (meta_key, value, {ref_col}) VALUES (?, ?, ?)"));
-        {
-            sqlx::query(&sql).bind(key).bind(value).bind(ref_id).execute(self.db.pool()).await?;
+    async fn exec_insert(&self, table: MetaTable, key: &str, value: &str, ref_id: i64) -> Result<()> {
+        if table == MetaTable::Global {
+            // global_meta has no ref column; the id must be left to the
+            // IDENTITY sequence. Binding id=0 explicitly collides once a row
+            // with id 0 exists and kills the pglite-oxide session on ANY SQL
+            // error, taking the whole single-connection pool down with it.
+            let sql = bind_placeholders("INSERT INTO global_meta (meta_key, value) VALUES (?, ?)");
+            {
+                sqlx::query(&sql).bind(key).bind(value).execute(self.db.pool()).await?;
+            }
+        } else {
+            let ref_col = table.ref_column();
+            let table_name = table.table_name();
+            let sql = bind_placeholders(&format!("INSERT INTO {table_name} (meta_key, value, {ref_col}) VALUES (?, ?, ?)"));
+            {
+                sqlx::query(&sql).bind(key).bind(value).bind(ref_id).execute(self.db.pool()).await?;
+            }
         }
         Ok(())
     }

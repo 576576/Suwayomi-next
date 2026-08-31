@@ -4,13 +4,17 @@
 //! `SourceFetcher` is the seam where the JVM sandbox (Phase 5) plugs in.
 //! `LocalSource` semantics (ID, file handling) are reserved here.
 
+pub mod local;
 pub mod sandbox;
 
 use async_trait::async_trait;
 use suwayomi_core::source::{MangasPage, SChapter, SManga};
 
-/// The Tachiyomi local source id (a negative long). Matches `LocalSource.ID`.
-pub const LOCAL_SOURCE_ID: i64 = -1;
+/// The local source id, aligned with the WebUI client constant
+/// `Sources.LOCAL_SOURCE_ID = '0'` (r3474). Older Tachiyomi builds used -1;
+/// the modern Suwayomi WebUI sends `'0'` for every local-source call
+/// (`fetchSourceManga(source: '0')`, `fetchMangaAndChapters(sourceId: '0')`).
+pub const LOCAL_SOURCE_ID: i64 = 0;
 
 /// Mirrors `Source` / `HttpSource` capabilities needed by the domain layer.
 #[async_trait]

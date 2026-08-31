@@ -104,7 +104,13 @@ fn build_router(state: AppState, graphql_schema: suwayomi_graphql::schema::Graph
     let api = Router::new()
         .nest("/api/v1", suwayomi_rest::routes::api_v1_router())
         .nest("/api", suwayomi_graphql::schema::graphql_router(graphql_schema))
-        .nest("/api/opds/v1.2", suwayomi_opds::router::opds_router());
+        .nest("/api/opds/v1.2", suwayomi_opds::router::opds_router())
+        // Local-source files (covers, chapter pages) — exposed under both
+        // `/local/...` (relative `local/...` URLs returned by GraphQL) and
+        // `/api/v1/local/...` (which `getValidImgUrlFor` in the WebUI
+        // prefixes with the API version).
+        .route("/local/{*path}", get(local_file))
+        .route("/api/v1/local/{*path}", get(local_file));
 
     let auth = middleware::from_fn_with_state(state.clone(), suwayomi_rest::auth::require_auth);
     if state.webui_dir.join("index.html").is_file() {
@@ -121,6 +127,74 @@ fn build_router(state: AppState, graphql_schema: suwayomi_graphql::schema::Graph
             .merge(api)
             .layer(auth)
             .with_state(state)
+    }
+}
+
+/// Serves local-source files from `data/local/<path>` (covers, page images,
+/// and images inside archive chapters). Guards against path traversal.
+async fn local_file(State(_state): State<AppState>, path: axum::extract::Path<String>) -> Response {
+    let rel = path.replace('\\', "/");
+    if rel.is_empty() || rel.split('/').any(|seg| seg == "..") || rel.contains("://") {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let root = std::env::current_dir()
+        .unwrap_or_default()
+        .join("data")
+        .join("local");
+    let file = root.join(&rel);
+    if file.is_file() {
+        return read_file_response(&file).await;
+    }
+    // Archive member: `local/<manga>/<chapter>.zip/<page>` — find the archive
+    // segment and extract the image by its file name.
+    let segments: Vec<&str> = rel.split('/').collect();
+    for split in 0..segments.len() {
+        let ext = segments[split].rsplit('.').next().unwrap_or("");
+        if suwayomi_domain::source::local::ARCHIVE_EXTS.contains(&ext.to_lowercase().as_str()) {
+            let archive_rel = segments[..=split].join("/");
+            let member = segments[split + 1..].join("/");
+            if member.is_empty() {
+                continue;
+            }
+            if let Some(bytes) =
+                suwayomi_domain::source::local::read_archive_image(&root.join(&archive_rel), &member)
+            {
+                return Response::builder()
+                    .header(axum::http::header::CONTENT_TYPE, image_content_type(&member))
+                    .header(axum::http::header::CACHE_CONTROL, "public, max-age=3600")
+                    .header(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                    .body(axum::body::Body::from(bytes))
+                    .expect("build response");
+            }
+        }
+    }
+    StatusCode::NOT_FOUND.into_response()
+}
+
+async fn read_file_response(file: &std::path::Path) -> Response {
+    match tokio::fs::read(file).await {
+        Ok(bytes) => {
+            let ct = webui_content_type(file);
+            Response::builder()
+                .header(axum::http::header::CONTENT_TYPE, ct)
+                .header(axum::http::header::CACHE_CONTROL, "public, max-age=3600")
+                .header(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .body(axum::body::Body::from(bytes))
+                .expect("build response")
+        }
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+fn image_content_type(name: &str) -> &'static str {
+    match name.rsplit('.').next().unwrap_or("").to_lowercase().as_str() {
+        "png" => "image/png",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        "avif" => "image/avif",
+        "heic" => "image/heic",
+        _ => "image/jpeg",
     }
 }
 

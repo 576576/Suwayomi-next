@@ -1390,6 +1390,19 @@ impl MutationRoot {
         } else {
             MangaType::from_row(&fetch_manga_row(state, input.id).await?)
         };
+        // Local source: seed chapters from disk so the chapter list populates
+        // without a prior browse call.
+        if input.fetch_chapters {
+            if let Ok(row) = fetch_manga_row(state, input.id).await {
+                if row.source == suwayomi_domain::source::LOCAL_SOURCE_ID {
+                    let root = suwayomi_domain::source::local::local_source_root();
+                    if let Some(dir) = suwayomi_domain::source::local::local_manga_dir(&root, &row.url) {
+                        let chapters = suwayomi_domain::source::local::scan_local_chapters(&dir);
+                        upsert_local_chapters(state, row.id, &chapters, Some(&dir)).await?;
+                    }
+                }
+            }
+        }
         let chapters = if input.fetch_chapters {
             let list = state.chapter.get_chapter_list(input.id, true).await.map_err(async_graphql::Error::from)?;
             list.iter()
@@ -1425,6 +1438,12 @@ impl MutationRoot {
     ) -> async_graphql::Result<FetchChapterPagesPayload> {
         let state = ctx.data::<GraphQLState>()?;
         let chapter = ChapterType::from_row(&fetch_chapter_row(state, input.chapter_id).await?);
+        // Local source: seed page rows from disk when missing.
+        if let Ok(manga_row) = fetch_manga_row(state, chapter.manga_id).await {
+            if manga_row.source == suwayomi_domain::source::LOCAL_SOURCE_ID {
+                seed_local_pages(state, &manga_row, &chapter).await?;
+            }
+        }
         let sql = bind_placeholders("SELECT url, image_url FROM page WHERE chapter = ? ORDER BY index ASC");
         let rows = sqlx::query(&sql)
             .bind(input.chapter_id)
@@ -1447,14 +1466,78 @@ impl MutationRoot {
 
     async fn fetch_source_manga(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: FetchSourceMangaInput,
     ) -> async_graphql::Result<FetchSourceMangaPayload> {
-        let _ = (input.filters, input.page, input.query, input.source, input.r#type);
+        let state = ctx.data::<GraphQLState>()?;
+        let source_id = input.source.0;
+        let page_num = input.page.max(1) as u32;
+
+        // Resolve the manga rows for this page, then map to GraphQL types.
+        let ids: Vec<i32>;
+        let has_next_page: bool;
+        if source_id == suwayomi_domain::source::LOCAL_SOURCE_ID {
+            // Local source: scan `data/local/` (folders -> manga). Search
+            // filters by title client-side; pagination is a single page.
+            let root = suwayomi_domain::source::local::local_source_root();
+            let mut mangas = suwayomi_domain::source::local::scan_local_source(&root);
+            if let Some(q) = input.query.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+                let needle = q.to_lowercase();
+                mangas.retain(|m| m.title.to_lowercase().contains(&needle));
+            }
+            ids = state
+                .manga_list
+                .insert_or_update(suwayomi_domain::source::LOCAL_SOURCE_ID, &mangas)
+                .await
+                .map_err(async_graphql::Error::from)?;
+            // Seed chapters from disk (idempotent upsert by (manga, url)),
+            // applying archive metadata (meta.json / ComicInfo.xml).
+            for (m, id) in mangas.iter().zip(ids.iter()) {
+                if let Some(dir) = suwayomi_domain::source::local::local_manga_dir(&root, &m.url) {
+                    let chapters = suwayomi_domain::source::local::scan_local_chapters(&dir);
+                    upsert_local_chapters(state, *id, &chapters, Some(&dir)).await?;
+                }
+            }
+            has_next_page = false;
+        } else {
+            let paged = match input.r#type {
+                FetchSourceMangaType::Popular => {
+                    state.manga_list.get_manga_list(source_id, page_num, true).await.map_err(async_graphql::Error::from)?
+                }
+                FetchSourceMangaType::Latest => {
+                    state.manga_list.get_manga_list(source_id, page_num, false).await.map_err(async_graphql::Error::from)?
+                }
+                FetchSourceMangaType::Search => {
+                    let query = input.query.as_deref().unwrap_or("").to_string();
+                    let page = state
+                        .manga_list
+                        .fetcher()
+                        .search_manga(source_id, &query, page_num)
+                        .await
+                        .map_err(async_graphql::Error::from)?;
+                    state.manga_list.process_entries(source_id, &page).await.map_err(async_graphql::Error::from)?
+                }
+            };
+            ids = paged.manga_list.iter().map(|m| m.id).collect();
+            has_next_page = paged.has_next_page;
+        }
+
+        let mut mangas = Vec::with_capacity(ids.len());
+        for id in ids {
+            let sql = bind_placeholders("SELECT * FROM manga WHERE id = ?");
+            let row = sqlx::query_as::<_, MangaRow>(&sql)
+                .bind(id)
+                .fetch_optional(state.db.pool())
+                .await
+                .map_err(async_graphql::Error::from)?;
+            if let Some(r) = row {
+                mangas.push(MangaType::from_row(&r));
+            }
+        }
         Ok(FetchSourceMangaPayload {
             client_mutation_id: input.client_mutation_id,
-            has_next_page: false,
-            mangas: vec![],
+            has_next_page,
+            mangas,
         })
     }
 
@@ -1511,6 +1594,135 @@ async fn fetch_manga_row(state: &GraphQLState, id: i32) -> async_graphql::Result
 async fn fetch_chapter_row(state: &GraphQLState, id: i32) -> async_graphql::Result<ChapterRow> {
     let sql = bind_placeholders("SELECT * FROM chapter WHERE id = ?");
     sqlx::query_as::<_, ChapterRow>(&sql).bind(id).fetch_one(state.db.pool()).await.map_err(async_graphql::Error::from)
+}
+
+/// Idempotent upsert of local-source chapters by (manga, url).
+async fn upsert_local_chapters(
+    state: &GraphQLState,
+    manga_id: i32,
+    chapters: &[suwayomi_core::source::SChapter],
+    manga_dir: Option<&std::path::Path>,
+) -> async_graphql::Result<()> {
+    use suwayomi_core::models::manga::now_epoch_secs;
+    use suwayomi_domain::source::local::{ARCHIVE_EXTS, read_archive_meta};
+    let now = now_epoch_secs();
+    for (i, c) in chapters.iter().enumerate() {
+        // sourceOrder is 1-based (Tachiyomi/WebUI convention): the reader
+        // resolves the current chapter as `chapters[len - sourceOrder]`.
+        let source_order = i as i32 + 1;
+        // Archive chapters carry chapter metadata (`meta.json` /
+        // `ComicInfo.xml` — mutually exclusive): apply date, scanlator and
+        // chapter number. The chapter name always comes from the on-disk
+        // file name (the SChapter name), never from embedded metadata.
+        let meta = manga_dir
+            .filter(|_| {
+                let ext = c.url.rsplit('.').next().unwrap_or("").to_lowercase();
+                ARCHIVE_EXTS.contains(&ext.as_str())
+            })
+            .and_then(|dir| read_archive_meta(&dir.join(&c.url)));
+        let name = c.name.clone();
+        let date_upload = meta.as_ref().and_then(|m| m.upload_date).unwrap_or(c.date_upload);
+        let scanlator = meta.as_ref().and_then(|m| m.scanlator.clone()).or_else(|| c.scanlator.clone());
+        let chapter_number = meta.as_ref().and_then(|m| m.number).unwrap_or(c.chapter_number);
+        let sql = bind_placeholders("SELECT id FROM chapter WHERE manga = ? AND url = ?");
+        let existing: Option<(i32,)> = sqlx::query_as(&sql)
+            .bind(manga_id)
+            .bind(&c.url)
+            .fetch_optional(state.db.pool())
+            .await
+            .map_err(async_graphql::Error::from)?;
+        match existing {
+            Some((id,)) => {
+                let sql = bind_placeholders(
+                    "UPDATE chapter SET name = ?, chapter_number = ?, source_order = ?, fetched_at = ?, last_modified_at = ?, date_upload = ?, scanlator = ? WHERE id = ?",
+                );
+                sqlx::query(&sql)
+                    .bind(&name)
+                    .bind(chapter_number)
+                    .bind(source_order)
+                    .bind(now)
+                    .bind(now)
+                    .bind(date_upload)
+                    .bind(&scanlator)
+                    .bind(id)
+                    .execute(state.db.pool())
+                    .await
+                    .map_err(async_graphql::Error::from)?;
+            }
+            None => {
+                let sql = bind_placeholders(
+                    "INSERT INTO chapter (url, name, chapter_number, source_order, manga, fetched_at, last_modified_at, date_upload, scanlator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                );
+                sqlx::query(&sql)
+                    .bind(&c.url)
+                    .bind(&name)
+                    .bind(chapter_number)
+                    .bind(source_order)
+                    .bind(manga_id)
+                    .bind(now)
+                    .bind(now)
+                    .bind(date_upload)
+                    .bind(&scanlator)
+                    .execute(state.db.pool())
+                    .await
+                    .map_err(async_graphql::Error::from)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Seed page rows for a local-source chapter from disk (idempotent: only when
+/// the chapter has no page rows yet).
+async fn seed_local_pages(
+    state: &GraphQLState,
+    manga_row: &MangaRow,
+    chapter: &ChapterType,
+) -> async_graphql::Result<()> {
+    use suwayomi_domain::source::local as local_src;
+    let root = local_src::local_source_root();
+    let Some(manga_dir) = local_src::local_manga_dir(&root, &manga_row.url) else {
+        return Ok(());
+    };
+    let chapter_path = manga_dir.join(&chapter.url);
+    if !chapter_path.exists() {
+        return Ok(());
+    }
+    // Rebuild page rows from disk every time: keeps archive chapters (whose
+    // page list depends on zip contents) and any legacy placeholder rows in
+    // sync with the actual files.
+    let sql = bind_placeholders("DELETE FROM page WHERE chapter = ?");
+    sqlx::query(&sql)
+        .bind(chapter.id)
+        .execute(state.db.pool())
+        .await
+        .map_err(async_graphql::Error::from)?;
+    let url_prefix = format!("local/{}/{}", manga_row.url, chapter.url);
+    let pages = local_src::scan_local_pages(&chapter_path, &url_prefix);
+    if pages.is_empty() {
+        return Ok(());
+    }
+    for p in &pages {
+        let image_url = p.image_url.clone().unwrap_or_else(|| p.url.clone());
+        let sql = bind_placeholders("INSERT INTO page (index, url, image_url, chapter) VALUES (?, ?, ?, ?)");
+        sqlx::query(&sql)
+            .bind(p.index)
+            .bind(&p.url)
+            .bind(&image_url)
+            .bind(chapter.id)
+            .execute(state.db.pool())
+            .await
+            .map_err(async_graphql::Error::from)?;
+    }
+    // Reflect the page count on the chapter row.
+    let sql = bind_placeholders("UPDATE chapter SET page_count = ? WHERE id = ?");
+    sqlx::query(&sql)
+        .bind(pages.len() as i32)
+        .bind(chapter.id)
+        .execute(state.db.pool())
+        .await
+        .map_err(async_graphql::Error::from)?;
+    Ok(())
 }
 
 async fn fetch_source_type(state: &GraphQLState, id: i64) -> async_graphql::Result<SourceType> {

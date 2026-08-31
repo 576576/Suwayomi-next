@@ -236,6 +236,8 @@ pub struct MangaType {
     pub author: Option<String>,
     pub description: Option<String>,
     pub genre: Vec<String>,
+    /// Alternative titles (other-language titles from archive metadata).
+    pub alt_titles: Vec<String>,
     pub status: MangaStatus,
     pub in_library: bool,
     pub in_library_at: i64,
@@ -270,6 +272,7 @@ impl MangaType {
             real_url: row.real_url.clone(),
             last_fetched_at: Some(row.last_fetched_at),
             chapters_last_fetched_at: Some(row.chapters_last_fetched_at),
+            alt_titles: serde_json::from_str(&row.alt_titles).unwrap_or_default(),
         }
     }
 
@@ -314,6 +317,9 @@ impl MangaType {
     }
     async fn genre(&self) -> &[String] {
         &self.genre
+    }
+    async fn alt_titles(&self) -> &[String] {
+        &self.alt_titles
     }
     async fn status(&self) -> MangaStatus {
         self.status

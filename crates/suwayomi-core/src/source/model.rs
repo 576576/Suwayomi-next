@@ -21,6 +21,10 @@ pub struct SManga {
     pub status: i32,
     pub description: Option<String>,
     pub genre: Option<String>,
+    /// Alternative titles (other-language titles from archive metadata) —
+    /// shown on the manga details page as "Alternative title: …".
+    #[serde(default)]
+    pub alt_titles: Vec<String>,
     pub update_strategy: UpdateStrategy,
     pub initialized: bool,
     /// Extra source-specific metadata (JSON), namespaced (`mihon.*`, …)

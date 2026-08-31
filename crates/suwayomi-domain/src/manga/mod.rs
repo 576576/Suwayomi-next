@@ -102,6 +102,7 @@ impl MangaService {
             author: row.author.clone(),
             description: row.description.clone(),
             genre: row.genre.clone(),
+            alt_titles: serde_json::from_str(&row.alt_titles).unwrap_or_default(),
             status: row.status,
             update_strategy: UpdateStrategy::from_db(&row.update_strategy),
             initialized: row.initialized,

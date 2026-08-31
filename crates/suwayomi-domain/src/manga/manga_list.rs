@@ -64,8 +64,9 @@ impl MangaListService {
 
     async fn insert_manga(&self, source_id: i64, s: &SManga) -> Result<i32> {
         let sql = bind_placeholders(
-            "INSERT INTO manga (url, title, artist, author, description, genre, status, thumbnail_url, update_strategy, memo, source, initialized) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)");
+            "INSERT INTO manga (url, title, artist, author, description, genre, alt_titles, status, thumbnail_url, update_strategy, memo, source, initialized) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)");
         let memo = s.memo.to_string();
+        let alt_titles = serde_json::to_string(&s.alt_titles).unwrap_or_else(|_| "[]".to_string());
         let last_id = {
             let sql = format!("{sql} RETURNING id");
             let row: (i32,) = sqlx::query_as(&sql)
@@ -75,6 +76,7 @@ impl MangaListService {
                 .bind(&s.author)
                 .bind(&s.description)
                 .bind(&s.genre)
+                .bind(alt_titles)
                 .bind(s.status)
                 .bind(&s.thumbnail_url)
                 .bind(s.update_strategy.to_db())
@@ -89,8 +91,9 @@ impl MangaListService {
 
     async fn update_manga(&self, existing: &MangaRow, s: &SManga) -> Result<()> {
         let sql = bind_placeholders(
-            "UPDATE manga SET title = ?, artist = COALESCE(?, artist), author = COALESCE(?, author), description = COALESCE(?, description), genre = COALESCE(?, genre), status = ?, thumbnail_url = COALESCE(?, thumbnail_url), update_strategy = ?, memo = ?, thumbnail_url_last_fetched = ? WHERE id = ?");
+            "UPDATE manga SET title = ?, artist = COALESCE(?, artist), author = COALESCE(?, author), description = COALESCE(?, description), genre = COALESCE(?, genre), alt_titles = ?, status = ?, thumbnail_url = COALESCE(?, thumbnail_url), update_strategy = ?, memo = ?, thumbnail_url_last_fetched = ? WHERE id = ?");
         let memo = s.memo.to_string();
+        let alt_titles = serde_json::to_string(&s.alt_titles).unwrap_or_else(|_| "[]".to_string());
         let thumbnail_changed =
             !s.thumbnail_url.as_deref().unwrap_or("").is_empty() && existing.thumbnail_url != s.thumbnail_url;
         let last_fetched =
@@ -102,6 +105,7 @@ impl MangaListService {
                 .bind(&s.author)
                 .bind(&s.description)
                 .bind(&s.genre)
+                .bind(alt_titles)
                 .bind(s.status)
                 .bind(&s.thumbnail_url)
                 .bind(s.update_strategy.to_db())

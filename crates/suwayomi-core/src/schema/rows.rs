@@ -48,6 +48,9 @@ pub struct MangaRow {
     pub author: Option<String>,
     pub description: Option<String>,
     pub genre: Option<String>,
+    /// JSON array of alternative titles (other-language titles from archive
+    /// metadata); parsed by the GraphQL layer into `altTitles`.
+    pub alt_titles: String,
     pub status: i32,
     pub thumbnail_url: Option<String>,
     pub thumbnail_url_last_fetched: i64,

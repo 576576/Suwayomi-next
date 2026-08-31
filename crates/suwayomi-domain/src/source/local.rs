@@ -266,6 +266,10 @@ pub struct ArchiveMeta {
     /// Manga-level title — `meta.json.title` (japanese preferred, then
     /// english) or `ComicInfo.Series`.
     pub manga_title: Option<String>,
+    /// Other-language titles from `meta.json.title` (everything except the
+    /// selected main title) — shown as "Alternative title: …" on the details
+    /// page when more than one title is present.
+    pub alt_titles: Vec<String>,
     pub author: Option<String>,
     pub artist: Option<String>,
     pub genre: Option<String>,
@@ -325,12 +329,16 @@ fn scan_manga_archive_meta(manga_dir: &Path) -> Option<ArchiveMeta> {
 ///   "tags": [{"type": "artist|group|category|tag|parody|character", "name": "..."}] }
 /// ```
 fn parse_meta_json(bytes: &[u8]) -> Option<ArchiveMeta> {
+    // Any language key is accepted (english/japanese/korean/chinese/…);
+    // `serde(flatten)` keeps the unknown keys in a map so nothing is dropped.
     #[derive(serde::Deserialize, Default)]
     struct MetaJsonTitle {
         #[serde(default)]
         english: Option<String>,
         #[serde(default)]
         japanese: Option<String>,
+        #[serde(flatten)]
+        extra: std::collections::HashMap<String, String>,
     }
     #[derive(serde::Deserialize, Default)]
     struct MetaJsonTag {
@@ -354,13 +362,32 @@ fn parse_meta_json(bytes: &[u8]) -> Option<ArchiveMeta> {
     }
 
     let m: MetaJson = serde_json::from_slice(bytes).ok()?;
-    // Manga title preference: japanese first (the work's native title),
-    // then english, then none.
-    let manga_title = m
-        .title
-        .as_ref()
-        .and_then(|t| t.japanese.clone().or_else(|| t.english.clone()))
-        .filter(|t| !t.trim().is_empty());
+    // Title ordering — english is ALWAYS the fallback, never preferred:
+    //   main title:  japanese > other non-english langs (sorted) > english
+    //   alternatives: every remaining title, english last.
+    let mut langs: Vec<String> = Vec::new(); // (title) in preference order
+    if let Some(t) = m.title.as_ref() {
+        let push = |langs: &mut Vec<String>, s: &Option<String>| {
+            if let Some(s) = s.as_deref().filter(|s| !s.trim().is_empty()) {
+                langs.push(s.to_string());
+            }
+        };
+        push(&mut langs, &t.japanese);
+        let mut extras: Vec<(&String, &String)> =
+            t.extra.iter().filter(|(_, v)| !v.trim().is_empty()).collect();
+        extras.sort_by(|a, b| a.0.cmp(b.0));
+        for (k, v) in extras {
+            if k != "english" {
+                langs.push(v.clone());
+            }
+        }
+        push(&mut langs, &t.english);
+    }
+    let mut alt_titles: Vec<String> = Vec::new();
+    let manga_title = langs.first().cloned();
+    if let Some(main) = &manga_title {
+        alt_titles = langs.iter().filter(|t| *t != main).cloned().collect();
+    }
     let mut artist = Vec::new();
     let mut author = Vec::new();
     let mut genre = Vec::new();
@@ -386,6 +413,7 @@ fn parse_meta_json(bytes: &[u8]) -> Option<ArchiveMeta> {
         upload_date: m.upload_date,
         page_count: m.num_pages.map(|n| n as i32),
         manga_title,
+        alt_titles,
         author: if author.is_empty() { None } else { Some(author.join(", ")) },
         artist: if artist.is_empty() { None } else { Some(artist.join(", ")) },
         genre: if genre.is_empty() { None } else { Some(genre.join(", ")) },
@@ -446,6 +474,7 @@ fn parse_comic_info_xml(bytes: &[u8]) -> Option<ArchiveMeta> {
         upload_date,
         page_count,
         manga_title,
+        alt_titles: Vec::new(), // ComicInfo carries a single title — no alternatives
         author: text("writer"),
         artist: text("penciller"),
         genre,
@@ -548,6 +577,7 @@ pub fn scan_local_source(root: &Path) -> Vec<SManga> {
             status,
             description: details.as_ref().and_then(|d| d.description.clone()),
             genre,
+            alt_titles: archive_meta.as_ref().map(|m| m.alt_titles.clone()).unwrap_or_default(),
             update_strategy: UpdateStrategy::default(),
             initialized: true,
             memo: serde_json::Value::Null,

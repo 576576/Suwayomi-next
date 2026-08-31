@@ -214,6 +214,7 @@ impl HttpSandboxFetcher {
                 status: m.status,
                 description: m.description,
                 genre: m.genre,
+                alt_titles: Vec::new(),
                 update_strategy: suwayomi_core::models::UpdateStrategy::AlwaysUpdate,
                 initialized: false,
                 memo: serde_json::Value::Null,

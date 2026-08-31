@@ -499,7 +499,7 @@ fn main() {
             .visible(false)
             .build()?;
 
-            // 系统托盘：启动Suwayomi（运行中则禁用）→ 打开WebUI → 数据目录 → 设置 → 隐藏托盘 → 退出
+            // 系统托盘：启动/重启Suwayomi（运行中显示「重启」）→ 打开WebUI → 数据目录 → 设置 → 隐藏托盘 → 退出
             let start_item = MenuItem::with_id(app, "start_suwayomi", "启动 Suwayomi", true, None::<&str>)?;
             let open_webui = MenuItem::with_id(app, "open_webui", "打开 WebUI", true, None::<&str>)?;
             let open_data = MenuItem::with_id(app, "open_data", "打开数据目录", true, None::<&str>)?;
@@ -511,10 +511,11 @@ fn main() {
                 &[&start_item, &open_webui, &open_data, &settings_item, &hide_tray, &quit],
             )?;
 
-            // 根据当前 server 状态刷新「启动 Suwayomi」项
+            // 根据当前 server 状态刷新「启动/重启 Suwayomi」项（始终可点：
+            // 运行中 = 重启，未运行 = 启动）
             let running = server_running(port);
-            let _ = start_item.set_enabled(!running);
-            let _ = start_item.set_text(if running { "Suwayomi 运行中" } else { "启动 Suwayomi" });
+            let _ = start_item.set_enabled(true);
+            let _ = start_item.set_text(if running { "重启 Suwayomi" } else { "启动 Suwayomi" });
 
             let _tray = TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().expect("default window icon").clone())
@@ -526,23 +527,21 @@ fn main() {
                         let st = app.state::<AppState>();
                         let port = st.port.load(Ordering::Relaxed);
                         if server_running(port) {
-                            return;
+                            // 运行中 → 重启：优雅停止（等进程退出，超时强杀）
+                            // 后重新拉起。stop_server_gracefully 内部已等待
+                            // 进程消失，单实例互斥体随进程退出释放。
+                            tray_log("[tray] restart: stopping running server");
+                            stop_server_gracefully(port);
+                            std::thread::sleep(Duration::from_secs(2));
                         }
                         let mut guard = st.server.lock().unwrap();
-                        if guard.is_none() {
-                            let d = st.data_dir.lock().unwrap().clone();
-                            *guard = spawn_server(&d, port);
-                            let _ = wait_ready(port, Duration::from_secs(20));
+                        if let Some(child) = guard.take() {
+                            drop(child);
                         }
+                        let d = st.data_dir.lock().unwrap().clone();
+                        *guard = spawn_server(&d, port);
                         drop(guard);
-                        if let Some(menu) = app.menu() {
-                            if let Some(kind) = menu.get("start_suwayomi") {
-                                if let Some(item) = kind.as_menuitem() {
-                                    let _ = item.set_enabled(false);
-                                    let _ = item.set_text("Suwayomi 运行中");
-                                }
-                            }
-                        }
+                        let _ = wait_ready(port, Duration::from_secs(25));
                     }
                     "open_webui" => {
                         let st = app.state::<AppState>();

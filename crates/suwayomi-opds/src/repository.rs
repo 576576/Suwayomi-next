@@ -25,7 +25,7 @@ struct MangaJoinedRow {
     thumbnail_url_last_fetched: i64,
     in_library: bool,
     in_library_at: i64,
-    source: i64,
+    source: Option<i64>,
     real_url: Option<String>,
     last_fetched_at: i64,
     chapters_last_fetched_at: i64,
@@ -34,8 +34,8 @@ struct MangaJoinedRow {
     version: i64,
     is_syncing: bool,
     memo: String,
-    source_name: String,
-    source_lang: String,
+    source_name: Option<String>,
+    source_lang: Option<String>,
 }
 
 /// Flat join row: chapter + manga summary + total chapters.
@@ -148,7 +148,7 @@ const MANGA_SELECT: &str = "SELECT m.id, m.url, m.title, m.initialized, m.artist
      m.thumbnail_url, m.thumbnail_url_last_fetched, m.in_library, m.in_library_at, m.source, m.real_url, \
      m.last_fetched_at, m.chapters_last_fetched_at, m.update_strategy, m.last_modified_at, m.version, \
      m.is_syncing, m.memo, s.name AS source_name, s.lang AS source_lang \
-     FROM manga m JOIN source s ON s.id = m.source";
+     FROM manga m LEFT JOIN source s ON s.id = m.source";
 
 /// Library sort keys (mirror Suwayomi library sort enum used by OPDS).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,8 +224,8 @@ impl<'p> OpdsRepository<'p> {
             description: r.description.clone(),
             thumbnail_url: r.thumbnail_url.clone(),
             last_fetched_at: r.last_fetched_at,
-            source_name: r.source_name,
-            source_lang: r.source_lang,
+            source_name: r.source_name.unwrap_or_default(),
+            source_lang: r.source_lang.unwrap_or_default(),
             in_library: r.in_library,
             total_chapters,
         }
@@ -285,7 +285,7 @@ impl<'p> OpdsRepository<'p> {
         let offset = (page_num.saturating_sub(1)) * ITEMS_PER_PAGE;
         let base = if params.is_empty() { "WHERE m.in_library = TRUE".to_string() } else { format!("WHERE m.in_library = TRUE AND {}", params.join(" AND ")) };
         let sql = format!("{MANGA_SELECT} {base} ORDER BY {order} LIMIT {ITEMS_PER_PAGE} OFFSET {offset}");
-        let count_sql = format!("SELECT COUNT(*) FROM manga m JOIN source s ON s.id = m.source {base}");
+        let count_sql = format!("SELECT COUNT(*) FROM manga m LEFT JOIN source s ON s.id = m.source {base}");
 
         let total: i64 = sqlx::query_scalar(&count_sql).fetch_one(self.pool).await?;
         let rows: Vec<MangaJoinedRow> = sqlx::query_as(&sql).fetch_all(self.pool).await?;
@@ -321,7 +321,7 @@ impl<'p> OpdsRepository<'p> {
         };
         let offset = (page_num.saturating_sub(1)) * ITEMS_PER_PAGE;
         let sql = format!("{MANGA_SELECT} {base} ORDER BY m.title ASC LIMIT {ITEMS_PER_PAGE} OFFSET {offset}");
-        let count_sql = format!("SELECT COUNT(*) FROM manga m JOIN source s ON s.id = m.source {base}");
+        let count_sql = format!("SELECT COUNT(*) FROM manga m LEFT JOIN source s ON s.id = m.source {base}");
         let total: i64 = sqlx::query_scalar(&count_sql).fetch_one(self.pool).await?;
         let rows: Vec<MangaJoinedRow> = sqlx::query_as(&sql).fetch_all(self.pool).await?;
         let items = self.attach_total_chapters(rows).await?;

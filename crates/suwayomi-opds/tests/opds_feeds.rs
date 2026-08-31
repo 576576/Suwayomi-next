@@ -147,6 +147,30 @@ async fn library_series_feed_contains_manga_entry() {
 }
 
 #[tokio::test]
+async fn library_series_feed_includes_local_manga_without_source() {
+    // 本地源漫画的 source 列指向不存在的 source id（悬空外键，不入 source 表）：
+    // LEFT JOIN 后仍须出现在 Library feed 中——回归测试，防止 INNER JOIN 把
+    // 匹配不到 source 行的本地漫画过滤掉。
+    let db = seed().await;
+    let pool = db.pool();
+    sqlx::query(
+        "INSERT INTO manga (url, title, initialized, status, in_library, source, last_fetched_at, last_modified_at) \
+         VALUES ($1, $2, TRUE, $3, TRUE, $4, $5, $5)",
+    )
+    .bind("/local/LocalManga")
+    .bind("Local Manga 本地漫画")
+    .bind(1_i32)
+    .bind(999_i64) // 悬空 source id：source 表无此行
+    .bind(1_700_000_000_000_i64)
+    .execute(pool)
+    .await
+    .expect("insert local manga");
+    let xml = feeds::library_series_feed(&ctx(&db), None, None, None, None, None, 1, "title", "all").await;
+    assert!(xml.contains("Local Manga 本地漫画"), "local manga present with dangling source");
+    assert!(xml.contains("opensearch:totalResults>2"), "total counts both manga");
+}
+
+#[tokio::test]
 async fn series_chapters_feed_contains_chapters() {
     let db = seed().await;
     let xml = feeds::series_chapters_feed(&ctx(&db), 1, 1, "number_asc", "all").await.expect("feed");

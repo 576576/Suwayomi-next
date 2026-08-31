@@ -426,7 +426,7 @@ fn main() {
             let open_webui = MenuItem::with_id(app, "open_webui", "打开 WebUI", true, None::<&str>)?;
             let open_data = MenuItem::with_id(app, "open_data", "打开数据目录", true, None::<&str>)?;
             let settings_item = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
-            let hide_tray = MenuItem::with_id(app, "hide_tray", "隐藏托盘（保留服务）", true, None::<&str>)?;
+            let hide_tray = MenuItem::with_id(app, "hide_tray", "隐藏托盘", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let menu = Menu::with_items(
                 app,

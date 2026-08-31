@@ -439,6 +439,17 @@ async fn main() -> anyhow::Result<()> {
     db.migrate().await?;
     tracing::info!(mode = ?db.mode(), "database ready (migrations applied)");
 
+    // 确保默认分类 (id=0, is_default) 存在——WebUI 书架页依赖它作为首个 tab
+    // （categories 列表 + GET_CATEGORY_MANGAS(id=0)）。ON CONFLICT 幂等，覆盖
+    // 备份恢复后 category 表为空/重建的场景。
+    sqlx::query(
+        "INSERT INTO category (id, name, sort_order, is_default, include_in_update, include_in_download) \
+         VALUES (0, '默认', 0, TRUE, -1, -1) ON CONFLICT (id) DO NOTHING",
+    )
+    .execute(db.pool())
+    .await
+    .map_err(anyhow::Error::from)?;
+
     // Apply a persisted `localSourcePath` (saved via setSettings) to the
     // local source root so custom directories survive restarts.
     load_local_source_path(&db).await;

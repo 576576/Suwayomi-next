@@ -1327,8 +1327,12 @@ impl QueryRoot {
     }
 
     /// Mirrors `aboutServer()` — full payload.
-    async fn about_server(&self) -> AboutServerPayload {
-        AboutServerPayload::current()
+    async fn about_server(&self, ctx: &Context<'_>) -> AboutServerPayload {
+        let data_dir = ctx
+            .data::<GraphQLState>()
+            .map(|s| s.data_dir.to_string_lossy().to_string())
+            .unwrap_or_default();
+        AboutServerPayload::current(&data_dir)
     }
 }
 

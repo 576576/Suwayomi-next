@@ -76,6 +76,27 @@ fn resolve_webui_dir() -> std::path::PathBuf {
     std::path::PathBuf::new()
 }
 
+/// Resolves the user data root (backups/downloads/local source live under it):
+/// `SUWAYOMI_DATA_DIR` env, else `<release root>/data` (exe under `bin/`),
+/// else `data` under the working directory.
+fn resolve_data_dir() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("SUWAYOMI_DATA_DIR") {
+        if !dir.trim().is_empty() {
+            return std::path::PathBuf::from(dir);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if dir.file_name().map(|n| n == "bin").unwrap_or(false) {
+                if let Some(base) = dir.parent() {
+                    return base.join("data");
+                }
+            }
+        }
+    }
+    std::path::PathBuf::from("data")
+}
+
 /// Resolves the JVM extension sandbox jar: `SUWAYOMI_SANDBOX_JAR` env, else the
 /// `jvm-sandbox.jar` bundled next to this executable, else the `bin/` subfolder
 /// (发布布局：suwayomi-server.exe 与 jvm-sandbox.jar 同在 bin/）。
@@ -495,7 +516,7 @@ async fn main() -> anyhow::Result<()> {
     // for the whole server lifetime — `let _ =` would drop it immediately and
     // kill the JVM in Drop.
     let _sandbox = sandbox_guard;
-    let graphql_state = suwayomi_graphql::GraphQLState::new(db.clone(), config.clone(), fetcher.clone(), sandbox_base.clone(), resolve_webui_dir());
+    let graphql_state = suwayomi_graphql::GraphQLState::new(db.clone(), config.clone(), fetcher.clone(), sandbox_base.clone(), resolve_webui_dir(), resolve_data_dir());
     let schema = suwayomi_graphql::schema::build_schema(graphql_state);
     tracing::info!("graphql schema ready ({} type definitions)", suwayomi_graphql::schema::schema_type_count());
     let state = AppState::new(db, config.clone(), fetcher, sandbox_base, resolve_webui_dir());

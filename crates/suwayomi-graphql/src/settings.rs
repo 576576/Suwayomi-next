@@ -588,10 +588,13 @@ pub struct AboutServerPayload {
     #[graphql(deprecation = "The version includes the revision as the patch number")]
     pub revision: String,
     pub version: String,
+    /// User data root (backups/downloads/local source live under it) —
+    /// displayed by the WebUI "Data & Storage" settings page.
+    pub data_dir: String,
 }
 
 impl AboutServerPayload {
-    pub fn current() -> Self {
+    pub fn current(data_dir: &str) -> Self {
         let os_name = std::env::consts::OS.to_string();
         let arch = std::env::consts::ARCH.to_string();
         Self {
@@ -615,6 +618,7 @@ impl AboutServerPayload {
             },
             revision: suwayomi_core::version::VERSION_CODE.into(),
             version: suwayomi_core::version::VERSION.into(),
+            data_dir: data_dir.to_string(),
         }
     }
 }

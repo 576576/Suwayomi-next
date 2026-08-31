@@ -273,6 +273,8 @@ fn spawn_server(data: &PathBuf, port: u16) -> Option<Child> {
         // 本地图源根目录 = 发布根 data/local（server 的 cwd 是 data 目录，
         // 不显式传 env 的话 local_source_root 会解析到 data/data/local）
         .env("SUWAYOMI_LOCAL_SOURCE_DIR", base_dir().join("data").join("local"))
+        // 数据根目录（aboutServer.dataDir / WebUI 数据与存储页显示）
+        .env("SUWAYOMI_DATA_DIR", base_dir().join("data"))
         // 日志目录（server + JVM 沙盒输出统一落位）
         .env("SUWAYOMI_LOGS_DIR", logs.clone())
         .env("SUWAYOMI_WEBUI_DIR", base_dir().join("webui"))

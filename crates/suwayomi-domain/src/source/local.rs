@@ -106,8 +106,47 @@ pub fn scan_local_chapters(manga_dir: &Path) -> Vec<SChapter> {
             memo: serde_json::Value::Null,
         });
     }
-    chapters.sort_by(|a, b| a.name.cmp(&b.name));
+    chapters.sort_by(|a, b| natural_cmp(&a.name, &b.name));
     chapters
+}
+
+/// Natural-order comparison: numeric runs are compared by value so that
+/// `1.jpg < 2.jpg < 10.jpg` (lexicographic order would put "10" before "2",
+/// which shows up as page 1 → page 10 in the reader).
+fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let ab = a.as_bytes();
+    let bb = b.as_bytes();
+    let (mut pa, mut pb) = (0usize, 0usize);
+    while pa < ab.len() && pb < bb.len() {
+        let (ca, cb) = (ab[pa], bb[pb]);
+        if ca.is_ascii_digit() && cb.is_ascii_digit() {
+            let mut ea = pa;
+            while ea < ab.len() && ab[ea].is_ascii_digit() {
+                ea += 1;
+            }
+            let mut eb = pb;
+            while eb < bb.len() && bb[eb].is_ascii_digit() {
+                eb += 1;
+            }
+            // 去前导零后按（长度 → 字典序）比较数值
+            let da = a[pa..ea].trim_start_matches('0');
+            let db = b[pb..eb].trim_start_matches('0');
+            let ord = da.len().cmp(&db.len()).then_with(|| da.cmp(db));
+            if ord != std::cmp::Ordering::Equal {
+                return ord;
+            }
+            pa = ea;
+            pb = eb;
+        } else {
+            let ord = ca.cmp(&cb);
+            if ord != std::cmp::Ordering::Equal {
+                return ord;
+            }
+            pa += 1;
+            pb += 1;
+        }
+    }
+    ab.len().cmp(&bb.len())
 }
 
 /// Scan the page images of one chapter folder. For directory chapters this
@@ -128,7 +167,7 @@ pub fn scan_local_pages(chapter_path: &Path, url_prefix: &str) -> Vec<SourcePage
                     .collect()
             })
             .unwrap_or_default();
-        files.sort_by_key(|e| e.file_name());
+        files.sort_by(|a, b| natural_cmp(&a.file_name().to_string_lossy(), &b.file_name().to_string_lossy()));
         for (i, f) in files.into_iter().enumerate() {
             let name = f.file_name().to_string_lossy().into_owned();
             let image_url = format!("{url_prefix}/{name}");
@@ -171,7 +210,7 @@ pub fn list_archive_pages(archive: &Path) -> Vec<(usize, String)> {
         }
         names.push(name);
     }
-    names.sort();
+    names.sort_by(|a, b| natural_cmp(a, b));
     names.into_iter().enumerate().collect()
 }
 
@@ -439,7 +478,7 @@ pub fn scan_local_source(root: &Path) -> Vec<SManga> {
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
         .collect();
-    dirs.sort_by_key(|e| e.file_name());
+    dirs.sort_by(|a, b| natural_cmp(&a.file_name().to_string_lossy(), &b.file_name().to_string_lossy()));
 
     let mut out = Vec::with_capacity(dirs.len());
     for entry in dirs {
@@ -531,6 +570,23 @@ fn read_details(path: &Path) -> Option<DetailsJson> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn natural_sort_orders_pages_numerically() {
+        // 回归：字典序会把 10 排在 2 前面（阅读器第 1 页后接第 10 页）
+        let mut names = vec!["10.jpg", "1.jpg", "2.jpg", "11.jpg", "20.jpg", "3.jpg"];
+        names.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(names, ["1.jpg", "2.jpg", "3.jpg", "10.jpg", "11.jpg", "20.jpg"]);
+
+        let mut chapters = vec!["Chapter 10", "Chapter 2", "Chapter 1"];
+        chapters.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(chapters, ["Chapter 1", "Chapter 2", "Chapter 10"]);
+
+        // 混合：非数字前缀按字典序、数字段按数值
+        let mut mixed = vec!["b-2.jpg", "a-10.jpg", "a-2.jpg", "b-1.jpg"];
+        mixed.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(mixed, ["a-2.jpg", "a-10.jpg", "b-1.jpg", "b-2.jpg"]);
+    }
 
     #[test]
     fn scans_directories_and_details() {

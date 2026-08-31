@@ -289,6 +289,24 @@ impl SourceFetcher for HttpSandboxFetcher {
         true // extensions support latest unless the source overrides it
     }
 
+    async fn get_filters(&self, source_id: i64) -> Result<serde_json::Value> {
+        let r = self
+            .client
+            .get(format!("{}/source/{source_id}/filters", self.base_url))
+            .send()
+            .await
+            .map_err(DomainError::from)?;
+        if !r.status().is_success() {
+            return Err(DomainError::Sandbox(format!("sandbox filters failed: {}", r.status())));
+        }
+        let json: serde_json::Value = r.json().await.map_err(DomainError::from)?;
+        // /source/{id}/filters 返回 {"filters":[...]}；兼容纯数组
+        Ok(json
+            .get("filters")
+            .cloned()
+            .unwrap_or_else(|| if json.is_array() { json } else { serde_json::json!([]) }))
+    }
+
     async fn fetch_pages(
         &self,
         source_id: i64,

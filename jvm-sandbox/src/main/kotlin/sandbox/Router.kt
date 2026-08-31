@@ -107,8 +107,10 @@ class Router(private val registry: ExtensionRegistry) {
                     ex.respond(200, """{"pages":[${resolved.joinToString(",") { mapToJson(it) }}]}""")
                 }
                 // /source/{id}/filters
-                segments.size == 3 && segments[1] == "filters" -> ex.respond(200, "[]")
-                segments.size == 2 && segments[1] == "filters" -> ex.respond(200, "[]")
+                segments.size == 3 && segments[1] == "filters" ->
+                    ex.respond(200, """{"filters":[${driver.getFilters().joinToString(",") { mapToJson(it) }}]}""")
+                segments.size == 2 && segments[1] == "filters" ->
+                    ex.respond(200, """{"filters":[${driver.getFilters().joinToString(",") { mapToJson(it) }}]}""")
                 else -> ex.respond404()
             }
         } catch (t: Throwable) {

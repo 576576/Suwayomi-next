@@ -9,6 +9,7 @@ repositories {
 }
 
 dependencies {
+    testImplementation(kotlin("test"))
     // --- extension runtime (provided by the sandbox process) ---
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okio:okio:3.9.0")
@@ -52,6 +53,11 @@ application {
 kotlin {
     jvmToolchain(17)
 }
+
+tasks.test {
+    useJUnitPlatform()
+}
+
 
 tasks.jar {
     manifest {

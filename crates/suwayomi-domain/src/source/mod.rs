@@ -43,6 +43,12 @@ pub trait SourceFetcher: Send + Sync {
 
     /// Whether the source provides a latest listing
     fn supports_latest(&self, source_id: i64) -> bool;
+
+    /// Search filters for a source (Phase 5). Defaults to an empty list;
+    /// the JVM sandbox backend forwards `/source/{id}/filters`.
+    async fn get_filters(&self, _source_id: i64) -> crate::error::Result<serde_json::Value> {
+        Ok(serde_json::json!([]))
+    }
 }
 
 /// Default stub used before the JVM sandbox is wired (Phase 5).

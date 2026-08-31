@@ -5,6 +5,7 @@
 
 package sandbox
 
+import eu.kanade.tachiyomi.source.model.Filter
 import suwayomi.tachidesk.manga.impl.util.lang.awaitSingle
 
 import java.lang.reflect.Modifier
@@ -141,4 +142,69 @@ class SourceDriver(private val src: LoadedSource) {
         "ON_HIATUS" -> 6
         else -> 0
     }
+
+    // ---- search filters -------------------------------------------------------
+
+    /** Reads the source's filter list (`getFilterList` / `fetchFilterList`). */
+    fun getFilters(): List<Map<String, Any?>> {
+        val obs = try {
+            callMethod(src.instance, "getFilterList")
+        } catch (e: Exception) {
+            System.err.println("sandbox: getFilterList failed: ${e.message}")
+            try {
+                callMethod(src.instance, "fetchFilterList")
+            } catch (e2: Exception) {
+                System.err.println("sandbox: fetchFilterList failed: ${e2.message}")
+                null
+            }
+        }
+        val list = awaitObservable(obs) ?: return emptyList()
+        val filters = readField(list, "list") as? List<Any> ?: emptyList()
+        return filters.map { filterToMap(it) }
+    }
+}
+
+/** Serializes a Filter subclass into the Tachidesk JSON shape. */
+internal fun filterToMap(f: Any?): Map<String, Any?> {
+    if (f == null) return emptyMap()
+    val name = readField(f, "name") as? String ?: ""
+    // 按类型层级判断（扩展 jar 里的 Filter 都是具名子类，simpleName 不可靠）
+    val type = when (f) {
+        is Filter.Header -> "title"
+        is Filter.Separator -> "separator"
+        is Filter.Select<*> -> "select"
+        is Filter.Text -> "text"
+        is Filter.CheckBox -> "check-box"
+        is Filter.TriState -> "tri-state"
+        is Filter.Sort -> "sort"
+        is Filter.Group<*> -> "group"
+        else -> "unknown"
+    }
+    val out = mutableMapOf<String, Any?>()
+    out["type"] = type
+    out["name"] = name
+    when (type) {
+        "title", "separator" -> {}
+        "select" -> {
+            out["state"] = (readField(f, "state") as? Number)?.toInt() ?: 0
+            out["values"] = readField(f, "displayValues") as? List<Any> ?: emptyList<Any>()
+        }
+        "text" -> out["state"] = readField(f, "state") ?: ""
+        "check-box" -> out["state"] = readField(f, "state") ?: false
+        "tri-state" -> out["state"] = (readField(f, "state") as? Number)?.toInt() ?: 0
+        "sort" -> {
+            out["values"] = (readField(f, "values") as? Array<*>)?.map { it?.toString() } ?: emptyList<String>()
+            val sel = readField(f, "state")
+            out["state"] = if (sel == null) {
+                null
+            } else {
+                mapOf<String, Any?>(
+                    "index" to ((readField(sel, "index") as? Number)?.toInt() ?: 0),
+                    "ascending" to ((readField(sel, "ascending") as? Boolean) ?: true),
+                )
+            }
+        }
+        "group" -> out["state"] = readField(f, "state") ?: emptyList<Any>()
+    }
+    return out
 }

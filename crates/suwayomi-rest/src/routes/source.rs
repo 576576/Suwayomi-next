@@ -110,8 +110,8 @@ async fn set_preferences(
     Ok(Json(serde_json::json!({ "message": "success" })))
 }
 
-async fn get_filters(State(_s): State<AppState>, Path(_source_id): Path<i64>) -> ApiResult<Json<serde_json::Value>> {
-    Ok(Json(serde_json::json!([])))
+async fn get_filters(State(state): State<AppState>, Path(source_id): Path<i64>) -> ApiResult<Json<serde_json::Value>> {
+    Ok(Json(state.fetcher.get_filters(source_id).await.map_err(ApiError::from)?))
 }
 
 async fn set_filters(State(_s): State<AppState>, Path(_source_id): Path<i64>) -> ApiResult<Json<serde_json::Value>> {

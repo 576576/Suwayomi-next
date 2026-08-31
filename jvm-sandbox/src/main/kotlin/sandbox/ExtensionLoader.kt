@@ -34,16 +34,18 @@ class LoadedSource(
     val mangasPageCls: Class<*>,
 )
 
-class ExtensionLoader(private val rootDir: Path) {
+class ExtensionLoader(private val rootDir: Path, private val jarDir: Path) {
     private val loaders = ConcurrentHashMap<String, ClassLoader>()
     private val cache = ConcurrentHashMap<String, List<LoadedSource>>()
 
-    /** Convert an APK to a JAR in the same directory (dex -> jar). */
+    /** Convert an APK to a JAR under [jarDir] (dex -> jar). */
     fun apkToJar(apk: Path): Path {
-        val jar = apk.resolveSibling(apk.fileName.toString().removeSuffix(".apk") + ".jar")
+        val name = apk.fileName.toString().removeSuffix(".apk") + ".jar"
+        val jar = jarDir.resolve(name)
         if (Files.exists(jar) && Files.size(jar) > 0) {
             return jar
         }
+        Files.createDirectories(jarDir)
         // dex2jar (femtopedia 2.4.38, same pipeline as Suwayomi-Server). Its
         // output loads fine except a few <clinit>s that BytecodeFixer repairs
         // at class-load time. (enjarify trips the verifier on method bodies.)

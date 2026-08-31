@@ -1,6 +1,6 @@
-//! Extension registry — scans the extensions directory for APKs, converts
-//! them to jars (dex2jar), loads the Source classes and exposes the sources
-//! to the HTTP router.
+//! Extension registry — scans the APK directory for APKs, converts them to
+//! jars under the jar directory (dex2jar), loads the Source classes and
+//! exposes the sources to the HTTP router.
 
 package sandbox
 
@@ -9,11 +9,11 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 
-class ExtensionRegistry(private val rootDir: Path) {
+class ExtensionRegistry(private val rootDir: Path, private val jarDir: Path) {
     val extensions = ConcurrentHashMap<String, ExtensionInfo>() // pkgName -> info
     val sources = ConcurrentHashMap<Long, LoadedSource>() // source id -> loaded
 
-    private val loader = ExtensionLoader(rootDir)
+    private val loader = ExtensionLoader(rootDir, jarDir)
 
     fun scan() {
         if (!Files.isDirectory(rootDir)) {

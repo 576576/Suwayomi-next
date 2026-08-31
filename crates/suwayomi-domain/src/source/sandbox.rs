@@ -383,7 +383,21 @@ fn spawn_java(jar_path: &str, port: &str) -> std::io::Result<std::process::Child
     // Pass through the extensions directory (default ./extensions) and an
     // optional outbound proxy (e.g. Clash) for geo-blocked sources.
     if let Ok(dir) = std::env::var("SUWAYOMI_EXTENSIONS_DIR") {
-        cmd.env("SUWAYOMI_EXTENSIONS_DIR", dir);
+        cmd.env("SUWAYOMI_EXTENSIONS_DIR", &dir);
+        // Converted jars go to <extensions>/../bin/extensions by default
+        // (release layout keeps only APKs under extensions/), overridable
+        // with SUWAYOMI_JAR_DIR.
+        if std::env::var("SUWAYOMI_JAR_DIR").is_err() {
+            let ext = std::path::Path::new(&dir);
+            let jar_dir = ext
+                .parent()
+                .map(|p| p.join("bin").join("extensions"))
+                .unwrap_or_else(|| std::path::PathBuf::from("bin/extensions"));
+            cmd.env("SUWAYOMI_JAR_DIR", jar_dir);
+        }
+    }
+    if let Ok(jar_dir) = std::env::var("SUWAYOMI_JAR_DIR") {
+        cmd.env("SUWAYOMI_JAR_DIR", jar_dir);
     }
     if let Ok(proxy) = std::env::var("SUWAYOMI_SANDBOX_PROXY") {
         cmd.env("SUWAYOMI_SANDBOX_PROXY", proxy);

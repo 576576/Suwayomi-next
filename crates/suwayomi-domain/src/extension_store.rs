@@ -179,6 +179,8 @@ pub struct ExtensionStoreService {
     http: Client,
     sandbox: Option<HttpSandboxFetcher>,
     extensions_dir: PathBuf,
+    /// Directory for dex2jar-converted jars (release layout: `bin/extensions`).
+    jar_dir: PathBuf,
 }
 
 impl ExtensionStoreService {
@@ -186,6 +188,14 @@ impl ExtensionStoreService {
         let extensions_dir = std::env::var("SUWAYOMI_EXTENSIONS_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("./extensions"));
+        let jar_dir = std::env::var("SUWAYOMI_JAR_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                extensions_dir
+                    .parent()
+                    .map(|p| p.join("bin").join("extensions"))
+                    .unwrap_or_else(|| PathBuf::from("bin/extensions"))
+            });
         let mut builder = Client::builder()
             .connect_timeout(std::time::Duration::from_secs(30))
             .read_timeout(std::time::Duration::from_secs(60));
@@ -201,6 +211,7 @@ impl ExtensionStoreService {
             http: builder.build().expect("reqwest client"),
             sandbox: sandbox_base.map(HttpSandboxFetcher::new),
             extensions_dir,
+            jar_dir,
         }
     }
 
@@ -210,6 +221,10 @@ impl ExtensionStoreService {
 
     pub fn extensions_dir(&self) -> &Path {
         &self.extensions_dir
+    }
+
+    pub fn jar_dir(&self) -> &Path {
+        &self.jar_dir
     }
 
     // ------------------------------------------------------------------
@@ -232,29 +247,66 @@ impl ExtensionStoreService {
     }
 
     /// Fetches one repo index and upserts its entries.
+    ///
+    /// The downloaded index is cached at `<extensions>/index/<repo>/index.pb`
+    /// (or `index.json` for legacy tachiyomi repos). Network/HTTP failures and
+    /// unparseable downloads fall back to the local cache, so a refresh never
+    /// hangs or wipes the store just because a repo is temporarily down.
     pub async fn refresh_one(&self, index_url: &str, store_name: &str) -> Result<usize> {
+        let _ = store_name;
         let url = normalize_index_url(index_url);
-        let resp = self
-            .http
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| DomainError::Source(format!("repo fetch {index_url}: {e}")))?;
-        if !resp.status().is_success() {
-            return Err(DomainError::Source(format!(
-                "repo {index_url} returned {}",
-                resp.status()
-            )));
+        let cache_file = self.index_cache_path(index_url);
+        let mut downloaded: Option<Vec<u8>> = None;
+
+        match self.http.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => match resp.bytes().await {
+                Ok(b) => {
+                    let b = decompress_gzip_if_needed(&b);
+                    // write-through cache
+                    if let Some(dir) = cache_file.parent() {
+                        let _ = std::fs::create_dir_all(dir);
+                    }
+                    let _ = std::fs::write(&cache_file, &b);
+                    downloaded = Some(b);
+                }
+                Err(e) => tracing::warn!("repo {index_url}: read body: {e}"),
+            },
+            Ok(resp) => tracing::warn!("repo {index_url} returned {}", resp.status()),
+            Err(e) => tracing::warn!("repo fetch {index_url}: {e}"),
         }
-        let bytes = resp.bytes().await.map_err(DomainError::from)?;
-        // some repos serve gzip regardless of accept-encoding
-        let bytes = decompress_gzip_if_needed(&bytes);
+
+        // Prefer the freshly downloaded index; on any failure fall back to
+        // the on-disk cache so the extension table keeps its last good state.
+        if let Some(bytes) = &downloaded {
+            match self.upsert_index(bytes, &url, index_url).await {
+                Ok(n) => return Ok(n),
+                Err(e) => tracing::warn!("repo {index_url} index parse failed ({e}); falling back to cache"),
+            }
+        }
+        if cache_file.exists() {
+            let cached = std::fs::read(&cache_file)
+                .map_err(|e| DomainError::Source(format!("read cached index: {e}")))?;
+            return self.upsert_index(&cached, &url, index_url).await;
+        }
+        // nothing usable at all — surface the original error if we had one
+        if let Some(bytes) = downloaded {
+            return self.upsert_index(&bytes, &url, index_url).await;
+        }
+        Err(DomainError::Source(format!(
+            "repo {index_url} unreachable and no cached index under {}",
+            cache_file.display()
+        )))
+    }
+
+    /// Parses a repo index (Mihon `index.pb` or tachiyomi `index.json`) and
+    /// upserts its entries into the `extension` table.
+    async fn upsert_index(&self, bytes: &[u8], url: &str, index_url: &str) -> Result<usize> {
         // Mihon 协议仓库（index.pb，gzip protobuf）与 Tachiyomi 仓库（index.json）分流
         let entries: Vec<RepoIndexEntry> = if url.ends_with("index.pb") {
-            parse_mihon_pb_index(&bytes)
+            parse_mihon_pb_index(bytes)
                 .map_err(|e| DomainError::Source(format!("mihon repo index parse: {e}")))?
         } else {
-            let index: RepoIndex = serde_json::from_slice(&bytes)
+            let index: RepoIndex = serde_json::from_slice(bytes)
                 .map_err(|e| DomainError::Source(format!("repo index parse: {e}")))?;
             index.entries()
         };
@@ -293,8 +345,17 @@ impl ExtensionStoreService {
             .map_err(|err| DomainError::Source(format!("extension upsert {}: {err}", e.pkg)))?;
             n += 1;
         }
-        let _ = store_name;
         Ok(n)
+    }
+
+    /// Local cache path for a repo index: `<extensions>/index/<repo>/index.pb`
+    /// (or `index.json`). `repo` is derived from the index URL so it is stable
+    /// across refreshes.
+    fn index_cache_path(&self, index_url: &str) -> PathBuf {
+        let url = normalize_index_url(index_url);
+        let repo = repo_dir_name(&url);
+        let file = if url.ends_with("index.pb") { "index.pb" } else { "index.json" };
+        self.extensions_dir.join("index").join(repo).join(file)
     }
 
     // ------------------------------------------------------------------
@@ -326,6 +387,7 @@ impl ExtensionStoreService {
 
         // remove any previous versions of the same package first
         remove_matching_apks(&self.extensions_dir, pkg)?;
+        remove_matching_jars(&self.jar_dir, pkg)?;
 
         let bytes = self
             .http
@@ -367,6 +429,7 @@ impl ExtensionStoreService {
         .execute(self.db.pool())
         .await?;
         remove_matching_apks(&self.extensions_dir, pkg)?;
+        remove_matching_jars(&self.jar_dir, pkg)?;
         fetcher.reload().await?;
         sqlx::query("UPDATE suwayomi.extension SET is_installed = FALSE, has_update = FALSE WHERE pkg_name = $1")
             .bind(pkg)
@@ -383,6 +446,7 @@ impl ExtensionStoreService {
         std::fs::create_dir_all(&self.extensions_dir)
             .map_err(|e| DomainError::Source(format!("create extensions dir: {e}")))?;
         remove_matching_apks(&self.extensions_dir, &meta.pkg_name)?;
+        remove_matching_jars(&self.jar_dir, &meta.pkg_name)?;
         let file_name = format!("tachiyomi-{}.{}-v{}.apk", meta.lang, meta.pkg_name, meta.version_name);
         let target = self.extensions_dir.join(&file_name);
         std::fs::write(&target, apk).map_err(|e| DomainError::Source(format!("write {file_name}: {e}")))?;
@@ -523,12 +587,50 @@ fn remove_matching_apks(dir: &Path, pkg: &str) -> Result<()> {
     Ok(())
 }
 
+/// Removes converted jars of the given package from the jar directory.
+/// The jar filename mirrors the apk's (`tachiyomi-<lang>.<short>-v<ver>.jar`).
+fn remove_matching_jars(dir: &Path, pkg: &str) -> Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for f in std::fs::read_dir(dir).map_err(|e| DomainError::Source(format!("read dir: {e}")))? {
+        let f = f.map_err(|e| DomainError::Source(format!("read dir entry: {e}")))?;
+        let name = f.file_name().to_string_lossy().into_owned();
+        let short = pkg.strip_prefix("eu.kanade.tachiyomi.extension.").unwrap_or(pkg);
+        if name.ends_with(".jar") && name.contains(short) {
+            std::fs::remove_file(f.path()).map_err(|e| DomainError::Source(format!("remove {name}: {e}")))?;
+        }
+    }
+    Ok(())
+}
+
 fn normalize_index_url(url: &str) -> String {
     if url.ends_with("index.json") || url.ends_with("index.pb") {
         url.to_string()
     } else {
         format!("{}/index.json", url.trim_end_matches('/'))
     }
+}
+
+/// Stable per-repo cache directory name derived from the index URL.
+/// `https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.pb`
+/// -> `keiyoushi` (first path segment after the host); falls back to the
+/// host name for bare domains.
+fn repo_dir_name(index_url: &str) -> String {
+    let rest = index_url.split("://").nth(1).unwrap_or(index_url);
+    let mut segments = rest.split('/').filter(|s| !s.is_empty());
+    let host = segments.next().unwrap_or("repo");
+    if let Some(first_path) = segments.next() {
+        if !first_path.is_empty() {
+            return first_path.to_string();
+        }
+    }
+    host.trim_start_matches("www.")
+        .trim_start_matches("raw.")
+        .split('.')
+        .next()
+        .unwrap_or("repo")
+        .to_string()
 }
 
 fn decompress_gzip_if_needed(bytes: &[u8]) -> Vec<u8> {
@@ -719,6 +821,47 @@ mod tests {
         assert!(!inst, "marked uninstalled");
 
         sb_srv.await.unwrap();
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn repo_index_refresh_falls_back_to_cache() {
+        let Some(db) = setup_db().await else { eprintln!("SKIP: requires DATABASE_URL"); return };
+        let tmp = std::env::temp_dir().join(format!("ext-test-cache-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::env::set_var("SUWAYOMI_EXTENSIONS_DIR", &tmp);
+
+        let index = br#"[{"name":"nhentai.com","pkg":"tachiyomi-all.nhentaicom","apk":"http://127.0.0.1:1/dl.apk","lang":"all","versionName":"1.4.10","versionCode":14,"nsfw":true}]"#;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _srv = serve_once(listener, index, "HTTP/1.1 200 OK");
+
+        let svc = ExtensionStoreService::new(db.clone(), None);
+        let n = svc
+            .refresh_one(&format!("http://{addr}/repo-1/index.json"), "t")
+            .await
+            .expect("first refresh");
+        assert_eq!(n, 1);
+
+        // write-through cache exists after the first successful refresh
+        let cache_file = tmp.join("index").join("repo-1").join("index.json");
+        assert!(cache_file.exists(), "cache written: {}", cache_file.display());
+
+        // second refresh: the one-shot server is gone (connection refused),
+        // so refresh_one must fall back to the cached copy instead of failing.
+        let n = svc
+            .refresh_one(&format!("http://{addr}/repo-1/index.json"), "t")
+            .await
+            .expect("cached refresh");
+        assert_eq!(n, 1, "offline refresh served from cache");
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM suwayomi.extension WHERE pkg_name = 'tachiyomi-all.nhentaicom'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(count, 1, "upsert served from cache");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

@@ -26,9 +26,13 @@ import java.nio.file.Paths
 fun main() {
     val port = System.getenv("SUWAYOMI_SANDBOX_PORT")?.toIntOrNull() ?: 4569
     val extensionsDir = System.getenv("SUWAYOMI_EXTENSIONS_DIR") ?: "extensions"
+    // Converted jars live in a separate directory (bin/extensions in the
+    // release layout) so the extensions dir only holds the downloaded APKs.
+    val jarDir = System.getenv("SUWAYOMI_JAR_DIR") ?: extensionsDir
     Files.createDirectories(Paths.get(extensionsDir))
+    Files.createDirectories(Paths.get(jarDir))
 
-    val registry = ExtensionRegistry(Paths.get(extensionsDir))
+    val registry = ExtensionRegistry(Paths.get(extensionsDir), Paths.get(jarDir))
     registry.scan()
 
     setupInjekt()
@@ -43,7 +47,7 @@ fun main() {
     server.createContext("/source/") { router.sourceDispatch(it) }
     server.executor = null
     server.start()
-    println("suwayomi-jvm-sandbox listening on 127.0.0.1:$port (extensions dir: $extensionsDir)")
+    println("suwayomi-jvm-sandbox listening on 127.0.0.1:$port (extensions dir: $extensionsDir, jar dir: $jarDir)")
 }
 
 fun jsonStr(s: String): String = "\"" + s

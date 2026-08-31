@@ -35,31 +35,11 @@ cargo run --release -p suwayomi-server
 
 ## 从 Kotlin 版迁移（Phase 7）
 
-Kotlin 版使用 H2 数据库文件（JVM 专有格式，Rust 无法直读）。两种迁移路径：
+Kotlin 版使用 H2 数据库文件（JVM 专有格式，Rust 无法直读）。完整迁移操作指南见
+**`docs/migration/MIGRATE.md`**，支持两种路径：
 
-### 路径 A：`--migrate`（推荐，完整保留）
-
-1. 构建迁移工具：`gradle -p tools/h2-dump build`
-2. 迁移（嵌入式默认；或设 `SUWAYOMI_DATABASE_URL` 指到外部 PG）：
-
-```bash
-suwayomi-server --migrate <kotlin-data-dir> [--h2-dump-jar <path>]
-```
-
-流程：定位 `<dir>/*.mv.db` → h2-dump 导出 PostgreSQL 脚本 → 导入当前后端 → 退出。
-之后正常启动即可看到原有库/章节/进度/分类/meta。
-
-> 提示：h2-dump 已按外键依赖序导出，导入脚本幂等（先 DELETE 再 INSERT）。
-
-### 路径 B：备份导入
-
-Kotlin 版导出的 Mihon `.proto` 备份（gzip 体）可直接导入：
-
-```bash
-curl -X POST http://localhost:4567/api/v1/backup/import --data-binary @backup.tachibk
-# 或校验（不落库）：
-curl -X POST http://localhost:4567/api/v1/backup/validate --data-binary @backup.tachibk
-```
+- 路径 A：`suwayomi-server --migrate <kotlin-data-dir>`（h2-dump 全量导出导入，推荐）
+- 路径 B：Mihon `.proto` 备份导入（`POST /api/v1/backup/import`）
 
 ## 备份
 

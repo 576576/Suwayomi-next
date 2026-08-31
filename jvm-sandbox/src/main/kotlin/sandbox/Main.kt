@@ -4,6 +4,7 @@ import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
 import java.nio.file.Files
 import java.nio.file.Paths
+import java.util.concurrent.Executors
 
 /**
  * Suwayomi extension sandbox — runs Mihon/Tachiyomi extensions in a JVM
@@ -47,7 +48,10 @@ fun main() {
     server.createContext("/reload") { router.reload(it) }
     server.createContext("/inspect") { router.inspect(it) }
     server.createContext("/source/") { router.sourceDispatch(it) }
-    server.executor = null
+    // 多线程 executor：默认单线程会把所有请求（含 /health）串行排队——某个
+    // 扩展的网络调用阻塞（慢/超时最长 30s）时 health 也卡死，Rust 监视器
+    // 误判 sandbox 挂掉而反复 kill/重启。线程池让慢请求独占线程，health 常驻可响应。
+    server.executor = Executors.newCachedThreadPool()
     server.start()
     println("suwayomi-jvm-sandbox listening on 127.0.0.1:$port (extensions dir: $extensionsDir, jar dir: $jarDir)")
 }

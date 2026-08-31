@@ -35,14 +35,32 @@ pub fn set_local_source_root(path: Option<PathBuf>) {
     }
 }
 
-/// The root directory of the local source: the configured `localSourcePath`
-/// when set, otherwise `data/local` under the server working directory
-/// (mirrors the Kotlin `DataDirectory` default).
+/// The root directory of the local source. Resolution order:
+/// 1. `localSourcePath` override (set_local_source_root / settings)
+/// 2. `SUWAYOMI_LOCAL_SOURCE_DIR` env (tray spawns the server with the release
+///    root's `data/local` — the server's cwd is the *data dir* there, so the
+///    plain `<cwd>/data/local` default would resolve to `data/data/local`).
+/// 3. exe in a `bin/` layout → `<release root>/data/local`
+/// 4. `<cwd>/data/local` fallback.
 pub fn local_source_root() -> PathBuf {
     if let Some(lock) = LOCAL_ROOT_OVERRIDE.get() {
         if let Ok(guard) = lock.read() {
             if let Some(path) = guard.as_ref() {
                 return path.clone();
+            }
+        }
+    }
+    if let Ok(dir) = std::env::var("SUWAYOMI_LOCAL_SOURCE_DIR") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if dir.file_name().map(|n| n == "bin").unwrap_or(false) {
+                if let Some(base) = dir.parent() {
+                    return base.join("data").join("local");
+                }
             }
         }
     }

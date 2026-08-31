@@ -54,19 +54,18 @@ impl Drop for AppState {
             // server 的日志文件句柄由 server 自身持有，不受影响。
             return;
         }
-        // 非菜单退出（托盘被系统关闭等）：先请求优雅关闭，等 server 自
-        // 行收尾（停 postgres/沙盒），超时才强杀兜底。
+        // 退出托盘：通知 server 优雅关闭（若还在运行），但**不等待**——托盘
+        // 进程必须立即退出（视觉上立刻消失）。server 收到 shutdown 请求后在
+        // 后台自行收尾（pg_ctl stop postgres、杀 JVM 沙盒），完成后进程自然
+        // 退出；即使异常残留，下次启动的 stale-postmaster 自愈会兜底。
         let port = self.port.load(Ordering::Relaxed);
         if server_running(port) {
             request_graceful_shutdown(port);
-            let deadline = Instant::now() + Duration::from_secs(6);
-            while Instant::now() < deadline && server_running(port) {
-                std::thread::sleep(Duration::from_millis(200));
-            }
         }
-        if let Some(mut child) = self.server.lock().unwrap().take() {
-            let _ = child.kill();
-            let _ = child.wait();
+        // 只释放 Child 句柄，不 kill / 不 wait：server 作为独立进程继续完成
+        // 优雅关闭（Windows 父进程退出不会自动终止子进程）。
+        if let Some(child) = self.server.lock().unwrap().take() {
+            drop(child);
         }
     }
 }
@@ -491,12 +490,12 @@ fn main() {
                         app.exit(0);
                     }
                     "quit" => {
-                        // 优雅关闭：先 POST /api/v1/shutdown 让 server 自行收尾
-                        // （pg_ctl stop postgres、杀 JVM 沙盒），等待退出；超时
-                        // 才强杀兜底。
+                        // 托盘立刻关闭（视觉上不等待）：只发优雅关闭请求，
+                        // server 在后台自行收尾（pg_ctl stop postgres、杀 JVM
+                        // 沙盒）后退出；AppState::drop 同样不阻塞。
                         let st = app.state::<AppState>();
                         let port = st.port.load(Ordering::Relaxed);
-                        stop_server_gracefully(port);
+                        request_graceful_shutdown(port);
                         app.exit(0);
                     }
                     _ => {}

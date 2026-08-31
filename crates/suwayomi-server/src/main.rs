@@ -521,10 +521,19 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("server listening on http://{addr}");
     axum::serve(
         listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        app.clone().into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown_signal(shutdown_rx))
     .await?;
+    tracing::info!("server stopped; shutting down embedded database");
+    // Release every Db reference held through the router (AppState /
+    // GraphQLState) so oliphaunt's session Drop runs `pg_ctl stop` on the
+    // postgres child and the NativeRootLock is unlocked.
+    drop(app);
+    // oliphaunt's root locks are unlocked but NOT deleted on Drop — remove
+    // the leftover `.oliphaunt-root-*.lock` (data dir's parent) and the
+    // `.oliphaunt.lock` marker inside the data dir.
+    cleanup_oliphaunt_lock_files();
     Ok(())
 }
 
@@ -541,4 +550,28 @@ async fn shutdown_signal(mut rx: tokio::sync::watch::Receiver<bool>) {
         _ = tokio::signal::ctrl_c() => tracing::info!("ctrl-c received; graceful shutdown"),
         _ = rx.changed() => tracing::info!("shutdown requested via /api/v1/shutdown; graceful shutdown"),
     }
+}
+
+/// Remove the oliphaunt root lock files left behind after a graceful stop:
+/// `NativeRootLock` unlocks the files on Drop but does not delete them — the
+/// stable lock lives in the data dir's parent (`.oliphaunt-root-<hash>.lock`)
+/// and the root marker `.oliphaunt.lock` sits inside the data dir. Deleting
+/// them keeps the deployment root clean between runs; they are recreated on
+/// the next open.
+fn cleanup_oliphaunt_lock_files() {
+    let data_dir = std::env::var("SUWAYOMI_PGLITE_DATA_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("pglite-data"));
+    if let Some(parent) = data_dir.parent() {
+        if let Ok(entries) = std::fs::read_dir(parent) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with(".oliphaunt-root-") && name.ends_with(".lock") {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+    let _ = std::fs::remove_file(data_dir.join(".oliphaunt.lock"));
 }

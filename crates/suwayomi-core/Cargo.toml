@@ -18,5 +18,16 @@ chrono.workspace = true
 uuid.workspace = true
 prost.workspace = true
 anyhow.workspace = true
-pglite-oxide.workspace = true
+oliphaunt.workspace = true
 flate2.workspace = true
+
+[build-dependencies]
+# Stages the Oliphaunt native runtime/broker artifacts into OUT_DIR and emits
+# OLIPHAUNT_RESOURCES_DIR for register_build_resources!().
+oliphaunt-build = "0.1.1"
+
+# Oliphaunt runtime selection (used by oliphaunt-build in build.rs).
+[package.metadata.oliphaunt]
+runtime = "liboliphaunt-native"
+runtime-version = "0.1.1"
+extensions = []

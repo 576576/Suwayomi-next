@@ -1,26 +1,23 @@
-//! Connection management — embedded PGlite (default) or external PostgreSQL.
+//! Connection management — embedded Oliphaunt (default) or external PostgreSQL.
 //!
 //! Mirrors `DBManager.kt` PostgreSQL path. All tables live in the
 //! `suwayomi` schema (matches M0054).
 //!
 //! Backend selection (Phase 6):
-//! - **Embedded (default)** — `Db::connect_embedded`: an in-process PGlite
-//!   (ElectricSQL PGlite engine, PostgreSQL 17) served over a local TCP
-//!   loopback socket via `pglite-oxide`. No external server, Docker or
-//!   install step. The engine owns a single session, so the pool is capped
-//!   at one connection.
+//! - **Embedded (default)** — `Db::connect_embedded`: an in-process
+//!   Oliphaunt native PostgreSQL server (the renamed pglite-oxide, running a
+//!   real local PostgreSQL 18 process). No external server, Docker or install
+//!   step. Unlike the old pglite-oxide WASI gateway (single serial session,
+//!   proxy terminated on any SQL error), the native server exposes
+//!   independent client sessions, so the pool can use multiple connections
+//!   and SQL errors never kill the server.
 //! - **External PostgreSQL (fallback)** — `Db::connect`: connects to a
 //!   standalone PostgreSQL server through a regular `postgres://` URL.
-//!
-//! Note: the `pglite-rs` crate (native static-lib build of PGlite) exposes
-//! its ORM bridge only over unix sockets, which is inert on Windows; we use
-//! `pglite-oxide` instead, which ships the same PGlite engine with a
-//! cross-platform TCP gateway, keeping the whole sqlx data layer unchanged.
 
 use std::path::Path;
 use std::sync::Arc;
 
-use pglite_oxide::{PgliteServer, PgliteServerBuilder};
+use oliphaunt::Oliphaunt;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
 use crate::db::migrator::MIGRATOR;
@@ -31,34 +28,40 @@ pub enum DbError {
     Sqlx(#[from] sqlx::Error),
     #[error("migration error: {0}")]
     Migrate(#[from] sqlx::migrate::MigrateError),
-    #[error("embedded pglite error: {0}")]
+    #[error("embedded oliphaunt error: {0}")]
     Embedded(#[from] anyhow::Error),
 }
 
 /// Which database backend the server is running on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DbMode {
-    /// In-process PGlite (default) — no external server required.
+    /// In-process Oliphaunt native server (default) — no external server required.
     Embedded,
     /// External PostgreSQL server via connection URL.
     External,
 }
 
 /// Database handle shared across the app (cloned per request via `Arc`).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Db {
     pool: PgPool,
-    /// Keeps the embedded PGlite server alive for the lifetime of the app.
-    /// `None` in external mode. `Arc` keeps `Db` cheap to clone; the server
-    /// shuts down (via `Drop`) when the last clone is dropped.
-    _server: Option<Arc<PgliteServer>>,
+    /// Keeps the embedded Oliphaunt native PostgreSQL server alive for the
+    /// lifetime of the app. `None` in external mode. `Arc` keeps `Db` cheap
+    /// to clone; the server shuts down (via `Drop`) when the last clone is
+    /// dropped.
+    _embedded: Option<Arc<Oliphaunt>>,
+}
+
+impl std::fmt::Debug for Db {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Db")
+            .field("mode", &self.mode())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Shared pool hardening — mirrors `DBManager.kt` + guards against stale
-/// connections (the embedded PGlite single backend may drop idle clients;
-/// sqlx then hands out the dead connection and queries die with
-/// "expected to read N bytes, got 0 bytes at EOF").
-///
+/// connections:
 /// - `test_before_acquire` — ping before handing out a connection.
 /// - `idle_timeout` — reclaim idle connections so long-sitting clients are
 ///   closed by us, not by the server at an arbitrary moment.
@@ -89,27 +92,58 @@ impl Db {
             })
             .connect(url)
             .await?;
-        Ok(Self { pool, _server: None })
+        Ok(Self { pool, _embedded: None })
     }
 
-    /// Connect to an embedded PGlite instance (default backend).
+    /// Connect to an embedded Oliphaunt native PostgreSQL server (default
+    /// backend).
     ///
     /// `data_dir`:
     /// - `Some(path)` — persistent database rooted at `path` (created on
-    ///   first open, reused on later starts).
+    ///   first open via initdb, reused on later starts).
     /// - `None` — ephemeral temporary database (fresh per process; ideal
     ///   for tests).
     ///
-    /// The embedded engine owns a single session, so the pool is capped at
-    /// one connection; concurrent queries queue on the pool.
+    /// The native server accepts independent client sessions, so the pool
+    /// is configured with multiple connections (up to the server's
+    /// `max_client_sessions`).
     pub async fn connect_embedded(data_dir: Option<&Path>) -> Result<Self, DbError> {
-        let server = match data_dir {
-            Some(dir) => PgliteServerBuilder::new().path(dir).start()?,
-            None => PgliteServer::temporary_tcp()?,
+        // Register the native runtime/broker artifact tree staged by
+        // oliphaunt-build (idempotent for the same path).
+        oliphaunt::register_build_resources!()
+            .map_err(|e| DbError::Embedded(anyhow::Error::new(e)))?;
+        // Workaround for oliphaunt 0.1.1 on Windows: `materialize_runtime`
+        // copies the runtime tools (exe) and lib/share trees into its cache,
+        // but omits the bin/*.dll files that the PostgreSQL binaries link
+        // against, so the first initdb fails with STATUS_DLL_NOT_FOUND
+        // (0xc0000135). Copy the DLLs from the staged resources into every
+        // existing cache bin; the first materialization creates the cache,
+        // so a failed open is retried once after copying.
+        let open = || async {
+            let builder = Oliphaunt::builder().native_server().max_client_sessions(32);
+            match data_dir {
+                Some(dir) => builder.path(dir),
+                None => builder.temporary(),
+            }
+            .open()
+            .await
         };
-        let url = server.connection_uri();
-        tracing::info!(%url, "embedded pglite ready");
-        let pool = hardened(PgPoolOptions::new().max_connections(1))
+        let server = match open().await {
+            Ok(server) => server,
+            Err(first) => {
+                copy_runtime_bin_dlls_to_cache();
+                open().await.map_err(|e| {
+                    DbError::Embedded(anyhow::anyhow!(
+                        "first attempt failed: {first}; retry after copying runtime DLLs failed: {e}"
+                    ))
+                })?
+            }
+        };
+        let url = server
+            .connection_string()
+            .ok_or_else(|| DbError::Embedded(anyhow::anyhow!("embedded native server did not expose a connection string")))?;
+        tracing::info!(%url, "embedded oliphaunt ready");
+        let pool = hardened(PgPoolOptions::new().max_connections(6))
             .after_connect(|conn, _meta| {
                 Box::pin(async move {
                     sqlx::query("SET search_path TO suwayomi").execute(conn).await?;
@@ -118,12 +152,12 @@ impl Db {
             })
             .connect(&url)
             .await?;
-        Ok(Self { pool, _server: Some(Arc::new(server)) })
+        Ok(Self { pool, _embedded: Some(Arc::new(server)) })
     }
 
     /// Which backend this handle is running on.
     pub fn mode(&self) -> DbMode {
-        if self._server.is_some() { DbMode::Embedded } else { DbMode::External }
+        if self._embedded.is_some() { DbMode::Embedded } else { DbMode::External }
     }
 
     /// Runs the schema migrations for the active backend.
@@ -134,56 +168,78 @@ impl Db {
         // advisory lock. Without the lock, two `_sqlx_migrations` inserts on
         // the same version race each other ("tuple concurrently updated").
         let mut conn = self.pool.acquire().await?;
-        // Both backends need the `suwayomi` schema to exist before migration:
-        // sqlx's `ensure_migrations_table` creates `_sqlx_migrations` with an
+        // The `suwayomi` schema must exist before migration: sqlx's
+        // `ensure_migrations_table` creates `_sqlx_migrations` with an
         // UNQUALIFIED name that resolves through search_path — on a fresh
         // database the missing schema would fail with 3F000.
         conn.execute("CREATE SCHEMA IF NOT EXISTS suwayomi").await?;
-        if self._server.is_some() {
-            // The pglite-oxide TCP proxy terminates the embedded session on
-            // ANY SQL error (e.g. 42P01 / 3F000). sqlx migrate probes
-            // `_sqlx_migrations` (error 42P01 on a fresh database) which
-            // would kill the session mid-migrate. Pre-creating the table,
-            // schema-qualified, makes every subsequent unqualified statement
-            // resolve without error.
-            conn.execute(
-                r#"CREATE TABLE IF NOT EXISTS suwayomi._sqlx_migrations (
-                    version BIGINT PRIMARY KEY,
-                    description TEXT NOT NULL,
-                    installed_on TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    success BOOLEAN NOT NULL,
-                    checksum BYTEA NOT NULL,
-                    execution_time BIGINT NOT NULL
-                )"#,
-            )
-            .await?;
-        }
         conn.execute("SELECT pg_advisory_lock(728232364)").await?;
         let r = MIGRATOR.run(&mut conn).await;
-        // SyncYomi version-bump triggers are PostgreSQL-only: they are written
-        // in PL/pgSQL, which the embedded pglite parser cannot compile (the
-        // baseline schema is pure DDL, so the embedded backend stays healthy).
-        // The files live in `migrations/pg-only/` so the sqlx migrator never
-        // sees them; external PostgreSQL applies them here (idempotent:
-        // CREATE OR REPLACE + DROP TRIGGER IF EXISTS).
-        let pg_only = if self._server.is_none() {
-            let f = conn
-                .execute(include_str!("../../../../migrations/pg-only/0002_sync_functions.sql"))
-                .await;
-            let t = conn
-                .execute(include_str!("../../../../migrations/pg-only/0002_sync_triggers.sql"))
-                .await;
-            f.and(t)
-        } else {
-            Ok(sqlx::postgres::PgQueryResult::default())
-        };
+        // SyncYomi version-bump triggers (PL/pgSQL) — supported by the real
+        // PostgreSQL engine in both embedded (Oliphaunt native) and external
+        // modes; idempotent: CREATE OR REPLACE + DROP TRIGGER IF EXISTS.
+        let f = conn
+            .execute(include_str!("../../../../migrations/pg-only/0002_sync_functions.sql"))
+            .await;
+        let t = conn
+            .execute(include_str!("../../../../migrations/pg-only/0002_sync_triggers.sql"))
+            .await;
         conn.execute("SELECT pg_advisory_unlock(728232364)").await?;
         r?;
-        pg_only?;
+        f.and(t)?;
         Ok(())
     }
 
     pub fn pool(&self) -> &PgPool {
         &self.pool
+    }
+}
+
+/// Workaround for oliphaunt 0.1.1 on Windows: the materialized runtime cache
+/// (see `materialize_runtime` in oliphaunt's `liboliphaunt/root/runtime.rs`)
+/// installs the PostgreSQL tools (exe) and the lib/share trees but omits the
+/// `bin/*.dll` files that those executables link against (libpq.dll, …), so
+/// initdb/postgres fail to start with STATUS_DLL_NOT_FOUND (0xc0000135).
+///
+/// The DLLs exist in the build-staged resources; copy them into every
+/// existing cache `bin/` directory (idempotent). Called before opening the
+/// server and again after a failed first open (the first materialization is
+/// what creates the cache directories in the first place).
+fn copy_runtime_bin_dlls_to_cache() {
+    // Compile-time value emitted by oliphaunt-build (cargo:rustc-env), same
+    // source used by the register_build_resources!() macro.
+    let Some(resources_dir) = option_env!("OLIPHAUNT_RESOURCES_DIR") else {
+        return;
+    };
+    let src_bin = std::path::Path::new(resources_dir)
+        .join("native-runtime/liboliphaunt-native/runtime/bin");
+    if !src_bin.is_dir() {
+        return;
+    }
+    let cache_root = std::env::var_os("OLIPHAUNT_RUNTIME_CACHE_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("oliphaunt-runtime-cache"));
+    let Ok(cache_entries) = std::fs::read_dir(&cache_root) else {
+        return;
+    };
+    let Ok(dlls) = std::fs::read_dir(&src_bin) else {
+        return;
+    };
+    let dlls: Vec<_> = dlls
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("dll")))
+        .collect();
+    for entry in cache_entries.flatten() {
+        let bin = entry.path().join("bin");
+        if !bin.is_dir() {
+            continue;
+        }
+        for dll in &dlls {
+            let target = bin.join(dll.file_name().unwrap_or_default());
+            if !target.exists() {
+                let _ = std::fs::copy(dll, &target);
+            }
+        }
     }
 }

@@ -142,8 +142,7 @@ impl MetaService {
         if table == MetaTable::Global {
             // global_meta has no ref column; the id must be left to the
             // IDENTITY sequence. Binding id=0 explicitly collides once a row
-            // with id 0 exists and kills the pglite-oxide session on ANY SQL
-            // error, taking the whole single-connection pool down with it.
+            // with id 0 exists (e.g. the pre-seeded webUI_migration row).
             let sql = bind_placeholders("INSERT INTO global_meta (meta_key, value) VALUES (?, ?)");
             {
                 sqlx::query(&sql).bind(key).bind(value).execute(self.db.pool()).await?;

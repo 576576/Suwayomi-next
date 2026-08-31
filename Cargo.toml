@@ -37,21 +37,14 @@ prost = "0.13"
 uuid = { version = "1", features = ["v4", "serde"] }
 md-5 = "0.10"
 flate2 = "1"
-# Embedded PostgreSQL (PGlite) — default database backend (Phase 6).
-# Pinned to 0.3 (wasmtime runtime): 0.4+/0.5 switched to wasmer-wasix,
-# whose alpha release fails to compile on current toolchains.
-pglite-oxide = "=0.3.0"
+# Embedded PostgreSQL — default database backend (Phase 6).
+# Oliphaunt (the renamed pglite-oxide) native server: real local PostgreSQL
+# process with independent client sessions, no external server/Docker.
+oliphaunt = "0.1.1"
 # Local-source archive chapters (ZIP/CBZ read support; deflate only).
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # Local-source archive metadata (ComicInfo.xml inside CBZ).
 quick-xml = "0.36"
-
-# Local fork: the upstream TCP proxy terminates its accept loop when a single
-# client connection errors (e.g. any SQL error ends the embedded session),
-# which then makes every subsequent pool acquire hang until acquire_timeout.
-# vendor/pglite-oxide keeps accepting after per-connection errors.
-[patch.crates-io]
-pglite-oxide = { path = "vendor/pglite-oxide" }
 
 [profile.release]
 lto = "thin"

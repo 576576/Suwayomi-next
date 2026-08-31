@@ -31,4 +31,6 @@ clap = { version = "4", features = ["derive"] }
 winres = "0.1"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
+# Win32_Security needed for CreateMutexW (single-instance guard); previously
+# transitively enabled by pglite-oxide, no longer after the oliphaunt switch.
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Security"] }

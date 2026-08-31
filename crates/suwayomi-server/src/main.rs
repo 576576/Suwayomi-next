@@ -375,8 +375,9 @@ async fn main() -> anyhow::Result<()> {
         dir
     };
 
-    // Database backend (Phase 6): embedded PGlite by default; an explicit
-    // `SUWAYOMI_DATABASE_URL` switches to an external PostgreSQL server.
+    // Database backend (Phase 6): embedded Oliphaunt (renamed pglite-oxide,
+    // native PostgreSQL) by default; an explicit `SUWAYOMI_DATABASE_URL`
+    // switches to an external PostgreSQL server.
     //   SUWAYOMI_PGLITE_DATA_DIR   -> embedded data directory
     //                                (default ./pglite-data; "" = ephemeral)
     let db = if config.database_url.is_empty() {
@@ -385,7 +386,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(_) => None, // explicitly empty -> ephemeral (tests/dev)
             Err(_) => Some(std::path::PathBuf::from("pglite-data")),
         };
-        tracing::info!("database backend: embedded PGlite (set SUWAYOMI_DATABASE_URL to use external PostgreSQL)");
+        tracing::info!("database backend: embedded Oliphaunt PostgreSQL (set SUWAYOMI_DATABASE_URL to use external PostgreSQL)");
         Db::connect_embedded(data_dir.as_deref()).await?
     } else {
         tracing::info!("database backend: external PostgreSQL at {}", config.database_url);

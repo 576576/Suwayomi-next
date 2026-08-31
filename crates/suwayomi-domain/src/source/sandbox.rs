@@ -380,7 +380,10 @@ fn spawn_java(jar_path: &str, port: &str) -> std::io::Result<std::process::Child
         Err(_) => std::path::PathBuf::from("java"),
     };
     let mut cmd = std::process::Command::new(java);
-    cmd.arg("-jar").arg(jar_path).env("SUWAYOMI_SANDBOX_PORT", port);
+    // JVM 默认不走代理（java.net.useSystemProxies=false）——用户本地 Clash 等
+    // 设置了系统代理时扩展请求仍直连外网而失败。显式开启系统代理；显式
+    // SUWAYOMI_SANDBOX_PROXY 仍优先（NetworkHelper 的 builder.proxy 覆盖）。
+    cmd.arg("-Djava.net.useSystemProxies=true").arg("-jar").arg(jar_path).env("SUWAYOMI_SANDBOX_PORT", port);
     // Pass through the extensions directory (default ./extensions) and an
     // optional outbound proxy (e.g. Clash) for geo-blocked sources.
     let ext_dir = std::env::var("SUWAYOMI_EXTENSIONS_DIR").unwrap_or_else(|_| "./extensions".to_string());

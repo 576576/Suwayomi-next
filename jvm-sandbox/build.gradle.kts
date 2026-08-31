@@ -56,6 +56,11 @@ kotlin {
 
 tasks.test {
     useJUnitPlatform()
+    // AndroidCompat 类编译为 Java 21（major 65）；沙盒运行时用 JAVA_HOME（>=21）。
+    // 测试任务用 JVM 21+，避免 UnsupportedClassVersionError。
+    javaLauncher.set(javaToolchains.launcherFor {
+        languageVersion.set(JavaLanguageVersion.of(21))
+    })
 }
 
 

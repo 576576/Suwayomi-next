@@ -62,3 +62,18 @@ class FilterSerializationTest {
         assertEquals(emptyMap<String, Any?>(), filterToMap(null))
     }
 }
+/** Verifies the Android Context stub serves real dirs (keiyoushi lib1.6 needs
+ * context.getCacheDir()/getFilesDir() in getFilterList). */
+class SandboxContextTest {
+    @Test
+    fun contextOnceProvidesDirs() {
+        val app = SandboxApp()
+        kotlin.test.assertTrue(app.getCacheDir().isDirectory)
+        kotlin.test.assertTrue(app.getFilesDir().isDirectory)
+        val sp = app.getSharedPreferences("x", 0)
+        val ed = sp.edit()
+        ed.putString("k", "v")
+        ed.apply()
+        kotlin.test.assertEquals("v", sp.getString("k", null))
+    }
+}

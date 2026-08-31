@@ -24,6 +24,17 @@ import java.util.concurrent.ConcurrentHashMap
 /** Application stub with an in-memory SharedPreferences store. */
 class SandboxApp : Application() {
     private val stores = ConcurrentHashMap<String, SharedPreferences>()
+    // keiyoushi lib 1.6 sources call context.getCacheDir()/getFilesDir() in
+    // getFilterList etc. — ContextWrapper.mBase is null here (no activity
+    // host), so serve real temp dirs instead of delegating to the null base.
+    private val cacheDir = java.io.File(System.getProperty("java.io.tmpdir"), "suwayomi-cache")
+        .apply { mkdirs() }
+    private val filesDir = java.io.File(System.getProperty("java.io.tmpdir"), "suwayomi-files")
+        .apply { mkdirs() }
+
+    override fun getCacheDir(): java.io.File = cacheDir
+
+    override fun getFilesDir(): java.io.File = filesDir
 
     override fun getSharedPreferences(name: String, mode: Int): SharedPreferences =
         stores.computeIfAbsent(name) { memorySharedPreferences() }
@@ -83,7 +94,9 @@ private fun memoryEditor(data: MutableMap<String, Any?>): SharedPreferences.Edit
 fun setupInjekt() {
     val m = module {
         single { NetworkHelper() }
-        single<Application> { SandboxApp() }
+        val app = SandboxApp()
+        single<Application> { app }
+        single<android.content.Context> { app }
         // Extensions (Mihon lib) inject their JSON codec through injekt.
         single {
             Json {

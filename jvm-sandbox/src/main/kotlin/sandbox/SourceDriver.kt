@@ -150,11 +150,11 @@ class SourceDriver(private val src: LoadedSource) {
         val obs = try {
             callMethod(src.instance, "getFilterList")
         } catch (e: Exception) {
-            System.err.println("sandbox: getFilterList failed: ${e.message}")
+            System.err.println("sandbox: getFilterList failed: " + e.stackTraceToString())
             try {
                 callMethod(src.instance, "fetchFilterList")
             } catch (e2: Exception) {
-                System.err.println("sandbox: fetchFilterList failed: ${e2.message}")
+                System.err.println("sandbox: fetchFilterList failed: " + e2.stackTraceToString())
                 null
             }
         }

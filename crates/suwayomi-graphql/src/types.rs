@@ -1188,8 +1188,21 @@ impl SourceType {
     async fn content_warning(&self) -> ContentWarning {
         ContentWarning::from_i32(self.content_warning)
     }
-    async fn icon_url(&self) -> String {
-        self.extension_row.as_ref().map(|r| ExtensionType::proxy_icon_url(&r.pkg_name)).unwrap_or_default()
+    async fn icon_url(&self, ctx: &Context<'_>) -> async_graphql::Result<String> {
+        // 本地源（id=0）为合成条目，无扩展图标——WebUI 显示文件夹图标。
+        if self.id == suwayomi_domain::source::LOCAL_SOURCE_ID {
+            return Ok(String::new());
+        }
+        // 扩展源：按 extension_id 查 pkg_name，返回服务器代理端点
+        // `/api/v1/extension/icon/{pkg}`（该端点下载扩展图标并缓存）。
+        let state = ctx.data::<GraphQLState>()?;
+        let sql = bind_placeholders("SELECT pkg_name FROM extension WHERE id = ?");
+        let pkg: Option<String> = sqlx::query_scalar(&sql)
+            .bind(self.extension_id)
+            .fetch_optional(state.db.pool())
+            .await
+            .map_err(async_graphql::Error::from)?;
+        Ok(pkg.map(|p| ExtensionType::proxy_icon_url(&p)).unwrap_or_default())
     }
     async fn is_nsfw(&self) -> bool {
         self.content_warning >= 1

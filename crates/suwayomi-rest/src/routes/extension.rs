@@ -53,9 +53,22 @@ async fn icon(State(s): State<AppState>, Path(pkg): Path<String>) -> ApiResult<a
             .await
             .map_err(ApiError::from)?;
     let url = icon_url.filter(|u| !u.is_empty()).ok_or_else(|| ApiError::NotFound("no icon".into()))?;
-    // proxy the remote icon
-    let resp = reqwest::get(&url).await.map_err(|e| ApiError::Internal(format!("icon fetch: {e}")))?;
-    let bytes = resp.bytes().await.map_err(|e| ApiError::Internal(format!("icon read: {e}")))?;
+
+    // 磁盘缓存：<SUWAYOMI_EXTENSIONS_DIR>/icons/{pkg}.img，避免每次请求都
+    // 回源下载远程扩展图标。首次下载后写入，之后直接命中。
+    let ext_dir = std::env::var("SUWAYOMI_EXTENSIONS_DIR").unwrap_or_else(|_| "./extensions".to_string());
+    let cache_dir = std::path::Path::new(&ext_dir).join("icons");
+    let cache_file = cache_dir.join(format!("{pkg}.img"));
+    let bytes = if cache_file.is_file() {
+        std::fs::read(&cache_file).map_err(|e| ApiError::Internal(e.to_string()))?
+    } else {
+        // proxy the remote icon
+        let resp = reqwest::get(&url).await.map_err(|e| ApiError::Internal(format!("icon fetch: {e}")))?;
+        let bytes = resp.bytes().await.map_err(|e| ApiError::Internal(format!("icon read: {e}")))?;
+        let _ = std::fs::create_dir_all(&cache_dir);
+        let _ = std::fs::write(&cache_file, &bytes);
+        bytes.to_vec()
+    };
     let ctype = guess_content_type(&bytes);
     let resp = axum::response::Response::builder()
         .header("Content-Type", ctype)

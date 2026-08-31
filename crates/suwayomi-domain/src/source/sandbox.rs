@@ -338,6 +338,32 @@ impl SourceFetcher for HttpSandboxFetcher {
     }
 }
 
+/// Best-effort: terminate whatever process is LISTENING on `port`.
+/// The single-instance mutex guarantees any listener is our own stale JVM.
+#[cfg(windows)]
+fn kill_port_listener(port: u16) {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+    let out = Command::new("netstat").args(["-ano"]).output().ok();
+    if let Some(out) = out {
+        let text = String::from_utf8_lossy(&out.stdout);
+        for line in text.lines() {
+            let l = line.to_ascii_lowercase();
+            if l.contains(&format!(":{port}")) && l.contains("listening") {
+                if let Some(pid) = line.split_whitespace().last() {
+                    let _ = Command::new("taskkill")
+                        .args(["/F", "/PID", pid])
+                        .creation_flags(0x08000000)
+                        .output();
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn kill_port_listener(_port: u16) {}
+
 /// Builds the `java -jar` command for the sandbox (no-window on Windows,
 /// JVM output redirected into `logs/sandbox.log` when `SUWAYOMI_LOGS_DIR` is set).
 fn spawn_java(jar_path: &str, port: &str) -> std::io::Result<std::process::Child> {
@@ -406,14 +432,30 @@ pub struct SandboxProcess {
 
 impl SandboxProcess {
     pub async fn start(jar_path: &str, port: &str) -> Result<Self> {
-        let child = spawn_java(jar_path, port)
+        // A sandbox JVM left over from a previous server run (e.g. after a
+        // jar upgrade + server restart) may still own `port`. Our health
+        // probe would hit that stale instance and pass, silently keeping the
+        // OLD jar alive — so clear the port before spawning.
+        let port_num: u16 = port.parse().unwrap_or(8091);
+        if std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port_num)).is_err() {
+            tracing::warn!("sandbox port {port} already in use; killing stale listener");
+            kill_port_listener(port_num);
+            for _ in 0..20 {
+                if std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port_num)).is_ok() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        }
+        let mut child = spawn_java(jar_path, port)
             .map_err(|e| DomainError::Sandbox(format!("spawn sandbox: {e}")))?;
         let base = format!("http://127.0.0.1:{port}");
         let fetcher = HttpSandboxFetcher::new(base.clone());
-        // wait for health with retries (up to ~15s)
+        // wait for health with retries (up to ~15s); bail if OUR child died
+        // (e.g. bind failed) instead of accepting a stale instance's health.
         let mut healthy = false;
         for _ in 0..50 {
-            if fetcher.health().await {
+            if fetcher.health().await && child.try_wait().ok().flatten().is_none() {
                 healthy = true;
                 break;
             }

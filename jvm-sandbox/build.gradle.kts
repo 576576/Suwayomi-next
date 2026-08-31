@@ -11,7 +11,9 @@ repositories {
 dependencies {
     testImplementation(kotlin("test"))
     // --- extension runtime (provided by the sandbox process) ---
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp:5.5.0")
+    implementation("com.squareup.okhttp3:okhttp-brotli:5.5.0")
+    implementation("com.squareup.okhttp3:okhttp-zstd:5.5.0")
     implementation("com.squareup.okio:okio:3.9.0")
     implementation("org.jsoup:jsoup:1.18.1")
     implementation("com.google.code.gson:gson:2.11.0")
@@ -21,7 +23,7 @@ dependencies {
     implementation("com.squareup.moshi:moshi:1.15.1")
     implementation("com.squareup.moshi:moshi-kotlin:1.15.1")
     implementation("io.insert-koin:koin-core:3.5.6")
-    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+    implementation("com.squareup.okhttp3:logging-interceptor:5.5.0")
     implementation("io.github.oshai:kotlin-logging-jvm:6.0.9")
     implementation("org.slf4j:slf4j-api:2.0.13")
     implementation("com.github.null2264:injekt-koin:ee267b2e27")
@@ -30,7 +32,7 @@ dependencies {
     implementation("io.reactivex:rxjava:1.3.8")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json-okio:1.11.0")
     implementation("io.insert-koin:koin-core:3.5.6")
-    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+    implementation("com.squareup.okhttp3:logging-interceptor:5.5.0")
     implementation("io.github.oshai:kotlin-logging-jvm:6.0.9")
     implementation("org.slf4j:slf4j-api:2.0.13")
     runtimeOnly("org.slf4j:slf4j-nop:2.0.13")

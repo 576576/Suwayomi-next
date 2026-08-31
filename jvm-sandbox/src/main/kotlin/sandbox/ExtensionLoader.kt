@@ -147,7 +147,15 @@ fun callMethod(obj: Any, name: String, vararg args: Any?): Any? {
             return try {
                 m.invoke(obj, *args)
             } catch (e: InvocationTargetException) {
-                throw RuntimeException("$name failed: ${e.cause?.message ?: e}", e.cause)
+                // unwrap nested InvocationTargetException chains and log the
+                // full cause stack so the underlying failure is visible in
+                // sandbox.log instead of a bare "InvocationTargetException".
+                var cause: Throwable? = e
+                while (cause is InvocationTargetException && cause.cause != null && cause.cause !== cause) {
+                    cause = cause.cause
+                }
+                cause?.printStackTrace()
+                throw RuntimeException("$name failed: ${cause?.message ?: e}", cause)
             }
         }
         cls = cls.superclass
@@ -156,6 +164,51 @@ fun callMethod(obj: Any, name: String, vararg args: Any?): Any? {
     val any = obj.javaClass.methods.firstOrNull { it.name == name && it.parameterCount == args.size }
         ?: throw RuntimeException("no method $name(${args.size} args) on ${obj.javaClass.name}")
     return any.invoke(obj, *args)
+}
+
+/** Bridge continuation that turns a Kotlin suspend call into a blocking one. */
+class BridgeContinuation<T>(
+    private val ctx: kotlin.coroutines.CoroutineContext = kotlin.coroutines.EmptyCoroutineContext,
+) : kotlin.coroutines.Continuation<T> {
+    private val deferred = kotlinx.coroutines.CompletableDeferred<T>()
+    override val context: kotlin.coroutines.CoroutineContext get() = ctx
+    override fun resumeWith(result: Result<T>) {
+        result.fold(
+            onSuccess = { deferred.complete(it) },
+            onFailure = { deferred.completeExceptionally(it) },
+        )
+    }
+    fun awaitBlocking(): T = kotlinx.coroutines.runBlocking { deferred.await() }
+}
+
+/**
+ * Calls a Kotlin suspend function `name(args..., Continuation)` reflectively and
+ * blocks until it completes. Used for new keiyoushi extensions (lib 2.x) whose
+ * sources implement the suspend `getPopularManga`/`getSearchManga`/… instead of
+ * the legacy rx.Observable `fetch*` methods.
+ */
+fun callSuspendMethod(obj: Any, name: String, vararg args: Any?): Any? {
+    val types = args.map { primitiveOf(it?.javaClass ?: Any::class.java) }.toTypedArray() +
+        arrayOf(kotlin.coroutines.Continuation::class.java)
+    val m = findMethod(obj.javaClass, name, *types)
+        ?: throw RuntimeException("no suspend method $name(${args.size}+1 args) on ${obj.javaClass.name}")
+    val cont = BridgeContinuation<Any?>()
+    val result = try {
+        val allArgs: Array<Any?> = arrayOf(*args, cont)
+        m.invoke(obj, *allArgs)
+    } catch (e: java.lang.reflect.InvocationTargetException) {
+        var cause: Throwable? = e
+        while (cause is java.lang.reflect.InvocationTargetException && cause.cause != null && cause.cause !== cause) {
+            cause = cause.cause
+        }
+        cause?.printStackTrace()
+        throw RuntimeException("$name failed: ${cause?.message ?: e}", cause)
+    }
+    return if (result === kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED) {
+        cont.awaitBlocking()
+    } else {
+        result
+    }
 }
 
 /** Maps a wrapper type to its primitive, if any (JVM methods use `int` etc.). */

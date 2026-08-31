@@ -7,6 +7,7 @@ package eu.kanade.tachiyomi.network
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+import eu.kanade.tachiyomi.network.interceptor.CloudflareInterceptor
 import eu.kanade.tachiyomi.network.interceptor.UncaughtExceptionInterceptor
 import eu.kanade.tachiyomi.network.interceptor.UserAgentInterceptor
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -66,6 +67,10 @@ class NetworkHelper() {
                         ),
                     ).addInterceptor(UncaughtExceptionInterceptor())
                     .addInterceptor(UserAgentInterceptor(::defaultUserAgentProvider))
+                    // 扩展按类简单名检查 client 拦截器（如 NHentai.to 的
+                    // "CloudflareInterceptor must be present in default client"），
+                    // 同名注册即可通过校验；真正 CF 挑战绕过需外部 flare solver。
+                    .addInterceptor(CloudflareInterceptor())
 
             // Optional outbound proxy (e.g. Clash) for reaching geo-blocked sources.
             // Format: SUWAYOMI_SANDBOX_PROXY=host:port

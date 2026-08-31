@@ -68,14 +68,32 @@ class SourceDriver(private val src: LoadedSource) {
     }
 
     fun getPopularManga(page: Int): Pair<List<Map<String, Any?>>, Boolean> =
-        mangasPageToList(awaitObservable(callMethod(src.instance, "fetchPopularManga", page)))
+        mangasPageToList(callMangasPageMethod("fetchPopularManga", "getPopularManga", page))
 
     fun getLatestUpdates(page: Int): Pair<List<Map<String, Any?>>, Boolean> =
-        mangasPageToList(awaitObservable(callMethod(src.instance, "fetchLatestUpdates", page)))
+        mangasPageToList(callMangasPageMethod("fetchLatestUpdates", "getLatestUpdates", page))
 
     fun search(query: String, page: Int): Pair<List<Map<String, Any?>>, Boolean> {
         val filters = emptyFilters()
-        return mangasPageToList(awaitObservable(callMethod(src.instance, "fetchSearchManga", page, query, filters)))
+        return mangasPageToList(callMangasPageMethod("fetchSearchManga", "getSearchManga", page, query, filters))
+    }
+
+    /**
+     * Legacy keiyoushi/mihon extensions (lib 1.x) implement the rx.Observable
+     * `fetchPopularManga(page)` / `fetchSearchManga(page, query, filters)` …;
+     * newer ones (lib 2.x) implement the suspend `getPopularManga(page)` /
+     * `getSearchManga(page, query, filters)`. R8 inlining also strips the
+     * protected `popularMangaRequest` overrides of new extensions, so the
+     * HttpSource template method `fetchPopularManga` falls through to the
+     * sandbox default (UnsupportedOperationException) — fall back to the
+     * suspend interface method in that case.
+     */
+    private fun callMangasPageMethod(oldName: String, newName: String, vararg args: Any?): Any? {
+        return try {
+            awaitObservable(callMethod(src.instance, oldName, *args))
+        } catch (e: RuntimeException) {
+            callSuspendMethod(src.instance, newName, *args)
+        }
     }
 
     private fun emptyFilters(): Any? {

@@ -141,6 +141,9 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+Windows 手动构建 release 产物（`suwayomi-server.exe` + 托盘 `suwayomi.exe`）：
+双击仓库根的 **`build.bat`**（或 `cmd /c build.bat`）。
+
 ## 关键文档
 
 - `docs/migration/MIGRATE.md` — 从 Kotlin 版迁移操作指南（h2-dump / 备份导入）

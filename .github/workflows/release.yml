@@ -192,6 +192,8 @@ jobs:
           curl -sL -o webui.zip "$WEBUI_ZIP"
           mkdir -p "$STAGE/webui"
           python3 -c "import zipfile; zipfile.ZipFile('webui.zip').extractall('$STAGE/webui')"
+          # 记录部署的 WebUI 版本（server aboutWebUI/checkForWebUIUpdate 读取）
+          echo "$WEBUI_ZIP" | python3 -c "import sys; u=sys.stdin.read().strip(); print(u.split('/download/')[1].split('/')[0])" > "$STAGE/webui/revision"
           rm -f webui.zip
           mkdir -p "$STAGE/data/autobackup" "$STAGE/data/downloads" "$STAGE/data/local"
 

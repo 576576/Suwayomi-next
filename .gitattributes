@@ -6,3 +6,5 @@
 *.sh text eol=lf
 *.yml text eol=lf
 *.py text eol=lf
+# Windows batch scripts: CRLF required for reliable cmd label/goto handling
+*.bat text eol=crlf

@@ -48,6 +48,9 @@ jobs:
   prep:
     name: 准备构建参数
     runs-on: ubuntu-latest
+    permissions:
+      # 用于 PATCH 更新 workflow run 标题（Release x.y.z）
+      actions: write
     outputs:
       channel: ${{ steps.out.outputs.channel }}
       targets: ${{ steps.out.outputs.targets }}
@@ -115,6 +118,13 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "prerelease=$PRE" >> "$GITHUB_OUTPUT"
           echo "手动发布: $CHANNEL $VER_NAME (code $VER_CODE, commits $COUNT) -> $TAG targets=$SEL"
+
+          # 动态更新 workflow run 标题：Release x.y.z（版本号在 shell 内算出，
+          # run-name 表达式拿不到，用 Actions API PATCH；失败不阻塞构建）
+          curl -s -X PATCH "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -d "{\"name\":\"Release ${VER_NAME}\"}" >/dev/null 2>&1 || true
 
   build:
     name: 构建 ${{ matrix.target }}

@@ -150,34 +150,72 @@ macro_rules! string_filter_input {
             pub distinct_from_all: Option<Vec<String>>,
             pub distinct_from_any: Option<Vec<String>>,
             pub distinct_from_insensitive: Option<String>,
+            pub distinct_from_insensitive_all: Option<Vec<String>>,
+            pub distinct_from_insensitive_any: Option<Vec<String>>,
             pub ends_with: Option<String>,
             pub ends_with_all: Option<Vec<String>>,
             pub ends_with_any: Option<Vec<String>>,
             pub ends_with_insensitive: Option<String>,
+            pub ends_with_insensitive_all: Option<Vec<String>>,
+            pub ends_with_insensitive_any: Option<Vec<String>>,
             pub equal_to: Option<String>,
             pub greater_than: Option<String>,
+            pub greater_than_insensitive: Option<String>,
             pub greater_than_or_equal_to: Option<String>,
+            pub greater_than_or_equal_to_insensitive: Option<String>,
             pub in_: Option<Vec<String>>,
             pub in_insensitive: Option<Vec<String>>,
             pub includes: Option<String>,
             pub includes_all: Option<Vec<String>>,
             pub includes_any: Option<Vec<String>>,
             pub includes_insensitive: Option<String>,
+            pub includes_insensitive_all: Option<Vec<String>>,
+            pub includes_insensitive_any: Option<Vec<String>>,
             pub is_null: Option<bool>,
             pub less_than: Option<String>,
+            pub less_than_insensitive: Option<String>,
             pub less_than_or_equal_to: Option<String>,
+            pub less_than_or_equal_to_insensitive: Option<String>,
+            pub like: Option<String>,
+            pub like_all: Option<Vec<String>>,
+            pub like_any: Option<Vec<String>>,
+            pub like_insensitive: Option<String>,
+            pub like_insensitive_all: Option<Vec<String>>,
+            pub like_insensitive_any: Option<Vec<String>>,
             pub not_distinct_from: Option<String>,
             pub not_distinct_from_insensitive: Option<String>,
+            pub not_ends_with: Option<String>,
+            pub not_ends_with_all: Option<Vec<String>>,
+            pub not_ends_with_any: Option<Vec<String>>,
+            pub not_ends_with_insensitive: Option<String>,
+            pub not_ends_with_insensitive_all: Option<Vec<String>>,
+            pub not_ends_with_insensitive_any: Option<Vec<String>>,
             pub not_equal_to: Option<String>,
             pub not_equal_to_all: Option<Vec<String>>,
             pub not_equal_to_any: Option<Vec<String>>,
             pub not_equal_to_insensitive: Option<String>,
+            pub not_equal_to_insensitive_all: Option<Vec<String>>,
+            pub not_equal_to_insensitive_any: Option<Vec<String>>,
             pub not_in: Option<Vec<String>>,
             pub not_in_insensitive: Option<Vec<String>>,
+            pub not_like: Option<String>,
+            pub not_like_all: Option<Vec<String>>,
+            pub not_like_any: Option<Vec<String>>,
+            pub not_like_insensitive: Option<String>,
+            pub not_like_insensitive_all: Option<Vec<String>>,
+            pub not_like_insensitive_any: Option<Vec<String>>,
+            pub not_starts_with: Option<String>,
+            pub not_starts_with_all: Option<Vec<String>>,
+            pub not_starts_with_any: Option<Vec<String>>,
+            pub not_starts_with_insensitive: Option<String>,
+            pub not_starts_with_insensitive_all: Option<Vec<String>>,
+            pub not_starts_with_insensitive_any: Option<Vec<String>>,
             pub starts_with: Option<String>,
             pub starts_with_all: Option<Vec<String>>,
             pub starts_with_any: Option<Vec<String>>,
             pub starts_with_insensitive: Option<String>,
+            pub starts_with_insensitive_all: Option<Vec<String>>,
+            pub starts_with_insensitive_any: Option<Vec<String>>,
         }
     };
 }
@@ -1698,41 +1736,305 @@ fn build_bool_filter(where_clauses: &mut Vec<String>, binds: &mut Vec<BindVal>, 
     }
 }
 
+/// `col OP ?` 字符串比较。
+fn push_str_cmp(w: &mut Vec<String>, b: &mut Vec<BindVal>, col: &str, op: &str, v: &str) {
+    w.push(format!("{col} {op} ?"));
+    b.push(BindVal::Str(v.to_string()));
+}
+
+/// 大小写不敏感比较：`LOWER(col) OP LOWER(?)`。
+fn push_str_cmp_insensitive(w: &mut Vec<String>, b: &mut Vec<BindVal>, col: &str, op: &str, v: &str) {
+    w.push(format!("LOWER({col}) {op} LOWER(?)"));
+    b.push(BindVal::Str(v.to_string()));
+}
+
+/// `col [NOT] LIKE/ILIKE 'left{value}right'`（单值，AND 语义）。
+fn push_like(w: &mut Vec<String>, b: &mut Vec<BindVal>, col: &str, v: &str, not: bool, insensitive: bool, left: &str, right: &str) {
+    let kw = if insensitive { "ILIKE" } else { "LIKE" };
+    let neg = if not { "NOT " } else { "" };
+    w.push(format!("{col} {neg}{kw} ?"));
+    b.push(BindVal::Str(format!("{left}{v}{right}")));
+}
+
+/// 多值 ALL：每个值一条 clause（调用方 AND 连接）。
+fn push_like_all(w: &mut Vec<String>, b: &mut Vec<BindVal>, col: &str, vs: &[String], not: bool, insensitive: bool, left: &str, right: &str) {
+    for v in vs {
+        push_like(w, b, col, v, not, insensitive, left, right);
+    }
+}
+
+/// 多值 ANY：OR 组合成单条 clause。
+fn push_like_any(w: &mut Vec<String>, b: &mut Vec<BindVal>, col: &str, vs: &[String], not: bool, insensitive: bool, left: &str, right: &str) {
+    if vs.is_empty() {
+        return;
+    }
+    let kw = if insensitive { "ILIKE" } else { "LIKE" };
+    let neg = if not { "NOT " } else { "" };
+    let parts: Vec<String> = vs.iter().map(|_| format!("{col} {neg}{kw} ?")).collect();
+    w.push(format!("({})", parts.join(" OR ")));
+    for v in vs {
+        b.push(BindVal::Str(format!("{left}{v}{right}")));
+    }
+}
+
+/// `col [NOT] IN (...)`，insensitive 时两侧 LOWER。
+fn push_in_list(w: &mut Vec<String>, b: &mut Vec<BindVal>, col: &str, vs: &[String], not: bool, insensitive: bool) {
+    if vs.is_empty() {
+        return;
+    }
+    let ph = vec!["?"; vs.len()].join(", ");
+    let neg = if not { "NOT " } else { "" };
+    if insensitive {
+        w.push(format!("LOWER({col}) {neg}IN ({ph})"));
+        b.extend(vs.iter().map(|v| BindVal::Str(v.to_lowercase())));
+    } else {
+        w.push(format!("{col} {neg}IN ({ph})"));
+        b.extend(vs.iter().cloned().map(BindVal::Str));
+    }
+}
+
 fn build_string_filter(where_clauses: &mut Vec<String>, binds: &mut Vec<BindVal>, col: &str, f: &StringFilterInput) {
+    // 相等 / 不等
     if let Some(v) = &f.equal_to {
-        where_clauses.push(format!("{col} = ?"));
-        binds.push(BindVal::Str(v.clone()));
+        push_str_cmp(where_clauses, binds, col, "=", v);
     }
     if let Some(v) = &f.not_equal_to {
-        where_clauses.push(format!("{col} != ?"));
-        binds.push(BindVal::Str(v.clone()));
+        push_str_cmp(where_clauses, binds, col, "!=", v);
     }
+    if let Some(v) = &f.not_equal_to_insensitive {
+        push_str_cmp_insensitive(where_clauses, binds, col, "!=", v);
+    }
+    if let Some(vs) = &f.not_equal_to_all {
+        for v in vs {
+            push_str_cmp(where_clauses, binds, col, "!=", v);
+        }
+    }
+    if let Some(vs) = &f.not_equal_to_any {
+        if !vs.is_empty() {
+            let parts: Vec<String> = vs.iter().map(|_| format!("{col} != ?")).collect();
+            where_clauses.push(format!("({})", parts.join(" OR ")));
+            binds.extend(vs.iter().cloned().map(BindVal::Str));
+        }
+    }
+    if let Some(vs) = &f.not_equal_to_insensitive_all {
+        for v in vs {
+            push_str_cmp_insensitive(where_clauses, binds, col, "!=", v);
+        }
+    }
+    if let Some(vs) = &f.not_equal_to_insensitive_any {
+        if !vs.is_empty() {
+            let parts: Vec<String> = vs.iter().map(|_| format!("LOWER({col}) != LOWER(?)")).collect();
+            where_clauses.push(format!("({})", parts.join(" OR ")));
+            binds.extend(vs.iter().cloned().map(BindVal::Str));
+        }
+    }
+    // 比较（> < >= <=，可选大小写不敏感）
+    if let Some(v) = &f.greater_than {
+        push_str_cmp(where_clauses, binds, col, ">", v);
+    }
+    if let Some(v) = &f.greater_than_insensitive {
+        push_str_cmp_insensitive(where_clauses, binds, col, ">", v);
+    }
+    if let Some(v) = &f.greater_than_or_equal_to {
+        push_str_cmp(where_clauses, binds, col, ">=", v);
+    }
+    if let Some(v) = &f.greater_than_or_equal_to_insensitive {
+        push_str_cmp_insensitive(where_clauses, binds, col, ">=", v);
+    }
+    if let Some(v) = &f.less_than {
+        push_str_cmp(where_clauses, binds, col, "<", v);
+    }
+    if let Some(v) = &f.less_than_insensitive {
+        push_str_cmp_insensitive(where_clauses, binds, col, "<", v);
+    }
+    if let Some(v) = &f.less_than_or_equal_to {
+        push_str_cmp(where_clauses, binds, col, "<=", v);
+    }
+    if let Some(v) = &f.less_than_or_equal_to_insensitive {
+        push_str_cmp_insensitive(where_clauses, binds, col, "<=", v);
+    }
+    // distinct_from（!=） / not_distinct_from（=）
+    if let Some(v) = &f.distinct_from {
+        push_str_cmp(where_clauses, binds, col, "!=", v);
+    }
+    if let Some(v) = &f.distinct_from_insensitive {
+        push_str_cmp_insensitive(where_clauses, binds, col, "!=", v);
+    }
+    if let Some(vs) = &f.distinct_from_all {
+        for v in vs {
+            push_str_cmp(where_clauses, binds, col, "!=", v);
+        }
+    }
+    if let Some(vs) = &f.distinct_from_any {
+        if !vs.is_empty() {
+            let parts: Vec<String> = vs.iter().map(|_| format!("{col} != ?")).collect();
+            where_clauses.push(format!("({})", parts.join(" OR ")));
+            binds.extend(vs.iter().cloned().map(BindVal::Str));
+        }
+    }
+    if let Some(vs) = &f.distinct_from_insensitive_all {
+        for v in vs {
+            push_str_cmp_insensitive(where_clauses, binds, col, "!=", v);
+        }
+    }
+    if let Some(vs) = &f.distinct_from_insensitive_any {
+        if !vs.is_empty() {
+            let parts: Vec<String> = vs.iter().map(|_| format!("LOWER({col}) != LOWER(?)")).collect();
+            where_clauses.push(format!("({})", parts.join(" OR ")));
+            binds.extend(vs.iter().cloned().map(BindVal::Str));
+        }
+    }
+    if let Some(v) = &f.not_distinct_from {
+        push_str_cmp(where_clauses, binds, col, "=", v);
+    }
+    if let Some(v) = &f.not_distinct_from_insensitive {
+        push_str_cmp_insensitive(where_clauses, binds, col, "=", v);
+    }
+    // includes（包含）
     if let Some(v) = &f.includes {
-        where_clauses.push(format!("{col} ILIKE ?"));
-        binds.push(BindVal::Str(format!("%{v}%")));
+        push_like(where_clauses, binds, col, v, false, false, "%", "%");
     }
+    if let Some(v) = &f.includes_insensitive {
+        push_like(where_clauses, binds, col, v, false, true, "%", "%");
+    }
+    if let Some(vs) = &f.includes_all {
+        push_like_all(where_clauses, binds, col, vs, false, false, "%", "%");
+    }
+    if let Some(vs) = &f.includes_any {
+        push_like_any(where_clauses, binds, col, vs, false, false, "%", "%");
+    }
+    if let Some(vs) = &f.includes_insensitive_all {
+        push_like_all(where_clauses, binds, col, vs, false, true, "%", "%");
+    }
+    if let Some(vs) = &f.includes_insensitive_any {
+        push_like_any(where_clauses, binds, col, vs, false, true, "%", "%");
+    }
+    // like
+    if let Some(v) = &f.like {
+        push_like(where_clauses, binds, col, v, false, false, "%", "%");
+    }
+    if let Some(v) = &f.like_insensitive {
+        push_like(where_clauses, binds, col, v, false, true, "%", "%");
+    }
+    if let Some(vs) = &f.like_all {
+        push_like_all(where_clauses, binds, col, vs, false, false, "%", "%");
+    }
+    if let Some(vs) = &f.like_any {
+        push_like_any(where_clauses, binds, col, vs, false, false, "%", "%");
+    }
+    if let Some(vs) = &f.like_insensitive_all {
+        push_like_all(where_clauses, binds, col, vs, false, true, "%", "%");
+    }
+    if let Some(vs) = &f.like_insensitive_any {
+        push_like_any(where_clauses, binds, col, vs, false, true, "%", "%");
+    }
+    // not like
+    if let Some(v) = &f.not_like {
+        push_like(where_clauses, binds, col, v, true, false, "%", "%");
+    }
+    if let Some(v) = &f.not_like_insensitive {
+        push_like(where_clauses, binds, col, v, true, true, "%", "%");
+    }
+    if let Some(vs) = &f.not_like_all {
+        push_like_all(where_clauses, binds, col, vs, true, false, "%", "%");
+    }
+    if let Some(vs) = &f.not_like_any {
+        push_like_any(where_clauses, binds, col, vs, true, false, "%", "%");
+    }
+    if let Some(vs) = &f.not_like_insensitive_all {
+        push_like_all(where_clauses, binds, col, vs, true, true, "%", "%");
+    }
+    if let Some(vs) = &f.not_like_insensitive_any {
+        push_like_any(where_clauses, binds, col, vs, true, true, "%", "%");
+    }
+    // starts_with / ends_with
     if let Some(v) = &f.starts_with {
-        where_clauses.push(format!("{col} ILIKE ?"));
-        binds.push(BindVal::Str(format!("{v}%")));
+        push_like(where_clauses, binds, col, v, false, false, "", "%");
+    }
+    if let Some(v) = &f.starts_with_insensitive {
+        push_like(where_clauses, binds, col, v, false, true, "", "%");
+    }
+    if let Some(vs) = &f.starts_with_all {
+        push_like_all(where_clauses, binds, col, vs, false, false, "", "%");
+    }
+    if let Some(vs) = &f.starts_with_any {
+        push_like_any(where_clauses, binds, col, vs, false, false, "", "%");
+    }
+    if let Some(vs) = &f.starts_with_insensitive_all {
+        push_like_all(where_clauses, binds, col, vs, false, true, "", "%");
+    }
+    if let Some(vs) = &f.starts_with_insensitive_any {
+        push_like_any(where_clauses, binds, col, vs, false, true, "", "%");
     }
     if let Some(v) = &f.ends_with {
-        where_clauses.push(format!("{col} ILIKE ?"));
-        binds.push(BindVal::Str(format!("%{v}")));
+        push_like(where_clauses, binds, col, v, false, false, "%", "");
     }
+    if let Some(v) = &f.ends_with_insensitive {
+        push_like(where_clauses, binds, col, v, false, true, "%", "");
+    }
+    if let Some(vs) = &f.ends_with_all {
+        push_like_all(where_clauses, binds, col, vs, false, false, "%", "");
+    }
+    if let Some(vs) = &f.ends_with_any {
+        push_like_any(where_clauses, binds, col, vs, false, false, "%", "");
+    }
+    if let Some(vs) = &f.ends_with_insensitive_all {
+        push_like_all(where_clauses, binds, col, vs, false, true, "%", "");
+    }
+    if let Some(vs) = &f.ends_with_insensitive_any {
+        push_like_any(where_clauses, binds, col, vs, false, true, "%", "");
+    }
+    // not starts_with / not ends_with
+    if let Some(v) = &f.not_starts_with {
+        push_like(where_clauses, binds, col, v, true, false, "", "%");
+    }
+    if let Some(v) = &f.not_starts_with_insensitive {
+        push_like(where_clauses, binds, col, v, true, true, "", "%");
+    }
+    if let Some(vs) = &f.not_starts_with_all {
+        push_like_all(where_clauses, binds, col, vs, true, false, "", "%");
+    }
+    if let Some(vs) = &f.not_starts_with_any {
+        push_like_any(where_clauses, binds, col, vs, true, false, "", "%");
+    }
+    if let Some(vs) = &f.not_starts_with_insensitive_all {
+        push_like_all(where_clauses, binds, col, vs, true, true, "", "%");
+    }
+    if let Some(vs) = &f.not_starts_with_insensitive_any {
+        push_like_any(where_clauses, binds, col, vs, true, true, "", "%");
+    }
+    if let Some(v) = &f.not_ends_with {
+        push_like(where_clauses, binds, col, v, true, false, "%", "");
+    }
+    if let Some(v) = &f.not_ends_with_insensitive {
+        push_like(where_clauses, binds, col, v, true, true, "%", "");
+    }
+    if let Some(vs) = &f.not_ends_with_all {
+        push_like_all(where_clauses, binds, col, vs, true, false, "%", "");
+    }
+    if let Some(vs) = &f.not_ends_with_any {
+        push_like_any(where_clauses, binds, col, vs, true, false, "%", "");
+    }
+    if let Some(vs) = &f.not_ends_with_insensitive_all {
+        push_like_all(where_clauses, binds, col, vs, true, true, "%", "");
+    }
+    if let Some(vs) = &f.not_ends_with_insensitive_any {
+        push_like_any(where_clauses, binds, col, vs, true, true, "%", "");
+    }
+    // in / not in
     if let Some(vs) = &f.in_ {
-        if !vs.is_empty() {
-            let ph = vec!["?"; vs.len()].join(", ");
-            where_clauses.push(format!("{col} IN ({ph})"));
-            binds.extend(vs.iter().cloned().map(BindVal::Str));
-        }
+        push_in_list(where_clauses, binds, col, vs, false, false);
+    }
+    if let Some(vs) = &f.in_insensitive {
+        push_in_list(where_clauses, binds, col, vs, false, true);
     }
     if let Some(vs) = &f.not_in {
-        if !vs.is_empty() {
-            let ph = vec!["?"; vs.len()].join(", ");
-            where_clauses.push(format!("{col} NOT IN ({ph})"));
-            binds.extend(vs.iter().cloned().map(BindVal::Str));
-        }
+        push_in_list(where_clauses, binds, col, vs, true, false);
     }
+    if let Some(vs) = &f.not_in_insensitive {
+        push_in_list(where_clauses, binds, col, vs, true, true);
+    }
+    // is null
     if let Some(null) = f.is_null {
         where_clauses.push(if null {
             format!("{col} IS NULL")

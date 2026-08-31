@@ -46,6 +46,16 @@ struct AppState {
 
 impl Drop for AppState {
     fn drop(&mut self) {
+        // 非菜单退出（托盘被系统关闭等）：先请求优雅关闭，等 server 自
+        // 行收尾（停 postgres/沙盒），超时才强杀兜底。
+        let port = self.port.load(Ordering::Relaxed);
+        if server_running() {
+            request_graceful_shutdown(port);
+            let deadline = Instant::now() + Duration::from_secs(6);
+            while Instant::now() < deadline && server_running() {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
         if let Some(mut child) = self.server.lock().unwrap().take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -166,6 +176,41 @@ fn kill_server_processes() {
     }
 }
 
+/// 请求 server 优雅关闭（POST /api/v1/shutdown，loopback）。server 收到后会
+/// 走 graceful shutdown：Db drop → oliphaunt `pg_ctl stop` 停 postgres 子进程、
+/// JVM 沙盒子进程随 Drop 终止——所有进程干净退出，不留 postgres/java 残留。
+fn request_graceful_shutdown(port: u16) {
+    use std::io::{Read, Write};
+    tray_log(&format!("[tray] requesting graceful shutdown on port {port}"));
+    if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) {
+        let req = format!(
+            "POST /api/v1/shutdown HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        let _ = stream.write_all(req.as_bytes());
+        let mut buf = [0u8; 256];
+        let _ = stream.read(&mut buf);
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    }
+}
+
+/// 优雅停掉 server：先请求 shutdown，等待进程自然退出（graceful），超时再强杀
+/// 兜底（强杀会残留 oliphaunt postgres 子进程，server 下次启动时自愈清理）。
+fn stop_server_gracefully(port: u16) {
+    if !server_running() {
+        return;
+    }
+    request_graceful_shutdown(port);
+    for _ in 0..12 {
+        std::thread::sleep(Duration::from_millis(500));
+        if !server_running() {
+            tray_log("[tray] server exited gracefully");
+            return;
+        }
+    }
+    tray_log("[tray] graceful shutdown timed out; force-killing server");
+    kill_server_processes();
+}
+
 /// Poll TCP until the server accepts connections.
 fn wait_ready(port: u16, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
@@ -275,10 +320,10 @@ fn save_settings(
     ensure_data_dirs(&new_data);
     std::fs::create_dir_all(&new_data).map_err(|e| format!("创建数据目录失败: {e}"))?;
 
-    // 端口/目录变更：结束旧 server 并以新配置重启
+    // 端口/目录变更：优雅结束旧 server 并以新配置重启（不残留 postgres）
+    stop_server_gracefully(state.port.load(Ordering::Relaxed));
     let mut guard = state.server.lock().unwrap();
     if let Some(mut c) = guard.take() {
-        let _ = c.kill();
         let _ = c.wait();
     }
     let child = spawn_server(&new_data, port)
@@ -422,7 +467,12 @@ fn main() {
                         }
                     }
                     "quit" => {
-                        kill_server_processes();
+                        // 优雅关闭：先 POST /api/v1/shutdown 让 server 自行收尾
+                        // （pg_ctl stop postgres、杀 JVM 沙盒），等待退出；超时
+                        // 才强杀兜底。
+                        let st = app.state::<AppState>();
+                        let port = st.port.load(Ordering::Relaxed);
+                        stop_server_gracefully(port);
                         app.exit(0);
                     }
                     _ => {}

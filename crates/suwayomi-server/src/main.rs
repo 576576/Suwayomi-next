@@ -12,11 +12,11 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::http::StatusCode;
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use suwayomi_core::config::ServerConfig;
 use suwayomi_core::db::Db;
@@ -100,11 +100,31 @@ fn resolve_sandbox_jar() -> Option<std::path::PathBuf> {
     None
 }
 
-fn build_router(state: AppState, graphql_schema: suwayomi_graphql::schema::GraphQLSchema) -> Router {
+fn build_router(
+    state: AppState,
+    graphql_schema: suwayomi_graphql::schema::GraphQLSchema,
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
+) -> Router {
     let api = Router::new()
         .nest("/api/v1", suwayomi_rest::routes::api_v1_router())
         .nest("/api", suwayomi_graphql::schema::graphql_router(graphql_schema))
         .nest("/api/opds/v1.2", suwayomi_opds::router::opds_router())
+        // Graceful shutdown endpoint used by the tray app (and scripts):
+        // `POST /api/v1/shutdown` triggers axum's graceful shutdown, letting
+        // the runtime unwind normally (Db drop → oliphaunt `pg_ctl stop`, JVM
+        // sandbox child kill). Only callable from loopback.
+        .route(
+            "/api/v1/shutdown",
+            post(
+                move |ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>| async move {
+                    if !addr.ip().is_loopback() {
+                        return (StatusCode::FORBIDDEN, "shutdown only allowed from loopback");
+                    }
+                    let _ = shutdown_tx.send(true);
+                    (StatusCode::OK, "shutdown requested")
+                },
+            ),
+        )
         // Local-source files (covers, chapter pages) — exposed under both
         // `/local/...` (relative `local/...` URLs returned by GraphQL) and
         // `/api/v1/local/...` (which `getValidImgUrlFor` in the WebUI
@@ -434,7 +454,11 @@ async fn main() -> anyhow::Result<()> {
     let schema = suwayomi_graphql::schema::build_schema(graphql_state);
     tracing::info!("graphql schema ready ({} type definitions)", suwayomi_graphql::schema::schema_type_count());
     let state = AppState::new(db, config.clone(), fetcher, sandbox_base, resolve_webui_dir());
-    let app = build_router(state, schema);
+    // Shutdown notification channel: `POST /api/v1/shutdown` (or Ctrl+C)
+    // triggers graceful shutdown so the embedded postgres + sandbox child
+    // processes are stopped cleanly instead of being orphaned.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let app = build_router(state, schema, shutdown_tx);
 
     // Bind with automatic port fallback. On Windows the configured port may be
     // inside the Hyper-V dynamic exclusion range (4501-4900) or already taken,
@@ -467,20 +491,26 @@ async fn main() -> anyhow::Result<()> {
         }
     };
     tracing::info!("server listening on http://{addr}");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal(shutdown_rx))
+    .await?;
     Ok(())
 }
 
-/// Wait for a shutdown request (Ctrl+C / termination) and then let the
-/// runtime unwind normally. This is what lets the embedded Oliphaunt
-/// PostgreSQL server stop cleanly: `Db` is dropped as `main` returns and
-/// `Oliphaunt`'s session Drop runs `pg_ctl stop` on the child postgres
-/// process. Without graceful shutdown, an abrupt process exit leaves the
-/// postgres child running and the next start fails on the
+/// Wait for a shutdown request — Ctrl+C, or the `POST /api/v1/shutdown`
+/// endpoint (watch channel) — and then let the runtime unwind normally. This
+/// is what lets the embedded Oliphaunt PostgreSQL server stop cleanly: `Db`
+/// is dropped as `main` returns and `Oliphaunt`'s session Drop runs `pg_ctl
+/// stop` on the child postgres process (and the JVM sandbox child is killed
+/// in its Drop). Without graceful shutdown, an abrupt process exit leaves
+/// the postgres child running and the next start fails on the
 /// `postmaster.pid` lock.
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
-    tracing::info!("shutdown signal received; stopping embedded database…");
+async fn shutdown_signal(mut rx: tokio::sync::watch::Receiver<bool>) {
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => tracing::info!("ctrl-c received; graceful shutdown"),
+        _ = rx.changed() => tracing::info!("shutdown requested via /api/v1/shutdown; graceful shutdown"),
+    }
 }

@@ -34,6 +34,11 @@ fn is_exempt(path: &str, method: &str) -> bool {
     if method == "OPTIONS" {
         return true;
     }
+    // Graceful shutdown endpoint — loopback-only is enforced by the handler
+    // itself (see main.rs /api/v1/shutdown).
+    if path == "/api/v1/shutdown" {
+        return true;
+    }
     if path.ends_with("login.html") || path.ends_with("site.webmanifest") || path.ends_with("manifest.json") {
         return true;
     }

@@ -81,7 +81,12 @@ class SourceDriver(private val src: LoadedSource) {
     private fun emptyFilters(): Any? {
         return try {
             val cls = src.sourceCls.classLoader.loadClass("eu.kanade.tachiyomi.source.model.FilterList")
-            cls.getDeclaredConstructor().newInstance()
+            // FilterList has no no-arg ctor: primary (List) + vararg (Filter[]) secondary.
+            // Pick the (List) ctor; a null filters argument NPEs every HttpSource.fetchSearchManga.
+            val ctor = cls.declaredConstructors.firstOrNull {
+                it.parameterCount == 1 && it.parameterTypes[0] == List::class.java
+            } ?: return null
+            ctor.newInstance(emptyList<Any>())
         } catch (e: Exception) {
             null
         }

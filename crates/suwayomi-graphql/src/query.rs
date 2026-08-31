@@ -30,7 +30,9 @@ enum BindVal {
 #[graphql(name = "MangaConditionInput")]
 pub struct MangaCondition {
     pub id: Option<i32>,
-    pub source_id: Option<i64>,
+    /// LongString so WebUI source ids (strings, e.g. "0") match the schema;
+    /// plain i64 would surface as `Int` and reject string input.
+    pub source_id: Option<LongString>,
     pub title: Option<String>,
     pub url: Option<String>,
     pub initialized: Option<bool>,
@@ -1359,7 +1361,7 @@ async fn query_mangas(
         }
         if let Some(v) = cond.source_id {
             where_clauses.push("source = ?".into());
-            binds.push(BindVal::I64(v));
+            binds.push(BindVal::I64(v.0));
         }
         if let Some(v) = &cond.title {
             where_clauses.push("title ILIKE ?".into());

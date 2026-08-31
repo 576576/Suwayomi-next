@@ -467,6 +467,20 @@ async fn main() -> anyhow::Result<()> {
         }
     };
     tracing::info!("server listening on http://{addr}");
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
     Ok(())
+}
+
+/// Wait for a shutdown request (Ctrl+C / termination) and then let the
+/// runtime unwind normally. This is what lets the embedded Oliphaunt
+/// PostgreSQL server stop cleanly: `Db` is dropped as `main` returns and
+/// `Oliphaunt`'s session Drop runs `pg_ctl stop` on the child postgres
+/// process. Without graceful shutdown, an abrupt process exit leaves the
+/// postgres child running and the next start fails on the
+/// `postmaster.pid` lock.
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+    tracing::info!("shutdown signal received; stopping embedded database…");
 }

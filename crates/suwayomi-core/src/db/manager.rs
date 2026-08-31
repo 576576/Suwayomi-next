@@ -119,6 +119,11 @@ impl Db {
         // (0xc0000135). Copy the DLLs from the staged resources into every
         // existing cache bin; the first materialization creates the cache,
         // so a failed open is retried once after copying.
+        //
+        // Also retried after cleaning a stale postmaster: if the previous
+        // process was killed without graceful shutdown (crash / taskkill /F),
+        // the oliphaunt postgres child keeps running and the next start fails
+        // on the `postmaster.pid` lock — remove that leftover and retry.
         let open = || async {
             let builder = Oliphaunt::builder().native_server().max_client_sessions(32);
             match data_dir {
@@ -132,9 +137,10 @@ impl Db {
             Ok(server) => server,
             Err(first) => {
                 copy_runtime_bin_dlls_to_cache();
+                cleanup_stale_postmaster(data_dir);
                 open().await.map_err(|e| {
                     DbError::Embedded(anyhow::anyhow!(
-                        "first attempt failed: {first}; retry after copying runtime DLLs failed: {e}"
+                        "first attempt failed: {first}; retry after copying runtime DLLs and cleaning a stale postmaster failed: {e}"
                     ))
                 })?
             }
@@ -242,4 +248,48 @@ fn copy_runtime_bin_dlls_to_cache() {
             }
         }
     }
+}
+
+/// Remove a leftover postmaster from a previous run that was killed without
+/// graceful shutdown. The embedded Oliphaunt postgres child survives such a
+/// kill and holds `postmaster.pid`, so the next start fails with
+/// "lock file postmaster.pid already exists". Only touches a postmaster
+/// whose executable lives under the oliphaunt runtime cache (ours), never a
+/// foreign PostgreSQL.
+fn cleanup_stale_postmaster(data_dir: Option<&Path>) {
+    use std::process::Command;
+
+    let Some(dir) = data_dir else {
+        return;
+    };
+    let pgdata = dir.join("pgdata");
+    let pid_file = pgdata.join("postmaster.pid");
+    let Ok(pid_text) = std::fs::read_to_string(&pid_file) else {
+        return;
+    };
+    let Ok(pid) = pid_text.lines().next().unwrap_or("").trim().parse::<u32>() else {
+        return;
+    };
+    // Windows: check the process image path contains our runtime cache.
+    let image = Command::new("wmic")
+        .args(["process", "where", &format!("ProcessId={pid}"), "get", "ExecutablePath", "/value"])
+        .output()
+        .ok();
+    let is_ours = image
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .to_lowercase()
+                .contains("oliphaunt-runtime-cache")
+        })
+        .unwrap_or(false);
+    if !is_ours {
+        tracing::warn!(pid, "postmaster.pid points to a foreign postgres; leaving it alone");
+        return;
+    }
+    tracing::warn!(pid, "killing stale oliphaunt postmaster from an ungraceful shutdown");
+    let _ = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .status();
+    let _ = std::fs::remove_file(&pid_file);
+    let _ = std::fs::remove_file(pgdata.join("postmaster.opts"));
 }

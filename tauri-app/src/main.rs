@@ -495,9 +495,9 @@ fn main() {
             .inner_size(480.0, 380.0)
             .resizable(false)
             .theme(Some(tauri::Theme::Dark))
+            // 以不可见状态创建——启动时完全不闪现，托盘「设置」菜单才 show()
+            .visible(false)
             .build()?;
-            // 启动不显示设置窗口——静默驻托盘
-            let _ = _settings_window.hide();
 
             // 系统托盘：启动Suwayomi（运行中则禁用）→ 打开WebUI → 数据目录 → 设置 → 隐藏托盘 → 退出
             let start_item = MenuItem::with_id(app, "start_suwayomi", "启动 Suwayomi", true, None::<&str>)?;

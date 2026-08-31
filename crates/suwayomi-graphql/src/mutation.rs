@@ -1697,7 +1697,11 @@ async fn seed_local_pages(
         .execute(state.db.pool())
         .await
         .map_err(async_graphql::Error::from)?;
-    let url_prefix = format!("local/{}/{}", manga_row.url, chapter.url);
+    // Root-relative prefix: the WebUI reader embeds page URLs directly in
+    // <img src> (no base-url rewrite, unlike thumbnails), so a plain
+    // relative `local/...` would resolve against the SPA route (e.g.
+    // /manga/232/chapter/local/...). Leading `/` keeps it on the server root.
+    let url_prefix = format!("/local/{}/{}", manga_row.url, chapter.url);
     let pages = local_src::scan_local_pages(&chapter_path, &url_prefix);
     if pages.is_empty() {
         return Ok(());

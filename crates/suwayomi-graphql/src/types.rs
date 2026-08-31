@@ -392,6 +392,11 @@ impl MangaType {
 
     async fn source(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<SourceType>> {
         let state = ctx.data::<GraphQLState>()?;
+        // 本地源漫画的 source_id = LOCAL_SOURCE_ID(0) 指向合成本地源（不在 source 表，
+        // 由 sources resolver 注入）——此处直接返回合成条目，避免 WebUI 详情页来源为 null。
+        if self.source_id == suwayomi_domain::source::LOCAL_SOURCE_ID {
+            return Ok(Some(SourceType::local_source()));
+        }
         let sql = bind_placeholders("SELECT * FROM source WHERE id = ?");
         let row = sqlx::query_as::<_, suwayomi_core::schema::SourceRow>(&sql)
             .bind(self.source_id)

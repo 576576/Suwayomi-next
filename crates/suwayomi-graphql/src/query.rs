@@ -741,6 +741,10 @@ impl QueryRoot {
     /// Mirrors `source(id:)` — single source by id.
     async fn source(&self, ctx: &Context<'_>, id: LongString) -> async_graphql::Result<SourceType> {
         let state = ctx.data::<GraphQLState>()?;
+        // LOCAL_SOURCE_ID(0) 为合成本地源（不在 source 表），直接返回合成条目。
+        if id.0 == suwayomi_domain::source::LOCAL_SOURCE_ID {
+            return Ok(SourceType::local_source());
+        }
         let sql = bind_placeholders("SELECT * FROM source WHERE id = ?");
         let row = sqlx::query_as::<_, suwayomi_core::schema::SourceRow>(&sql)
             .bind(id.0)

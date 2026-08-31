@@ -12,3 +12,17 @@ pub mod db;
 pub mod models;
 pub mod schema;
 pub mod source;
+
+/// Build metadata derived by `build.rs` (commit-count based versioning).
+pub mod version {
+    /// Version name — `r{versionCode}` for auto/local builds (e.g. `r3064`),
+    /// or the `SUWAYOMI_VERSION_NAME` value injected by release CI.
+    pub const VERSION: &str = env!("SUWAYOMI_VERSION_NAME");
+    /// Internal version code — commit count + 3000 (string, parse at use site).
+    pub const VERSION_CODE: &str = env!("SUWAYOMI_VERSION_CODE");
+    /// Commit count at build time (string, parse at use site).
+    pub const VERSION_COUNT: &str = env!("SUWAYOMI_VERSION_COUNT");
+    /// Build time as Unix epoch seconds (string, parse at use site).
+    pub const BUILD_TIME_EPOCH_SECS: &str = env!("SUWAYOMI_BUILD_TIME");
+}
+

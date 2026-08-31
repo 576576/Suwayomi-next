@@ -595,7 +595,9 @@ impl AboutServerPayload {
         let os_name = std::env::consts::OS.to_string();
         let arch = std::env::consts::ARCH.to_string();
         Self {
-            build_time: LongString(0),
+            // 真实构建时间与版本（由 suwayomi-core/build.rs 注入）——
+            // 之前的 0 / 0.1.0 让 WebUI 关于页显示 1970-01-01 与占位版本。
+            build_time: LongString(suwayomi_core::version::BUILD_TIME_EPOCH_SECS.parse().unwrap_or(0)),
             build_type: "release".into(),
             discord: "https://qm.qq.com/q/aq1PDjhjMc".into(),
             github: "https://github.com/576576/Suwayomi-next".into(),
@@ -611,8 +613,8 @@ impl AboutServerPayload {
                 },
                 os: OSInfo { build: None, name: os_name, version: "n/a".into() },
             },
-            revision: "".into(),
-            version: env!("CARGO_PKG_VERSION").into(),
+            revision: suwayomi_core::version::VERSION_CODE.into(),
+            version: suwayomi_core::version::VERSION.into(),
         }
     }
 }

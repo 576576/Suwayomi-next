@@ -23,12 +23,12 @@ use suwayomi_core::db::Db;
 use suwayomi_domain::source::{SourceFetcher, StubFetcher};
 use suwayomi_rest::AppState;
 
-/// Build version name — `r{versionCode}` (see build.rs), e.g. r3050.
-pub const VERSION: &str = env!("SUWAYOMI_VERSION_NAME");
-/// Internal version code — commit count + 3000 (see build.rs).
-pub const VERSION_CODE: &str = env!("SUWAYOMI_VERSION_CODE");
-/// Commit count baked in at build time (see build.rs).
-pub const VERSION_COUNT: &str = env!("SUWAYOMI_VERSION_COUNT");
+/// Build version name — `r{versionCode}`（由 suwayomi-core/build.rs 统一注入）。
+pub const VERSION: &str = suwayomi_core::version::VERSION;
+/// Internal version code — commit count + 3000 (see suwayomi-core/build.rs).
+pub const VERSION_CODE: &str = suwayomi_core::version::VERSION_CODE;
+/// Commit count baked in at build time (see suwayomi-core/build.rs).
+pub const VERSION_COUNT: &str = suwayomi_core::version::VERSION_COUNT;
 
 fn config_from_env() -> ServerConfig {
     // Pure-PostgreSQL decision (2026-08-30): Rust backend only supports PG.

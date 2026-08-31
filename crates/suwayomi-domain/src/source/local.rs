@@ -11,6 +11,7 @@
 //! `genre` (array or comma string) / `status` (numeric string).
 
 use std::path::{Path, PathBuf};
+use std::sync::{OnceLock, RwLock};
 
 use suwayomi_core::models::UpdateStrategy;
 use suwayomi_core::source::{SChapter, SManga, SourcePage};
@@ -21,9 +22,30 @@ pub const ARCHIVE_EXTS: &[&str] = &["zip", "cbz", "rar", "cbr", "epub"];
 /// Supported page image extensions for directory chapters.
 pub const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp", "avif", "heic"];
 
-/// `data/local` under the server working directory — the default location of
-/// the local source. Mirrors the Kotlin `DataDirectory` default.
+/// Process-wide override for the local source root, set from the
+/// `localSourcePath` server setting (`set_settings`) or loaded at startup.
+static LOCAL_ROOT_OVERRIDE: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
+
+/// Point the local source at a custom directory (`localSourcePath` setting).
+/// `None`/empty resets to the default `<cwd>/data/local`.
+pub fn set_local_source_root(path: Option<PathBuf>) {
+    let lock = LOCAL_ROOT_OVERRIDE.get_or_init(|| RwLock::new(None));
+    if let Ok(mut guard) = lock.write() {
+        *guard = path.filter(|p| !p.as_os_str().is_empty());
+    }
+}
+
+/// The root directory of the local source: the configured `localSourcePath`
+/// when set, otherwise `data/local` under the server working directory
+/// (mirrors the Kotlin `DataDirectory` default).
 pub fn local_source_root() -> PathBuf {
+    if let Some(lock) = LOCAL_ROOT_OVERRIDE.get() {
+        if let Ok(guard) = lock.read() {
+            if let Some(path) = guard.as_ref() {
+                return path.clone();
+            }
+        }
+    }
     std::env::current_dir()
         .unwrap_or_default()
         .join("data")

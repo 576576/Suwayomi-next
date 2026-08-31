@@ -150,17 +150,15 @@ fn build_router(
     }
 }
 
-/// Serves local-source files from `data/local/<path>` (covers, page images,
-/// and images inside archive chapters). Guards against path traversal.
+/// Serves local-source files from the local source root (default
+/// `data/local/<path>`, or the configured `localSourcePath`) — covers, page
+/// images, and images inside archive chapters. Guards against path traversal.
 async fn local_file(State(_state): State<AppState>, path: axum::extract::Path<String>) -> Response {
     let rel = path.replace('\\', "/");
     if rel.is_empty() || rel.split('/').any(|seg| seg == "..") || rel.contains("://") {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    let root = std::env::current_dir()
-        .unwrap_or_default()
-        .join("data")
-        .join("local");
+    let root = suwayomi_domain::source::local::local_source_root();
     let file = root.join(&rel);
     if file.is_file() {
         return read_file_response(&file).await;
@@ -330,6 +328,32 @@ async fn import_h2_data(db: &Db, data_dir: &std::path::Path) -> anyhow::Result<(
     Ok(())
 }
 
+/// Load a persisted `localSourcePath` (the `settings` global_meta blob saved
+/// via `setSettings`) into the process-wide local source root override, so a
+/// custom local source directory survives restarts.
+async fn load_local_source_path(db: &Db) {
+    let Ok(Some((value,))) = sqlx::query_as::<_, (String,)>(
+        "SELECT value FROM global_meta WHERE meta_key = 'settings'",
+    )
+    .fetch_optional(db.pool())
+    .await
+    else {
+        return;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&value) else {
+        return;
+    };
+    let Some(p) = json
+        .get("localSourcePath")
+        .and_then(|v| v.as_str())
+        .filter(|p| !p.is_empty())
+    else {
+        return;
+    };
+    suwayomi_domain::source::local::set_local_source_root(Some(std::path::PathBuf::from(p)));
+    tracing::info!("local source path from settings: {p}");
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // `-v` / `--version`：打印版本信息后退出（替代打包产物里的 VERSION.txt）
@@ -414,6 +438,10 @@ async fn main() -> anyhow::Result<()> {
     };
     db.migrate().await?;
     tracing::info!(mode = ?db.mode(), "database ready (migrations applied)");
+
+    // Apply a persisted `localSourcePath` (saved via setSettings) to the
+    // local source root so custom directories survive restarts.
+    load_local_source_path(&db).await;
 
     // Phase 7: import the Kotlin H2 data and stop.
     if let Some(dir) = migrate_dir {

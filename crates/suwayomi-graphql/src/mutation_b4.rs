@@ -1753,6 +1753,10 @@ impl MutationRootB4 {
             .modify(MetaTable::Global, &by_ref)
             .await
             .map_err(async_graphql::Error::from)?;
+        // Local source path takes effect immediately (no restart needed).
+        if let Some(p) = input.settings.local_source_path.clone() {
+            suwayomi_domain::source::local::set_local_source_root(Some(std::path::PathBuf::from(p)));
+        }
         Ok(SetSettingsPayload {
             client_mutation_id: input.client_mutation_id,
             settings: crate::settings::SettingsType::from_config(&state.config),

@@ -54,6 +54,23 @@ pub struct Db {
     _server: Option<Arc<PgliteServer>>,
 }
 
+/// Shared pool hardening — mirrors `DBManager.kt` + guards against stale
+/// connections (the embedded PGlite single backend may drop idle clients;
+/// sqlx then hands out the dead connection and queries die with
+/// "expected to read N bytes, got 0 bytes at EOF").
+///
+/// - `test_before_acquire` — ping before handing out a connection.
+/// - `idle_timeout` — reclaim idle connections so long-sitting clients are
+///   closed by us, not by the server at an arbitrary moment.
+/// - `max_lifetime` — hard ceiling against connection rot.
+fn hardened(options: PgPoolOptions) -> PgPoolOptions {
+    options
+        .test_before_acquire(true)
+        .idle_timeout(std::time::Duration::from_secs(300))
+        .max_lifetime(std::time::Duration::from_secs(3600))
+        .acquire_timeout(std::time::Duration::from_secs(30))
+}
+
 impl Db {
     /// Connect to an external PostgreSQL server (fallback backend).
     ///
@@ -63,8 +80,7 @@ impl Db {
     /// Sets `search_path` to the `suwayomi` schema on every connection,
     /// mirroring the Kotlin side's `defaultSchema` (M0054).
     pub async fn connect(url: &str) -> Result<Self, DbError> {
-        let pool = PgPoolOptions::new()
-            .max_connections(6)
+        let pool = hardened(PgPoolOptions::new().max_connections(6))
             .after_connect(|conn, _meta| {
                 Box::pin(async move {
                     sqlx::query("SET search_path TO suwayomi").execute(conn).await?;
@@ -93,8 +109,7 @@ impl Db {
         };
         let url = server.connection_uri();
         tracing::info!(%url, "embedded pglite ready");
-        let pool = PgPoolOptions::new()
-            .max_connections(1)
+        let pool = hardened(PgPoolOptions::new().max_connections(1))
             .after_connect(|conn, _meta| {
                 Box::pin(async move {
                     sqlx::query("SET search_path TO suwayomi").execute(conn).await?;

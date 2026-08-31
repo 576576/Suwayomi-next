@@ -22,7 +22,7 @@ schema 基线见 `docs/graphql/README.md`，与 Kotlin 原版保持行为兼容�
 ## 快速开始（源码构建）
 
 ```bash
-# 构建 + 启动（默认端口 8090，内置嵌入式 PGlite，零外部依赖；Windows 上 4501-4900 可能被 Hyper-V 保留，启动失败时自动顺延端口）
+# 构建 + 启动（默认端口 8090，内置嵌入式 Oliphaunt PostgreSQL 18，零外部依赖；Windows 上 4501-4900 可能被 Hyper-V 保留，启动失败时自动顺延端口）
 cargo run --release -p suwayomi-server
 ```
 
@@ -92,7 +92,7 @@ docs/                基线文档（REST 端点 / GraphQL schema / 迁移说明 
 
 ## 数据库后端
 
-- **默认**：嵌入式 PGlite（PostgreSQL 17 引擎，WASM 打包，数据目录 `./pglite-data`）——零安装即用
+- **默认**：嵌入式 Oliphaunt（原 pglite-oxide 改名，真实 PostgreSQL 18 引擎 native 运行，数据目录 `./pglite-data`）——零安装即用，支持多连接池
 - **备选**：外部 PostgreSQL（设 `SUWAYOMI_DATABASE_URL`，如 `postgres://user:pass@host:5432/db`）
 
 ## 真实扩展（JVM sandbox）
@@ -131,7 +131,7 @@ SUWAYOMI_SANDBOX_PROXY=127.0.0.1:7890 \   # 可选：出境代理（访问被墙
 
 - **KOReader**：GraphQL `connectKoSyncAccount` / `pushKoSyncProgress` / `pullKoSyncProgress` / `koSyncStatus`。凭据存 `global_meta`；章节 `koreader_hash` 为 `md5("<manga title> - <chapter name>")`（FILENAME 校验和）。
 - **SyncYomi**：GraphQL `startSync` / `lastSyncStatus`。配置见 ServerConfig：`syncYomiEnabled` / `syncYomiHost` / `syncYomiApiKey`（另有 6 项 `syncData*` 数据范围与 `syncInterval`）。同步以 Mihon Backup protobuf + ETag（If-None-Match/If-Match）在 `{host}/api/sync/content` 上 pull → restore → push。
-- **version 触发器**：`migrations/pg-only/0002_*` 是 `SyncYomiTriggers.kt` 的 PostgreSQL 移植（manga/chapter/category 变更自动 bump version，`is_syncing` 豁免）。嵌入式 pglite 不支持 PL/pgSQL，仅外部 PostgreSQL 应用（`Db::migrate` 自动分流）。
+- **version 触发器**：`migrations/pg-only/0002_*` 是 `SyncYomiTriggers.kt` 的 PostgreSQL 移植（manga/chapter/category 变更自动 bump version，`is_syncing` 豁免）。嵌入式（oliphaunt 真实 PG）与外部 PostgreSQL 均自动应用（`Db::migrate` 统一执行）。
 
 ## 构建
 
@@ -153,7 +153,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ```bash
 docker build -t suwayomi-next .
-docker run -p 8090:4567 -v suwayomi-data:/data suwayomi-next   # 容器内 4567，映射到宿主 8090
+docker run -p 8090:8090 -v suwayomi-data:/data suwayomi-next   # 容器内与宿主均 8090
 ```
 
 ## License

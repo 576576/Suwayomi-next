@@ -12,7 +12,7 @@ Kotlin 原版（Suwayomi/Tachidesk）使用 H2 数据库文件（JVM 专有格�
 # 1) 构建迁移工具（JDK 17+，首次需要）
 gradle -p tools/h2-dump build
 
-# 2) 执行迁移（数据写到嵌入式 PGlite，即 ./pglite-data）
+# 2) 执行迁移（数据写到嵌入式 Oliphaunt 数据库，即 ./pglite-data）
 suwayomi-server --migrate <kotlin-data-dir>
 # 或指定 h2-dump jar 路径：
 suwayomi-server --migrate <kotlin-data-dir> --h2-dump-jar <path>
@@ -21,7 +21,7 @@ suwayomi-server --migrate <kotlin-data-dir> --h2-dump-jar <path>
 suwayomi-server
 ```
 
-- 迁移目标后端由 `SUWAYOMI_DATABASE_URL` 决定：不设 → 嵌入式 PGlite；设置 →
+- 迁移目标后端由 `SUWAYOMI_DATABASE_URL` 决定：不设 → 嵌入式 Oliphaunt；设置 →
   外部 PostgreSQL（`postgres://user:pass@host:5432/db`）。
 - 流程：定位 `<dir>/*.mv.db` → h2-dump 导出（按外键依赖序）→ 逐条导入 → 退出。
 - h2-dump 导入脚本幂等（先 DELETE 再 INSERT），重复执行安全。
@@ -33,9 +33,9 @@ Kotlin 版导出的 Mihon `.proto` 备份（gzip 体）可直接导入，适合�
 
 ```bash
 # 校验（不落库）：
-curl -X POST http://localhost:4567/api/v1/backup/validate --data-binary @backup.tachibk
+curl -X POST http://localhost:8090/api/v1/backup/validate --data-binary @backup.tachibk
 # 导入：
-curl -X POST http://localhost:4567/api/v1/backup/import --data-binary @backup.tachibk
+curl -X POST http://localhost:8090/api/v1/backup/import --data-binary @backup.tachibk
 ```
 
 导出（用于反向迁移或日常备份）：`GET /api/v1/backup/export`。
@@ -45,7 +45,7 @@ curl -X POST http://localhost:4567/api/v1/backup/import --data-binary @backup.ta
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `SUWAYOMI_H2_DUMP_JAR` | `tools/h2-dump/build/libs/h2-dump.jar` | `--migrate` 用的导出工具 jar |
-| `SUWAYOMI_DATABASE_URL` | 嵌入式 PGlite | 迁移目标数据库连接串 |
+| `SUWAYOMI_DATABASE_URL` | 嵌入式 Oliphaunt | 迁移目标数据库连接串 |
 
 ## 更多迁移背景
 

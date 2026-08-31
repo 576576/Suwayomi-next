@@ -134,6 +134,7 @@
 - **Phase 2 已完成**：domain 服务（Manga/MangaList/Library/Chapter/Page/Category/CategoryManga/Meta/SourceFetcher trait）；10 个 domain 集成测试（移植 Kotlin MangaTest/CategoryMangaTest 核心断言）
 - **决策变更（2026-08-30）：数据库后端统一为 PostgreSQL**（移除 SQLite）：`Db` 改为 PgPool 包装（连接级 search_path=suwayomi）、`bind_placeholders` 固定 `?`→`$n`、bool 列改 TRUE/FALSE 语法、迁移幂等（DROP CONSTRAINT IF EXISTS）、memo 列 TEXT 字符串；PG 集成测试经 Docker postgres:16（端口 15432）12 项全绿；workspace 23 单元测试全绿，clippy -D warnings 通过
 - **决策变更（2026-08-30）：嵌入式 PGlite 为默认后端（外部 PostgreSQL 保留为备选）**：`Db::connect_embedded(data_dir)` 通过 pglite-oxide（PGlite/PostgreSQL 17 引擎 + wasmtime，本地 TCP 回环，池单连接）实现「零安装嵌入式 PG」；`Db::connect(url)` 维持外部 PG。注：`pglite-rs`（原生静态库版）的 ORM 桥仅 unix socket（Windows 无效），故采用同引擎的 pglite-oxide（钉 0.3.0：0.4+/0.5 切 wasmer-wasix alpha 编译失败）。已知约束：嵌入式代理在**任何 SQL 报错**时终止会话（迁移前已用限定名预建 suwayomi schema + `_sqlx_migrations` 规避；运行时 SQL 错误会触发重连）。server 默认嵌入式（`SUWAYOMI_PGLITE_DATA_DIR` 指定数据目录，默认 `./pglite-data`），设置 `SUWAYOMI_DATABASE_URL` 即切外部 PG。嵌入式集成测试 5 项全绿（迁移/CRUD/持久化重开/search_path）+ 4568 端口冒烟通过
+- **决策变更（2026-08-31）：嵌入式后端迁移 pglite-oxide → oliphaunt 0.1.1**（上游改名 + 全新 native-first SDK）：`Db::connect_embedded` 改为 `Oliphaunt::builder().native_server()`（真实 PostgreSQL 18 进程 + 独立客户端会话，替代旧 WASI 单会话 gateway）；**连接池 1 → 6**（14 并发验证通过）、PL/pgSQL pg-only 触发器（SyncYomi version bump）嵌入式也应用、SQL 错误不再杀后端（旧 proxy 容错 vendor patch 移除，`vendor/pglite-oxide` 与 `[patch.crates-io]` 一并删除）。集成：oliphaunt-build build-dep + `[package.metadata.oliphaunt]` + `register_build_resources!()`；Windows 侧 workaround：0.1.1 `materialize_runtime` 漏复制 bin/*.dll（initdb 0xc0000135），启动时把 staged DLL 补进缓存 bin；进程生命周期治理：`with_graceful_shutdown(ctrl_c)` 优雅停 postgres + 强杀残留 postmaster 自动清理（wmic 校验 oliphaunt 缓存路径后 taskkill /T /F）。数据目录为 PG18 原生格式（旧 PG17 pglite-data 不兼容，部署时备份为 `pglite-data.bak-pg17-*` 重新 initdb）。回归：db_embedded 5 测试 + 部署 9 项全绿
 - **Phase 3 已完成（核心）**：axum REST 层（AppState/认证 Basic+Simple+login 豁免/错误映射 404·400·401·403·500）、/api/v1 全路由注册（backup/downloads/download/update/track 为 501 stub）、manga/category/chapter/source/extension/global 端点；REST 集成测试 2 项 + 真实服务冒烟（4568 端口）通过；25 单元测试全绿；clippy -D warnings 通过
 - **Phase 4 已启动（核心骨架）**：async-graphql 7 集成（自定义标量 LongString/Duration/Cursor、MangaType/ChapterType/CategoryType/PageType/SourceType/MetaType、NodeList 分页、mangas 条件过滤+排序+分页、计算字段 unread/download/bookmark/chapters/categories/meta）；挂载 /api/graphql（GET/POST）端到端查询验证通过（枚举值/NodeList/过滤/计算字段与 Kotlin 一致）；当前 28 类型，基线 359 待增量补全；27 单元测试全绿；clippy -D warnings 通过
 - **Phase 4 已完成**：Query 33/33、Mutation 82/82、Subscription 6/6 字段全齐；类型 351/363（缺失 14 均为孤立声明类型，客户端不可达不影响）；27 单元测试全绿
@@ -152,8 +153,9 @@
 - **Phase 6 同步全完成**：KOReader（koreader_sync.rs：凭据/设备 hash/推送拉取/冲突策略 +
   GraphQL connect/logout/push/pullKoSyncProgress + 3 测试）与 SyncYomi（sync_yomi.rs：
   Backup protobuf + ETag pull/push/merge + startSync/lastSyncStatus + mock server 全链路测试）；
-  PG 版 SyncYomiTriggers（migrations/pg-only/0002_*，plpgsql 触发器，嵌入式 pglite 不支持
-  故仅外部 PG 应用，Db::migrate 自动分流 + advisory lock 串行化）；version_bump 语义测试
+  PG 版 SyncYomiTriggers（migrations/pg-only/0002_*，plpgsql 触发器，嵌入式与外部
+  PG 均应用（2026-08-31 起 embedded=oliphaunt 真实 PG），Db::migrate 统一执行 +
+  advisory lock 串行化）；version_bump 语义测试
   （DATABASE_URL 存在时真跑，否则 SKIP）；core backup 拆 create_backup_proto/restore_backup_proto
 - **扩展库在线安装 + 源注册管理完成**（Phase 6 收口）：extension_store.rs 服务——
   仓库索引刷新（v1 数组 / keiyoushi v2 对象双格式，versionCode 字符串兼容）、APK 下载安装/

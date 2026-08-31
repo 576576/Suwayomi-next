@@ -4,6 +4,27 @@
 
 use serde::{Deserialize, Serialize};
 
+/// 统一缓存根：`<发布根>/cache`（`SUWAYOMI_CACHE_DIR` 可覆盖），内分子目录
+/// （extensions/icons、extensions/index、trackers 等）。发布布局
+/// bin/suwayomi-server.exe 时根 = exe 的上级；否则退回当前工作目录。
+pub fn cache_root() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("SUWAYOMI_CACHE_DIR") {
+        if !dir.is_empty() {
+            return std::path::PathBuf::from(dir);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if dir.file_name().map(|n| n == "bin").unwrap_or(false) {
+                if let Some(base) = dir.parent() {
+                    return base.join("cache");
+                }
+            }
+        }
+    }
+    std::path::PathBuf::from("cache")
+}
+
 /// Mirrors `graphql/types/DatabaseType.kt`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DatabaseType {

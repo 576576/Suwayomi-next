@@ -17,26 +17,8 @@ use axum::Router;
 
 use crate::state::AppState;
 
-/// 统一缓存根：`<发布根>/cache`（`SUWAYOMI_CACHE_DIR` 可覆盖），内分子目录
-/// （extensions/icons、trackers 等）。发布布局 bin/suwayomi-server.exe 时根 =
-/// exe 的上级；否则退回当前工作目录。
-pub fn cache_root() -> std::path::PathBuf {
-    if let Ok(dir) = std::env::var("SUWAYOMI_CACHE_DIR") {
-        if !dir.is_empty() {
-            return std::path::PathBuf::from(dir);
-        }
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            if dir.file_name().map(|n| n == "bin").unwrap_or(false) {
-                if let Some(base) = dir.parent() {
-                    return base.join("cache");
-                }
-            }
-        }
-    }
-    std::path::PathBuf::from("cache")
-}
+/// 统一缓存根（实现见 suwayomi-core）：`<发布根>/cache`，`SUWAYOMI_CACHE_DIR` 可覆盖。
+pub use suwayomi_core::config::cache_root;
 
 /// Builds the `/api/v1/**` router (OPDS & GraphQL mounted separately).
 pub fn api_v1_router() -> Router<AppState> {

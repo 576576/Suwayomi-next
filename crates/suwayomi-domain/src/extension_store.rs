@@ -248,7 +248,7 @@ impl ExtensionStoreService {
 
     /// Fetches one repo index and upserts its entries.
     ///
-    /// The downloaded index is cached at `<extensions>/index/<repo>/index.pb`
+    /// The downloaded index is cached at `<cache>/extensions/index/<repo>/index.pb`
     /// (or `index.json` for legacy tachiyomi repos). Network/HTTP failures and
     /// unparseable downloads fall back to the local cache, so a refresh never
     /// hangs or wipes the store just because a repo is temporarily down.
@@ -348,14 +348,19 @@ impl ExtensionStoreService {
         Ok(n)
     }
 
-    /// Local cache path for a repo index: `<extensions>/index/<repo>/index.pb`
+    /// Local cache path for a repo index: `<cache>/extensions/index/<repo>/index.pb`
     /// (or `index.json`). `repo` is derived from the index URL so it is stable
-    /// across refreshes.
+    /// across refreshes. Cache root lives outside the extensions dir (unified
+    /// `<发布根>/cache`, see `suwayomi_core::config::cache_root`).
     fn index_cache_path(&self, index_url: &str) -> PathBuf {
         let url = normalize_index_url(index_url);
         let repo = repo_dir_name(&url);
         let file = if url.ends_with("index.pb") { "index.pb" } else { "index.json" };
-        self.extensions_dir.join("index").join(repo).join(file)
+        suwayomi_core::config::cache_root()
+            .join("extensions")
+            .join("index")
+            .join(repo)
+            .join(file)
     }
 
     // ------------------------------------------------------------------
@@ -830,6 +835,7 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("ext-test-cache-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
         std::env::set_var("SUWAYOMI_EXTENSIONS_DIR", &tmp);
+        std::env::set_var("SUWAYOMI_CACHE_DIR", tmp.join("cache"));
 
         let index = br#"[{"name":"nhentai.com","pkg":"tachiyomi-all.nhentaicom","apk":"http://127.0.0.1:1/dl.apk","lang":"all","versionName":"1.4.10","versionCode":14,"nsfw":true}]"#;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -844,7 +850,7 @@ mod tests {
         assert_eq!(n, 1);
 
         // write-through cache exists after the first successful refresh
-        let cache_file = tmp.join("index").join("repo-1").join("index.json");
+        let cache_file = tmp.join("cache").join("extensions").join("index").join("repo-1").join("index.json");
         assert!(cache_file.exists(), "cache written: {}", cache_file.display());
 
         // second refresh: the one-shot server is gone (connection refused),

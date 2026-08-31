@@ -338,75 +338,151 @@ impl SourceFetcher for HttpSandboxFetcher {
     }
 }
 
-/// Owns the sandbox JVM process: spawns `java -jar`, waits for health,
-/// and hands out an `HttpSandboxFetcher`. Dropping the guard stops the child.
+/// Builds the `java -jar` command for the sandbox (no-window on Windows,
+/// JVM output redirected into `logs/sandbox.log` when `SUWAYOMI_LOGS_DIR` is set).
+fn spawn_java(jar_path: &str, port: &str) -> std::io::Result<std::process::Child> {
+    let java = match std::env::var("JAVA_HOME") {
+        Ok(jh) => {
+            let p = std::path::Path::new(&jh).join("bin").join("java");
+            if p.exists() {
+                p
+            } else {
+                std::path::PathBuf::from("java")
+            }
+        }
+        Err(_) => std::path::PathBuf::from("java"),
+    };
+    let mut cmd = std::process::Command::new(java);
+    cmd.arg("-jar").arg(jar_path).env("SUWAYOMI_SANDBOX_PORT", port);
+    // Pass through the extensions directory (default ./extensions) and an
+    // optional outbound proxy (e.g. Clash) for geo-blocked sources.
+    if let Ok(dir) = std::env::var("SUWAYOMI_EXTENSIONS_DIR") {
+        cmd.env("SUWAYOMI_EXTENSIONS_DIR", dir);
+    }
+    if let Ok(proxy) = std::env::var("SUWAYOMI_SANDBOX_PROXY") {
+        cmd.env("SUWAYOMI_SANDBOX_PROXY", proxy);
+    }
+    // Windows：server 自身无控制台（windows_subsystem=windows），spawn 的
+    // java 是 console 程序，默认会新建一个终端窗口——用 CREATE_NO_WINDOW
+    // 静默启动，并把 JVM 输出落到日志目录便于诊断。
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let stdio = match std::env::var("SUWAYOMI_LOGS_DIR") {
+        Ok(dir) => {
+            let dir = std::path::PathBuf::from(dir);
+            let _ = std::fs::create_dir_all(&dir);
+            std::fs::OpenOptions::new().create(true).append(true).open(dir.join("sandbox.log")).ok()
+        }
+        Err(_) => None,
+    };
+    match stdio {
+        Some(f) => {
+            let clone = f.try_clone().ok();
+            cmd.stdout(std::process::Stdio::from(f));
+            if let Some(c) = clone {
+                cmd.stderr(std::process::Stdio::from(c));
+            }
+        }
+        None => {
+            cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        }
+    }
+    cmd.spawn()
+}
+
+/// Owns the sandbox JVM process: spawns `java -jar`, waits for health, and
+/// hands out an `HttpSandboxFetcher`. A background monitor restarts the JVM
+/// whenever it dies (crash / OOM / kill) — the HTTP fetch base URL stays the
+/// same (same port), so existing fetchers keep working after a restart.
+/// Dropping the guard stops the child and the monitor.
 pub struct SandboxProcess {
-    child: Option<std::process::Child>,
+    child: std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>>,
     fetcher: HttpSandboxFetcher,
+    monitor: tokio::task::JoinHandle<()>,
 }
 
 impl SandboxProcess {
     pub async fn start(jar_path: &str, port: &str) -> Result<Self> {
-        let java = match std::env::var("JAVA_HOME") {
-            Ok(jh) => {
-                let p = std::path::Path::new(&jh).join("bin").join("java");
-                if p.exists() {
-                    p
-                } else {
-                    std::path::PathBuf::from("java")
-                }
-            }
-            Err(_) => std::path::PathBuf::from("java"),
-        };
-        let mut cmd = std::process::Command::new(java);
-        cmd.arg("-jar").arg(jar_path).env("SUWAYOMI_SANDBOX_PORT", port);
-        // Pass through the extensions directory (default ./extensions) and an
-        // optional outbound proxy (e.g. Clash) for geo-blocked sources.
-        if let Ok(dir) = std::env::var("SUWAYOMI_EXTENSIONS_DIR") {
-            cmd.env("SUWAYOMI_EXTENSIONS_DIR", dir);
-        }
-        if let Ok(proxy) = std::env::var("SUWAYOMI_SANDBOX_PROXY") {
-            cmd.env("SUWAYOMI_SANDBOX_PROXY", proxy);
-        }
-        // Windows：server 自身无控制台（windows_subsystem=windows），spawn 的
-        // java 是 console 程序，默认会新建一个终端窗口——用 CREATE_NO_WINDOW
-        // 静默启动，并把 JVM 输出落到日志目录便于诊断。
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-        }
-        let stdio = match std::env::var("SUWAYOMI_LOGS_DIR") {
-            Ok(dir) => {
-                let dir = std::path::PathBuf::from(dir);
-                let _ = std::fs::create_dir_all(&dir);
-                std::fs::OpenOptions::new().create(true).append(true).open(dir.join("sandbox.log")).ok()
-            }
-            Err(_) => None,
-        };
-        match stdio {
-            Some(f) => {
-                let clone = f.try_clone().ok();
-                cmd.stdout(std::process::Stdio::from(f));
-                if let Some(c) = clone {
-                    cmd.stderr(std::process::Stdio::from(c));
-                }
-            }
-            None => {
-                cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-            }
-        }
-        let child = cmd.spawn().map_err(|e| DomainError::Sandbox(format!("spawn sandbox: {e}")))?;
+        let child = spawn_java(jar_path, port)
+            .map_err(|e| DomainError::Sandbox(format!("spawn sandbox: {e}")))?;
         let base = format!("http://127.0.0.1:{port}");
         let fetcher = HttpSandboxFetcher::new(base.clone());
         // wait for health with retries (up to ~15s)
+        let mut healthy = false;
         for _ in 0..50 {
             if fetcher.health().await {
-                return Ok(Self { child: Some(child), fetcher });
+                healthy = true;
+                break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         }
-        Err(DomainError::Sandbox(format!("sandbox did not become healthy on {base}")))
+        if !healthy {
+            let _ = fetch_child_kill(&mut Some(child));
+            return Err(DomainError::Sandbox(format!("sandbox did not become healthy on {base}")));
+        }
+        let child = std::sync::Arc::new(std::sync::Mutex::new(Some(child)));
+        let monitor = Self::spawn_monitor(child.clone(), fetcher.clone(), jar_path.to_string(), port.to_string());
+        Ok(Self { child, fetcher, monitor })
+    }
+
+    /// Background watchdog: health-check every 10s; after 2 consecutive
+    /// failures kill the JVM, wait for the port to free, respawn and re-check.
+    fn spawn_monitor(
+        child: std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>>,
+        fetcher: HttpSandboxFetcher,
+        jar: String,
+        port: String,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut fails: u32 = 0;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                let ok = fetcher.health().await;
+                fails = if ok { 0 } else { fails + 1 };
+                if fails < 2 {
+                    continue;
+                }
+                tracing::warn!("jvm sandbox lost (health failed {fails} consecutive times); restarting on port {port}");
+                // kill the old JVM so the port is released
+                {
+                    let mut guard = child.lock().unwrap();
+                    let _ = fetch_child_kill(&mut *guard);
+                }
+                // wait for the port to free up (bind probe)
+                let port_num = port.parse::<u16>().unwrap_or(8091);
+                for _ in 0..10 {
+                    if std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port_num)).is_ok() {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                // respawn and wait for health
+                match spawn_java(&jar, &port) {
+                    Ok(c) => {
+                        let mut ok = false;
+                        for _ in 0..50 {
+                            if fetcher.health().await {
+                                ok = true;
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                        }
+                        if ok {
+                            *child.lock().unwrap() = Some(c);
+                            tracing::info!("jvm sandbox restarted on port {port}");
+                        } else {
+                            tracing::warn!("jvm sandbox restart failed to become healthy");
+                            let _ = fetch_child_kill(&mut Some(c));
+                        }
+                    }
+                    Err(e) => tracing::warn!("jvm sandbox respawn failed: {e}"),
+                }
+                fails = 0;
+            }
+        })
     }
 
     pub fn fetcher(&self) -> HttpSandboxFetcher {
@@ -414,12 +490,22 @@ impl SandboxProcess {
     }
 }
 
+fn fetch_child_kill(child: &mut Option<std::process::Child>) -> std::io::Result<()> {
+    if let Some(c) = child.as_mut() {
+        let r = c.kill();
+        let _ = c.wait();
+        *child = None;
+        r
+    } else {
+        Ok(())
+    }
+}
+
 impl Drop for SandboxProcess {
     fn drop(&mut self) {
-        if let Some(child) = &mut self.child {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        self.monitor.abort();
+        let mut guard = self.child.lock().unwrap();
+        let _ = fetch_child_kill(&mut *guard);
     }
 }
 

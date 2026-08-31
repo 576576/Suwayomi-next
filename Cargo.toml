@@ -48,3 +48,11 @@ quick-xml = "0.36"
 
 [profile.release]
 lto = "thin"
+
+# 本地 patch oliphaunt（crates.io 0.1.1 + 两处 Windows 修复）：
+# - server.rs/broker.rs 的 postgres/broker 子进程加 CREATE_NO_WINDOW——父进程
+#   （托盘/server）是 GUI 无控制台时，console 子进程会被分配新控制台窗口
+#   （postgres.exe 弹终端）。分支基于 oliphaunt-rust-v0.1.1 tag，仅此改动。
+# fork: https://github.com/576576/oliphaunt (branch suwayomi-patch)
+[patch.crates-io]
+oliphaunt = { git = "https://github.com/576576/oliphaunt", branch = "suwayomi-patch" }

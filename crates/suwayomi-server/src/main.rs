@@ -431,6 +431,12 @@ async fn main() -> anyhow::Result<()> {
             Err(_) => Some(std::path::PathBuf::from("pglite-data")),
         };
         tracing::info!("database backend: embedded Oliphaunt PostgreSQL (set SUWAYOMI_DATABASE_URL to use external PostgreSQL)");
+        // 预创建数据目录：oliphaunt 的 `stable_root_lock_dir` 从数据目录的父级向上
+        // 找第一个已存在的目录来放 `.oliphaunt-root-<hash>.lock`——目录不存在时
+        // 锁会落到发布根；预先建好目录可让锁文件落在 pglite-data 内。
+        if let Some(dir) = &data_dir {
+            std::fs::create_dir_all(dir).map_err(anyhow::Error::from)?;
+        }
         Db::connect_embedded(data_dir.as_deref()).await?
     } else {
         tracing::info!("database backend: external PostgreSQL at {}", config.database_url);
@@ -565,16 +571,20 @@ async fn shutdown_signal(mut rx: tokio::sync::watch::Receiver<bool>) {
 
 /// Remove the oliphaunt root lock files left behind after a graceful stop:
 /// `NativeRootLock` unlocks the files on Drop but does not delete them — the
-/// stable lock lives in the data dir's parent (`.oliphaunt-root-<hash>.lock`)
-/// and the root marker `.oliphaunt.lock` sits inside the data dir. Deleting
-/// them keeps the deployment root clean between runs; they are recreated on
-/// the next open.
+/// stable lock `.oliphaunt-root-<hash>.lock` and the root marker
+/// `.oliphaunt.lock` both live inside the data dir (Suwayomi patch moves the
+/// stable lock there; the data dir is pre-created before open). The parent
+/// directory is also swept for the pre-patch location, so deployments that
+/// ran an older oliphaunt get cleaned too. They are recreated on the next open.
 fn cleanup_oliphaunt_lock_files() {
     let data_dir = std::env::var("SUWAYOMI_PGLITE_DATA_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("pglite-data"));
-    if let Some(parent) = data_dir.parent() {
-        if let Ok(entries) = std::fs::read_dir(parent) {
+    for dir in [data_dir.parent().map(std::path::PathBuf::from), Some(data_dir.clone())]
+        .into_iter()
+        .flatten()
+    {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let name = name.to_string_lossy();

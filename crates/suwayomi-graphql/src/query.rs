@@ -867,7 +867,41 @@ impl QueryRoot {
             };
         }
         let rows = q.fetch_all(state.db.pool()).await.map_err(async_graphql::Error::from)?;
-        let mut nodes: Vec<SourceType> = rows.iter().map(SourceType::from_row).collect();
+        // 批量预取扩展 pkg_name 与 source meta，注入 SourceType 缓存字段——
+        // 避免 iconUrl/meta 每个源一次 DB 查询（N+1 并发把连接池打满导致
+        // "pool timed out"，DebugInformation 的 sources 查询会触发）。
+        let pkg_by_ext: std::collections::HashMap<i64, String> = sqlx::query_as::<_, (i32, String)>(
+            bind_placeholders("SELECT id, pkg_name FROM extension").as_str(),
+        )
+        .fetch_all(state.db.pool())
+        .await
+        .map_err(async_graphql::Error::from)?
+        .into_iter()
+        .map(|(id, pkg)| (i64::from(id), pkg))
+        .collect();
+        let mut meta_by_source: std::collections::HashMap<i64, Vec<crate::types::SourceMetaType>> =
+            std::collections::HashMap::new();
+        let meta_rows = sqlx::query_as::<_, (i64, String, String)>(
+            bind_placeholders("SELECT source_ref, meta_key, value FROM source_meta").as_str(),
+        )
+        .fetch_all(state.db.pool())
+        .await
+        .map_err(async_graphql::Error::from)?;
+        for (sid, key, value) in meta_rows {
+            meta_by_source
+                .entry(sid)
+                .or_default()
+                .push(crate::types::SourceMetaType { key, value, source_id: sid });
+        }
+        let mut nodes: Vec<SourceType> = rows
+            .iter()
+            .map(|r| {
+                let mut st = SourceType::from_row(r);
+                st.icon_pkg_name = pkg_by_ext.get(&i64::from(st.extension_id)).cloned();
+                st.meta_cache = meta_by_source.get(&st.id).cloned().unwrap_or_default();
+                st
+            })
+            .collect();
         // Inject the local source (id=0, lang=OTHER — WebUI "Other" group)
         // unless an explicit condition rules it out.
         let include_local = match &condition {

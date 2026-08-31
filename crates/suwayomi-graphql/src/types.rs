@@ -1131,6 +1131,10 @@ pub struct SourceType {
     pub content_warning: i32,
     pub extension_id: i32,
     pub extension_row: Option<suwayomi_core::schema::ExtensionRow>,
+    /// Batch-injected by the `sources` resolver (avoids N+1 icon lookups).
+    pub icon_pkg_name: Option<String>,
+    /// Batch-injected by the `sources` resolver (avoids N+1 meta lookups).
+    pub meta_cache: Vec<SourceMetaType>,
 }
 
 impl SourceType {
@@ -1142,6 +1146,8 @@ impl SourceType {
             content_warning: row.content_warning,
             extension_id: row.extension,
             extension_row: None,
+            icon_pkg_name: None,
+            meta_cache: Vec::new(),
         }
     }
 
@@ -1174,6 +1180,8 @@ impl SourceType {
                 is_obsolete: false,
                 class_name: String::new(),
             }),
+            icon_pkg_name: None,
+            meta_cache: Vec::new(),
         }
     }
 
@@ -1201,8 +1209,11 @@ impl SourceType {
         if self.id == suwayomi_domain::source::LOCAL_SOURCE_ID {
             return Ok(String::new());
         }
-        // 扩展源：按 extension_id 查 pkg_name，返回服务器代理端点
-        // `/api/v1/extension/icon/{pkg}`（该端点下载扩展图标并缓存）。
+        // 优先使用 sources resolver 批量注入的 pkg_name（避免 N+1），
+        // 未注入时按 extension_id 回退查询。
+        if let Some(pkg) = &self.icon_pkg_name {
+            return Ok(ExtensionType::proxy_icon_url(pkg));
+        }
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT pkg_name FROM extension WHERE id = ?");
         let pkg: Option<String> = sqlx::query_scalar(&sql)
@@ -1258,6 +1269,10 @@ impl SourceType {
         Ok(MangaNodeList::from_nodes(nodes))
     }
     async fn meta(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<SourceMetaType>> {
+        // 优先使用 sources resolver 批量注入的缓存（避免 N+1），空则回退查询。
+        if !self.meta_cache.is_empty() {
+            return Ok(self.meta_cache.clone());
+        }
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT meta_key, value FROM source_meta WHERE source_ref = ?");
         let rows =

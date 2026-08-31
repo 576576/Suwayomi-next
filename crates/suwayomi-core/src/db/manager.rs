@@ -83,7 +83,7 @@ impl Db {
     /// Sets `search_path` to the `suwayomi` schema on every connection,
     /// mirroring the Kotlin side's `defaultSchema` (M0054).
     pub async fn connect(url: &str) -> Result<Self, DbError> {
-        let pool = hardened(PgPoolOptions::new().max_connections(32))
+        let pool = hardened(PgPoolOptions::new().max_connections(64))
             .after_connect(|conn, _meta| {
                 Box::pin(async move {
                     sqlx::query("SET search_path TO suwayomi").execute(conn).await?;
@@ -149,7 +149,7 @@ impl Db {
             .connection_string()
             .ok_or_else(|| DbError::Embedded(anyhow::anyhow!("embedded native server did not expose a connection string")))?;
         tracing::info!(%url, "embedded oliphaunt ready");
-        let pool = hardened(PgPoolOptions::new().max_connections(32))
+        let pool = hardened(PgPoolOptions::new().max_connections(64))
             .after_connect(|conn, _meta| {
                 Box::pin(async move {
                     sqlx::query("SET search_path TO suwayomi").execute(conn).await?;

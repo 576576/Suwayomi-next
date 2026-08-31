@@ -597,11 +597,26 @@ impl AboutServerPayload {
     pub fn current(data_dir: &str) -> Self {
         let os_name = std::env::consts::OS.to_string();
         let arch = std::env::consts::ARCH.to_string();
+        // 真实构建类型：SUWAYOMI_BUILD_TYPE env 优先（CI 注入），
+        // 否则从版本名推导（r3118-alpha.xxx → alpha，-beta → beta，其余 release）。
+        let version = suwayomi_core::version::VERSION;
+        let build_type = std::env::var("SUWAYOMI_BUILD_TYPE")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                if version.contains("-alpha") {
+                    "alpha".to_string()
+                } else if version.contains("-beta") {
+                    "beta".to_string()
+                } else {
+                    "release".to_string()
+                }
+            });
         Self {
             // 真实构建时间与版本（由 suwayomi-core/build.rs 注入）——
             // 之前的 0 / 0.1.0 让 WebUI 关于页显示 1970-01-01 与占位版本。
             build_time: LongString(suwayomi_core::version::BUILD_TIME_EPOCH_SECS.parse().unwrap_or(0)),
-            build_type: "release".into(),
+            build_type,
             discord: "https://qm.qq.com/q/aq1PDjhjMc".into(),
             github: "https://github.com/576576/Suwayomi-next".into(),
             name: "Suwayomi (next)".into(),

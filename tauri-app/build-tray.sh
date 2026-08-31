@@ -3,8 +3,9 @@
 # injected into the Windows version resource.
 #
 # The version follows the same scheme as suwayomi-core/build.rs:
-#   versionCode = git commit count + 3000  →  Windows version "3118.0.0"
-# (server reports this as "r3118"; the tray keeps the same numeric code.)
+#   versionCode = git commit count + 3000  →  Windows version digits split
+#   "3119" → "3.1.1" (semver, tauri-build requires a 3-segment version;
+#   Windows shows the same digits as the FileVersion/ProductVersion strings).
 #
 # Usage: bash build-tray.sh  (from anywhere; runs cargo build --release)
 
@@ -14,7 +15,10 @@ cd "$(dirname "$0")"
 # --- derive version code from git (same as suwayomi-core/build.rs) ---
 COUNT="$(git rev-list --count HEAD 2>/dev/null || echo 38)"
 VCODE=$((COUNT + 3000))
-VER="${VCODE}.0.0"
+# split the versionCode into semver segments: "3119" → "3.1.1"
+# (versionCode is always >= 3000 so it has ≥4 digits; take the first three)
+VS="${VCODE}"
+VER="${VS:0:1}.${VS:1:1}.${VS:2:1}"
 echo "[build-tray] versionCode=${VCODE} -> Windows version ${VER}"
 
 # --- inject version into tauri.conf.json, restore afterwards (even on failure) ---

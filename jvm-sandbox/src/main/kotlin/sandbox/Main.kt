@@ -43,6 +43,7 @@ fun main() {
     val router = Router(registry)
 
     server.createContext("/health") { router.health(it) }
+    server.createContext("/jvm") { router.jvm(it) }
     server.createContext("/extensions") { router.extensions(it) }
     server.createContext("/sources") { router.sources(it) }
     server.createContext("/reload") { router.reload(it) }

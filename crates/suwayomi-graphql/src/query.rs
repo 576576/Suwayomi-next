@@ -1362,11 +1362,11 @@ impl QueryRoot {
 
     /// Mirrors `aboutServer()` — full payload.
     async fn about_server(&self, ctx: &Context<'_>) -> AboutServerPayload {
-        let data_dir = ctx
-            .data::<GraphQLState>()
-            .map(|s| s.data_dir.to_string_lossy().to_string())
-            .unwrap_or_default();
-        AboutServerPayload::current(&data_dir)
+        let state = ctx.data::<GraphQLState>();
+        let data_dir = state.as_ref().map(|s| s.data_dir.to_string_lossy().to_string()).unwrap_or_default();
+        let sandbox_base = state.as_ref().ok().and_then(|s| s.sandbox_base.clone());
+        let jvm = fetch_sandbox_jvm_info(sandbox_base.as_deref()).await;
+        AboutServerPayload::current(&data_dir, jvm)
     }
 }
 
@@ -2443,4 +2443,56 @@ pub(crate) async fn fetch_latest_webui_release() -> Result<(String, String), Str
         return Err("no release asset".into());
     }
     Ok((tag, url))
+}
+
+/// JVM info reported by the jvm-sandbox (`GET /jvm`), cached 60s; falls back
+/// to "n/a" when the sandbox is absent or unreachable.
+static JVM_CACHE: std::sync::OnceLock<std::sync::Mutex<(i64, crate::settings::JvmInfo)>> =
+    std::sync::OnceLock::new();
+
+async fn fetch_sandbox_jvm_info(sandbox_base: Option<&str>) -> crate::settings::JvmInfo {
+    let now = chrono::Utc::now().timestamp();
+    let cache = JVM_CACHE.get_or_init(|| std::sync::Mutex::new((0, crate::settings::JvmInfo {
+        java_version: "n/a".into(),
+        vm_name: "n/a".into(),
+        vm_vendor: "n/a".into(),
+        vm_version: "n/a".into(),
+    })));
+    if let Ok(guard) = cache.lock() {
+        if guard.0 > now - 60 {
+            return guard.1.clone();
+        }
+    }
+    let fallback = || crate::settings::JvmInfo {
+        java_version: "n/a".into(),
+        vm_name: "n/a".into(),
+        vm_vendor: "n/a".into(),
+        vm_version: "n/a".into(),
+    };
+    let Some(base) = sandbox_base else { return fallback() };
+    let client = match reqwest::Client::builder().user_agent("Suwayomi-next/1.0").build() {
+        Ok(c) => c,
+        Err(_) => return fallback(),
+    };
+    let resp = client
+        .get(format!("{base}/jvm"))
+        .timeout(std::time::Duration::from_millis(2000))
+        .send()
+        .await;
+    let info = match resp {
+        Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
+            Ok(j) => crate::settings::JvmInfo {
+                java_version: j["javaVersion"].as_str().unwrap_or("n/a").to_string(),
+                vm_name: j["vmName"].as_str().unwrap_or("n/a").to_string(),
+                vm_vendor: j["vmVendor"].as_str().unwrap_or("n/a").to_string(),
+                vm_version: j["vmVersion"].as_str().unwrap_or("n/a").to_string(),
+            },
+            Err(_) => fallback(),
+        },
+        _ => fallback(),
+    };
+    if let Ok(mut guard) = cache.lock() {
+        *guard = (now, info.clone());
+    }
+    info
 }

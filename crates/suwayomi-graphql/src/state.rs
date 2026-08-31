@@ -44,6 +44,8 @@ pub struct GraphQLState {
     pub webui_dir: std::path::PathBuf,
     /// User data root (backups/downloads/local source live under it).
     pub data_dir: std::path::PathBuf,
+    /// JVM sandbox base URL (e.g. `http://127.0.0.1:8091`) — aboutServer JVM info.
+    pub sandbox_base: Option<String>,
 }
 
 impl GraphQLState {
@@ -66,7 +68,7 @@ impl GraphQLState {
         let download = DownloadManager::new(db.clone(), fetcher);
         let koreader = KoreaderSyncService::new(db.clone(), config.clone());
         let sync_yomi = SyncYomiService::new(db.clone(), config.clone());
-        let extension_store = ExtensionStoreService::new(db.clone(), sandbox_base);
-        Self { db, config, manga, chapter, category, category_manga, library, manga_list, page, update, download, koreader, sync_yomi, extension_store, webui_dir, data_dir }
+        let extension_store = ExtensionStoreService::new(db.clone(), sandbox_base.clone());
+        Self { db, config, manga, chapter, category, category_manga, library, manga_list, page, update, download, koreader, sync_yomi, extension_store, webui_dir, data_dir, sandbox_base }
     }
 }

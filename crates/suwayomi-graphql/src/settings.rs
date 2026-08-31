@@ -594,7 +594,7 @@ pub struct AboutServerPayload {
 }
 
 impl AboutServerPayload {
-    pub fn current(data_dir: &str) -> Self {
+    pub fn current(data_dir: &str, jvm: JvmInfo) -> Self {
         let os_name = std::env::consts::OS.to_string();
         let arch = std::env::consts::ARCH.to_string();
         // 真实构建类型：SUWAYOMI_BUILD_TYPE env 优先（CI 注入），
@@ -623,12 +623,8 @@ impl AboutServerPayload {
             platform_info: PlatformInfo {
                 arch,
                 headless: true,
-                jvm: JvmInfo {
-                    java_version: "n/a (Rust)".into(),
-                    vm_name: "n/a".into(),
-                    vm_vendor: "n/a".into(),
-                    vm_version: "n/a".into(),
-                },
+                // 真实 JVM 信息由 jvm-sandbox 上报（/jvm），未连接时兜底 n/a。
+                jvm,
                 os: OSInfo { build: None, name: os_name, version: "n/a".into() },
             },
             revision: suwayomi_core::version::VERSION_CODE.into(),

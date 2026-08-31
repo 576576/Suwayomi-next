@@ -14,6 +14,14 @@ class Router(private val registry: ExtensionRegistry) {
         ex.respond(200, """{"ok":true,"extensions":${registry.extensions.size},"sources":${registry.sources.size}}""")
     }
 
+    /** GET /jvm — JVM runtime info reported to the server (About → debug info). */
+    fun jvm(ex: HttpExchange) {
+        ex.respond(
+            200,
+            """{"javaVersion":${jsonStr(System.getProperty("java.version") ?: "")},"vmName":${jsonStr(System.getProperty("java.vm.name") ?: "")},"vmVendor":${jsonStr(System.getProperty("java.vendor") ?: "")},"vmVersion":${jsonStr(System.getProperty("java.vm.version") ?: "")}}""",
+        )
+    }
+
     fun extensions(ex: HttpExchange) {
         ex.respond(200, registry.toExtensionsJson())
     }

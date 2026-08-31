@@ -420,20 +420,32 @@ impl ExtensionStoreService {
         let pool = self.db.pool();
         let mut n = 0usize;
 
+        // Registered pkg -> extension id. A jar sitting in the extensions dir
+        // that is NOT in the index (repo missing / hand-dropped / refresh
+        // failed) has no row here — the nested SELECT below would return NULL
+        // and violate the NOT NULL constraint. pglite-oxide kills the whole
+        // session on ANY SQL error, so skip unregistered packages instead.
+        let registered: std::collections::HashMap<String, i32> =
+            sqlx::query_as::<_, (String, i32)>("SELECT pkg_name, id FROM suwayomi.extension")
+                .fetch_all(pool)
+                .await?
+                .into_iter()
+                .collect();
+
         // The sandbox reports each extension together with the sources it
         // provides, so the pkg link is unambiguous here.
         for e in &exts {
+            let Some(&ext_id) = registered.get(&e.pkg_name) else { continue };
             for s in &e.sources {
                 sqlx::query(
-                    "INSERT INTO suwayomi.source (id, name, lang, extension) VALUES ($1, $2, $3, \
-                     (SELECT id FROM suwayomi.extension WHERE pkg_name = $4)) \
+                    "INSERT INTO suwayomi.source (id, name, lang, extension) VALUES ($1, $2, $3, $4) \
                      ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, lang = EXCLUDED.lang, \
                        extension = EXCLUDED.extension",
                 )
                 .bind(s.id)
                 .bind(&s.name)
                 .bind(&s.lang)
-                .bind(&e.pkg_name)
+                .bind(ext_id)
                 .execute(pool)
                 .await?;
                 n += 1;

@@ -485,7 +485,7 @@ fn main() {
             // 先检测：已有 server 实例（外部启动）则不再重复拉起
             let running = server_running(port);
             tray_log(&format!("[tray] setup: server_running={running}"));
-            let (server, ready) = if running {
+            let (server, _ready) = if running {
                 tray_log("[tray] server already running; not starting another");
                 (None, false)
             } else {

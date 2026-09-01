@@ -85,6 +85,16 @@ jobs:
           curl -sL -o temurin-jre.zip "https://api.adoptium.net/v3/binary/latest/25/ga/windows/x64/jre/hotspot/normal/eclipse"
           python3 -c "import zipfile,os; z=zipfile.ZipFile('temurin-jre.zip'); t=z.namelist()[0].split('/')[0]; z.extractall('jre-tmp'); z.close(); os.rename('jre-tmp/'+t, '$STAGE/jre')"
           rm -rf jre-tmp temurin-jre.zip
+          # 捆绑 oliphaunt 原生 runtime（编译期 OUT_DIR 路径在用户机器不存在，
+          # server 运行时回退到 exe 同级 oliphaunt-runtime/resources）
+          for d in target/release/build/suwayomi-core-*/out/oliphaunt/resources; do
+            if [ -d "$d" ]; then
+              mkdir -p "$STAGE/oliphaunt-runtime"
+              cp -r "$d" "$STAGE/oliphaunt-runtime/resources"
+              echo "bundled oliphaunt runtime from $d"
+              break
+            fi
+          done
 
           # ---- 捆绑 WebUI（fork release 产物）+ 启动脚本 + data 目录 ----
           WEBUI_ZIP=$(curl -s "https://api.github.com/repos/576576/Suwayomi-WebUI/releases/latest" | python3 -c "import json,sys; d=json.load(sys.stdin); print([a['browser_download_url'] for a in d.get('assets',[]) if a['name'].endswith('.zip')][0])")

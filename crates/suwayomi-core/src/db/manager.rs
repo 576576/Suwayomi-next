@@ -110,11 +110,54 @@ impl Db {
     /// The native server accepts independent client sessions, so the pool
     /// is configured with multiple connections (up to the server's
     /// `max_client_sessions`).
+    ///
+    /// Registers the oliphaunt native resources with a bundled-runtime
+    /// fallback: the compiled-in `OLIPHAUNT_RESOURCES_DIR` is the *build
+    /// machine's* OUT_DIR — valid for local builds, but CI-built release
+    /// packages carry a GitHub-runner path that does not exist on the
+    /// user's machine (server then dies with "could not locate native
+    /// PostgreSQL 18 install tree"). Prefer the compiled path when it
+    /// actually exists; otherwise register the `oliphaunt-runtime/resources`
+    /// bundle shipped next to the executable (release.yml copies it there).
+    fn register_oliphaunt_resources() -> Result<(), DbError> {
+        const COMPILED: Option<&str> = option_env!("OLIPHAUNT_RESOURCES_DIR");
+        let compiled_ok = COMPILED
+            .map(|dir| Path::new(dir).join("native-runtime").is_dir())
+            .unwrap_or(false);
+        if compiled_ok {
+            oliphaunt::register_build_resources!()
+                .map_err(|e| DbError::Embedded(anyhow::Error::new(e)))?;
+            return Ok(());
+        }
+        // CI-built release: fall back to the bundle next to the executable
+        // (<release-root>/oliphaunt-runtime/resources; root = exe parent's
+        // parent, since the server lives in bin/).
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(root) = exe.parent().and_then(|b| b.parent()) {
+                let bundled = root.join("oliphaunt-runtime").join("resources");
+                if bundled.join("native-runtime").is_dir() {
+                    oliphaunt::register_build_resources_dir(&bundled)
+                        .map_err(|e| DbError::Embedded(anyhow::Error::new(e)))?;
+                    tracing::info!(
+                        "oliphaunt resources: compiled path missing, using bundled {}",
+                        bundled.display()
+                    );
+                    return Ok(());
+                }
+            }
+        }
+        Err(DbError::Embedded(anyhow::anyhow!(
+            "oliphaunt native resources unavailable: compiled path missing and no bundled oliphaunt-runtime/resources next to the executable"
+        )))
+    }
     pub async fn connect_embedded(data_dir: Option<&Path>) -> Result<Self, DbError> {
         // Register the native runtime/broker artifact tree staged by
-        // oliphaunt-build (idempotent for the same path).
-        oliphaunt::register_build_resources!()
-            .map_err(|e| DbError::Embedded(anyhow::Error::new(e)))?;
+        // oliphaunt-build (idempotent for the same path). The compiled-in
+        // path is the *build machine's* `OUT_DIR/oliphaunt/resources` — on a
+        // machine running a CI-built release package that path does not
+        // exist, so fall back to the bundled `oliphaunt-runtime/resources`
+        // directory shipped next to the executable (see release.yml).
+        Self::register_oliphaunt_resources()?;
         // Workaround for oliphaunt 0.1.1 on Windows: `materialize_runtime`
         // copies the runtime tools (exe) and lib/share trees into its cache,
         // but omits the bin/*.dll files that the PostgreSQL binaries link

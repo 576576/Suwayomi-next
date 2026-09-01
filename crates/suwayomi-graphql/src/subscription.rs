@@ -7,10 +7,9 @@ use futures::stream::{self, Stream};
 use futures::StreamExt;
 
 use crate::mutation_b4::{
-    DownloadUpdates, LibraryUpdateStatus, UpdateState, WebUIUpdateInfo, WebUIUpdateStatus,
+    DownloadUpdates, LibraryUpdateStatus,
 };
 use crate::query::UpdateStatusPayload;
-use crate::settings::WebUIChannel;
 
 #[derive(SimpleObject, Clone)]
 pub struct UpdaterUpdates {
@@ -90,18 +89,6 @@ impl SubscriptionRoot {
             }
         })
         .boxed()
-    }
-
-    /// Mirrors `webUIUpdateStatusChange`.
-    #[graphql(name = "webUIUpdateStatusChange")]
-    async fn web_ui_update_status_change(&self, _ctx: &Context<'_>) -> impl Stream<Item = WebUIUpdateStatus> {
-        stream::once(async {
-            WebUIUpdateStatus {
-                info: WebUIUpdateInfo { channel: WebUIChannel::Stable, tag: String::new() },
-                progress: 0,
-                state: UpdateState::Idle,
-            }
-        })
     }
 
     /// Mirrors `syncStatusChanged`.

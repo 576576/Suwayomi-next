@@ -7,8 +7,8 @@ use suwayomi_core::schema::{CategoryRow, ChapterRow, MangaRow};
 use suwayomi_domain::sql::bind_placeholders;
 
 use crate::mutation_b4::{
-    BackupRestoreState, BackupRestoreStatus, DownloadStatus, KoSyncStatusPayloadType, LibraryUpdateStatus, UpdateState,
-    ValidateBackupInput, ValidateBackupResult, WebUIUpdateInfo, WebUIUpdateStatus,
+    BackupRestoreState, BackupRestoreStatus, DownloadStatus, KoSyncStatusPayloadType, LibraryUpdateStatus,
+    ValidateBackupInput, ValidateBackupResult,
 };
 use crate::scalars::{Cursor, LongString};
 use crate::settings::WebUIChannel;
@@ -1301,9 +1301,29 @@ impl QueryRoot {
         AboutWebUI { channel: WebUIChannel::Stable, tag, update_timestamp: LongString(0) }
     }
 
-    /// Mirrors `checkForServerUpdates()`.
+    /// Mirrors `checkForServerUpdates()` — compares the local server build
+    /// with the latest 576576/Suwayomi-next release on GitHub. Empty when
+    /// up-to-date or the check fails.
     async fn check_for_server_updates(&self) -> Vec<CheckForServerUpdatesPayload> {
-        vec![]
+        match fetch_latest_server_release().await {
+            Ok((tag, url)) => {
+                let current = suwayomi_core::version::VERSION;
+                tracing::info!("checkForServerUpdates: local={current} latest={tag}");
+                if !tag.is_empty() && tag_to_num(&tag) > tag_to_num(current) {
+                    vec![CheckForServerUpdatesPayload {
+                        channel: "release".to_string(),
+                        tag,
+                        url,
+                    }]
+                } else {
+                    vec![]
+                }
+            }
+            Err(e) => {
+                tracing::warn!("checkForServerUpdates failed: {e}");
+                vec![]
+            }
+        }
     }
 
     /// Mirrors `checkForWebUIUpdate()` — compares the deployed revision with
@@ -1325,20 +1345,6 @@ impl QueryRoot {
                 tracing::warn!("checkForWebUIUpdate failed: {e}");
                 WebUIUpdateCheck { channel: WebUIChannel::Stable, tag: String::new(), update_available: false }
             }
-        }
-    }
-
-    /// Mirrors `getWebUIUpdateStatus()`.
-    #[graphql(name = "getWebUIUpdateStatus")]
-    async fn get_web_ui_update_status(&self, ctx: &Context<'_>) -> WebUIUpdateStatus {
-        let tag = ctx
-            .data::<GraphQLState>()
-            .map(|s| local_webui_version(&s.webui_dir))
-            .unwrap_or_default();
-        WebUIUpdateStatus {
-            info: WebUIUpdateInfo { channel: WebUIChannel::Stable, tag },
-            progress: 0,
-            state: UpdateState::Idle,
         }
     }
 
@@ -2457,6 +2463,39 @@ pub(crate) async fn fetch_latest_webui_release() -> Result<(String, String), Str
         .to_string();
     if tag.is_empty() || url.is_empty() {
         return Err("no release asset".into());
+    }
+    Ok((tag, url))
+}
+
+/// Latest 576576/Suwayomi-next release: `(tag, release_page_url)`.
+///
+/// The `releases/latest` shortcut redirects to the plain `/releases` list
+/// because every next release is a pre-release, so parse the first
+/// `releases/tag/r\d+` link from the list page HTML (the GitHub API is
+/// rate-limited on shared/CN exit IPs). Falls back to the API list.
+pub(crate) async fn fetch_latest_server_release() -> Result<(String, String), String> {
+    // 1) HTML list page: first `releases/tag/rNNNN` link
+    if let Ok(resp) = github_get_with_fallback("https://github.com/576576/Suwayomi-next/releases").await {
+        if let Ok(html) = resp.text().await {
+            let marker = "/576576/Suwayomi-next/releases/tag/r";
+            if let Some(i) = html.find(marker) {
+                let rest = &html[i + marker.len()..];
+                let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+                if !digits.is_empty() {
+                    let tag = format!("r{digits}");
+                    let url = format!("https://github.com/576576/Suwayomi-next/releases/tag/{tag}");
+                    return Ok((tag, url));
+                }
+            }
+        }
+    }
+    // 2) API fallback
+    let resp = github_get_with_fallback("https://api.github.com/repos/576576/Suwayomi-next/releases?per_page=1").await?;
+    let j: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let tag = j[0]["tag_name"].as_str().unwrap_or("").to_string();
+    let url = j[0]["html_url"].as_str().unwrap_or("").to_string();
+    if tag.is_empty() {
+        return Err("no release".into());
     }
     Ok((tag, url))
 }

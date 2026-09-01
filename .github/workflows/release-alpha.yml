@@ -25,7 +25,7 @@ jobs:
       count: ${{ steps.ver.outputs.count }}
       tag: ${{ steps.ver.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: ver
@@ -123,7 +123,7 @@ jobs:
           echo "artifact=dist/Suwayomi-${VER}-${TGT}.zip" >> "$GITHUB_OUTPUT"
           echo "artifact_el=dist/Suwayomi-${VER}-${TGT}_wElectron.zip" >> "$GITHUB_OUTPUT"
       - name: 上传构建产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Suwayomi-${{ steps.ver.outputs.version_name }}-windows-x64
           path: |
@@ -139,10 +139,10 @@ jobs:
     steps:
       # gh release create --generate-notes 需要 git 仓库（读历史生成 changelog），
       # 而 publish job 无构建上下文——必须先 checkout（fetch-depth: 0 拿完整历史）
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true

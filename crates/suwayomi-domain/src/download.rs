@@ -590,8 +590,9 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                     if let Some(cid) = res {
                         if entry.path().is_file() {
                             let pages = crate::source::local::list_archive_pages(&entry.path());
+                            let page_count = pages.len() as i32;
                             let img_base = format!("/api/v1/manga/{vid}/chapter/{source_order}/page");
-                            for (pi, pname) in pages {
+                            for (pi, pname) in &pages {
                                 // real upsert by (chapter, index) — the page
                                 // table has no unique constraint, so
                                 // ON CONFLICT would silently re-insert.
@@ -599,7 +600,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                                 let sql = bind_placeholders("SELECT id FROM page WHERE chapter = ? AND index = ?");
                                 let existing_page: Option<(i32,)> = sqlx::query_as(&sql)
                                     .bind(cid)
-                                    .bind(pi as i32)
+                                    .bind(*pi as i32)
                                     .fetch_optional(db.pool())
                                     .await
                                     .ok()
@@ -621,7 +622,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                                             "INSERT INTO page (index, url, image_url, chapter) VALUES (?, ?, ?, ?)",
                                         );
                                         let _ = sqlx::query(&sql)
-                                            .bind(pi as i32)
+                                            .bind(*pi as i32)
                                             .bind(&pname)
                                             .bind(&image_url)
                                             .bind(cid)
@@ -630,6 +631,16 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                                     }
                                 }
                             }
+                            // Reflect the page count on the chapter row —
+                            // the reader relies on it for paged-mode state.
+                            let sql = bind_placeholders(
+                                "UPDATE chapter SET page_count = ? WHERE id = ?",
+                            );
+                            let _ = sqlx::query(&sql)
+                                .bind(page_count)
+                                .bind(cid)
+                                .execute(db.pool())
+                                .await;
                         }
                     }
                 }

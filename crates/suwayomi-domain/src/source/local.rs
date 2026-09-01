@@ -471,30 +471,43 @@ fn parse_comic_info_xml(bytes: &[u8]) -> Option<ArchiveMeta> {
     genre_parts.dedup();
     let genre = if genre_parts.is_empty() { None } else { Some(genre_parts.join(", ")) };
 
-    // ComicInfo.Summary is a multi-line block:
+    // ComicInfo.Summary is a multi-line block like:
     //   Alternative Title: ...
     //   Groups: ...
     //   Description: <free text | null>
-    //   Pages: N  / Category / Language / Parodies / Characters ...
-    let mut description: Option<String> = None;
+    //   Pages: N / Category / Language / Parodies / Characters ...
+    // The details page renders the whole summary as the manga description;
+    // alt-titles are pulled out into their own field.
     let mut alt_titles: Vec<String> = Vec::new();
     if let Some(summary) = text("summary") {
         for line in summary.lines() {
             let line = line.trim();
-            if let Some(v) = line.strip_prefix("Description:") {
-                let v = v.trim();
-                if !v.is_empty() && !v.eq_ignore_ascii_case("null") {
-                    description = Some(v.to_string());
-                }
-            } else if let Some(v) = line.strip_prefix("Alternative Title:") {
+            if let Some(v) = line.strip_prefix("Alternative Title:") {
                 let v = v.trim();
                 if !v.is_empty() {
                     alt_titles.push(v.to_string());
                 }
             }
         }
+        alt_titles.dedup();
     }
-    alt_titles.dedup();
+    // Description: full Summary body (trimmed, multi-line). Drop the literal
+    // `Description: null` line if present; drop the leading blank line that
+    // follows the header so the rendering reads cleanly.
+    let description = text("summary").map(|raw| {
+        let mut lines: Vec<&str> = Vec::new();
+        for line in raw.lines() {
+            let t = line.trim();
+            if t.is_empty() {
+                continue;
+            }
+            if t.eq_ignore_ascii_case("Description: null") {
+                continue;
+            }
+            lines.push(line);
+        }
+        lines.join("\n").trim().to_string()
+    });
 
     Some(ArchiveMeta {
         title,

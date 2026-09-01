@@ -547,6 +547,8 @@ pub struct AboutWebUI {
     pub channel: WebUIChannel,
     pub tag: String,
     pub update_timestamp: LongString,
+    /// Build time as Unix epoch seconds (line 3 of version.txt; 0 when absent).
+    pub build_time: LongString,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1299,7 +1301,8 @@ impl QueryRoot {
         let dir = ctx.data::<GraphQLState>().map(|s| s.webui_dir.clone()).unwrap_or_default();
         let tag = local_webui_version(&dir);
         let channel = local_webui_channel(&dir);
-        AboutWebUI { channel, tag, update_timestamp: LongString(0) }
+        let build_time = local_webui_build_time(&dir);
+        AboutWebUI { channel, tag, update_timestamp: LongString(0), build_time }
     }
 
     /// Mirrors `checkForServerUpdates()` — compares the local server build
@@ -2390,6 +2393,18 @@ fn local_webui_channel(dir: &std::path::Path) -> crate::settings::WebUIChannel {
         }
     }
     WebUIChannel::Stable
+}
+
+/// version.txt 第三行为构建时间戳（Unix 秒），缺省返回 0。
+fn local_webui_build_time(dir: &std::path::Path) -> LongString {
+    if let Ok(content) = std::fs::read_to_string(dir.join("version.txt")) {
+        if let Some(ts) = content.lines().nth(2) {
+            if let Ok(secs) = ts.trim().parse::<i64>() {
+                return LongString(secs);
+            }
+        }
+    }
+    LongString(0)
 }
 
 /// `r3482` → 3482 for numeric comparison (plain string compare breaks on

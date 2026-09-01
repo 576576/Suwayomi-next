@@ -405,7 +405,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
             Ok(v) => v,
             Err(_) => continue,
         };
-        let Some((_source_id,)) = source_id else { continue };
+        let Some((source_id,)) = source_id else { continue };
 
         let manga_dirs = match std::fs::read_dir(source_entry.path()) {
             Ok(it) => it,
@@ -416,13 +416,14 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                 continue;
             }
             let manga_title = manga_entry.file_name().to_string_lossy().into_owned();
-            // 1) resolve a manga row by exact title. Deliberately NOT filtered
-            // by source: historical downloads recorded a different language
-            // variant than the (LANG) directory tag, and the title is what the
-            // downloader used to build the directory. The resolved url then
-            // matches every variant below.
-            let sql = bind_placeholders("SELECT id, url FROM manga WHERE title = ? LIMIT 1");
+            // 1) resolve a manga row by exact title under this source. The
+            // (LANG) directory tag is authoritative — a mismatched download
+            // directory (e.g. the old nhentai.com bug that filed everything
+            // under JA) is the user's data to fix, not something to paper
+            // over with a source-blind title match.
+            let sql = bind_placeholders("SELECT id, url FROM manga WHERE source = ? AND title = ? LIMIT 1");
             let row: Option<(i32, String)> = match sqlx::query_as(&sql)
+                .bind(source_id)
                 .bind(&manga_title)
                 .fetch_optional(db.pool())
                 .await

@@ -1291,14 +1291,15 @@ impl QueryRoot {
     }
 
     /// Mirrors `aboutWebUI()` — the locally deployed WebUI version
-    /// (from `<webui_dir>/revision`, written on every webui sync/update).
+    /// Mirrors `aboutWebUI()` — version from `<webui_dir>/version.txt`
+    /// (line 1) with the channel on line 2 (written by the WebUI's own CI),
+    /// falling back to the legacy `revision` file.
     #[graphql(name = "aboutWebUI")]
     async fn about_web_ui(&self, ctx: &Context<'_>) -> AboutWebUI {
-        let tag = ctx
-            .data::<GraphQLState>()
-            .map(|s| local_webui_version(&s.webui_dir))
-            .unwrap_or_default();
-        AboutWebUI { channel: WebUIChannel::Stable, tag, update_timestamp: LongString(0) }
+        let dir = ctx.data::<GraphQLState>().map(|s| s.webui_dir.clone()).unwrap_or_default();
+        let tag = local_webui_version(&dir);
+        let channel = local_webui_channel(&dir);
+        AboutWebUI { channel, tag, update_timestamp: LongString(0) }
     }
 
     /// Mirrors `checkForServerUpdates()` — compares the local server build
@@ -2365,9 +2366,30 @@ trait MangaStatusExt {
 
 /// Locally deployed WebUI version from `<webui_dir>/revision` (e.g. `r3482`).
 pub(crate) fn local_webui_version(dir: &std::path::Path) -> String {
+    // version.txt 第一行为版本号（WebUI CI 构建时写入）；旧产物回退 revision
+    if let Ok(content) = std::fs::read_to_string(dir.join("version.txt")) {
+        if let Some(tag) = content.lines().next() {
+            let tag = tag.trim().to_string();
+            if !tag.is_empty() {
+                return tag;
+            }
+        }
+    }
     std::fs::read_to_string(dir.join("revision"))
         .map(|s| s.trim().to_string())
         .unwrap_or_default()
+}
+
+/// version.txt 第二行为通道（Alpha/Beta/Release），映射到 WebUIChannel。
+fn local_webui_channel(dir: &std::path::Path) -> crate::settings::WebUIChannel {
+    use crate::settings::WebUIChannel;
+    if let Ok(content) = std::fs::read_to_string(dir.join("version.txt")) {
+        match content.lines().nth(1).unwrap_or("").trim() {
+            "Release" => return WebUIChannel::Stable,
+            _ => return WebUIChannel::Preview, // Alpha / Beta / 未知
+        }
+    }
+    WebUIChannel::Stable
 }
 
 /// `r3482` → 3482 for numeric comparison (plain string compare breaks on

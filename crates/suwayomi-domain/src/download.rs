@@ -477,8 +477,10 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                 }
             }
             if let Some(m) = &meta {
+                // NULLIF(..., '') so empty-string columns count as missing
+                // and get filled from the archive metadata.
                 let sql = bind_placeholders(
-                    "UPDATE manga SET alt_titles = COALESCE(NULLIF(alt_titles, '[]'), ?), author = COALESCE(author, ?), artist = COALESCE(artist, ?), genre = COALESCE(genre, ?), description = COALESCE(description, ?) WHERE id = ?",
+                    "UPDATE manga SET alt_titles = COALESCE(NULLIF(alt_titles, '[]'), ?), author = COALESCE(NULLIF(author, ''), ?), artist = COALESCE(NULLIF(artist, ''), ?), genre = COALESCE(NULLIF(genre, ''), ?), description = COALESCE(NULLIF(description, ''), ?) WHERE id = ?",
                 );
                 let alt = serde_json::to_string(&m.alt_titles).unwrap_or_else(|_| "[]".into());
                 for vid in &variant_ids {

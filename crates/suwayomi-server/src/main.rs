@@ -431,7 +431,9 @@ async fn main() -> anyhow::Result<()> {
                 "--migrate" => dir = args.next().map(std::path::PathBuf::from),
                 "--h2-dump-jar" => {
                     if let Some(p) = args.next() {
-                        std::env::set_var("SUWAYOMI_H2_DUMP_JAR", p);
+                        // SAFETY: single-threaded arg parsing before any
+                        // other env access; this only sets one flag var.
+                        unsafe { std::env::set_var("SUWAYOMI_H2_DUMP_JAR", p) };
                     }
                 }
                 _ => {}

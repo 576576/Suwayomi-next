@@ -371,15 +371,10 @@ impl MangaType {
     }
 
     async fn chapters(&self, ctx: &Context<'_>) -> async_graphql::Result<ChapterNodeList> {
-        let state = ctx.data::<GraphQLState>()?;
-        // A freshly-browsed manga has no chapter rows yet — pull them from
-        // the source so the details page shows the chapter list without a
-        // manual "refresh chapters". Idempotent: once rows exist this is a
-        // plain DB read.
-        if self.chapters_of(&state.db).await.is_empty() {
-            let _ = state.chapter.get_chapter_list(self.id, true).await;
-        }
-        let chapters = self.chapters_of(&state.db).await;
+        // Plain DB read — auto-fetching here would fire for every library /
+        // list rendering that queries chapter counts. The details page
+        // pre-fetches chapters inside the fetchManga mutation instead.
+        let chapters = self.chapters_of(&ctx.data::<GraphQLState>()?.db).await;
         let nodes: Vec<ChapterType> = chapters.iter().map(ChapterType::from_row).collect();
         Ok(ChapterNodeList::from_nodes(nodes))
     }

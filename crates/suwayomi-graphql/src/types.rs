@@ -1238,6 +1238,26 @@ impl SourceType {
     async fn is_configurable(&self) -> bool {
         false // extension runtime not loaded yet (Phase 5)
     }
+    /// True when the source's extension is listed by an extension store
+    /// (`extension_store` table) — the WebUI uses this to drive the "migrate"
+    /// picker on the sources list. Without this field the library/browse page
+    /// queries fail with "Unknown field 'isMigratable'" and the spinner
+    /// hangs forever.
+    async fn is_migratable(&self, ctx: &Context<'_>) -> async_graphql::Result<bool> {
+        if self.id == suwayomi_domain::source::LOCAL_SOURCE_ID {
+            return Ok(false);
+        }
+        let state = ctx.data::<GraphQLState>()?;
+        let sql = bind_placeholders(
+            "SELECT EXISTS(SELECT 1 FROM extension WHERE id = ? AND store_index_url IS NOT NULL)",
+        );
+        let has: bool = sqlx::query_scalar(&sql)
+            .bind(self.extension_id)
+            .fetch_one(state.db.pool())
+            .await
+            .map_err(async_graphql::Error::from)?;
+        Ok(has)
+    }
     async fn display_name(&self) -> &str {
         &self.name
     }

@@ -881,6 +881,21 @@ impl QueryRoot {
         .collect();
         let mut meta_by_source: std::collections::HashMap<i64, Vec<crate::types::SourceMetaType>> =
             std::collections::HashMap::new();
+        // Batch-load extension rows so SourceType.extension (and therefore
+        // extensionStore) never fires per-source queries (N+1) — with 31+
+        // sources and async_graphql's concurrent resolver execution that
+        // exhausted the connection pool and hung the sources page.
+        let ext_rows: Vec<suwayomi_core::schema::ExtensionRow> =
+            sqlx::query_as::<_, suwayomi_core::schema::ExtensionRow>(
+                bind_placeholders("SELECT * FROM extension").as_str(),
+            )
+            .fetch_all(state.db.pool())
+            .await
+            .map_err(async_graphql::Error::from)?;
+        let ext_by_id: std::collections::HashMap<i64, suwayomi_core::schema::ExtensionRow> = ext_rows
+            .into_iter()
+            .map(|r| (i64::from(r.id), r))
+            .collect();
         let meta_rows = sqlx::query_as::<_, (i64, String, String)>(
             bind_placeholders("SELECT source_ref, meta_key, value FROM source_meta").as_str(),
         )
@@ -898,6 +913,7 @@ impl QueryRoot {
             .map(|r| {
                 let mut st = SourceType::from_row(r);
                 st.icon_pkg_name = pkg_by_ext.get(&i64::from(st.extension_id)).cloned();
+                st.extension_row = ext_by_id.get(&i64::from(st.extension_id)).cloned();
                 st.meta_cache = meta_by_source.get(&st.id).cloned().unwrap_or_default();
                 st
             })

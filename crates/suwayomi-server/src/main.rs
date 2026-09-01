@@ -516,7 +516,16 @@ async fn main() -> anyhow::Result<()> {
     // for the whole server lifetime — `let _ =` would drop it immediately and
     // kill the JVM in Drop.
     let _sandbox = sandbox_guard;
-    let graphql_state = suwayomi_graphql::GraphQLState::new(db.clone(), config.clone(), fetcher.clone(), sandbox_base.clone(), resolve_webui_dir(), resolve_data_dir());
+
+    // Reconcile on-disk downloads (`data/downloads/**`) with the database so
+    // imported/historical downloads show the "downloaded" badge. Best-effort:
+    // a failure must not block startup.
+    let data_dir_path = resolve_data_dir();
+    if let Err(e) = suwayomi_domain::download::reconcile_downloads(&db, &data_dir_path).await {
+        tracing::warn!("downloads reconcile failed: {e}");
+    }
+
+    let graphql_state = suwayomi_graphql::GraphQLState::new(db.clone(), config.clone(), fetcher.clone(), sandbox_base.clone(), resolve_webui_dir(), data_dir_path.clone());
     let schema = suwayomi_graphql::schema::build_schema(graphql_state);
     tracing::info!("graphql schema ready ({} type definitions)", suwayomi_graphql::schema::schema_type_count());
     let state = AppState::new(db, config.clone(), fetcher, sandbox_base, resolve_webui_dir());

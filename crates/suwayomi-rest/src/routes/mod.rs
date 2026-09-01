@@ -7,6 +7,7 @@ pub mod chapter;
 pub mod download;
 pub mod extension;
 pub mod global;
+pub mod image;
 pub mod manga;
 pub mod meta_handler;
 pub mod source;
@@ -38,4 +39,6 @@ pub fn api_v1_router() -> Router<AppState> {
         .nest("/update", update::update_router())
         .nest("/track", track::track_router())
         .nest("/backup", backup::backup_router())
+        // external image proxy with disk cache (extension covers)
+        .nest("/image", image::router())
 }

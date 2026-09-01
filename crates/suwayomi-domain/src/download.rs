@@ -12,8 +12,10 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 
 use suwayomi_core::db::Db;
+use suwayomi_core::models::now_epoch_secs;
 
 use crate::source::SourceFetcher;
+use crate::sql::bind_placeholders;
 
 /// Per-job state (mirrors `DownloadState`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -352,4 +354,185 @@ mod tests {
         let downloaded: bool = sqlx::query_scalar("SELECT is_downloaded FROM chapter WHERE id = 1").fetch_one(db.pool()).await.expect("flag");
         assert!(!downloaded, "stub fetcher cannot download");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Downloads-dir reconciliation
+// ---------------------------------------------------------------------------
+
+/// Reconciles the on-disk `data/downloads/` tree with the database so that
+/// chapters downloaded on-disk (e.g. imported from a Tachiyomi/Tachidesk
+/// backup, or written by an earlier build) show the "downloaded" badge in the
+/// WebUI.
+///
+/// Layout: `{downloads}/{SourceName} ({LANG})/{MangaTitle}/{Chapter}.cbz`
+///
+/// Matching strategy: the manga directory name is matched against
+/// `manga.title` first; the resolved `manga.url` then matches ALL rows with
+/// that url across every language variant of the source, so browsing/searching
+/// any variant surfaces the downloaded state. Chapters are upserted by
+/// (manga, url) and marked `is_downloaded = TRUE`.
+pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::error::Result<usize> {
+    let downloads_root = data_dir.join("downloads");
+    if !downloads_root.is_dir() {
+        return Ok(0);
+    }
+    let mut matched_mangas: std::collections::HashSet<i32> = std::collections::HashSet::new();
+    let mut total_chapters = 0usize;
+
+    let source_dirs = match std::fs::read_dir(&downloads_root) {
+        Ok(it) => it,
+        Err(_) => return Ok(0),
+    };
+    for source_entry in source_dirs.flatten() {
+        if !source_entry.path().is_dir() {
+            continue;
+        }
+        // "{name} ({LANG})" -> (name, lang)
+        let dir_name = source_entry.file_name().to_string_lossy().into_owned();
+        let (name, lang) = match split_source_dir_name(&dir_name) {
+            Some(v) => v,
+            None => continue,
+        };
+        // resolve source row by name+lang (case-insensitive)
+        let sql = bind_placeholders("SELECT id FROM source WHERE LOWER(name) = LOWER(?) AND LOWER(lang) = LOWER(?)");
+        let source_id: Option<(i64,)> = match sqlx::query_as(&sql)
+            .bind(&name)
+            .bind(&lang)
+            .fetch_optional(db.pool())
+            .await
+        {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let Some((_source_id,)) = source_id else { continue };
+
+        let manga_dirs = match std::fs::read_dir(source_entry.path()) {
+            Ok(it) => it,
+            Err(_) => continue,
+        };
+        for manga_entry in manga_dirs.flatten() {
+            if !manga_entry.path().is_dir() {
+                continue;
+            }
+            let manga_title = manga_entry.file_name().to_string_lossy().into_owned();
+            // 1) resolve a manga row by exact title. Deliberately NOT filtered
+            // by source: historical downloads recorded a different language
+            // variant than the (LANG) directory tag, and the title is what the
+            // downloader used to build the directory. The resolved url then
+            // matches every variant below.
+            let sql = bind_placeholders("SELECT id, url FROM manga WHERE title = ? LIMIT 1");
+            let row: Option<(i32, String)> = match sqlx::query_as(&sql)
+                .bind(&manga_title)
+                .fetch_optional(db.pool())
+                .await
+            {
+                Ok(v) => v,
+                Err(_) => None,
+            };
+            let Some((_manga_id, manga_url)) = row else {
+                tracing::warn!(%manga_title, "downloads: no matching manga row");
+                continue;
+            };
+            // 2) all variants sharing the same url
+            let sql = bind_placeholders("SELECT id FROM manga WHERE url = ?");
+            let variants: Vec<(i32,)> = match sqlx::query_as(&sql).bind(&manga_url).fetch_all(db.pool()).await {
+                Ok(v) => v,
+                Err(_) => Vec::new(),
+            };
+            let variant_ids: Vec<i32> = variants.iter().map(|(id,)| *id).collect();
+            for vid in &variant_ids {
+                matched_mangas.insert(*vid);
+            }
+            // 3) chapters from the directory listing (files or subdirs)
+            let entries: Vec<_> = match std::fs::read_dir(manga_entry.path()) {
+                Ok(it) => it
+                    .flatten()
+                    .filter(|e| e.file_name() != ".nomedia" && e.file_name() != ".noxml")
+                    .collect(),
+                Err(_) => Vec::new(),
+            };
+            if entries.is_empty() {
+                continue;
+            }
+            for vid in &variant_ids {
+                for (i, entry) in entries.iter().enumerate() {
+                    let cname = entry.file_name().to_string_lossy().into_owned();
+                    let source_order = i as i32 + 1;
+                    let now = now_epoch_secs();
+                    let sql = bind_placeholders("SELECT id FROM chapter WHERE manga = ? AND url = ?");
+                    let existing: Option<(i32,)> = match sqlx::query_as(&sql)
+                        .bind(vid)
+                        .bind(&cname)
+                        .fetch_optional(db.pool())
+                        .await
+                    {
+                        Ok(v) => v,
+                        Err(_) => None,
+                    };
+                    let chapter_name = std::path::Path::new(&cname)
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("chapter"))
+                        .unwrap_or_else(|| "Chapter".to_string());
+                    let res = match existing {
+                        Some((cid,)) => sqlx::query(
+                            bind_placeholders(
+                                "UPDATE chapter SET is_downloaded = TRUE, source_order = ?, fetched_at = ? WHERE id = ?",
+                            )
+                            .as_str(),
+                        )
+                        .bind(source_order)
+                        .bind(now)
+                        .bind(cid)
+                        .execute(db.pool())
+                        .await,
+                        None => sqlx::query(
+                            bind_placeholders(
+                                "INSERT INTO chapter (url, name, chapter_number, source_order, manga, fetched_at, last_modified_at, is_downloaded) VALUES (?, ?, ?, ?, ?, ?, ?, TRUE)",
+                            )
+                            .as_str(),
+                        )
+                        .bind(&cname)
+                        .bind(&chapter_name)
+                        .bind(-1f32)
+                        .bind(source_order)
+                        .bind(vid)
+                        .bind(now)
+                        .bind(now)
+                        .execute(db.pool())
+                        .await,
+                    };
+                    if res.is_ok() {
+                        total_chapters += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    if !matched_mangas.is_empty() {
+        tracing::info!(
+            "downloads reconcile: {} manga, {} chapters",
+            matched_mangas.len(),
+            total_chapters
+        );
+    }
+    Ok(total_chapters)
+}
+
+/// `"nHentai.com (unoriginal) (JA)"` -> `("nHentai.com (unoriginal)", "ja")`.
+fn split_source_dir_name(dir_name: &str) -> Option<(String, String)> {
+    let trimmed = dir_name.trim();
+    let lang_start = trimmed.rfind('(')?;
+    let lang_end = trimmed.rfind(')')?;
+    if lang_end <= lang_start {
+        return None;
+    }
+    let lang = trimmed[lang_start + 1..lang_end].trim().to_lowercase();
+    if lang.is_empty() {
+        return None;
+    }
+    let name = trimmed[..lang_start].trim().to_string();
+    Some((name, lang))
 }

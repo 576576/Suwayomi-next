@@ -9,6 +9,7 @@ use suwayomi_core::models::{
 use suwayomi_core::schema::{CategoryRow, ChapterRow, MangaRow};
 
 use crate::scalars::{Cursor, LongString};
+use base64::Engine;
 use crate::state::GraphQLState;
 use crate::track::TrackRecordNodeList;
 use sqlx::Row;
@@ -254,7 +255,9 @@ impl MangaType {
             source_id: row.source,
             url: row.url.clone(),
             title: row.title.clone(),
-            thumbnail_url: row.thumbnail_url.clone(),
+            // external covers go through the same-origin image proxy (CORS-safe,
+            // disk-cached); the DB keeps the raw URL for refreshes.
+            thumbnail_url: proxied_cover_url(row.thumbnail_url.clone()),
             thumbnail_url_last_fetched: row.thumbnail_url_last_fetched,
             initialized: row.initialized,
             artist: row.artist.clone(),
@@ -1417,4 +1420,20 @@ impl ExtensionStoreNodeList {
             total_count: total,
         }
     }
+}
+
+/// Wraps an external cover URL into the server's same-origin image proxy
+/// (`/api/v1/image/{b64url}`). The browser then loads covers without CORS
+/// failures (extension CDNs usually omit CORS headers and the WebUI sets
+/// `crossOrigin='anonymous'`) and repeated requests hit the local disk cache
+/// instead of the upstream CDN. Non-http URLs pass through unchanged.
+pub fn proxied_cover_url(url: Option<String>) -> Option<String> {
+    url.map(|u| {
+        if u.starts_with("http://") || u.starts_with("https://") {
+            let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(u.as_bytes());
+            format!("/api/v1/image/{b64}")
+        } else {
+            u
+        }
+    })
 }

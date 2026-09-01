@@ -72,9 +72,84 @@ impl ChapterService {
         if !list.is_empty() || !online_fetch {
             return Ok(list);
         }
-        // empty + onlineFetch: delegate to source (Phase 5); stub raises
-        let _ = self.fetcher.fetch_manga_update(0, &suwayomi_core::source::SManga::default(), &[], false, true).await?;
-        Err(DomainError::Source("source fetch not available (Phase 5)".into()))
+        // empty + onlineFetch: pull chapters from the extension source and
+        // upsert them so the WebUI's chapter list (and download matching)
+        // has rows to show. The manga row carries the source id + url the
+        // fetcher needs to drive the JVM sandbox.
+        let manga_row: Option<MangaRow> =
+            sqlx::query_as(bind_placeholders("SELECT * FROM manga WHERE id = ?").as_str())
+                .bind(manga_id)
+                .fetch_optional(self.db.pool())
+                .await?;
+        let Some(mrow) = manga_row else {
+            return Ok(Vec::new());
+        };
+        let smanga = suwayomi_core::source::SManga {
+            url: mrow.url.clone(),
+            title: mrow.title.clone(),
+            thumbnail_url: mrow.thumbnail_url.clone(),
+            ..Default::default()
+        };
+        let (_, chapters) = self
+            .fetcher
+            .fetch_manga_update(mrow.source, &smanga, &[], false, true)
+            .await
+            .map_err(|e| DomainError::Source(format!("online chapter fetch failed: {e}")))?;
+        let now = now_epoch_secs();
+        for (i, c) in chapters.iter().enumerate() {
+            // sourceOrder is 1-based (Tachiyomi/WebUI convention).
+            let source_order = i as i32 + 1;
+            let sql = bind_placeholders("SELECT id FROM chapter WHERE manga = ? AND url = ?");
+            let existing: Option<(i32,)> = sqlx::query_as(&sql)
+                .bind(manga_id)
+                .bind(&c.url)
+                .fetch_optional(self.db.pool())
+                .await?;
+            match existing {
+                Some((id,)) => {
+                    let sql = bind_placeholders(
+                        "UPDATE chapter SET name = ?, chapter_number = ?, source_order = ?, fetched_at = ?, last_modified_at = ?, date_upload = ?, scanlator = ? WHERE id = ?",
+                    );
+                    sqlx::query(&sql)
+                        .bind(&c.name)
+                        .bind(c.chapter_number)
+                        .bind(source_order)
+                        .bind(now)
+                        .bind(now)
+                        .bind(c.date_upload)
+                        .bind(&c.scanlator)
+                        .bind(id)
+                        .execute(self.db.pool())
+                        .await?;
+                }
+                None => {
+                    let sql = bind_placeholders(
+                        "INSERT INTO chapter (url, name, chapter_number, source_order, manga, fetched_at, last_modified_at, date_upload, scanlator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    );
+                    sqlx::query(&sql)
+                        .bind(&c.url)
+                        .bind(&c.name)
+                        .bind(c.chapter_number)
+                        .bind(source_order)
+                        .bind(manga_id)
+                        .bind(now)
+                        .bind(now)
+                        .bind(c.date_upload)
+                        .bind(&c.scanlator)
+                        .execute(self.db.pool())
+                        .await?;
+                }
+            }
+        }
+        // also stamp the manga's chapters-fetched time
+        let sql = bind_placeholders("UPDATE manga SET chapters_last_fetched_at = ? WHERE id = ?");
+        sqlx::query(&sql).bind(now).bind(manga_id).execute(self.db.pool()).await?;
+        // re-read what we just persisted
+        let rows = sqlx::query_as::<_, ChapterRow>(&bind_placeholders("SELECT * FROM chapter WHERE manga = ? ORDER BY source_order DESC"))
+            .bind(manga_id)
+            .fetch_all(self.db.pool())
+            .await?;
+        Ok(rows.iter().map(chapter_row_to_data_class).collect())
     }
 
     pub async fn get_count_of_manga_chapters(&self, manga_id: i32) -> Result<i64> {

@@ -28,7 +28,11 @@ class SourceDriver(private val src: LoadedSource) {
         val out = mutableMapOf<String, Any?>()
         out["url"] = readField(m, "url") ?: ""
         out["title"] = readField(m, "title") ?: ""
-        out["thumbnailUrl"] = readField(m, "thumbnailUrl")
+        // Cover field name varies across lib versions: new libs `coverUrl`,
+        // old libs `thumbnail_url` (getter getThumbnail_url). Try all.
+        out["thumbnailUrl"] = readField(m, "coverUrl")
+            ?: readField(m, "thumbnailUrl")
+            ?: readField(m, "thumbnail_url")
         out["artist"] = readField(m, "artist")
         out["author"] = readField(m, "author")
         out["description"] = readField(m, "description")
@@ -64,8 +68,15 @@ class SourceDriver(private val src: LoadedSource) {
         val out = mutableMapOf<String, Any?>()
         out["url"] = readField(c, "url") ?: ""
         out["name"] = readField(c, "name") ?: ""
-        out["dateUpload"] = (readField(c, "dateUpload") as? Number)?.toLong() ?: 0L
-        out["chapterNumber"] = (readField(c, "chapterNumber") as? Number)?.toFloat() ?: -1f
+        // New libs store camelCase (`dateUpload`), old libs snake_case
+        // (`date_upload`). Defaults must not shadow a real value, so prefer
+        // whichever field holds a non-default number.
+        val du1 = (readField(c, "dateUpload") as? Number)?.toLong() ?: 0L
+        val du2 = (readField(c, "date_upload") as? Number)?.toLong() ?: 0L
+        out["dateUpload"] = if (du1 != 0L) du1 else du2
+        val cn1 = (readField(c, "chapterNumber") as? Number)?.toFloat() ?: -1f
+        val cn2 = (readField(c, "chapter_number") as? Number)?.toFloat() ?: -1f
+        out["chapterNumber"] = if (cn1 != -1f) cn1 else cn2
         out["scanlator"] = readField(c, "scanlator")
         return out
     }

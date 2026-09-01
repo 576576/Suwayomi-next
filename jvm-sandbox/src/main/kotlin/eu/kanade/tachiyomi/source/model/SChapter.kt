@@ -12,9 +12,15 @@ interface SChapter : Serializable {
 
     var chapter_number: Float
 
+    /** New lib spelling (`chapterNumber`); see [chapter_number]. */
+    var chapterNumber: Float
+
     var scanlator: String?
 
     var date_upload: Long
+
+    /** New lib spelling (`dateUpload`); see [date_upload]. */
+    var dateUpload: Long
 
     /**
      * Extra metadata associated with the chapter.
@@ -33,7 +39,9 @@ interface SChapter : Serializable {
         name = other.name
         url = other.url
         date_upload = other.date_upload
+        dateUpload = other.dateUpload
         chapter_number = other.chapter_number
+        chapterNumber = other.chapterNumber
         scanlator = other.scanlator
     }
 

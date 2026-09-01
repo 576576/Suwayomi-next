@@ -14,7 +14,10 @@ open class Filter<T>(
         name: String = "",
     ) : Filter<Any>(name, 0)
 
-    abstract class Select<V>(
+    // NB: these are `open` (not `abstract`) on purpose — legacy lib 1.x
+    // extensions instantiate `Filter.Select(...)` / `Filter.Text(...)` directly,
+    // while new lib 2.x extensions subclass them. Both must work.
+    open class Select<V>(
         name: String,
         val values: Array<V>,
         state: Int = 0,
@@ -22,17 +25,17 @@ open class Filter<T>(
         val displayValues get() = values.map { it.toString() }
     }
 
-    abstract class Text(
+    open class Text(
         name: String,
         state: String = "",
     ) : Filter<String>(name, state)
 
-    abstract class CheckBox(
+    open class CheckBox(
         name: String,
         state: Boolean = false,
     ) : Filter<Boolean>(name, state)
 
-    abstract class TriState(
+    open class TriState(
         name: String,
         state: Int = STATE_IGNORE,
     ) : Filter<Int>(name, state) {
@@ -49,12 +52,12 @@ open class Filter<T>(
         }
     }
 
-    abstract class Group<V>(
+    open class Group<V>(
         name: String,
         state: List<V>,
     ) : Filter<List<V>>(name, state)
 
-    abstract class Sort(
+    open class Sort(
         name: String,
         val values: Array<String>,
         state: Selection? = null,

@@ -12,6 +12,13 @@ interface SManga : Serializable {
 
     var thumbnail_url: String?
 
+    /**
+     * Newer keiyoushi libs (lib 2.x / tachiyomix 1.6) renamed `thumbnail_url`
+     * to `coverUrl`. Keep both spellings — the sandbox never knows which lib
+     * version an extension was compiled against.
+     */
+    var coverUrl: String?
+
     var artist: String?
 
     var author: String?
@@ -23,6 +30,9 @@ interface SManga : Serializable {
     var genre: String?
 
     var update_strategy: UpdateStrategy
+
+    /** New lib spelling (`updateStrategy`); see [update_strategy]. */
+    var updateStrategy: UpdateStrategy
 
     var initialized: Boolean
 
@@ -58,7 +68,9 @@ interface SManga : Serializable {
             it.genre = genre
             it.status = status
             it.thumbnail_url = thumbnail_url
+            it.coverUrl = coverUrl
             it.update_strategy = update_strategy
+            it.updateStrategy = updateStrategy
             it.initialized = initialized
         }
 

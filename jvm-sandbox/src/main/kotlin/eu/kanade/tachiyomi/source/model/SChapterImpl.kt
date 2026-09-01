@@ -12,9 +12,13 @@ class SChapterImpl : SChapter {
 
     override var chapter_number: Float = -1f
 
+    override var chapterNumber: Float = -1f
+
     override var scanlator: String? = null
 
     override var date_upload: Long = 0
+
+    override var dateUpload: Long = 0
 
     override var memo: JsonObject = JsonObject.EMPTY
 }

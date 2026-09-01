@@ -12,6 +12,8 @@ class SMangaImpl : SManga {
 
     override var thumbnail_url: String? = null
 
+    override var coverUrl: String? = null
+
     override var artist: String? = null
 
     override var author: String? = null
@@ -23,6 +25,8 @@ class SMangaImpl : SManga {
     override var genre: String? = null
 
     override var update_strategy: UpdateStrategy = UpdateStrategy.ALWAYS_UPDATE
+
+    override var updateStrategy: UpdateStrategy = UpdateStrategy.ALWAYS_UPDATE
 
     override var initialized: Boolean = false
 

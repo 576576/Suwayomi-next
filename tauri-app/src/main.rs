@@ -455,6 +455,15 @@ const SETTINGS_HTML: &str = include_str!("../frontend/index.html");
 
 fn main() {
     tauri::Builder::default()
+        // 单实例去重：重复启动 suwayomi.exe 时第二实例直接退出，不产生
+        // 第二个托盘图标；已有实例收到通知后聚焦设置窗口。
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            tray_log("[tray] single-instance: second launch detected, focusing settings window");
+            if let Some(w) = app.get_webview_window("settings") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .invoke_handler(tauri::generate_handler![
             get_settings,
             save_settings,

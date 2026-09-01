@@ -63,8 +63,14 @@ impl MangaListService {
     }
 
     async fn insert_manga(&self, source_id: i64, s: &SManga) -> Result<i32> {
+        // initialized = FALSE: a manga seen in browse/search lists has only
+        // list-level metadata — it is NOT initialized. The WebUI details page
+        // keys its one-shot auto-fetch on !initialized (fetchMangaAndChapters),
+        // which pulls the real chapter list and flips initialized to TRUE.
+        // Hard-coding TRUE here made the details page never auto-fetch, so
+        // freshly browsed manga showed an empty chapter list.
         let sql = bind_placeholders(
-            "INSERT INTO manga (url, title, artist, author, description, genre, alt_titles, status, thumbnail_url, update_strategy, memo, source, initialized) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)");
+            "INSERT INTO manga (url, title, artist, author, description, genre, alt_titles, status, thumbnail_url, update_strategy, memo, source, initialized) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)");
         let memo = s.memo.to_string();
         let alt_titles = serde_json::to_string(&s.alt_titles).unwrap_or_else(|_| "[]".to_string());
         let last_id = {

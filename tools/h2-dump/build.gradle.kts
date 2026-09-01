@@ -16,7 +16,8 @@ application {
 }
 
 kotlin {
-    jvmToolchain(17)
+    // 与 jvm-sandbox 一致：统一 Java 25（本地/CI 均为 Temurin 25）
+    jvmToolchain(25)
 }
 
 tasks.jar {

@@ -185,6 +185,10 @@ jobs:
             # 扩展沙盒（JVM，Kotlin fat jar）——放 bin/（server 自动查找）
             cd jvm-sandbox && ./gradlew -q jar --no-daemon && cd ..
             cp jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar "$STAGE/bin/jvm-sandbox.jar"
+            # 捆绑 Temurin JRE 25（jre/）——sandbox 运行时自包含，无需系统 JDK
+            curl -sL -o temurin-jre.zip "https://api.adoptium.net/v3/binary/latest/25/ga/windows/x64/jre/hotspot/normal/eclipse"
+            python3 -c "import zipfile,os; z=zipfile.ZipFile('temurin-jre.zip'); t=z.namelist()[0].split('/')[0]; z.extractall('jre-tmp'); z.close(); os.rename('jre-tmp/'+t, '$STAGE/jre')"
+            rm -rf jre-tmp temurin-jre.zip
           fi
 
           # ---- 捆绑 WebUI（fork release 产物）+ 启动脚本 + data 目录 ----

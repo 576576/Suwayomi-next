@@ -365,20 +365,73 @@ fn kill_port_listener(port: u16) {
 #[cfg(not(windows))]
 fn kill_port_listener(_port: u16) {}
 
+/// `java` on Windows is `java.exe` — probe both spellings.
+fn java_bin(root: &std::path::Path) -> Option<std::path::PathBuf> {
+    let bin = root.join("bin").join("java");
+    if bin.is_file() {
+        return Some(bin);
+    }
+    let exe = bin.with_extension("exe");
+    if exe.is_file() {
+        return Some(exe);
+    }
+    None
+}
+
+/// Resolves the `java` executable for the sandbox, in priority order:
+/// 1. `SUWAYOMI_JAVA` env — explicit override (e.g. a specific JDK).
+/// 2. Bundled Temurin JRE 25 shipped in the release layout as `<root>/jre/`
+///    (next to the executable, or one level up from `bin/` where the sandbox
+///    jar lives) — makes the desktop zip fully self-contained, no system JDK.
+/// 3. `JAVA_HOME/bin/java`.
+/// 4. `java` on PATH.
+fn resolve_java(jar_path: &str) -> std::path::PathBuf {
+    // 1) explicit env override
+    if let Ok(java) = std::env::var("SUWAYOMI_JAVA") {
+        if !java.is_empty() {
+            let p = std::path::PathBuf::from(&java);
+            if p.is_file() || p.with_extension("exe").is_file() {
+                return p;
+            }
+        }
+    }
+    // 2) bundled jre — jre/ sits at the release root, i.e. either next to the
+    //    executable or one level up from `bin/` (where exe/jar live).
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            roots.push(dir.to_path_buf()); // exe at release root
+            if let Some(p) = dir.parent() {
+                roots.push(p.to_path_buf()); // exe inside bin/ → root is one up
+            }
+        }
+    }
+    let jar = std::path::Path::new(jar_path);
+    if let Some(dir) = jar.parent() {
+        roots.push(dir.to_path_buf()); // jar at release root
+        if let Some(p) = dir.parent() {
+            roots.push(p.to_path_buf()); // jar inside bin/ → root is one up
+        }
+    }
+    for r in &roots {
+        if let Some(p) = java_bin(&r.join("jre")) {
+            return p;
+        }
+    }
+    // 3) JAVA_HOME
+    if let Ok(jh) = std::env::var("JAVA_HOME") {
+        if let Some(p) = java_bin(std::path::Path::new(&jh)) {
+            return p;
+        }
+    }
+    // 4) PATH
+    std::path::PathBuf::from("java")
+}
+
 /// Builds the `java -jar` command for the sandbox (no-window on Windows,
 /// JVM output redirected into `logs/sandbox.log` when `SUWAYOMI_LOGS_DIR` is set).
 fn spawn_java(jar_path: &str, port: &str) -> std::io::Result<std::process::Child> {
-    let java = match std::env::var("JAVA_HOME") {
-        Ok(jh) => {
-            let p = std::path::Path::new(&jh).join("bin").join("java");
-            if p.exists() {
-                p
-            } else {
-                std::path::PathBuf::from("java")
-            }
-        }
-        Err(_) => std::path::PathBuf::from("java"),
-    };
+    let java = resolve_java(jar_path);
     let mut cmd = std::process::Command::new(java);
     // JVM 默认不走代理（java.net.useSystemProxies=false）——用户本地 Clash 等
     // 设置了系统代理时扩展请求仍直连外网而失败。显式开启系统代理；显式

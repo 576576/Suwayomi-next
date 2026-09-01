@@ -1,6 +1,6 @@
 # Suwayomi-next
 
-Suwayomi（Kotlin/JVM）的 Rust 重写版。目标：保持既有数据、GraphQL/REST/OPDS 接口、Mihon 扩展体系完全兼容。
+[Suwayomi](https://github.com/Suwayomi/Suwayomi-Server/) （下称Kotlin/Java版）的 Rust 实现。保持既有 Tachiyomi 数据结构、GraphQL/REST/OPDS 接口、Mihon 扩展体系完全兼容，除扩展运行层外均由Rust实现。
 
 ## 状态
 
@@ -16,7 +16,7 @@ Suwayomi（Kotlin/JVM）的 Rust 重写版。目标：保持既有数据、Graph
 | 7 | 数据迁移工具与发布 | 🟢 完成 |
 
 **API 兼容性状态**：REST v1 端点基线见 `docs/api/rest-endpoints-baseline.md`，GraphQL
-schema 基线见 `docs/graphql/README.md`，与 Kotlin 原版保持行为兼容（详见
+schema 基线见 `docs/graphql/README.md`，与 Suwayomi 原版保持行为兼容（详见
 `docs/migration/MIGRATION_PLAN.md` 的决策记录 R1–R8）。
 
 ## 快速开始（源码构建）
@@ -40,8 +40,11 @@ GitHub Release 提供 `Suwayomi-{version}-{platform}-{arch}.zip` 等平台压缩
 suwayomi.exe          桌面壳（Tauri 托盘）：启动/重启/WebUI/数据目录/设置/退出
 bin/
   ├─ suwayomi-server.exe   无头服务器（核心 Suwayomi-server, 单实例）
-  ├─ jvm-sandbox.jar       扩展沙盒（JVM-server, 需要系统 JDK 21, 已计划捆绑JDK）
+  ├─ jvm-sandbox.jar       扩展沙盒（JVM-server）
   └─ extensions/*.jar      已安装扩展（dex2jar 输出，自动生成）
+jre/                  捆绑 Temurin JRE 25（Windows x64）——sandbox 运行时，
+                      server 优先使用 jre/bin/java.exe，无需系统 JDK；
+                      未捆绑时回退 SUWAYOMI_JAVA → JAVA_HOME → PATH 的 java
 webui/                Suwayomi-WebUI 构建产物（CI 自动捆绑 fork 最新 release）
                       └─ revision  当前部署的 WebUI 版本（r3487 等，关于页/更新检查读取）
 extensions/           扩展下载目录：仅存放扩展安装包 APK（tachiyomi-*.apk）
@@ -79,7 +82,7 @@ logs/                 运行时日志
 > 版本命名：自动构建产物版本为 `r{versionCode}`（versionCode = commit 数 + 3000）；
 > 手动 beta/release 版本为 `3.y.z`（versionCode 的前三位拆分）。
 
-## 从 Kotlin 版迁移
+## 从 Java 版迁移
 
 迁移操作（H2 → 当前后端）见 **`docs/migration/MIGRATE.md`**：推荐 `suwayomi-server
 --migrate <kotlin-data-dir>`（h2-dump 全量导入），或导入 Mihon `.proto` 备份。
@@ -104,7 +107,7 @@ docs/                基线文档（REST 端点 / GraphQL schema / 迁移说明 
 
 ## 数据库后端
 
-- **默认**：嵌入式 Oliphaunt（原 pglite-oxide 改名，真实 PostgreSQL 18 引擎 native 运行，数据目录 `./pglite-data`）——零安装即用，支持多连接池
+- **默认**：嵌入式 Oliphaunt（PostgreSQL 18 native，数据目录 `./pglite-data`）——零安装即用，支持多连接池
 - **备选**：外部 PostgreSQL（设 `SUWAYOMI_DATABASE_URL`，如 `postgres://user:pass@host:5432/db`）
 
 ## 真实扩展（JVM sandbox）
@@ -112,7 +115,7 @@ docs/                基线文档（REST 端点 / GraphQL schema / 迁移说明 
 server 可启动一个 JVM 沙盒进程，通过 HTTP 契约驱动真实 Mihon/Tachiyomi 扩展（APK → dex2jar → ChildFirst 类加载 + 反射，字节码修复 R8 产物）：
 
 ```bash
-# 1) 构建 sandbox（JDK 17+，产物 build/libs/suwayomi-jvm-sandbox.jar）
+# 1) 构建 sandbox（JDK 21+，产物 build/libs/suwayomi-jvm-sandbox.jar）
 cd jvm-sandbox
 gradle build          # 需要 jvm-sandbox/libs/AndroidCompat-1.0.jar（从 Suwayomi-Server
                       #   AndroidCompat 模块构建后复制，或自行替换为等价 Android stub）
@@ -127,7 +130,7 @@ SUWAYOMI_SANDBOX_PROXY=127.0.0.1:7890 \   # 可选：出境代理（访问被墙
 ./target/debug/suwayomi
 ```
 
-环境变量：`SUWAYOMI_SANDBOX_JAR`（启用沙盒）、`SUWAYOMI_SANDBOX_PORT`（默认 8091，避开 Windows 动态端口保留区 4501–4900）、`SUWAYOMI_EXTENSIONS_DIR`（默认 ./extensions）、`SUWAYOMI_JAR_DIR`（转换 jar 目录，默认 `<extensions>/../bin/extensions`）、`SUWAYOMI_SANDBOX_PROXY`（可选 HTTP 代理）。未配置时回退内置 `StubFetcher`。
+环境变量：`SUWAYOMI_SANDBOX_JAR`（启用沙盒）、`SUWAYOMI_SANDBOX_PORT`（默认 8091）、`SUWAYOMI_EXTENSIONS_DIR`（默认 ./extensions）、`SUWAYOMI_JAR_DIR`（转换 jar 目录，默认 `<extensions>/../bin/extensions`）、`SUWAYOMI_SANDBOX_PROXY`（可选 HTTP 代理）。未配置时回退内置 `StubFetcher`。
 
 ## 扩展安装与源管理（Phase 6）
 
@@ -136,7 +139,7 @@ SUWAYOMI_SANDBOX_PROXY=127.0.0.1:7890 \   # 可选：出境代理（访问被墙
 - **仓库**：`extension_store` 表存 `index_url`（支持 v1 数组与 keiyoushi v2 对象格式）。`POST /api/v1/extension/refresh`（或 GraphQL `fetchExtensions`）拉取索引并 upsert `extension` 表（apkUrl/版本/NSFW 等）。索引下载后写本地缓存 `extensions/index/{repo}/index.pb|json`，仓库不可达时自动回退缓存。
 - **安装/更新/卸载**：`GET /api/v1/extension/install/{pkgName}`、`/update/{pkgName}`、`/uninstall/{pkgName}`（GraphQL 对应 `updateExtension`/`updateExtensions` patch）。安装下载 APK 到 `SUWAYOMI_EXTENSIONS_DIR`（缺省 `./extensions`，命名 `tachiyomi-{lang}.{pkg}-v{ver}.apk`），触发 JVM sandbox 热加载（`/reload`），随后把 `/sources` 的稳定源 id（扩展 `Source.getId()`）upsert 进 `source` 表。
 - **外部 APK**：GraphQL `installExternalExtension`（multipart 上传）走 sandbox `/inspect` 解析元数据后安装。
-- **代理**：仓库/APK 下载复用 `SUWAYOMI_SANDBOX_PROXY` 出境代理。
+- **代理**：仓库/APK 下载复用 `SUWAYOMI_SANDBOX_PROXY` 代理设置。
 - 实测（keiyoushi 仓库）：刷新 **1381** 个扩展；安装 nhentai → sandbox 热加载 **22 源** → DB 注册 → popular **18 部真实漫画**；卸载后 sandbox 0 源、DB 清空。
 
 ## 同步（Phase 6）

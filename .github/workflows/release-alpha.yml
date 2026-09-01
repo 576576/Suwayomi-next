@@ -106,6 +106,8 @@ jobs:
           mkdir -p "$STAGE_EL/electron/resources/app"
           python3 -c "import zipfile; zipfile.ZipFile('electron.zip').extractall('$STAGE_EL/electron')"
           cp electron-app/main.js electron-app/package.json "$STAGE_EL/electron/resources/app/"
+          # 窗口图标：与 main.js 的 BrowserWindow icon 配套（替代 Electron 默认图标）
+          cp tauri-app/icons/icon.ico "$STAGE_EL/electron/resources/app/icon.ico"
           rm -f electron.zip
           powershell -Command "Compress-Archive -Path 'dist/Suwayomi-${VER}-${TGT}_wElectron' -DestinationPath 'dist/Suwayomi-${VER}-${TGT}_wElectron.zip' -Force"
 

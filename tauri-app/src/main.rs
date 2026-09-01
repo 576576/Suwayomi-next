@@ -608,7 +608,10 @@ fn main() {
 
             // 启动时自动打开 WebUI（默认开启，设置里可关；有 Electron 则优先
             // 用 Electron 壳打开）——放在 manage 之后，launch_webui 需要 state。
-            if started && settings.open_webui && ready {
+            // 条件：open_webui 开启 且（本托盘刚拉起 server 或 server 已在运行）。
+            // 之前误用 `started`（仅本托盘 spawn 的才算），导致 server 已运行
+            // 时（如隐藏托盘后重启托盘、或外部启动的 server）不自动打开 WebUI。
+            if settings.open_webui && (started || running) {
                 let st = app.state::<AppState>();
                 launch_webui(&st, settings.prefer_electron, port);
             }

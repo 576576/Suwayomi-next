@@ -377,6 +377,15 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
     if !downloads_root.is_dir() {
         return Ok(0);
     }
+    // Earlier builds inserted page rows with `ON CONFLICT DO NOTHING`, which
+    // is a no-op without a unique constraint — every startup re-inserted the
+    // same pages, so readers saw the first page repeated. Dedupe once:
+    // keep the lowest id per (chapter, index).
+    let _ = sqlx::query(
+        bind_placeholders("DELETE FROM page WHERE id NOT IN (SELECT MIN(id) FROM page GROUP BY chapter, index)").as_str(),
+    )
+    .execute(db.pool())
+    .await;
     let mut matched_mangas: std::collections::HashSet<i32> = std::collections::HashSet::new();
     let mut total_chapters = 0usize;
 
@@ -510,23 +519,43 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                         Ok(v) => v,
                         Err(_) => None,
                     };
-                    let chapter_name = std::path::Path::new(&cname)
+                    // Chapter name: prefer the archive's own metadata title
+                    // (ComicInfo `<Title>`), then the file stem, then
+                    // "Chapter".
+                    let mut chapter_name = "Chapter".to_string();
+                    if entry.path().is_file() {
+                        if let Some(meta) = crate::source::local::read_archive_meta(&entry.path())
+                            && let Some(t) = meta.title
+                            && !t.trim().is_empty()
+                        {
+                            chapter_name = t;
+                        } else if let Some(stem) = std::path::Path::new(&cname)
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().into_owned())
+                            .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("chapter"))
+                        {
+                            chapter_name = stem;
+                        }
+                    } else if let Some(stem) = std::path::Path::new(&cname)
                         .file_stem()
                         .map(|s| s.to_string_lossy().into_owned())
                         .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("chapter"))
-                        .unwrap_or_else(|| "Chapter".to_string());
+                    {
+                        chapter_name = stem;
+                    }
                     let cbz_path = entry.path().to_string_lossy().into_owned();
                     let res = match existing {
                         Some((cid,)) => {
                             let _ = sqlx::query(
                                 bind_placeholders(
-                                    "UPDATE chapter SET is_downloaded = TRUE, source_order = ?, fetched_at = ?, real_url = ? WHERE id = ?",
+                                    "UPDATE chapter SET is_downloaded = TRUE, source_order = ?, fetched_at = ?, real_url = ?, name = ? WHERE id = ?",
                                 )
                                 .as_str(),
                             )
                             .bind(source_order)
                             .bind(now)
                             .bind(&cbz_path)
+                            .bind(&chapter_name)
                             .bind(cid)
                             .execute(db.pool())
                             .await;
@@ -563,16 +592,43 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                             let pages = crate::source::local::list_archive_pages(&entry.path());
                             let img_base = format!("/api/v1/manga/{vid}/chapter/{source_order}/page");
                             for (pi, pname) in pages {
-                                let sql = bind_placeholders(
-                                    "INSERT INTO page (index, url, image_url, chapter) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
-                                );
-                                let _ = sqlx::query(&sql)
-                                    .bind(pi as i32)
-                                    .bind(&pname)
-                                    .bind(format!("{img_base}/{pi}/image"))
+                                // real upsert by (chapter, index) — the page
+                                // table has no unique constraint, so
+                                // ON CONFLICT would silently re-insert.
+                                let image_url = format!("{img_base}/{pi}/image");
+                                let sql = bind_placeholders("SELECT id FROM page WHERE chapter = ? AND index = ?");
+                                let existing_page: Option<(i32,)> = sqlx::query_as(&sql)
                                     .bind(cid)
-                                    .execute(db.pool())
-                                    .await;
+                                    .bind(pi as i32)
+                                    .fetch_optional(db.pool())
+                                    .await
+                                    .ok()
+                                    .flatten();
+                                match existing_page {
+                                    Some((pid,)) => {
+                                        let sql = bind_placeholders(
+                                            "UPDATE page SET url = ?, image_url = ? WHERE id = ?",
+                                        );
+                                        let _ = sqlx::query(&sql)
+                                            .bind(&pname)
+                                            .bind(&image_url)
+                                            .bind(pid)
+                                            .execute(db.pool())
+                                            .await;
+                                    }
+                                    None => {
+                                        let sql = bind_placeholders(
+                                            "INSERT INTO page (index, url, image_url, chapter) VALUES (?, ?, ?, ?)",
+                                        );
+                                        let _ = sqlx::query(&sql)
+                                            .bind(pi as i32)
+                                            .bind(&pname)
+                                            .bind(&image_url)
+                                            .bind(cid)
+                                            .execute(db.pool())
+                                            .await;
+                                    }
+                                }
                             }
                         }
                     }

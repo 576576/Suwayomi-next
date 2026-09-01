@@ -255,8 +255,9 @@ fn ensure_data_dirs(data: &PathBuf) {
 
 fn spawn_server(data: &PathBuf, port: u16) -> Option<Child> {
     let bin = find_server_bin()?;
-    // 日志统一放发布根目录 logs/（不混入 data/ 工作数据目录）
-    let logs = base_dir().join("logs");
+    // 日志统一放 cache/logs/（cache 目录：封面代理缓存 cache/images/ + 日志；
+    // 不混入 data/ 工作数据目录）
+    let logs = base_dir().join("cache").join("logs");
     let _ = std::fs::create_dir_all(&logs);
     let log_file = std::fs::OpenOptions::new()
         .create(true)
@@ -286,9 +287,9 @@ fn spawn_server(data: &PathBuf, port: u16) -> Option<Child> {
     Some(child)
 }
 
-/// 调试日志：写入 logs/tray.log（release GUI 无控制台，eprintln 不可见）
+/// 调试日志：写入 cache/logs/tray.log（release GUI 无控制台，eprintln 不可见）
 fn tray_log(msg: &str) {
-    let dir = base_dir().join("logs");
+    let dir = base_dir().join("cache").join("logs");
     let _ = std::fs::create_dir_all(&dir);
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)

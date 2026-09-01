@@ -822,6 +822,8 @@ pub struct PartialSettingsTypeInput {
     pub auto_download_ignore_re_uploads: Option<bool>,
     pub auto_download_new_chapters: Option<bool>,
     pub auto_download_new_chapters_limit: Option<i32>,
+    #[graphql(name = "autoBackupFrequency")]
+    pub auto_backup_frequency: Option<i32>,
     pub backup_interval: Option<i32>,
     pub backup_path: Option<String>,
     #[graphql(name = "backupTTL")]
@@ -1988,6 +1990,7 @@ fn partial_settings_to_json(s: &PartialSettingsTypeInput) -> serde_json::Value {
     put!("autoDownloadIgnoreReUploads", s.auto_download_ignore_re_uploads);
     put!("autoDownloadNewChapters", s.auto_download_new_chapters);
     put!("autoDownloadNewChaptersLimit", s.auto_download_new_chapters_limit);
+    put!("autoBackupFrequency", s.auto_backup_frequency);
     put!("backupInterval", s.backup_interval);
     put!("backupPath", s.backup_path.clone());
     put!("backupTTL", s.backup_ttl);

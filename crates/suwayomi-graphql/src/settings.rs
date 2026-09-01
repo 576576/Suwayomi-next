@@ -129,6 +129,10 @@ pub struct SettingsType {
     pub auto_download_ignore_re_uploads: bool,
     pub auto_download_new_chapters: bool,
     pub auto_download_new_chapters_limit: i32,
+    /// Auto backup cadence in minutes (0 = disabled). UI slider offers
+    /// off / 1-12 hours / 1-6 days / weekly; default 43200 (12 hours).
+    #[graphql(name = "autoBackupFrequency")]
+    pub auto_backup_frequency: i32,
     pub backup_interval: i32,
     pub backup_path: String,
     #[graphql(name = "backupTTL")]
@@ -249,6 +253,7 @@ impl SettingsType {
             auto_download_ignore_re_uploads: false,
             auto_download_new_chapters: false,
             auto_download_new_chapters_limit: 20,
+            auto_backup_frequency: 43200,
             backup_interval: 0,
             backup_path: String::new(),
             backup_ttl: 0,
@@ -359,6 +364,7 @@ impl SettingsType {
         self.auto_download_ignore_re_uploads = ov_bool(o, "autoDownloadIgnoreReUploads", self.auto_download_ignore_re_uploads);
         self.auto_download_new_chapters = ov_bool(o, "autoDownloadNewChapters", self.auto_download_new_chapters);
         self.auto_download_new_chapters_limit = ov_i32(o, "autoDownloadNewChaptersLimit", self.auto_download_new_chapters_limit);
+        self.auto_backup_frequency = ov_i32(o, "autoBackupFrequency", self.auto_backup_frequency);
         self.backup_interval = ov_i32(o, "backupInterval", self.backup_interval);
         self.backup_path = ov_str(o, "backupPath", self.backup_path.clone());
         self.backup_ttl = ov_i32(o, "backupTTL", self.backup_ttl);

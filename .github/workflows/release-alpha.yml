@@ -87,14 +87,14 @@ jobs:
           rm -rf jre-tmp temurin-jre.zip
           # 捆绑 oliphaunt 原生 runtime（编译期 OUT_DIR 路径在用户机器不存在，
           # server 运行时回退到 exe 同级 oliphaunt-runtime/resources）
-          for d in target/release/build/suwayomi-core-*/out/oliphaunt/resources; do
-            if [ -d "$d" ]; then
-              mkdir -p "$STAGE/oliphaunt-runtime"
-              cp -r "$d" "$STAGE/oliphaunt-runtime/resources"
-              echo "bundled oliphaunt runtime from $d"
-              break
-            fi
-          done
+          RES=$(find target -path "*/release/build/suwayomi-core-*/out/oliphaunt/resources" -type d 2>/dev/null | head -1)
+          if [ -n "$RES" ] && [ -d "$RES" ]; then
+            mkdir -p "$STAGE/oliphaunt-runtime"
+            cp -r "$RES" "$STAGE/oliphaunt-runtime/resources"
+            echo "bundled oliphaunt runtime from $RES"
+          else
+            echo "WARN: no oliphaunt resources found to bundle"
+          fi
 
           # ---- 捆绑 WebUI（fork release 产物）+ 启动脚本 + data 目录 ----
           WEBUI_ZIP=$(curl -s "https://api.github.com/repos/576576/Suwayomi-WebUI/releases/latest" | python3 -c "import json,sys; d=json.load(sys.stdin); print([a['browser_download_url'] for a in d.get('assets',[]) if a['name'].endswith('.zip')][0])")

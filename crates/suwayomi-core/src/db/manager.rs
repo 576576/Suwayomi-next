@@ -120,35 +120,26 @@ impl Db {
     /// actually exists; otherwise register the `oliphaunt-runtime/resources`
     /// bundle shipped next to the executable (release.yml copies it there).
     fn register_oliphaunt_resources() -> Result<(), DbError> {
-        const COMPILED: Option<&str> = option_env!("OLIPHAUNT_RESOURCES_DIR");
-        let compiled_ok = COMPILED
+        let Some(resources) = active_oliphaunt_resources_dir() else {
+            return Err(DbError::Embedded(anyhow::anyhow!(
+                "oliphaunt native resources unavailable: compiled path missing and no bundled oliphaunt-runtime/resources next to the executable"
+            )));
+        };
+        let compiled_ok = option_env!("OLIPHAUNT_RESOURCES_DIR")
             .map(|dir| Path::new(dir).join("native-runtime").is_dir())
             .unwrap_or(false);
         if compiled_ok {
             oliphaunt::register_build_resources!()
                 .map_err(|e| DbError::Embedded(anyhow::Error::new(e)))?;
-            return Ok(());
+        } else {
+            oliphaunt::register_build_resources_dir(&resources)
+                .map_err(|e| DbError::Embedded(anyhow::Error::new(e)))?;
+            tracing::info!(
+                "oliphaunt resources: compiled path missing, using bundled {}",
+                resources.display()
+            );
         }
-        // CI-built release: fall back to the bundle next to the executable
-        // (<release-root>/oliphaunt-runtime/resources; root = exe parent's
-        // parent, since the server lives in bin/).
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(root) = exe.parent().and_then(|b| b.parent()) {
-                let bundled = root.join("oliphaunt-runtime").join("resources");
-                if bundled.join("native-runtime").is_dir() {
-                    oliphaunt::register_build_resources_dir(&bundled)
-                        .map_err(|e| DbError::Embedded(anyhow::Error::new(e)))?;
-                    tracing::info!(
-                        "oliphaunt resources: compiled path missing, using bundled {}",
-                        bundled.display()
-                    );
-                    return Ok(());
-                }
-            }
-        }
-        Err(DbError::Embedded(anyhow::anyhow!(
-            "oliphaunt native resources unavailable: compiled path missing and no bundled oliphaunt-runtime/resources next to the executable"
-        )))
+        Ok(())
     }
     pub async fn connect_embedded(data_dir: Option<&Path>) -> Result<Self, DbError> {
         // Register the native runtime/broker artifact tree staged by
@@ -257,14 +248,39 @@ impl Db {
 /// existing cache `bin/` directory (idempotent). Called before opening the
 /// server and again after a failed first open (the first materialization is
 /// what creates the cache directories in the first place).
+/// Resolves the oliphaunt native resources directory that is actually valid
+/// on this machine:
+/// 1. the compiled-in `OLIPHAUNT_RESOURCES_DIR` when it exists (local builds),
+/// 2. otherwise the bundled `oliphaunt-runtime/resources` shipped next to the
+///    executable (`<release-root>/oliphaunt-runtime/resources`, server lives
+///    in `bin/` so root = exe parent's parent) — CI-built release packages.
+fn active_oliphaunt_resources_dir() -> Option<std::path::PathBuf> {
+    if let Some(dir) = option_env!("OLIPHAUNT_RESOURCES_DIR") {
+        let p = Path::new(dir);
+        if p.join("native-runtime").is_dir() {
+            return Some(p.to_path_buf());
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(root) = exe.parent().and_then(|b| b.parent()) {
+            let bundled = root.join("oliphaunt-runtime").join("resources");
+            if bundled.join("native-runtime").is_dir() {
+                return Some(bundled);
+            }
+        }
+    }
+    None
+}
+
 fn copy_runtime_bin_dlls_to_cache() {
-    // Compile-time value emitted by oliphaunt-build (cargo:rustc-env), same
-    // source used by the register_build_resources!() macro.
-    let Some(resources_dir) = option_env!("OLIPHAUNT_RESOURCES_DIR") else {
+    // The DLL source must be the *effective* resources dir: compiled-in
+    // OUT_DIR on a local build, or the bundled oliphaunt-runtime/resources
+    // on a CI-built release (compiled path is the runner's, nonexistent
+    // here). Same resolution as register_oliphaunt_resources().
+    let Some(resources_dir) = active_oliphaunt_resources_dir() else {
         return;
     };
-    let src_bin = std::path::Path::new(resources_dir)
-        .join("native-runtime/liboliphaunt-native/runtime/bin");
+    let src_bin = resources_dir.join("native-runtime/liboliphaunt-native/runtime/bin");
     if !src_bin.is_dir() {
         return;
     }

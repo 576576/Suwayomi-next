@@ -109,7 +109,25 @@ impl MangaService {
             memo: parse_memo(&row.memo),
         };
         let (updated, _) = self.fetcher.fetch_manga_update(row.source, &s_manga, &[], true, false).await?;
-        let _ = updated; // DB write of fetched data lands with the sandbox path (Phase 5)
+        // persist the fetched details so the details page shows the source's
+        // metadata (title/description/author/artist/genre/status/alt titles)
+        // even after restart — mirroring what the updater writes.
+        let sql = bind_placeholders(
+            "UPDATE manga SET title = ?, thumbnail_url = ?, author = ?, artist = ?, description = ?, genre = ?, status = ?, alt_titles = ?, initialized = TRUE, last_fetched_at = ? WHERE id = ?",
+        );
+        sqlx::query(&sql)
+            .bind(if updated.title.is_empty() { row.title.clone() } else { updated.title.clone() })
+            .bind(updated.thumbnail_url.clone().or_else(|| row.thumbnail_url.clone()))
+            .bind(updated.author.clone().or_else(|| row.author.clone()))
+            .bind(updated.artist.clone().or_else(|| row.artist.clone()))
+            .bind(updated.description.clone().or_else(|| row.description.clone()))
+            .bind(updated.genre.clone().or_else(|| row.genre.clone()))
+            .bind(updated.status)
+            .bind(serde_json::to_string(&updated.alt_titles).unwrap_or_else(|_| "[]".into()))
+            .bind(now_epoch_secs())
+            .bind(manga_id)
+            .execute(self.db.pool())
+            .await?;
 
         let row = self.fetch_row(manga_id).await?;
         let mut dc = manga_row_to_data_class(&row);

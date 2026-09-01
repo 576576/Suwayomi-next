@@ -456,6 +456,43 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
             if entries.is_empty() {
                 continue;
             }
+            // manga-level metadata from the first archive that carries
+            // ComicInfo.xml / meta.json (alt titles, author, artist, genre,
+            // description) — fill only what the DB doesn't already know.
+            let mut meta: Option<crate::source::local::ArchiveMeta> = None;
+            for entry in &entries {
+                let p = entry.path();
+                if p.is_file() {
+                    let ext = p
+                        .extension()
+                        .and_then(|x| x.to_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+                    if crate::source::local::ARCHIVE_EXTS.contains(&ext.as_str()) {
+                        meta = crate::source::local::read_archive_meta(&p);
+                        if meta.is_some() {
+                            break;
+                        }
+                    }
+                }
+            }
+            if let Some(m) = &meta {
+                let sql = bind_placeholders(
+                    "UPDATE manga SET alt_titles = COALESCE(NULLIF(alt_titles, '[]'), ?), author = COALESCE(author, ?), artist = COALESCE(artist, ?), genre = COALESCE(genre, ?), description = COALESCE(description, ?) WHERE id = ?",
+                );
+                let alt = serde_json::to_string(&m.alt_titles).unwrap_or_else(|_| "[]".into());
+                for vid in &variant_ids {
+                    let _ = sqlx::query(&sql)
+                        .bind(&alt)
+                        .bind(&m.author)
+                        .bind(&m.artist)
+                        .bind(&m.genre)
+                        .bind(&m.description)
+                        .bind(vid)
+                        .execute(db.pool())
+                        .await;
+                }
+            }
             for vid in &variant_ids {
                 for (i, entry) in entries.iter().enumerate() {
                     let cname = entry.file_name().to_string_lossy().into_owned();
@@ -476,36 +513,66 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                         .map(|s| s.to_string_lossy().into_owned())
                         .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("chapter"))
                         .unwrap_or_else(|| "Chapter".to_string());
+                    let cbz_path = entry.path().to_string_lossy().into_owned();
                     let res = match existing {
-                        Some((cid,)) => sqlx::query(
-                            bind_placeholders(
-                                "UPDATE chapter SET is_downloaded = TRUE, source_order = ?, fetched_at = ? WHERE id = ?",
+                        Some((cid,)) => {
+                            let _ = sqlx::query(
+                                bind_placeholders(
+                                    "UPDATE chapter SET is_downloaded = TRUE, source_order = ?, fetched_at = ?, real_url = ? WHERE id = ?",
+                                )
+                                .as_str(),
                             )
-                            .as_str(),
-                        )
-                        .bind(source_order)
-                        .bind(now)
-                        .bind(cid)
-                        .execute(db.pool())
-                        .await,
-                        None => sqlx::query(
-                            bind_placeholders(
-                                "INSERT INTO chapter (url, name, chapter_number, source_order, manga, fetched_at, last_modified_at, is_downloaded) VALUES (?, ?, ?, ?, ?, ?, ?, TRUE)",
-                            )
-                            .as_str(),
-                        )
-                        .bind(&cname)
-                        .bind(&chapter_name)
-                        .bind(-1f32)
-                        .bind(source_order)
-                        .bind(vid)
-                        .bind(now)
-                        .bind(now)
-                        .execute(db.pool())
-                        .await,
+                            .bind(source_order)
+                            .bind(now)
+                            .bind(&cbz_path)
+                            .bind(cid)
+                            .execute(db.pool())
+                            .await;
+                            Some(cid)
+                        }
+                        None => {
+                            let sql = bind_placeholders(
+                                "INSERT INTO chapter (url, name, chapter_number, source_order, manga, fetched_at, last_modified_at, is_downloaded, real_url) VALUES (?, ?, ?, ?, ?, ?, ?, TRUE, ?) RETURNING id",
+                            );
+                            sqlx::query_as::<_, (i32,)>(&sql)
+                                .bind(&cname)
+                                .bind(&chapter_name)
+                                .bind(-1f32)
+                                .bind(source_order)
+                                .bind(vid)
+                                .bind(now)
+                                .bind(now)
+                                .bind(&cbz_path)
+                                .fetch_optional(db.pool())
+                                .await
+                                .ok()
+                                .flatten()
+                                .map(|(id,)| id)
+                        }
                     };
-                    if res.is_ok() {
+                    if res.is_some() {
                         total_chapters += 1;
+                    }
+                    // page rows from the archive so the downloaded CBZ is
+                    // readable: image_url points at the server's image
+                    // endpoint, which extracts the bytes from the archive.
+                    if let Some(cid) = res {
+                        if entry.path().is_file() {
+                            let pages = crate::source::local::list_archive_pages(&entry.path());
+                            let img_base = format!("/api/v1/manga/{vid}/chapter/{source_order}/page");
+                            for (pi, pname) in pages {
+                                let sql = bind_placeholders(
+                                    "INSERT INTO page (index, url, image_url, chapter) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                                );
+                                let _ = sqlx::query(&sql)
+                                    .bind(pi as i32)
+                                    .bind(&pname)
+                                    .bind(format!("{img_base}/{pi}/image"))
+                                    .bind(cid)
+                                    .execute(db.pool())
+                                    .await;
+                            }
+                        }
                     }
                 }
             }

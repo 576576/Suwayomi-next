@@ -273,6 +273,9 @@ pub struct ArchiveMeta {
     pub author: Option<String>,
     pub artist: Option<String>,
     pub genre: Option<String>,
+    /// Free-text description — `meta.json.description` or the `Description:`
+    /// line inside `ComicInfo.Summary` (skipped when it's `null`/empty).
+    pub description: Option<String>,
 }
 
 /// Read and parse `meta.json` / `ComicInfo.xml` from inside an archive.
@@ -417,6 +420,7 @@ fn parse_meta_json(bytes: &[u8]) -> Option<ArchiveMeta> {
         author: if author.is_empty() { None } else { Some(author.join(", ")) },
         artist: if artist.is_empty() { None } else { Some(artist.join(", ")) },
         genre: if genre.is_empty() { None } else { Some(genre.join(", ")) },
+        description: None,
     })
 }
 
@@ -467,6 +471,31 @@ fn parse_comic_info_xml(bytes: &[u8]) -> Option<ArchiveMeta> {
     genre_parts.dedup();
     let genre = if genre_parts.is_empty() { None } else { Some(genre_parts.join(", ")) };
 
+    // ComicInfo.Summary is a multi-line block:
+    //   Alternative Title: ...
+    //   Groups: ...
+    //   Description: <free text | null>
+    //   Pages: N  / Category / Language / Parodies / Characters ...
+    let mut description: Option<String> = None;
+    let mut alt_titles: Vec<String> = Vec::new();
+    if let Some(summary) = text("summary") {
+        for line in summary.lines() {
+            let line = line.trim();
+            if let Some(v) = line.strip_prefix("Description:") {
+                let v = v.trim();
+                if !v.is_empty() && !v.eq_ignore_ascii_case("null") {
+                    description = Some(v.to_string());
+                }
+            } else if let Some(v) = line.strip_prefix("Alternative Title:") {
+                let v = v.trim();
+                if !v.is_empty() {
+                    alt_titles.push(v.to_string());
+                }
+            }
+        }
+    }
+    alt_titles.dedup();
+
     Some(ArchiveMeta {
         title,
         number,
@@ -474,10 +503,11 @@ fn parse_comic_info_xml(bytes: &[u8]) -> Option<ArchiveMeta> {
         upload_date,
         page_count,
         manga_title,
-        alt_titles: Vec::new(), // ComicInfo carries a single title — no alternatives
+        alt_titles,
         author: text("writer"),
         artist: text("penciller"),
         genre,
+        description,
     })
 }
 

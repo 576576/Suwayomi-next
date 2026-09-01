@@ -1,6 +1,8 @@
 //! Manga endpoints — mirrors `MangaController.kt`.
 
 use axum::extract::{Path, Query, State};
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -35,6 +37,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/{manga_id}/chapter/{chapter_index}/meta", patch(chapter_meta))
         .route("/{manga_id}/chapter/{chapter_index}/page/{index}", get(page_retrieve))
+        .route("/{manga_id}/chapter/{chapter_index}/page/{index}/image", get(page_image))
         .route("/{manga_id}/category", get(category_list))
         .route("/{manga_id}/category/{category_id}", get(add_to_category).delete(remove_from_category))
 }
@@ -235,6 +238,55 @@ async fn page_retrieve(
     let id = find_chapter_id(&s, manga_id, chapter_index).await.map_err(crate::error::ApiError::from)?;
     let page = s.page.get_page(id, index).await?;
     Ok(Json(serde_json::json!({ "index": page.index, "imageUrl": page.image_url })))
+}
+
+/// Serves the raw image bytes for a page of a downloaded archive (CBZ):
+/// the chapter's `real_url` points at the archive on disk, the page row's
+/// `url` holds the image file name inside it.
+async fn page_image(
+    State(s): State<AppState>,
+    Path((manga_id, chapter_index, index)): Path<(i32, i32, i32)>,
+) -> Response {
+    let find = async {
+        let cid = find_chapter_id(&s, manga_id, chapter_index).await?;
+        let sql = suwayomi_domain::sql::bind_placeholders("SELECT real_url FROM chapter WHERE id = ?");
+        let real: Option<String> = sqlx::query_scalar(&sql).bind(cid).fetch_optional(s.db.pool()).await?;
+        let real = real.filter(|r| !r.is_empty()).ok_or_else(|| {
+            suwayomi_domain::error::DomainError::NotFound("no archive for this chapter".into())
+        })?;
+        let page = s.page.get_page(cid, index).await?;
+        let file_name = page.url;
+        Ok::<_, suwayomi_domain::error::DomainError>((real, file_name))
+    };
+    let (archive, file_name) = match find.await {
+        Ok(v) => v,
+        Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+    };
+    let Some(bytes) = suwayomi_domain::source::local::read_archive_image(&std::path::Path::new(&archive), &file_name)
+    else {
+        return (StatusCode::NOT_FOUND, "image not found in archive").into_response();
+    };
+    let mime = match std::path::Path::new(&file_name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "avif" => "image/avif",
+        _ => "image/jpeg",
+    };
+    let mut resp = bytes.into_response();
+    if let Ok(v) = axum::http::HeaderValue::from_str(mime) {
+        resp.headers_mut().insert(axum::http::header::CONTENT_TYPE, v);
+    }
+    if let Ok(v) = axum::http::HeaderValue::from_str("public, max-age=31536000, immutable") {
+        resp.headers_mut().insert(axum::http::header::CACHE_CONTROL, v);
+    }
+    resp
 }
 
 async fn category_list(State(s): State<AppState>, Path(manga_id): Path<i32>) -> ApiResult<Json<serde_json::Value>> {

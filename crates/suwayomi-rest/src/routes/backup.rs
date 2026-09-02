@@ -36,7 +36,10 @@ async fn backup_export(State(state): State<AppState>) -> Response {
 async fn backup_export_file(State(state): State<AppState>) -> Response {
     match suwayomi_core::backup::create_backup(state.db.pool()).await {
         Ok(bytes) => {
-            let filename = format!("org.suwayomi.next_{}.tachibk", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0));
+            // Mirror the autobackup / Mihon naming scheme so the downloaded
+            // file sits naturally next to real backups in data/autobackup:
+            // org.suwayomi.next_2026-08-30_01-44.tachibk (local time).
+            let filename = format!("org.suwayomi.next_{}.tachibk", chrono::Local::now().format("%Y-%m-%d_%H-%M"));
             let content_disposition = format!("attachment; filename=\"{filename}\"");
             (
                 [

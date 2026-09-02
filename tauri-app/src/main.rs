@@ -537,6 +537,21 @@ fn main() {
                 .menu(&menu)
                 .tooltip("Suwayomi")
                 .show_menu_on_left_click(false)
+                // 单击托盘图标 = 打开 WebUI（与菜单「打开 WebUI」行为一致）
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        button_state: tauri::tray::MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        let st = app.state::<AppState>();
+                        let port = st.port.load(Ordering::Relaxed);
+                        let loaded = load_settings();
+                        launch_webui(&st, loaded.prefer_electron, port);
+                    }
+                })
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "start_suwayomi" => {
                         let st = app.state::<AppState>();

@@ -162,7 +162,11 @@ impl Db {
         // the oliphaunt postgres child keeps running and the next start fails
         // on the `postmaster.pid` lock — remove that leftover and retry.
         let open = || async {
-            let builder = Oliphaunt::builder().native_server().max_client_sessions(32);
+            // PG's max_connections mirrors max_client_sessions; it must be >=
+            // the sqlx pool (64) plus room for PG-internal/utility sessions,
+            // otherwise bursts of concurrent queries exhaust PG and sqlx
+            // reports "pool timed out while waiting for an open connection".
+            let builder = Oliphaunt::builder().native_server().max_client_sessions(96);
             match data_dir {
                 Some(dir) => builder.path(dir),
                 None => builder.temporary(),

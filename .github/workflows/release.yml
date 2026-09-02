@@ -297,7 +297,13 @@ jobs:
             rm -rf bundle-tmp
           fi
 
-          echo "artifacts=$ARTIFACTS" >> "$GITHUB_OUTPUT"
+          # GITHUB_OUTPUT 多行值必须用 name<<DELIM 定界格式（普通 name=value 遇换行即报
+          # Invalid format），artifacts 是每行一个产物路径的列表
+          {
+            echo "artifacts<<ARTIFACTS_EOF"
+            printf '%s\n' "$ARTIFACTS"
+            echo "ARTIFACTS_EOF"
+          } >> "$GITHUB_OUTPUT"
           echo "packed artifacts:"
           echo "$ARTIFACTS" | sed 's/^/  /'
       - name: 上传构建产物

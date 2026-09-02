@@ -248,6 +248,15 @@ impl SourceFetcher for HttpSandboxFetcher {
                     if m.status != 0 {
                         updated.status = m.status;
                     }
+                    // The sandbox returns `genre` as a ", "-joined string
+                    // (mangaToMap). Without this copy, every online manga
+                    // ended up with an empty genre column in the DB even
+                    // after the detail page re-fetched the source.
+                    if let Some(g) = m.genre {
+                        if !g.is_empty() {
+                            updated.genre = Some(g);
+                        }
+                    }
                 }
             }
         }

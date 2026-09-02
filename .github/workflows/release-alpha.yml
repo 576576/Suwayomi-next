@@ -98,8 +98,26 @@ jobs:
             echo "WARN: no oliphaunt resources found to bundle"
           fi
 
-          # ---- 捆绑 WebUI（fork release 产物）+ 启动脚本 + data 目录 ----
-          WEBUI_ZIP=$(curl -s "https://api.github.com/repos/576576/Suwayomi-WebUI/releases/latest" | python3 -c "import json,sys; d=json.load(sys.stdin); print([a['browser_download_url'] for a in d.get('assets',[]) if a['name'].endswith('.zip')][0])")
+          # ---- 捆绑 WebUI（fork 最新 release）+ data 目录。gh api 优先（匿名 api.github.com
+          #      易限流致资产列表为空报 IndexError）；latest 无 zip 回退最近 10 个 release。----
+          WEBUI_ZIP=""
+          if command -v gh >/dev/null 2>&1; then
+            WEBUI_ZIP="$(gh api repos/576576/Suwayomi-WebUI/releases/latest --jq '.assets[]? | select(.name|endswith(".zip")) | .browser_download_url' 2>/dev/null | head -1)"
+          fi
+          if [ -z "$WEBUI_ZIP" ]; then
+            for TAG in $(gh release list -R 576576/Suwayomi-WebUI -L 10 --json tagName --jq '.[].tagName' 2>/dev/null); do
+              WEBUI_ZIP="$(gh api "repos/576576/Suwayomi-WebUI/releases/tags/$TAG" --jq '.assets[]? | select(.name|endswith(".zip")) | .browser_download_url' 2>/dev/null | head -1)"
+              [ -n "$WEBUI_ZIP" ] && break
+            done
+          fi
+          if [ -z "$WEBUI_ZIP" ]; then
+            WEBUI_ZIP="$(curl -sL --retry 3 "https://api.github.com/repos/576576/Suwayomi-WebUI/releases/latest" | python3 -c "import json,sys; d=json.load(sys.stdin); a=[x['browser_download_url'] for x in d.get('assets',[]) if x['name'].endswith('.zip')]; print(a[0] if a else '')")"
+          fi
+          if [ -z "$WEBUI_ZIP" ]; then
+            echo "::error::无法解析 576576/Suwayomi-WebUI 的 .zip release 资产"
+            exit 1
+          fi
+          echo "webui zip: $WEBUI_ZIP"
           curl -sL -o webui.zip "$WEBUI_ZIP"
           mkdir -p "$STAGE/webui"
           python3 -c "import zipfile; zipfile.ZipFile('webui.zip').extractall('$STAGE/webui')"

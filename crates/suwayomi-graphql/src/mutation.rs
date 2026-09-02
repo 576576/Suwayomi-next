@@ -1526,7 +1526,8 @@ impl MutationRoot {
                             .execute(state.db.pool())
                             .await;
                     }
-                    let _ = sqlx::query("UPDATE chapter SET page_count = ?, fetched_at = ? WHERE id = ?")
+                    let sql = bind_placeholders("UPDATE chapter SET page_count = ?, fetched_at = ? WHERE id = ?");
+                    let _ = sqlx::query(&sql)
                         .bind(source_pages.len() as i32)
                         .bind(chrono::Utc::now().timestamp_millis())
                         .bind(input.chapter_id)

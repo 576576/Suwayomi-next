@@ -65,7 +65,7 @@ impl GraphQLState {
         let manga_list = MangaListService::new(db.clone(), fetcher.clone());
         let page = PageService::new(db.clone());
         let update = UpdateManager::new(db.clone(), fetcher.clone());
-        let download = DownloadManager::new(db.clone(), fetcher);
+        let download = DownloadManager::new(db.clone(), fetcher, data_dir.clone());
         let koreader = KoreaderSyncService::new(db.clone(), config.clone());
         let sync_yomi = SyncYomiService::new(db.clone(), config.clone());
         let extension_store = ExtensionStoreService::new(db.clone(), sandbox_base.clone());

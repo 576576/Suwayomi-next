@@ -43,6 +43,7 @@ impl AppState {
         fetcher: Arc<dyn SourceFetcher>,
         sandbox_base: Option<String>,
         webui_dir: std::path::PathBuf,
+        data_dir: std::path::PathBuf,
     ) -> Self {
         let manga = MangaService::new(db.clone(), fetcher.clone());
         let chapter = ChapterService::new(db.clone(), fetcher.clone());
@@ -51,7 +52,7 @@ impl AppState {
         let library = LibraryService::new(db.clone(), manga.clone());
         let manga_list = MangaListService::new(db.clone(), fetcher.clone());
         let page = PageService::new(db.clone());
-        let download = DownloadManager::new(db.clone(), fetcher.clone());
+        let download = DownloadManager::new(db.clone(), fetcher.clone(), data_dir);
         let extension_store = ExtensionStoreService::new(db.clone(), sandbox_base);
         Self { db, config, fetcher, manga, chapter, category, category_manga, library, manga_list, page, download, extension_store, webui_dir }
     }

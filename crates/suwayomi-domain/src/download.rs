@@ -54,6 +54,8 @@ pub enum DownloadEvent {
 pub struct DownloadManager {
     db: Db,
     fetcher: Arc<dyn SourceFetcher>,
+    data_dir: std::path::PathBuf,
+    client: reqwest::Client,
     queue: Arc<Mutex<VecDeque<DownloadJob>>>,
     tx: broadcast::Sender<DownloadEvent>,
     running: Arc<AtomicBool>,
@@ -61,11 +63,19 @@ pub struct DownloadManager {
 }
 
 impl DownloadManager {
-    pub fn new(db: Db, fetcher: Arc<dyn SourceFetcher>) -> Self {
+    pub fn new(db: Db, fetcher: Arc<dyn SourceFetcher>, data_dir: std::path::PathBuf) -> Self {
         let (tx, _) = broadcast::channel(128);
+        let client = reqwest::Client::builder()
+            .user_agent("Suwayomi-next/1.0")
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .timeout(std::time::Duration::from_secs(90))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             db,
             fetcher,
+            data_dir,
+            client,
             queue: Arc::new(Mutex::new(VecDeque::new())),
             tx,
             running: Arc::new(AtomicBool::new(false)),
@@ -244,20 +254,89 @@ impl DownloadManager {
         match result {
             Ok(pages) => {
                 let total = pages.len().max(1) as f64;
-                for (i, _page) in pages.iter().enumerate() {
-                    // per-page progress (no binary storage yet — the sandbox
-                    // provides bytes in a later increment)
-                    job.progress = (i + 1) as f64 / total;
-                    self.emit(DownloadEvent::Progress { chapter_id: job.chapter_id, progress: job.progress });
+                let mut stored = 0usize;
+                let mut failed = 0usize;
+                let mut page_files: Vec<(i32, String)> = Vec::new(); // (index, file name in archive)
+                let mut archive_opt: Option<std::path::PathBuf> = None;
+                let mut archive_err: Option<String> = None;
+                // Download every page image (server-side, so CDN CORS/referer
+                // rules don't matter), then bundle them into a CBZ under
+                // `{data_dir}/downloads/…` and wire the chapter up for offline
+                // reading (mirroring reconcile_downloads' layout).
+                let tx = self.tx.clone();
+                let cid = job.chapter_id;
+                match self.download_chapter_archive(&job, &pages, &mut |i| {
+                    let _ = tx.send(DownloadEvent::Progress { chapter_id: cid, progress: (i + 1) as f64 / total });
+                }).await
+                {
+                    Ok((archive, files)) => {
+                        archive_opt = Some(archive);
+                        page_files = files;
+                        stored = page_files.len();
+                    }
+                    Err(e) => {
+                        failed = pages.len();
+                        archive_err = Some(e.to_string());
+                    }
                 }
-                // mark downloaded
-                let _ = sqlx::query("UPDATE chapter SET is_downloaded = TRUE, fetched_at = $1 WHERE id = $2")
-                    .bind(chrono::Utc::now().timestamp_millis())
+
+                if let Some(archive) = archive_opt {
+                    // Register the download so offline reading works through
+                    // `/api/v1/manga/{manga}/chapter/{order}/page/{n}/image`.
+                    let pool = self.db.pool();
+                    let chapter_row: Option<(i32, i32)> = sqlx::query_as(
+                        "SELECT c.manga, c.source_order FROM chapter c WHERE c.id = $1",
+                    )
                     .bind(job.chapter_id)
-                    .execute(self.db.pool())
+                    .fetch_optional(pool)
+                    .await
+                    .ok()
+                    .flatten();
+                    let img_base = chapter_row
+                        .map(|(manga_id, source_order)| format!("/api/v1/manga/{manga_id}/chapter/{source_order}/page"))
+                        .unwrap_or_default();
+                    for (pi, name) in &page_files {
+                        let image_url = format!("{img_base}/{pi}/image");
+                        let sql = bind_placeholders("SELECT id FROM page WHERE chapter = ? AND index = ?");
+                        let existing: Option<(i32,)> = sqlx::query_as(&sql)
+                            .bind(job.chapter_id)
+                            .bind(pi)
+                            .fetch_optional(pool)
+                            .await
+                            .ok()
+                            .flatten();
+                        match existing {
+                            Some((pid,)) => {
+                                let sql = bind_placeholders("UPDATE page SET url = ?, image_url = ? WHERE id = ?");
+                                let _ = sqlx::query(&sql).bind(name).bind(&image_url).bind(pid).execute(pool).await;
+                            }
+                            None => {
+                                let sql = bind_placeholders("INSERT INTO page (index, url, image_url, chapter) VALUES (?, ?, ?, ?)");
+                                let _ = sqlx::query(&sql).bind(pi).bind(name).bind(&image_url).bind(job.chapter_id).execute(pool).await;
+                            }
+                        }
+                    }
+                    let _ = sqlx::query(
+                        "UPDATE chapter SET is_downloaded = TRUE, real_url = $1, page_count = $2, fetched_at = $3 WHERE id = $4",
+                    )
+                    .bind(archive.to_string_lossy().to_string())
+                    .bind(page_files.len() as i32)
+                    .bind(now_epoch_secs())
+                    .bind(job.chapter_id)
+                    .execute(pool)
                     .await;
-                job.state = JobState::Finished;
-                job.progress = 1.0;
+                    stored = page_files.len();
+                } else {
+                    tracing::warn!(chapter_id = job.chapter_id, "download failed: {}", archive_err.unwrap_or_default());
+                }
+
+                if stored > 0 {
+                    job.state = JobState::Finished;
+                    job.progress = 1.0;
+                } else {
+                    job.state = JobState::Error;
+                }
+                let _ = failed;
             }
             Err(e) => {
                 tracing::warn!(chapter_id = job.chapter_id, "download failed: {e}");
@@ -265,6 +344,96 @@ impl DownloadManager {
             }
         }
         self.patch_job(&job).await;
+    }
+
+    /// Fetch image bytes for every page, bundle them into a CBZ and store it
+    /// under `{data_dir}/downloads/{Source} ({LANG})/{MangaTitle}/{Chapter}.cbz`.
+    /// Returns the archive path and `(page_index, file_name_in_archive)` pairs.
+    async fn download_chapter_archive(
+        &self,
+        job: &DownloadJob,
+        pages: &[suwayomi_core::source::SourcePage],
+        progress: &mut (dyn FnMut(usize) + Send),
+    ) -> Result<(std::path::PathBuf, Vec<(i32, String)>), String> {
+        // Resolve the source directory tag "{name} ({LANG})".
+        let src: Option<(String, String)> = sqlx::query_as("SELECT name, lang FROM source WHERE id = $1")
+            .bind(job.source_id)
+            .fetch_optional(self.db.pool())
+            .await
+            .map_err(|e| format!("source lookup: {e}"))?;
+        let (src_name, src_lang) = src.ok_or_else(|| "source row missing".to_string())?;
+        let source_dir = format!("{src_name} ({})", src_lang.to_uppercase());
+        let manga_dir = sanitize_file_name(&job.manga_title);
+        let chapter_file = format!("{}.cbz", sanitize_file_name(&job.chapter_name));
+
+        let dir = self
+            .data_dir
+            .join("downloads")
+            .join(&source_dir)
+            .join(&manga_dir);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {e}"))?;
+        let cbz_path = dir.join(&chapter_file);
+
+        // Download page bytes (limited concurrency to stay gentle on the CDN).
+        let mut downloaded: Vec<(i32, String, Vec<u8>)> = Vec::new();
+        let mut errors = Vec::new();
+        let fetches: Vec<_> = pages
+            .iter()
+            .enumerate()
+            .map(|(n, p)| {
+                let url = p.image_url.clone().unwrap_or_else(|| p.url.clone());
+                (n as i32 + 1, url)
+            })
+            .collect();
+        for (idx, url) in &fetches {
+            match self.download_bytes(url).await {
+                Ok(bytes) => {
+                    let ext = image_ext_from_content_type(&bytes);
+                    downloaded.push((*idx, format!("{idx}.{ext}"), bytes));
+                    progress(downloaded.len());
+                }
+                Err(e) => errors.push(format!("page {idx}: {e}")),
+            }
+        }
+        if downloaded.is_empty() {
+            return Err(format!("no page image could be downloaded: {}", errors.join("; ")));
+        }
+        if !errors.is_empty() {
+            tracing::warn!(chapter_id = job.chapter_id, "download: {} page(s) failed: {}", errors.len(), errors.join("; "));
+        }
+
+        // Bundle into a CBZ.
+        let cursor = std::io::Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .unix_permissions(0o644);
+        for (_, name, bytes) in &downloaded {
+            zip.start_file(name.clone(), options).map_err(|e| format!("zip: {e}"))?;
+            std::io::Write::write_all(&mut zip, bytes).map_err(|e| format!("zip write: {e}"))?;
+        }
+        let cursor = zip.finish().map_err(|e| format!("zip finish: {e}"))?;
+        let bytes = cursor.into_inner();
+        // avoid partial archives on crash: write tmp then rename
+        let tmp = cbz_path.with_extension("cbz.tmp");
+        std::fs::write(&tmp, &bytes).map_err(|e| format!("write: {e}"))?;
+        if let Err(e) = std::fs::rename(&tmp, &cbz_path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("rename: {e}"));
+        }
+        Ok((cbz_path, downloaded.into_iter().map(|(i, n, _)| (i, n)).collect()))
+    }
+
+    async fn download_bytes(&self, url: &str) -> Result<Vec<u8>, String> {
+        let resp = self.client.get(url).send().await.map_err(|e| format!("{url}: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("{url}: HTTP {}", resp.status()));
+        }
+        let bytes = resp.bytes().await.map_err(|e| format!("{url}: read {e}"))?;
+        if bytes.is_empty() {
+            return Err(format!("{url}: empty body"));
+        }
+        Ok(bytes.to_vec())
     }
 
     async fn patch_job(&self, job: &DownloadJob) {
@@ -302,7 +471,7 @@ mod tests {
     #[tokio::test]
     async fn enqueue_dequeue_clear_roundtrip() {
         let db = seed().await;
-        let mgr = DownloadManager::new(db, Arc::new(StubFetcher));
+        let mgr = DownloadManager::new(db, Arc::new(StubFetcher), std::env::temp_dir());
 
         mgr.enqueue_chapter(1).await.expect("enqueue");
         let jobs = mgr.snapshot().await;
@@ -325,7 +494,7 @@ mod tests {
     #[tokio::test]
     async fn enqueue_unknown_chapter_errors() {
         let db = seed().await;
-        let mgr = DownloadManager::new(db, Arc::new(StubFetcher));
+        let mgr = DownloadManager::new(db, Arc::new(StubFetcher), std::env::temp_dir());
         let err = mgr.enqueue_chapter(999).await.unwrap_err();
         assert!(err.contains("not found"), "got: {err}");
     }
@@ -333,7 +502,7 @@ mod tests {
     #[tokio::test]
     async fn start_stop_marks_jobs_failed_with_stub_fetcher() {
         let db = seed().await;
-        let mgr = DownloadManager::new(db.clone(), Arc::new(StubFetcher));
+        let mgr = DownloadManager::new(db.clone(), Arc::new(StubFetcher), std::env::temp_dir());
         let mut rx = mgr.subscribe();
 
         mgr.enqueue_chapter(1).await.expect("enqueue");
@@ -386,6 +555,20 @@ mod tests {
 /// (manga, url) and marked `is_downloaded = TRUE`.
 pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::error::Result<usize> {
     let downloads_root = data_dir.join("downloads");
+    // Older builds "downloaded" chapters by flipping is_downloaded without
+    // ever storing an archive (real_url stays empty) — nothing to read
+    // offline. Clear those stale markers so the chapters can be downloaded
+    // again; real downloads always set real_url to the CBZ path.
+    let cleared = sqlx::query(
+        bind_placeholders("UPDATE chapter SET is_downloaded = FALSE WHERE is_downloaded = TRUE AND (real_url IS NULL OR real_url = '')").as_str(),
+    )
+    .execute(db.pool())
+    .await
+    .map(|r| r.rows_affected())
+    .unwrap_or(0);
+    if cleared > 0 {
+        tracing::info!("downloads: cleared {cleared} stale download marker(s) without an archive");
+    }
     if !downloads_root.is_dir() {
         return Ok(0);
     }
@@ -684,4 +867,46 @@ fn split_source_dir_name(dir_name: &str) -> Option<(String, String)> {
     }
     let name = trimmed[..lang_start].trim().to_string();
     Some((name, lang))
+}
+
+/// Filesystem-safe directory/file name: strip Windows-invalid characters
+/// and trailing dots/spaces, collapse runs to a single character.
+fn sanitize_file_name(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            c if (c as u32) < 0x20 => '_',
+            c => c,
+        })
+        .collect();
+    let collapsed = cleaned
+        .chars()
+        .fold(String::new(), |mut acc, c| {
+            if acc.ends_with('_') && c == '_' {
+                // skip duplicate underscores
+            } else {
+                acc.push(c);
+            }
+            acc
+        });
+    let trimmed = collapsed.trim_matches(|c| c == '.' || c == ' ' || c == '_');
+    if trimmed.is_empty() { "_".to_string() } else { trimmed.to_string() }
+}
+
+/// Best-effort image extension from magic bytes (order matters).
+fn image_ext_from_content_type(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        "png"
+    } else if bytes.starts_with(&[0xFF, 0xD8]) {
+        "jpg"
+    } else if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "webp"
+    } else if bytes.starts_with(&[b'G', b'I', b'F']) {
+        "gif"
+    } else if bytes.len() > 8 && &bytes[4..8] == b"ftyp" {
+        "avif"
+    } else {
+        "jpg"
+    }
 }

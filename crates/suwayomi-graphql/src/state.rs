@@ -46,6 +46,8 @@ pub struct GraphQLState {
     pub data_dir: std::path::PathBuf,
     /// JVM sandbox base URL (e.g. `http://127.0.0.1:8091`) — aboutServer JVM info.
     pub sandbox_base: Option<String>,
+    /// In-memory results of finished backup restores (`restoreStatus(id:)`).
+    backup_restores: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, crate::mutation_b4::BackupRestoreStatus>>>,
 }
 
 impl GraphQLState {
@@ -69,6 +71,14 @@ impl GraphQLState {
         let koreader = KoreaderSyncService::new(db.clone(), config.clone());
         let sync_yomi = SyncYomiService::new(db.clone(), config.clone());
         let extension_store = ExtensionStoreService::new(db.clone(), sandbox_base.clone());
-        Self { db, config, manga, chapter, category, category_manga, library, manga_list, page, update, download, koreader, sync_yomi, extension_store, webui_dir, data_dir, sandbox_base }
+        Self { db, config, manga, chapter, category, category_manga, library, manga_list, page, update, download, koreader, sync_yomi, extension_store, webui_dir, data_dir, sandbox_base, backup_restores: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())) }
+    }
+
+    pub async fn set_backup_restore_status(&self, id: &str, status: crate::mutation_b4::BackupRestoreStatus) {
+        self.backup_restores.lock().await.insert(id.to_string(), status);
+    }
+
+    pub async fn get_backup_restore_status(&self, id: &str) -> Option<crate::mutation_b4::BackupRestoreStatus> {
+        self.backup_restores.lock().await.get(id).cloned()
     }
 }

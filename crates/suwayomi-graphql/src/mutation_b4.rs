@@ -1150,14 +1150,47 @@ impl MutationRootB4 {
 
     async fn restore_backup(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: RestoreBackupInput,
     ) -> async_graphql::Result<RestoreBackupPayload> {
-        let _ = (input.backup, input.flags);
+        let state = ctx.data::<crate::state::GraphQLState>()?;
+        // Read the uploaded .tachibk payload and restore it (upserts manga/
+        // chapters/categories idempotently; sources are matched by name).
+        let mut upload = input.backup.value(ctx)?;
+        let mut bytes = Vec::new();
+        use std::io::Read as _;
+        upload
+            .content
+            .read_to_end(&mut bytes)
+            .map_err(|e| async_graphql::Error::new(format!("read upload: {e}")))?;
+
+        let id = format!("restore-{}", chrono::Utc::now().timestamp_millis());
+        let final_status = match suwayomi_core::backup::restore_backup(state.db.pool(), &bytes).await {
+            Ok(summary) => {
+                if !summary.errors.is_empty() {
+                    tracing::warn!(errors = ?summary.errors, "backup restore completed with errors");
+                }
+                let manga_total = summary.restored_manga as i32;
+                BackupRestoreStatus {
+                    manga_progress: manga_total,
+                    state: BackupRestoreState::Success,
+                    total_manga: manga_total,
+                }
+            }
+            Err(e) => {
+                tracing::error!(%e, "backup restore failed");
+                BackupRestoreStatus {
+                    manga_progress: 0,
+                    state: BackupRestoreState::Failure,
+                    total_manga: 0,
+                }
+            }
+        };
+        state.set_backup_restore_status(&id, final_status.clone()).await;
         Ok(RestoreBackupPayload {
             client_mutation_id: input.client_mutation_id,
-            id: String::new(),
-            status: Some(BackupRestoreStatus { manga_progress: 0, state: BackupRestoreState::Idle, total_manga: 0 }),
+            id,
+            status: Some(final_status),
         })
     }
 

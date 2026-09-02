@@ -7,8 +7,8 @@ use suwayomi_core::schema::{CategoryRow, ChapterRow, MangaRow};
 use suwayomi_domain::sql::bind_placeholders;
 
 use crate::mutation_b4::{
-    BackupRestoreState, BackupRestoreStatus, DownloadStatus, KoSyncStatusPayloadType, LibraryUpdateStatus,
-    ValidateBackupInput, ValidateBackupResult,
+    BackupRestoreStatus, DownloadStatus, KoSyncStatusPayloadType, LibraryUpdateStatus,
+    ValidateBackupInput, ValidateBackupResult, ValidateBackupSource,
 };
 use crate::scalars::{Cursor, LongString};
 use crate::settings::WebUIChannel;
@@ -1355,19 +1355,43 @@ impl QueryRoot {
         }
     }
 
-    /// Mirrors `restoreStatus(id:)`.
-    async fn restore_status(&self, _id: String) -> BackupRestoreStatus {
-        BackupRestoreStatus { manga_progress: 0, state: BackupRestoreState::Idle, total_manga: 0 }
+    /// Mirrors `restoreStatus(id:)` — result of the last restore with that id.
+    async fn restore_status(
+        &self,
+        ctx: &Context<'_>,
+        id: String,
+    ) -> async_graphql::Result<BackupRestoreStatus> {
+        let state = ctx.data::<crate::state::GraphQLState>()?;
+        Ok(state
+            .get_backup_restore_status(&id)
+            .await
+            .unwrap_or(BackupRestoreStatus { manga_progress: 0, state: crate::mutation_b4::BackupRestoreState::Idle, total_manga: 0 }))
     }
 
-    /// Mirrors `validateBackup(input:)` — backup validation (Phase 6 parses proto).
+    /// Mirrors `validateBackup(input:)` — reports missing sources without restoring.
     async fn validate_backup(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: ValidateBackupInput,
     ) -> async_graphql::Result<ValidateBackupResult> {
-        let _ = input.backup;
-        Ok(ValidateBackupResult { missing_sources: vec![], missing_trackers: vec![] })
+        let mut upload = input.backup.value(ctx)?;
+        let mut bytes = Vec::new();
+        use std::io::Read as _;
+        upload
+            .content
+            .read_to_end(&mut bytes)
+            .map_err(|e| async_graphql::Error::new(format!("read upload: {e}")))?;
+        let summary = suwayomi_core::backup::validate_backup(&bytes)
+            .await
+            .map_err(async_graphql::Error::from)?;
+        Ok(ValidateBackupResult {
+            missing_sources: summary
+                .missing_sources
+                .into_iter()
+                .map(|name| ValidateBackupSource { id: LongString(0), name })
+                .collect(),
+            missing_trackers: vec![],
+        })
     }
 
     /// Mirrors `settings()` — full settings registry.

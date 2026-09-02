@@ -59,7 +59,7 @@ class NetworkHelper() {
                     .cookieJar(PersistentCookieJar(cookieStore))
                     .connectTimeout(30, TimeUnit.SECONDS)
                     .readTimeout(30, TimeUnit.SECONDS)
-                    .callTimeout(2, TimeUnit.MINUTES)
+                    .callTimeout(10, TimeUnit.MINUTES)  // bumped from 2min: NHentai.xxx chapter downloads need ~5min (199 large webp pages)
                     .cache(
                         Cache(
                             directory = Files.createTempDirectory("tachidesk_network_cache").toFile(),

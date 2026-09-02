@@ -1486,12 +1486,12 @@ impl MutationRoot {
         input: FetchChapterPagesInput,
     ) -> async_graphql::Result<FetchChapterPagesPayload> {
         let state = ctx.data::<GraphQLState>()?;
-        let chapter = ChapterType::from_row(&fetch_chapter_row(state, input.chapter_id).await?);
+        let chapter_row = fetch_chapter_row(state, input.chapter_id).await?;
+        let manga_row = fetch_manga_row(state, chapter_row.manga).await?;
+        let chapter_type = ChapterType::from_row(&chapter_row);
         // Local source: seed page rows from disk when missing.
-        if let Ok(manga_row) = fetch_manga_row(state, chapter.manga_id).await {
-            if manga_row.source == suwayomi_domain::source::LOCAL_SOURCE_ID {
-                seed_local_pages(state, &manga_row, &chapter).await?;
-            }
+        if manga_row.source == suwayomi_domain::source::LOCAL_SOURCE_ID {
+            seed_local_pages(state, &manga_row, &chapter_type).await?;
         }
         let sql = bind_placeholders("SELECT url, image_url FROM page WHERE chapter = ? ORDER BY index ASC");
         let rows = sqlx::query(&sql)
@@ -1499,12 +1499,50 @@ impl MutationRoot {
             .fetch_all(state.db.pool())
             .await
             .map_err(async_graphql::Error::from)?;
-        let mut pages = Vec::new();
+        let mut pages: Vec<String> = Vec::new();
         for row in &rows {
             let url: String = row.try_get("url").unwrap_or_default();
             let image_url: Option<String> = row.try_get("image_url").ok();
             pages.push(image_url.unwrap_or(url));
         }
+        // Remote source with no cached pages yet: fetch the page list from
+        // the extension (through the sandbox) and persist it, so online
+        // reading works on the first open instead of showing "no content".
+        if pages.is_empty() && !chapter_row.is_downloaded && manga_row.source != suwayomi_domain::source::LOCAL_SOURCE_ID
+        {
+            match state
+                .download
+                .fetch_pages_from_source(manga_row.source, &manga_row.url, &chapter_row.url)
+                .await
+            {
+                Ok(source_pages) if !source_pages.is_empty() => {
+                    for p in &source_pages {
+                        let sql = bind_placeholders("INSERT INTO page (index, url, image_url, chapter) VALUES (?, ?, ?, ?)");
+                        let _ = sqlx::query(&sql)
+                            .bind(p.index)
+                            .bind(&p.url)
+                            .bind(&p.image_url)
+                            .bind(input.chapter_id)
+                            .execute(state.db.pool())
+                            .await;
+                    }
+                    let _ = sqlx::query("UPDATE chapter SET page_count = ?, fetched_at = ? WHERE id = ?")
+                        .bind(source_pages.len() as i32)
+                        .bind(chrono::Utc::now().timestamp_millis())
+                        .bind(input.chapter_id)
+                        .execute(state.db.pool())
+                        .await;
+                    pages = source_pages
+                        .into_iter()
+                        .map(|p| p.image_url.unwrap_or(p.url))
+                        .collect();
+                }
+                Ok(_) => tracing::debug!("fetchChapterPages: source returned no pages for chapter {}", input.chapter_id),
+                Err(e) => tracing::warn!("fetchChapterPages: source fetch failed for chapter {}: {e}", input.chapter_id),
+            }
+        }
+        // Re-read so the returned chapter reflects the freshly stored page count.
+        let chapter = ChapterType::from_row(&fetch_chapter_row(state, input.chapter_id).await?);
         Ok(FetchChapterPagesPayload {
             chapter,
             client_mutation_id: input.client_mutation_id,

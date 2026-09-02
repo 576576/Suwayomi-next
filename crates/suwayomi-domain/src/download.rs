@@ -77,6 +77,18 @@ impl DownloadManager {
         self.tx.subscribe()
     }
 
+    /// Fetch a chapter's page list from the source (through the sandbox
+    /// fetcher) without downloading the images. Used by the reader to
+    /// hydrate the page table on demand when no pages are cached yet.
+    pub async fn fetch_pages_from_source(
+        &self,
+        source_id: i64,
+        manga_url: &str,
+        chapter_url: &str,
+    ) -> crate::error::Result<Vec<suwayomi_core::source::SourcePage>> {
+        self.fetcher.fetch_pages(source_id, manga_url, chapter_url).await
+    }
+
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
     }

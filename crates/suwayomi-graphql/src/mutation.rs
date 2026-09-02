@@ -1548,6 +1548,12 @@ impl MutationRoot {
                 .execute(state.db.pool())
                 .await;
         }
+        // Serve every external page through the same-origin image proxy
+        // (`/api/v1/image/{b64}`): the WebUI loads reader images with
+        // crossOrigin='anonymous', which fails against CDNs that omit CORS
+        // headers (zrocdn.xyz, i2.nhentaimg.com, …). Same-origin proxying
+        // fixes that for any source and reuses the disk cache.
+        let pages: Vec<String> = pages.into_iter().map(|u| image_proxy_url(&u)).collect();
         // Re-read so the returned chapter reflects the freshly stored page count.
         let chapter = ChapterType::from_row(&fetch_chapter_row(state, input.chapter_id).await?);
         Ok(FetchChapterPagesPayload {
@@ -1741,6 +1747,20 @@ async fn fetch_manga_row(state: &GraphQLState, id: i32) -> async_graphql::Result
 async fn fetch_chapter_row(state: &GraphQLState, id: i32) -> async_graphql::Result<ChapterRow> {
     let sql = bind_placeholders("SELECT * FROM chapter WHERE id = ?");
     sqlx::query_as::<_, ChapterRow>(&sql).bind(id).fetch_one(state.db.pool()).await.map_err(async_graphql::Error::from)
+}
+
+/// Map an external http(s) image URL onto the same-origin proxy path
+/// `/api/v1/image/{b64}` (see suwayomi-rest::routes::image), so the WebUI's
+/// `crossOrigin='anonymous'` image loads work against CDNs without CORS
+/// headers. Non-http values (already-proxied paths, local files) pass through.
+fn image_proxy_url(url: &str) -> String {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(url);
+        format!("/api/v1/image/{b64}")
+    } else {
+        url.to_string()
+    }
 }
 
 /// Idempotent upsert of local-source chapters by (manga, url).

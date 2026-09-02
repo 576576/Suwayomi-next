@@ -302,7 +302,7 @@ impl SettingsType {
             max_log_file_size: String::new(),
             max_log_files: 0,
             max_log_folder_size: String::new(),
-            max_sources_in_parallel: 0,
+            max_sources_in_parallel: 6,
             opds_cbz_mimetype: CbzMediaType::Modern,
             opds_chapter_sort_order: crate::query::SortOrder::Asc,
             opds_enable_page_read_progress: true,

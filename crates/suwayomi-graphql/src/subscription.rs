@@ -6,6 +6,8 @@ use async_graphql::{Context, InputObject, SimpleObject, Subscription};
 use futures::stream::{self, Stream};
 use futures::StreamExt;
 
+use suwayomi_domain::download::DownloadEvent;
+
 use crate::mutation_b4::{
     DownloadUpdates, LibraryUpdateStatus,
 };
@@ -45,7 +47,10 @@ impl SubscriptionRoot {
         futures::stream::unfold((state.clone(), rx), |(state, mut rx)| async move {
             loop {
                 match rx.recv().await {
-                    Ok(_) => {
+                    Ok(event) => {
+                        if let DownloadEvent::Progress { chapter_id, progress } = event {
+                            state.download.set_progress(chapter_id, progress);
+                        }
                         let status = crate::mutation_b4::download_status(&state).await.ok()?;
                         return Some((status, (state.clone(), rx)));
                     }
@@ -72,7 +77,12 @@ impl SubscriptionRoot {
         futures::stream::unfold((state.clone(), rx), |(state, mut rx)| async move {
             loop {
                 match rx.recv().await {
-                    Ok(_) => {
+                    Ok(event) => {
+                        // Apply per-page progress ticks to the queued job so
+                        // the emitted snapshot reports real progress.
+                        if let DownloadEvent::Progress { chapter_id, progress } = event {
+                            state.download.set_progress(chapter_id, progress);
+                        }
                         let status = crate::mutation_b4::download_status(&state).await.ok()?;
                         return Some((
                             DownloadUpdates {

@@ -1246,9 +1246,10 @@ impl QueryRoot {
         Ok(SearchTrackerPayload { track_searches: vec![] })
     }
 
-    /// Mirrors `downloadStatus()` — current download queue (Phase 6 wires the manager).
-    async fn download_status(&self) -> DownloadStatus {
-        DownloadStatus::idle()
+    /// Mirrors `downloadStatus()` — current download queue / progress.
+    async fn download_status(&self, ctx: &Context<'_>) -> async_graphql::Result<DownloadStatus> {
+        let state = ctx.data::<crate::state::GraphQLState>()?;
+        crate::mutation_b4::download_status(state).await
     }
 
     /// Mirrors `updateStatus()` — deprecated library update status.

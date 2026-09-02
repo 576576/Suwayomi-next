@@ -58,6 +58,10 @@ pub struct DownloadManager {
     client: reqwest::Client,
     server_base_url: String,
     queue: Arc<Mutex<VecDeque<DownloadJob>>>,
+    /// Live per-chapter progress (0..1) written synchronously by the page
+    /// downloader; merged into snapshots. Kept separate from `queue` so no
+    /// async lock is needed for progress ticks.
+    progress_by_id: Arc<std::sync::Mutex<std::collections::HashMap<i32, f64>>>,
     tx: broadcast::Sender<DownloadEvent>,
     running: Arc<AtomicBool>,
     worker_spawned: Arc<AtomicBool>,
@@ -79,6 +83,7 @@ impl DownloadManager {
             client,
             server_base_url: String::from("http://127.0.0.1:8090"),
             queue: Arc::new(Mutex::new(VecDeque::new())),
+            progress_by_id: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             tx,
             running: Arc::new(AtomicBool::new(false)),
             worker_spawned: Arc::new(AtomicBool::new(false)),
@@ -107,7 +112,25 @@ impl DownloadManager {
 
     /// Queue snapshot for REST/GraphQL.
     pub async fn snapshot(&self) -> Vec<DownloadJob> {
-        self.queue.lock().await.iter().cloned().collect()
+        let mut jobs = self.queue.lock().await.iter().cloned().collect::<Vec<_>>();
+        // Merge live progress ticks (written synchronously during downloads).
+        let progress = self.progress_by_id.lock().unwrap();
+        for job in &mut jobs {
+            if let Some(p) = progress.get(&job.chapter_id) {
+                job.progress = *p;
+            }
+        }
+        jobs
+    }
+
+    /// Records a per-page progress tick. Synchronous so it can be called from
+    /// the downloader while pages are being fetched concurrently.
+    pub fn set_progress(&self, chapter_id: i32, progress: f64) {
+        self.progress_by_id.lock().unwrap().insert(chapter_id, progress);
+    }
+
+    fn clear_progress(&self, chapter_id: i32) {
+        self.progress_by_id.lock().unwrap().remove(&chapter_id);
     }
 
     fn emit(&self, event: DownloadEvent) {
@@ -166,6 +189,9 @@ impl DownloadManager {
         });
         drop(queue);
         self.emit_snapshot().await;
+        // Auto-start the worker: downloading from the manga/reader pages must
+        // progress without the user having to open the queue and press play.
+        self.start().await;
         Ok(())
     }
 
@@ -228,15 +254,22 @@ impl DownloadManager {
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 continue;
             }
-            let job = {
-                let mut queue = self.queue.lock().await;
-                queue.pop_front()
-            };
+            // Peek (do not pop) the head: the job stays in the queue while it
+            // is processed so its state/progress are visible to snapshots.
+            let job = { let queue = self.queue.lock().await; queue.front().cloned() };
             let Some(job) = job else {
                 // idle: keep the worker alive waiting for new jobs
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 continue;
             };
+            if matches!(job.state, JobState::Finished | JobState::Error) {
+                // terminal leftover: drop it so the next queued chapter runs
+                // (re-processing it would re-download the same chapter forever)
+                { let mut queue = self.queue.lock().await; queue.pop_front(); }
+                self.clear_progress(job.chapter_id);
+                self.emit_snapshot().await;
+                continue;
+            }
             self.process_job(job).await;
             self.emit_snapshot().await;
         }
@@ -280,7 +313,10 @@ impl DownloadManager {
                 let tx = self.tx.clone();
                 let cid = job.chapter_id;
                 match self.download_chapter_archive(&job, &pages, &mut |i| {
-                    let _ = tx.send(DownloadEvent::Progress { chapter_id: cid, progress: (i + 1) as f64 / total });
+                    let progress = ((i + 1) as f64 / total).min(1.0);
+                    // Keep the queued job's progress accurate at all times.
+                    self.set_progress(cid, progress);
+                    let _ = tx.send(DownloadEvent::Progress { chapter_id: cid, progress });
                 }).await
                 {
                     Ok((archive, files)) => {
@@ -360,6 +396,82 @@ impl DownloadManager {
         self.patch_job(&job).await;
     }
 
+    /// Builds a `ComicInfo.xml` (ComicRack standard) payload for the archive,
+    /// based on the manga/chapter rows in the DB.
+    async fn build_comic_info(&self, job: &DownloadJob, page_count: usize) -> Option<String> {
+        use sqlx::Row;
+        #[derive(Clone, Default)]
+        struct Meta {
+            title: String,
+            series: String,
+            number: String,
+            writer: String,
+            penciller: String,
+            genre: String,
+            summary: String,
+            scan_info: String,
+            page_count: String,
+            pub_date: String,
+        }
+        let row = sqlx::query(
+            "SELECT m.title, m.author, m.artist, m.genre, m.description, \
+                    c.chapter_number, c.scanlator, c.date_upload \
+             FROM chapter c JOIN manga m ON m.id = c.manga WHERE c.id = $1",
+        )
+        .bind(job.chapter_id)
+        .fetch_optional(self.db.pool())
+        .await
+        .ok()?;
+        let row = row?;
+        let mut meta = Meta::default();
+        meta.title = row.try_get::<String, _>("title").unwrap_or_default();
+        meta.series = meta.title.clone();
+        meta.writer = row.try_get::<String, _>("author").unwrap_or_default();
+        meta.penciller = row.try_get::<String, _>("artist").unwrap_or_default();
+        meta.genre = row.try_get::<String, _>("genre").unwrap_or_default();
+        meta.summary = row.try_get::<String, _>("description").unwrap_or_default();
+        meta.scan_info = row.try_get::<String, _>("scanlator").unwrap_or_default();
+        meta.page_count = page_count.to_string();
+        let number: f32 = row.try_get("chapter_number").unwrap_or(0.0);
+        if number > 0.0 {
+            meta.number = if (number - number.trunc()).abs() < f32::EPSILON {
+                format!("{}", number as i64)
+            } else {
+                format!("{number}")
+            };
+        }
+        let date_upload: i64 = row.try_get("date_upload").unwrap_or(0);
+        if date_upload > 0 {
+            let secs = if date_upload > 10_000_000_000 { date_upload / 1000 } else { date_upload };
+            if let Some(dt) = chrono::DateTime::from_timestamp(secs, 0) {
+                meta.pub_date = dt.format("%Y-%m-%d").to_string();
+            }
+        }
+        if meta.title.is_empty() {
+            meta.title = job.chapter_name.clone();
+        }
+        let e = xml_escape;
+        let mut xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ComicInfo xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\n");
+        for (tag, value) in [
+            ("Title", &meta.title),
+            ("Series", &meta.series),
+            ("Number", &meta.number),
+            ("Writer", &meta.writer),
+            ("Penciller", &meta.penciller),
+            ("Genre", &meta.genre),
+            ("Summary", &meta.summary),
+            ("PageCount", &meta.page_count),
+            ("ScanInformation", &meta.scan_info),
+            ("PublicationDate", &meta.pub_date),
+        ] {
+            if !value.is_empty() {
+                xml.push_str(&format!("  <{tag}>{}</{tag}>\n", e(value)));
+            }
+        }
+        xml.push_str("</ComicInfo>");
+        Some(xml)
+    }
+
     /// Fetch image bytes for every page, bundle them into a CBZ and store it
     /// under `{data_dir}/downloads/{Source} ({LANG})/{MangaTitle}/{Chapter}.cbz`.
     /// Returns the archive path and `(page_index, file_name_in_archive)` pairs.
@@ -387,6 +499,10 @@ impl DownloadManager {
             .join(&manga_dir);
         std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {e}"))?;
         let cbz_path = dir.join(&chapter_file);
+
+        // ComicInfo.xml (ComicRack standard) so the archive carries metadata
+        // (manga/chapter identity, author/artist, genre, …) like a proper CBZ.
+        let comic_info = self.build_comic_info(job, pages.len()).await;
 
         // Download page bytes concurrently. Each URL goes through the
         // same-origin image proxy (`/api/v1/image/{b64}`) so:
@@ -455,6 +571,10 @@ impl DownloadManager {
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated)
             .unix_permissions(0o644);
+        if let Some(xml) = &comic_info {
+            zip.start_file("ComicInfo.xml", options).map_err(|e| format!("zip: {e}"))?;
+            std::io::Write::write_all(&mut zip, xml.as_bytes()).map_err(|e| format!("zip write: {e}"))?;
+        }
         for (_, name, bytes) in &downloaded {
             zip.start_file(name.clone(), options).map_err(|e| format!("zip: {e}"))?;
             std::io::Write::write_all(&mut zip, bytes).map_err(|e| format!("zip write: {e}"))?;
@@ -484,13 +604,14 @@ impl DownloadManager {
     }
 
     async fn patch_job(&self, job: &DownloadJob) {
+        // The processed job stays in the queue while it runs; update it in
+        // place. Never (re-)insert here — that used to push a copy back to the
+        // front, which the worker then popped again and re-downloaded forever.
         let mut queue = self.queue.lock().await;
         if let Some(existing) = queue.iter_mut().find(|j| j.chapter_id == job.chapter_id) {
             existing.state = job.state;
             existing.progress = job.progress;
             existing.tries = job.tries;
-        } else {
-            queue.push_front(job.clone());
         }
     }
 }
@@ -1021,6 +1142,22 @@ fn split_source_dir_name(dir_name: &str) -> Option<(String, String)> {
     }
     let name = trimmed[..lang_start].trim().to_string();
     Some((name, lang))
+}
+
+/// XML text escaping for metadata written into `ComicInfo.xml`.
+fn xml_escape(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Filesystem-safe directory/file name: strip Windows-invalid characters

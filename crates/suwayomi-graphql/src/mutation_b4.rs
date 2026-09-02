@@ -1721,8 +1721,29 @@ impl MutationRootB4 {
         // Persist the submitted (non-None) settings as a JSON blob under the
         // `settings` global_meta key so saves survive restarts. The settings
         // query overlays this blob on top of the env-derived defaults.
+        //
+        // Merge with whatever is already persisted: the blob row is a single
+        // JSON value, and callers submit single keys (e.g. only
+        // autoBackupFrequency). Without merging, each save would drop every
+        // previously stored setting and they'd silently fall back to
+        // defaults after a restart.
         let json = partial_settings_to_json(&input.settings);
-        let json_str = serde_json::to_string(&json).unwrap_or_else(|_| "{}".to_string());
+        let mut merged: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+        let existing_sql = bind_placeholders("SELECT value FROM global_meta WHERE meta_key = 'settings'");
+        if let Ok(Some(existing)) = sqlx::query_scalar::<_, String>(&existing_sql)
+            .fetch_optional(state.db.pool())
+            .await
+        {
+            if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(&existing) {
+                merged = map;
+            }
+        }
+        if let serde_json::Value::Object(input_map) = json {
+            for (k, v) in input_map {
+                merged.insert(k, v);
+            }
+        }
+        let json_str = serde_json::to_string(&serde_json::Value::Object(merged)).unwrap_or_else(|_| "{}".to_string());
         let mut m = HashMap::new();
         m.insert("settings".to_string(), json_str);
         let mut by_ref = HashMap::new();

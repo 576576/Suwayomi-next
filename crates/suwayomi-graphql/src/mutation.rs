@@ -1526,13 +1526,6 @@ impl MutationRoot {
                             .execute(state.db.pool())
                             .await;
                     }
-                    let sql = bind_placeholders("UPDATE chapter SET page_count = ?, fetched_at = ? WHERE id = ?");
-                    let _ = sqlx::query(&sql)
-                        .bind(source_pages.len() as i32)
-                        .bind(chrono::Utc::now().timestamp_millis())
-                        .bind(input.chapter_id)
-                        .execute(state.db.pool())
-                        .await;
                     pages = source_pages
                         .into_iter()
                         .map(|p| p.image_url.unwrap_or(p.url))
@@ -1541,6 +1534,19 @@ impl MutationRoot {
                 Ok(_) => tracing::debug!("fetchChapterPages: source returned no pages for chapter {}", input.chapter_id),
                 Err(e) => tracing::warn!("fetchChapterPages: source fetch failed for chapter {}: {e}", input.chapter_id),
             }
+        }
+        // Keep chapter.page_count in sync with the actual page rows — the
+        // reader clamps its current page index against pageCount, so a stale
+        // -1 (older builds wrote it with invalid '?' placeholders) freezes
+        // page turning at the first page even though the page list is fine.
+        if !pages.is_empty() {
+            let sql = bind_placeholders("UPDATE chapter SET page_count = ?, fetched_at = ? WHERE id = ?");
+            let _ = sqlx::query(&sql)
+                .bind(pages.len() as i32)
+                .bind(chrono::Utc::now().timestamp_millis())
+                .bind(input.chapter_id)
+                .execute(state.db.pool())
+                .await;
         }
         // Re-read so the returned chapter reflects the freshly stored page count.
         let chapter = ChapterType::from_row(&fetch_chapter_row(state, input.chapter_id).await?);

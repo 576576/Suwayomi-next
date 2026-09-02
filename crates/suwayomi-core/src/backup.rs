@@ -283,9 +283,16 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
         let id = match existing {
             Some(id) => id,
             None => {
+                // Use a fresh, collision-free sort_order: keying membership by
+                // numeric order is fine within one backup file, but reusing a
+                // value already taken in the DB (e.g. several categories at
+                // order 0) would make a later restore of our own export map
+                // memberships onto the wrong category.
+                let next_order: i32 =
+                    sqlx::query_scalar("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM category").fetch_one(pool).await?;
                 let id: i32 = sqlx::query_scalar("INSERT INTO category (name, sort_order) VALUES ($1, $2) RETURNING id")
                     .bind(&c.name)
-                    .bind(c.order)
+                    .bind(next_order)
                     .fetch_one(pool)
                     .await?;
                 summary.restored_categories += 1;
@@ -346,8 +353,8 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
                     "UPDATE manga SET artist = COALESCE($1, artist), author = COALESCE($2, author), \
                      description = COALESCE($3, description), genre = COALESCE(NULLIF($4, ''), genre), \
                      status = $5, thumbnail_url = COALESCE($6, thumbnail_url), update_strategy = $7, \
-                     in_library = TRUE, in_library_at = $8, last_modified_at = $9, \
-                     version = $10, initialized = initialized OR $11 WHERE id = $12",
+                     in_library = TRUE, in_library_at = $8, \
+                     initialized = initialized OR $9 WHERE id = $10",
                 )
                 .bind(&m.artist)
                 .bind(&m.author)
@@ -357,8 +364,6 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
                 .bind(&m.thumbnail_url)
                 .bind(update_strategy_name(m.update_strategy))
                 .bind(added_secs)
-                .bind(m.last_modified_at)
-                .bind(m.version)
                 .bind(m.description.is_some())
                 .bind(id)
                 .execute(pool)
@@ -404,7 +409,7 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
                 Some(cid) => {
                     sqlx::query(
                         "UPDATE chapter SET name = $1, scanlator = $2, read = $3, bookmark = $4, last_page_read = $5, \
-                         date_upload = $6, chapter_number = $7, source_order = $8, last_modified_at = $9, version = $10 WHERE id = $11",
+                         date_upload = $6, chapter_number = $7, source_order = $8 WHERE id = $9",
                     )
                     .bind(&ch.name)
                     .bind(&ch.scanlator)
@@ -413,9 +418,11 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
                     .bind(ch.last_page_read)
                     .bind(ch.date_upload)
                     .bind(ch.chapter_number)
-                    .bind(ch.source_order)
-                    .bind(ch.last_modified_at)
-                    .bind(ch.version)
+                    // source_order is 1-based here (Mihon/phone backups are
+                    // 0-based): the reader indexes chapters by
+                    // `len - sourceOrder` on a DESC-sorted list, so a 0-based
+                    // chapter (or 0) can never be opened.
+                    .bind(ch.source_order + 1)
                     .bind(cid)
                     .execute(pool)
                     .await?;
@@ -434,7 +441,7 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
                     .bind(ch.last_page_read)
                     .bind(ch.date_upload)
                     .bind(ch.chapter_number)
-                    .bind(ch.source_order)
+                    .bind(ch.source_order + 1)
                     .bind(manga_id)
                     .fetch_one(pool)
                     .await?;
@@ -522,7 +529,13 @@ async fn build_backup(pool: &PgPool) -> Result<Backup, BackupError> {
                 date_fetch: c.fetched_at,
                 date_upload: c.date_upload,
                 chapter_number: c.chapter_number,
-                source_order: c.source_order,
+                // File format is the Mihon one: source_order is 0-based in a
+                // `.tachibk`. The server stores it 1-based internally (the
+                // WebUI reader indexes `len - sourceOrder`), so export
+                // subtracts 1 and restore adds it back — a phone backup and a
+                // re-export of a restored library stay numerically identical,
+                // and export→import round-trips without drifting.
+                source_order: c.source_order.saturating_sub(1),
                 last_modified_at: c.last_modified_at,
                 version: c.version,
                 memo: c.memo.clone().into_bytes(),

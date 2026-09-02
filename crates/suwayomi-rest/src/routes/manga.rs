@@ -171,6 +171,25 @@ async fn find_chapter_id(s: &AppState, manga_id: i32, index: i32) -> Result<i32,
         .ok_or_else(|| suwayomi_domain::error::DomainError::NotFound("chapter not found".into()))
 }
 
+/// Resolves a chapter for the offline-page endpoints. The API parameter is
+/// `source_order`, but rows written by older builds sometimes embedded the
+/// chapter *number* (e.g. `/chapter/1/page/…` for a chapter whose
+/// source_order is 0) into stored `image_url` values. Fall back to
+/// `chapter_number` so those archives keep serving.
+async fn find_chapter_id_offline(s: &AppState, manga_id: i32, index: i32) -> Result<i32, suwayomi_domain::error::DomainError> {
+    if let Ok(id) = find_chapter_id(s, manga_id, index).await {
+        return Ok(id);
+    }
+    let sql = suwayomi_domain::sql::bind_placeholders("SELECT id FROM chapter WHERE manga = ? AND chapter_number = ?");
+    sqlx::query_scalar::<_, i32>(&sql)
+        .bind(manga_id)
+        .bind(index)
+        .fetch_optional(s.db.pool())
+        .await
+        .map_err(suwayomi_domain::error::DomainError::Db)?
+        .ok_or_else(|| suwayomi_domain::error::DomainError::NotFound("chapter not found".into()))
+}
+
 async fn chapter_retrieve(
     State(s): State<AppState>,
     Path((manga_id, chapter_index)): Path<(i32, i32)>,
@@ -235,7 +254,7 @@ async fn page_retrieve(
     State(s): State<AppState>,
     Path((manga_id, chapter_index, index)): Path<(i32, i32, i32)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let id = find_chapter_id(&s, manga_id, chapter_index).await.map_err(crate::error::ApiError::from)?;
+    let id = find_chapter_id_offline(&s, manga_id, chapter_index).await.map_err(crate::error::ApiError::from)?;
     let page = s.page.get_page(id, index).await?;
     Ok(Json(serde_json::json!({ "index": page.index, "imageUrl": page.image_url })))
 }
@@ -248,7 +267,7 @@ async fn page_image(
     Path((manga_id, chapter_index, index)): Path<(i32, i32, i32)>,
 ) -> Response {
     let find = async {
-        let cid = find_chapter_id(&s, manga_id, chapter_index).await?;
+        let cid = find_chapter_id_offline(&s, manga_id, chapter_index).await?;
         let sql = suwayomi_domain::sql::bind_placeholders("SELECT real_url FROM chapter WHERE id = ?");
         let real: Option<String> = sqlx::query_scalar(&sql).bind(cid).fetch_optional(s.db.pool()).await?;
         let real = real.filter(|r| !r.is_empty()).ok_or_else(|| {

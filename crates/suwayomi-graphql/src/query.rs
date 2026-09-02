@@ -2434,12 +2434,14 @@ fn local_webui_build_time(dir: &std::path::Path) -> LongString {
     LongString(0)
 }
 
-/// `r3482` → 3482 for numeric comparison (plain string compare breaks on
-/// `r349` vs `r3480`).
+/// Normalizes a release tag to a comparable number by stripping every
+/// non-digit character: `r3482` → 3482, `v3.1.7` → 317, `3.5.16` → 3516.
+/// Both the legacy `r{commitCount}` style and the dot-style stable tags
+/// encode the same commit count, so numeric comparison stays correct across
+/// mixed formats (plain string compare would break on `r349` vs `r3480`).
 fn tag_to_num(tag: &str) -> i64 {
     tag.chars()
-        .skip_while(|c| !c.is_ascii_digit())
-        .take_while(|c| c.is_ascii_digit())
+        .filter(|c| c.is_ascii_digit())
         .collect::<String>()
         .parse()
         .unwrap_or(0)

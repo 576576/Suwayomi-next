@@ -1256,14 +1256,16 @@ impl QueryRoot {
         UpdateStatusPayload::idle()
     }
 
-    /// Mirrors `libraryUpdateStatus()`.
-    async fn library_update_status(&self) -> LibraryUpdateStatus {
-        LibraryUpdateStatus::idle()
+    /// Mirrors `libraryUpdateStatus()` — live status/progress of the global updater.
+    async fn library_update_status(&self, ctx: &Context<'_>) -> async_graphql::Result<LibraryUpdateStatus> {
+        let state = ctx.data::<crate::state::GraphQLState>()?;
+        Ok(state.update.latest_status().await)
     }
 
-    /// Mirrors `lastUpdateTimestamp()`.
-    async fn last_update_timestamp(&self) -> LastUpdateTimestampPayload {
-        LastUpdateTimestampPayload { timestamp: LongString(0) }
+    /// Mirrors `lastUpdateTimestamp()` — epoch-millis of the last finished global update.
+    async fn last_update_timestamp(&self, ctx: &Context<'_>) -> async_graphql::Result<LastUpdateTimestampPayload> {
+        let state = ctx.data::<crate::state::GraphQLState>()?;
+        Ok(LastUpdateTimestampPayload { timestamp: LongString(state.update.last_update_timestamp_ms().await) })
     }
 
     /// Mirrors `koSyncStatus()` — Koreader sync (Phase 6 wires accounts).

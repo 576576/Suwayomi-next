@@ -6,6 +6,7 @@
 //! snapshots on a broadcast channel that the `libraryUpdateStatusChanged`
 //! subscription consumes.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use sqlx::PgPool;
@@ -14,10 +15,14 @@ use tokio::sync::broadcast;
 use suwayomi_core::db::Db;
 use suwayomi_core::schema::{ChapterRow, MangaRow};
 use suwayomi_core::source::{SChapter, SManga};
+use suwayomi_domain::meta::{MetaService, MetaTable};
 use suwayomi_domain::source::SourceFetcher;
 
 use crate::mutation_b4::{LibraryUpdateStatus, MangaJobStatus, MangaUpdateType, UpdaterJobsInfoType};
 use crate::types::MangaType;
+
+/// global_meta key persisting the epoch-millis of the last finished global update.
+pub const LAST_GLOBAL_UPDATE_AT: &str = "last_global_update_at";
 
 /// Shared updater handle (clonable; one per server).
 #[derive(Clone)]
@@ -26,6 +31,9 @@ pub struct UpdateManager {
     fetcher: Arc<dyn SourceFetcher>,
     tx: broadcast::Sender<LibraryUpdateStatus>,
     state: Arc<tokio::sync::Mutex<UpdaterState>>,
+    /// Latest emitted status snapshot, kept so `libraryUpdateStatus` queries
+    /// return progress without waiting for the subscription channel.
+    latest: Arc<tokio::sync::Mutex<LibraryUpdateStatus>>,
 }
 
 #[derive(Default)]
@@ -37,7 +45,13 @@ struct UpdaterState {
 impl UpdateManager {
     pub fn new(db: Db, fetcher: Arc<dyn SourceFetcher>) -> Self {
         let (tx, _) = broadcast::channel(64);
-        Self { db, fetcher, tx, state: Arc::new(tokio::sync::Mutex::new(UpdaterState::default())) }
+        Self {
+            db,
+            fetcher,
+            tx,
+            state: Arc::new(tokio::sync::Mutex::new(UpdaterState::default())),
+            latest: Arc::new(tokio::sync::Mutex::new(LibraryUpdateStatus::idle())),
+        }
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<LibraryUpdateStatus> {
@@ -46,6 +60,21 @@ impl UpdateManager {
 
     pub async fn is_running(&self) -> bool {
         self.state.lock().await.running
+    }
+
+    /// Latest status snapshot for polling resolvers (`libraryUpdateStatus`).
+    pub async fn latest_status(&self) -> LibraryUpdateStatus {
+        self.latest.lock().await.clone()
+    }
+
+    /// Epoch-millis of the last finished global update (persisted, survives restarts).
+    pub async fn last_update_timestamp_ms(&self) -> i64 {
+        MetaService::new(self.db.clone())
+            .get_map(MetaTable::Global, 0)
+            .await
+            .ok()
+            .and_then(|m| m.get(LAST_GLOBAL_UPDATE_AT).and_then(|v| v.parse().ok()))
+            .unwrap_or(0)
     }
 
     /// Starts the update job. No-op if already running.
@@ -67,8 +96,20 @@ impl UpdateManager {
         self.state.lock().await.stop_requested = true;
     }
 
-    fn emit(&self, status: LibraryUpdateStatus) {
+    async fn emit(&self, status: LibraryUpdateStatus) {
+        *self.latest.lock().await = status.clone();
         let _ = self.tx.send(status);
+    }
+
+    /// Persists the finish time of a global update run.
+    async fn persist_last_update(&self, now_ms: i64) {
+        let mut m = HashMap::new();
+        m.insert(LAST_GLOBAL_UPDATE_AT.to_string(), now_ms.to_string());
+        let mut by_ref = HashMap::new();
+        by_ref.insert(0i64, m);
+        if let Err(e) = MetaService::new(self.db.clone()).modify(MetaTable::Global, &by_ref).await {
+            tracing::warn!(%e, "updater: failed to persist last global update timestamp");
+        }
     }
 
     async fn update_loop(&self, categories: Option<Vec<i32>>) {
@@ -77,7 +118,7 @@ impl UpdateManager {
             Ok(ids) => ids,
             Err(e) => {
                 tracing::error!(%e, "updater: failed to load library");
-                self.emit(LibraryUpdateStatus::idle());
+                self.emit(LibraryUpdateStatus::idle()).await;
                 return;
             }
         };
@@ -97,7 +138,8 @@ impl UpdateManager {
                 total_jobs: total,
             },
             manga_updates: vec![],
-        });
+        })
+        .await;
 
         for manga_id in ids {
             if self.state.lock().await.stop_requested {
@@ -133,7 +175,8 @@ impl UpdateManager {
                     total_jobs: total,
                 },
                 manga_updates: manga_updates.clone(),
-            });
+            })
+            .await;
         }
 
         self.emit(LibraryUpdateStatus {
@@ -146,7 +189,11 @@ impl UpdateManager {
                 total_jobs: total,
             },
             manga_updates,
-        });
+        })
+        .await;
+
+        // Remember when the last global update finished (shown as "last update" in the UI).
+        self.persist_last_update(chrono::Utc::now().timestamp_millis()).await;
     }
 
     /// Fetches one manga's chapters from its source and inserts new ones.
@@ -193,10 +240,13 @@ impl UpdateManager {
             .map_err(|e| e.to_string())?;
 
         let mut inserted = 0usize;
+        // New chapters are stamped with the (epoch-seconds) time they were found so they
+        // show up in the "updates" feed (fetched_at > in_library_at, both epoch seconds).
+        let now = chrono::Utc::now().timestamp();
         for (idx, ch) in chapters.iter().enumerate() {
             let res = sqlx::query(
-                "INSERT INTO chapter (url, name, date_upload, chapter_number, scanlator, source_order, real_url, manga) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (url, manga) DO NOTHING",
+                "INSERT INTO chapter (url, name, date_upload, chapter_number, scanlator, source_order, real_url, fetched_at, manga) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (url, manga) DO NOTHING",
             )
             .bind(&ch.url)
             .bind(&ch.name)
@@ -205,6 +255,7 @@ impl UpdateManager {
             .bind(ch.scanlator.clone())
             .bind(idx as i32)
             .bind(ch.url.clone())
+            .bind(now)
             .bind(manga_id)
             .execute(pool)
             .await;
@@ -214,10 +265,12 @@ impl UpdateManager {
             }
         }
 
+        // All fetch-time fields on `manga` are epoch seconds (age is derived as
+        // now_epoch_secs() - last_fetched_at); timestamp_millis() would corrupt them.
         let _ = sqlx::query(
             "UPDATE manga SET last_fetched_at = $1, chapters_last_fetched_at = $1, last_modified_at = $1, version = version + 1 WHERE id = $2",
         )
-        .bind(chrono::Utc::now().timestamp_millis())
+        .bind(now)
         .bind(manga_id)
         .execute(pool)
         .await;

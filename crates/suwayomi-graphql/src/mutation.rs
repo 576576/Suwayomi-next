@@ -1540,11 +1540,13 @@ impl MutationRoot {
         // reader clamps its current page index against pageCount, so a stale
         // -1 (older builds wrote it with invalid '?' placeholders) freezes
         // page turning at the first page even though the page list is fine.
+        // Note: fetched_at is intentionally NOT touched here — it denotes when
+        // a chapter was discovered (epoch seconds, matching in_library_at) and
+        // must not be rewritten every time pages are hydrated.
         if !pages.is_empty() {
-            let sql = bind_placeholders("UPDATE chapter SET page_count = ?, fetched_at = ? WHERE id = ?");
+            let sql = bind_placeholders("UPDATE chapter SET page_count = ? WHERE id = ?");
             let _ = sqlx::query(&sql)
                 .bind(pages.len() as i32)
-                .bind(chrono::Utc::now().timestamp_millis())
                 .bind(input.chapter_id)
                 .execute(state.db.pool())
                 .await;

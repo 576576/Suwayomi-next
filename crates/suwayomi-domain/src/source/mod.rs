@@ -89,3 +89,19 @@ impl SourceFetcher for StubFetcher {
         false
     }
 }
+
+
+/// Convert an external http(s) image URL into the server's same-origin
+/// proxy path `/api/v1/image/{b64}` (handled by `suwayomi-rest::routes::image`).
+/// Non-http values pass through unchanged so already-proxied paths and local
+/// paths round-trip safely. The encoding must stay in lockstep with the REST
+/// route; keep both here.
+pub fn image_proxy_url(url: &str) -> String {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(url);
+        format!("/api/v1/image/{b64}")
+    } else {
+        url.to_string()
+    }
+}

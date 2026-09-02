@@ -36,6 +36,7 @@ chrono = { version = "0.4", features = ["serde"] }
 prost = "0.13"
 uuid = { version = "1", features = ["v4", "serde"] }
 md-5 = "0.10"
+base64 = "0.22"
 flate2 = "1"
 # Embedded PostgreSQL — default database backend (Phase 6).
 # Oliphaunt (the renamed pglite-oxide) native server: real local PostgreSQL

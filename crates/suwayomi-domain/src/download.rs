@@ -56,6 +56,7 @@ pub struct DownloadManager {
     fetcher: Arc<dyn SourceFetcher>,
     data_dir: std::path::PathBuf,
     client: reqwest::Client,
+    server_base_url: String,
     queue: Arc<Mutex<VecDeque<DownloadJob>>>,
     tx: broadcast::Sender<DownloadEvent>,
     running: Arc<AtomicBool>,
@@ -76,6 +77,7 @@ impl DownloadManager {
             fetcher,
             data_dir,
             client,
+            server_base_url: String::from("http://127.0.0.1:8090"),
             queue: Arc::new(Mutex::new(VecDeque::new())),
             tx,
             running: Arc::new(AtomicBool::new(false)),
@@ -246,10 +248,22 @@ impl DownloadManager {
         self.patch_job(&job).await;
         self.emit_snapshot().await;
 
-        let result = self
-            .fetcher
-            .fetch_pages(job.source_id, &job.manga_url, &job.chapter_url)
-            .await;
+        // Page list source, in priority order:
+        //   1. page rows already in the DB (online reading populated them)
+        //   2. fetch from the source through the sandbox (slow path; can
+        //      hit the okhttp callTimeout for large chapters on slow CDNs)
+        let mut pages: Vec<suwayomi_core::source::SourcePage> = Vec::new();
+        match read_db_pages(self.db.pool(), job.chapter_id).await {
+            Ok(rows) => pages = rows,
+            Err(e) => tracing::debug!("read_db_pages: {e}"),
+        }
+        let result = if !pages.is_empty() {
+            Ok(pages)
+        } else {
+            self.fetcher
+                .fetch_pages(job.source_id, &job.manga_url, &job.chapter_url)
+                .await
+        };
 
         match result {
             Ok(pages) => {
@@ -374,26 +388,59 @@ impl DownloadManager {
         std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {e}"))?;
         let cbz_path = dir.join(&chapter_file);
 
-        // Download page bytes (limited concurrency to stay gentle on the CDN).
-        let mut downloaded: Vec<(i32, String, Vec<u8>)> = Vec::new();
-        let mut errors = Vec::new();
-        let fetches: Vec<_> = pages
+        // Download page bytes concurrently. Each URL goes through the
+        // same-origin image proxy (`/api/v1/image/{b64}`) so:
+        //   * online-reading pages already cached by the proxy return
+        //     instantly from disk (warm path)
+        //   * cold pages still bypass CORS / hotlink issues
+        //   * failed/interrupted downloads naturally resume by re-hitting
+        //     the same proxy path; missing pages fall through to a fresh
+        //     download.
+        // 8 in-flight keeps us gentle on the CDN while still ~8× faster
+        // than the previous sequential loop on warm paths.
+        const CONCURRENCY: usize = 8;
+        let fetches: Vec<(i32, String)> = pages
             .iter()
-            .enumerate()
-            .map(|(n, p)| {
-                let url = p.image_url.clone().unwrap_or_else(|| p.url.clone());
-                (n as i32 + 1, url)
+            .map(|p| {
+                let raw = p.image_url.clone().unwrap_or_else(|| p.url.clone());
+                (p.index, raw)
             })
             .collect();
-        for (idx, url) in &fetches {
-            match self.download_bytes(url).await {
-                Ok(bytes) => {
-                    let ext = image_ext_from_content_type(&bytes);
-                    downloaded.push((*idx, format!("{idx}.{ext}"), bytes));
-                    progress(downloaded.len());
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(CONCURRENCY));
+        let client = self.client.clone();
+        let mut join = tokio::task::JoinSet::new();
+        for (idx, raw_url) in fetches.clone() {
+            let permit_src = sem.clone();
+            let proxy_path = crate::source::image_proxy_url(&raw_url);
+            let url = format!("{}{}", self.server_base_url, proxy_path);
+            let client = client.clone();
+            join.spawn(async move {
+                let _permit = permit_src.acquire_owned().await.expect("semaphore closed");
+                let r = client.get(&url).send().await;
+                let resp = match r {
+                    Ok(r) if r.status().is_success() => r,
+                    Ok(r) => return Err(format!("page {idx}: HTTP {}", r.status())),
+                    Err(e) => return Err(format!("page {idx}: {e}")),
+                };
+                let bytes = match resp.bytes().await {
+                    Ok(b) => b,
+                    Err(e) => return Err(format!("page {idx}: read {e}")),
+                };
+                Ok::<(i32, Vec<u8>), String>((idx, bytes.to_vec()))
+            });
+        }
+        let mut downloaded: Vec<(i32, String, Vec<u8>)> = Vec::new();
+        let mut errors: Vec<String> = Vec::new();
+        while let Some(joined) = join.join_next().await {
+            match joined {
+                    Ok(Ok((idx, bytes))) => {
+                        let ext = image_ext_from_content_type(&bytes);
+                        downloaded.push((idx, format!("{idx}.{ext}"), bytes));
+                        progress(downloaded.len());
+                    }
+                    Ok(Err(e)) => errors.push(e),
+                    Err(e) => errors.push(format!("join: {e}")),
                 }
-                Err(e) => errors.push(format!("page {idx}: {e}")),
-            }
         }
         if downloaded.is_empty() {
             return Err(format!("no page image could be downloaded: {}", errors.join("; ")));
@@ -559,15 +606,56 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
     // ever storing an archive (real_url stays empty) — nothing to read
     // offline. Clear those stale markers so the chapters can be downloaded
     // again; real downloads always set real_url to the CBZ path.
-    let cleared = sqlx::query(
-        bind_placeholders("UPDATE chapter SET is_downloaded = FALSE WHERE is_downloaded = TRUE AND (real_url IS NULL OR real_url = '')").as_str(),
-    )
-    .execute(db.pool())
-    .await
-    .map(|r| r.rows_affected())
-    .unwrap_or(0);
+    // Same for markers whose archive file has since disappeared from disk.
+    let stale_ids: Vec<i32> = {
+        use sqlx::Row;
+        let sql = bind_placeholders(
+            "SELECT id, real_url FROM chapter WHERE is_downloaded = TRUE",
+        );
+        let rows = sqlx::query(&sql).fetch_all(db.pool()).await.unwrap_or_default();
+        let mut ids: Vec<i32> = Vec::new();
+        for r in rows {
+            let id: i32 = r.get("id");
+            let real: Option<String> = r.try_get("real_url").ok().flatten();
+            let missing = match &real {
+                Some(p) if !p.is_empty() => !std::path::Path::new(p).exists(),
+                _ => true,
+            };
+            if missing {
+                ids.push(id);
+            }
+        }
+        ids
+    };
+    let cleared = if stale_ids.is_empty() {
+        sqlx::query(
+            bind_placeholders(
+                "UPDATE chapter SET is_downloaded = FALSE WHERE is_downloaded = TRUE AND (real_url IS NULL OR real_url = '')",
+            ).as_str(),
+        )
+        .execute(db.pool())
+        .await
+        .map(|r| r.rows_affected())
+        .unwrap_or(0)
+    } else {
+        sqlx::query(
+            bind_placeholders("UPDATE chapter SET is_downloaded = FALSE WHERE id = ANY($1)").as_str(),
+        )
+        .bind(&stale_ids)
+        .execute(db.pool())
+        .await
+        .map(|r| r.rows_affected())
+        .unwrap_or(0)
+    };
     if cleared > 0 {
         tracing::info!("downloads: cleared {cleared} stale download marker(s) without an archive");
+    }
+    if !stale_ids.is_empty() {
+        // Drop page rows for the cleared chapters so the next reader/download
+        // re-hydrates from the source instead of reusing archive endpoints
+        // (`/api/v1/...`) that no longer serve bytes.
+        let sql = bind_placeholders("DELETE FROM page WHERE chapter = ANY($1)");
+        let _ = sqlx::query(&sql).bind(&stale_ids).execute(db.pool()).await;
     }
     if !downloads_root.is_dir() {
         return Ok(0);
@@ -704,16 +792,35 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                     let cname = entry.file_name().to_string_lossy().into_owned();
                     let source_order = i as i32 + 1;
                     let now = now_epoch_secs();
-                    let sql = bind_placeholders("SELECT id FROM chapter WHERE manga = ? AND url = ?");
-                    let existing: Option<(i32,)> = match sqlx::query_as(&sql)
+                    let cbz_path = entry.path().to_string_lossy().into_owned();
+                    // Match order matters: first try the chapter this server
+                    // downloaded itself (real_url = this archive — its url is
+                    // the remote source url, not the file name); only then
+                    // fall back to external imports matched by url = file
+                    // name. Without the real_url match, reconcile re-inserted
+                    // our own downloads as duplicate "Chapter.cbz" chapters.
+                    let sql = bind_placeholders("SELECT id FROM chapter WHERE manga = ? AND real_url = ?");
+                    let mut existing: Option<(i32, bool)> = match sqlx::query_as::<_, (i32,)>(&sql)
                         .bind(vid)
-                        .bind(&cname)
+                        .bind(&cbz_path)
                         .fetch_optional(db.pool())
                         .await
                     {
-                        Ok(v) => v,
+                        Ok(v) => v.map(|(id,)| (id, true)),
                         Err(_) => None,
                     };
+                    if existing.is_none() {
+                        let sql = bind_placeholders("SELECT id FROM chapter WHERE manga = ? AND url = ?");
+                        existing = match sqlx::query_as::<_, (i32,)>(&sql)
+                            .bind(vid)
+                            .bind(&cname)
+                            .fetch_optional(db.pool())
+                            .await
+                        {
+                            Ok(v) => v.map(|(id,)| (id, false)),
+                            Err(_) => None,
+                        };
+                    }
                     // Chapter name: prefer the archive's own metadata title
                     // (ComicInfo `<Title>`), then the file stem, then
                     // "Chapter".
@@ -738,9 +845,27 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                     {
                         chapter_name = stem;
                     }
-                    let cbz_path = entry.path().to_string_lossy().into_owned();
                     let res = match existing {
-                        Some((cid,)) => {
+                        Some((cid, true)) => {
+                            // Our own download: keep the chapter's source
+                            // order and name (they mirror the remote chapter
+                            // list / extension metadata), just sync state.
+                            let _ = sqlx::query(
+                                bind_placeholders(
+                                    "UPDATE chapter SET is_downloaded = TRUE, fetched_at = ?, real_url = ? WHERE id = ?",
+                                )
+                                .as_str(),
+                            )
+                            .bind(now)
+                            .bind(&cbz_path)
+                            .bind(cid)
+                            .execute(db.pool())
+                            .await;
+                            Some(cid)
+                        }
+                        Some((cid, false)) => {
+                            // External import matched by url = file name:
+                            // keep the original ordering behaviour.
                             let _ = sqlx::query(
                                 bind_placeholders(
                                     "UPDATE chapter SET is_downloaded = TRUE, source_order = ?, fetched_at = ?, real_url = ?, name = ? WHERE id = ?",
@@ -851,6 +976,35 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
         );
     }
     Ok(total_chapters)
+}
+
+/// Read page rows already in the DB for a chapter.
+async fn read_db_pages(
+    pool: &sqlx::PgPool,
+    chapter_id: i32,
+) -> sqlx::Result<Vec<suwayomi_core::source::SourcePage>> {
+    use sqlx::Row;
+    // Skip rows whose image_url points at the offline archive endpoint
+    // (`/api/v1/manga/.../page/N/image`): after a chapter has been downloaded
+    // the download step rewrites rows to serve the CBZ. Those rows are only
+    // usable while the archive exists, and re-downloading (archive removed)
+    // must fall back to the source instead of re-fetching the archive URLs.
+    let sql = bind_placeholders(
+        "SELECT index, url, image_url FROM page \
+         WHERE chapter = ? AND (image_url IS NULL OR image_url NOT LIKE '/api/v1/%') \
+         ORDER BY index ASC ",
+    );
+    let rows = sqlx::query(&sql).bind(chapter_id).fetch_all(pool).await?;
+    Ok(rows.into_iter().map(|r| {
+        let url: String = r.try_get("url").unwrap_or_default();
+        let image_url: Option<String> = r.try_get("image_url").ok().flatten();
+        suwayomi_core::source::SourcePage {
+            index: r.try_get("index").unwrap_or(0),
+            image_url: image_url.or(Some(url.clone())),
+            url,
+            uri: None,
+        }
+    }).collect())
 }
 
 /// `"nHentai.com (unoriginal) (JA)"` -> `("nHentai.com (unoriginal)", "ja")`.

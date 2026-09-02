@@ -12,12 +12,12 @@ use sqlx::postgres::PgPool;
 use suwayomi_core::db::Db;
 use suwayomi_core::models::{IncludeOrExclude, MangaStatus, PaginatedList, UpdateStrategy};
 use suwayomi_core::source::SManga;
-use suwayomi_domain::category::category_manga::CategoryMangaService;
 use suwayomi_domain::category::CategoryService;
+use suwayomi_domain::category::category_manga::CategoryMangaService;
 use suwayomi_domain::chapter::ChapterService;
+use suwayomi_domain::manga::MangaService;
 use suwayomi_domain::manga::library::LibraryService;
 use suwayomi_domain::manga::manga_list::MangaListService;
-use suwayomi_domain::manga::MangaService;
 use suwayomi_domain::source::StubFetcher;
 
 const BUSINESS_TABLES: &[&str] = &[

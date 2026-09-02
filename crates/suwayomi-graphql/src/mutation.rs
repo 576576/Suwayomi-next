@@ -8,6 +8,7 @@ use std::sync::Mutex;
 
 use suwayomi_core::schema::{CategoryRow, ChapterRow, MangaRow};
 use suwayomi_domain::meta::{MetaService, MetaTable};
+use suwayomi_domain::source::image_proxy_url;
 use suwayomi_domain::sql::bind_placeholders;
 
 use crate::scalars::LongString;
@@ -1749,19 +1750,6 @@ async fn fetch_chapter_row(state: &GraphQLState, id: i32) -> async_graphql::Resu
     sqlx::query_as::<_, ChapterRow>(&sql).bind(id).fetch_one(state.db.pool()).await.map_err(async_graphql::Error::from)
 }
 
-/// Map an external http(s) image URL onto the same-origin proxy path
-/// `/api/v1/image/{b64}` (see suwayomi-rest::routes::image), so the WebUI's
-/// `crossOrigin='anonymous'` image loads work against CDNs without CORS
-/// headers. Non-http values (already-proxied paths, local files) pass through.
-fn image_proxy_url(url: &str) -> String {
-    if url.starts_with("http://") || url.starts_with("https://") {
-        use base64::Engine;
-        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(url);
-        format!("/api/v1/image/{b64}")
-    } else {
-        url.to_string()
-    }
-}
 
 /// Idempotent upsert of local-source chapters by (manga, url).
 async fn upsert_local_chapters(

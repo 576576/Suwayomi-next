@@ -32,9 +32,16 @@ cargo run --release -p suwayomi-server
 
 ## Release 目录结构与用法
 
-GitHub Release 提供 `Suwayomi-{version}-{platform}-{arch}.zip` 等平台压缩包，解压后即开即用：
+GitHub Release 提供 `Suwayomi-{version}-{platform}-{arch}.zip` 等平台压缩包，解压后即开即用
+（下方目录结构以“含 JRE 的完整版”为例；基础版无 `jre/` 目录，server 会回退到系统 java）。
+产物命名约定（Windows x64 可选捆绑，按内容如实加后缀；无后缀 = 不含 JRE/Electron 的基础包）：
 
 > 若发布没有你想要的平台构建，可Fork该仓库后手动运行Release构建，构建参数支持一键配置
+
+- `…-windows-x64.zip` 基础包：桌面壳 + 服务器 + 沙盒 jar + WebUI（不含 JRE/Electron）
+- `…-windows-x64+jre.zip`：基础包 + 捆绑 Temurin JRE 25（`jre/`，沙盒自包含）
+- `…-windows-x64+electron.zip` / `…+electron+jre.zip`：基础包 + `electron/` 桌面壳
+  （Electron 开启时若同时选了 JRE 则命名为 `+electron+jre`，如实标注内含 JRE）
 
 ```
 suwayomi.exe          桌面壳（Tauri 托盘）：启动/重启/WebUI/数据目录/设置/退出
@@ -58,8 +65,8 @@ pglite-data/          嵌入式数据库（server 自动创建于发布根目录
 logs/                 运行时日志
 ```
 
-带 Electron 桌面壳的产物为 `Suwayomi-{version}-{platform}-{arch}_wElectron.zip`——在标准版
-基础上多一个 `electron/` 目录（electron v44.1.0 win32-x64 运行时 + 应用入口）。托盘
+带 Electron 桌面壳的产物命名 `Suwayomi-{version}-{platform}-{arch}+electron+jre.zip`——在
+`+jre` 版基础上多一个 `electron/` 目录（electron v44.1.0 win32-x64 运行时 + 应用入口）。托盘
 设置「有 Electron 时优先使用」（默认开）开启后，打开 WebUI 将启动 Electron 窗口
 （`electron/electron.exe --url=http://127.0.0.1:{port}`）而非系统浏览器；托盘退出时
 会一并关闭 Electron 进程。

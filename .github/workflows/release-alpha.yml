@@ -68,9 +68,11 @@ jobs:
           TGT="windows-x64"
           BIN="target/x86_64-pc-windows-msvc/release/suwayomi-server.exe"
 
-          # 产物命名：Suwayomi-r3046-windows-x64.zip（无 Next、无 -alpha 后缀）
-          STAGE="dist/Suwayomi-${VER}-${TGT}"
-          STAGE_EL="dist/Suwayomi-${VER}-${TGT}_wElectron"
+          # 产物命名：Suwayomi-r3046-windows-x64.zip（无 Next、无 -alpha 后缀）。
+          # 本 CI 固定捆绑 Temurin JRE 25，故标准包名为 ...+jre；Electron 包在其
+          # 基础上再带桌面壳，命名为 ...+electron+jre（与 release.yml 的后缀约定一致）
+          STAGE="dist/Suwayomi-${VER}-${TGT}+jre"
+          STAGE_EL="dist/Suwayomi-${VER}-${TGT}+electron+jre"
           mkdir -p "$STAGE/bin"
           cp "$BIN" "$STAGE/bin/"
           # 桌面壳（Tauri 托盘+设置）——build-tray.sh 注入真实版本号到 Windows 资源
@@ -105,10 +107,10 @@ jobs:
           echo "$WEBUI_ZIP" | python3 -c "import sys; u=sys.stdin.read().strip(); print(u.split('/download/')[1].split('/')[0])" > "$STAGE/webui/revision"
           rm -f webui.zip
           mkdir -p "$STAGE/data/autobackup" "$STAGE/data/downloads" "$STAGE/data/local"
-          powershell -Command "Compress-Archive -Path 'dist/Suwayomi-${VER}-${TGT}' -DestinationPath 'dist/Suwayomi-${VER}-${TGT}.zip' -Force"
+          powershell -Command "Compress-Archive -Path 'dist/Suwayomi-${VER}-${TGT}+jre' -DestinationPath 'dist/Suwayomi-${VER}-${TGT}+jre.zip' -Force"
 
-          # ---- 带 Electron 壳的产物（_wElectron，桌面窗口化 WebUI）----
-          # 复制普通产物为基底，附加 electron v44.1.0 win32-x64 运行时 + 应用入口
+          # ---- 带 Electron 壳的产物（+electron+jre，桌面窗口化 WebUI）----
+          # 复制 JRE 版产物为基底，附加 electron v44.1.0 win32-x64 运行时 + 应用入口
           cp -r "$STAGE" "$STAGE_EL"
           ELECTRON_VER="v44.1.0"
           curl -sL -o electron.zip "https://github.com/electron/electron/releases/download/${ELECTRON_VER}/electron-${ELECTRON_VER}-win32-x64.zip"
@@ -118,17 +120,17 @@ jobs:
           # 窗口图标：与 main.js 的 BrowserWindow icon 配套（替代 Electron 默认图标）
           cp tauri-app/icons/icon.ico "$STAGE_EL/electron/resources/app/icon.ico"
           rm -f electron.zip
-          powershell -Command "Compress-Archive -Path 'dist/Suwayomi-${VER}-${TGT}_wElectron' -DestinationPath 'dist/Suwayomi-${VER}-${TGT}_wElectron.zip' -Force"
+          powershell -Command "Compress-Archive -Path 'dist/Suwayomi-${VER}-${TGT}+electron+jre' -DestinationPath 'dist/Suwayomi-${VER}-${TGT}+electron+jre.zip' -Force"
 
-          echo "artifact=dist/Suwayomi-${VER}-${TGT}.zip" >> "$GITHUB_OUTPUT"
-          echo "artifact_el=dist/Suwayomi-${VER}-${TGT}_wElectron.zip" >> "$GITHUB_OUTPUT"
+          echo "artifact=dist/Suwayomi-${VER}-${TGT}+jre.zip" >> "$GITHUB_OUTPUT"
+          echo "artifact_el=dist/Suwayomi-${VER}-${TGT}+electron+jre.zip" >> "$GITHUB_OUTPUT"
       - name: 上传构建产物
         uses: actions/upload-artifact@v7
         with:
           name: Suwayomi-${{ steps.ver.outputs.version_name }}-windows-x64
           path: |
-            dist/Suwayomi-${{ steps.ver.outputs.version_name }}-windows-x64.zip
-            dist/Suwayomi-${{ steps.ver.outputs.version_name }}-windows-x64_wElectron.zip
+            dist/Suwayomi-${{ steps.ver.outputs.version_name }}-windows-x64+jre.zip
+            dist/Suwayomi-${{ steps.ver.outputs.version_name }}-windows-x64+electron+jre.zip
 
   publish:
     name: 发布 alpha (${{ needs.build.outputs.version_name }})
@@ -162,7 +164,7 @@ jobs:
           - versionCode: $CODE
           - commits: $COUNT
           - 构建: windows-x64（推送 main/dev 自动触发）
-          - 产物: Suwayomi-${VER}-windows-x64.zip（标准版）
-          - 产物: Suwayomi-${VER}-windows-x64_wElectron.zip（内置 Electron 桌面壳）" \
+          - 产物: Suwayomi-${VER}-windows-x64+jre.zip（含捆绑 Temurin JRE 25）
+          - 产物: Suwayomi-${VER}-windows-x64+electron+jre.zip（内置 Electron 桌面壳 + JRE）" \
             --prerelease \
             --generate-notes

@@ -1,11 +1,13 @@
 @echo off
 REM ============================================================
-REM  Suwayomi (next) - manual build producing the SAME artifacts
-REM  as the Auto-build CI (release-alpha.yml), WITHOUT _wElectron.
+REM  Suwayomi (next) - manual build producing the base artifact
+REM  (no bundled JRE, no Electron) — naming matches the CI suffix
+REM  convention: an un-suffixed name means neither bundle.
+REM  CI variants: ...+jre / ...+electron(+jre) via release.yml.
 REM
 REM  Output: target\artifacts\  (cleared on every run)
 REM    Suwayomi-r{code}-windows-x64\           unpacked stage
-REM    Suwayomi-r{code}-windows-x64.zip        release zip
+REM    Suwayomi-r{code}-windows-x64.zip        release zip (base)
 REM
 REM  Requires: cargo (Rust), JDK 17+ (jvm-sandbox jar),
 REM  git, curl, python (zip extraction), PowerShell (zip pack)

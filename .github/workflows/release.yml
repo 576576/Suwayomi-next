@@ -2,6 +2,9 @@ name: Release
 
 # 手动发布 CI：workflow_dispatch 触发，可选 alpha / beta / release 通道，
 # 以勾选方式多选构建目标（GitHub 无 multi-select 输入，用 boolean 复选）。
+# 可选捆绑（JRE / Electron，独立于架构勾选、仅 Windows x64 目标生效）：
+# 无论勾选与否都会产出“两个都不捆绑”的基础单包（无后缀）；勾选后每个
+# 捆绑再额外产出带 +jre / +electron(+jre) 后缀的包。
 # 推送自动 alpha 走 release-alpha.yml。
 #
 # 版本号（见 crates/suwayomi-server/build.rs）：
@@ -36,6 +39,14 @@ on:
         description: macOS arm64
         type: boolean
         default: false
+      bundle_jre:
+        description: 额外产物 +jre（捆绑 Temurin JRE 25，仅 Windows x64 生效）
+        type: boolean
+        default: true
+      bundle_electron:
+        description: 额外产物 +electron（捆绑 Electron 桌面壳，仅 Windows x64 生效）
+        type: boolean
+        default: false
       version_count:
         description: 版本计数（留空自动使用提交数；用于预发布验证）
         type: string
@@ -59,6 +70,8 @@ jobs:
       count: ${{ steps.out.outputs.count }}
       tag: ${{ steps.out.outputs.tag }}
       prerelease: ${{ steps.out.outputs.prerelease }}
+      bundle_jre: ${{ steps.out.outputs.bundle_jre }}
+      bundle_electron: ${{ steps.out.outputs.bundle_electron }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -117,7 +130,9 @@ jobs:
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "prerelease=$PRE" >> "$GITHUB_OUTPUT"
-          echo "手动发布: $CHANNEL $VER_NAME (code $VER_CODE, commits $COUNT) -> $TAG targets=$SEL"
+          echo "bundle_jre=${{ github.event.inputs.bundle_jre }}" >> "$GITHUB_OUTPUT"
+          echo "bundle_electron=${{ github.event.inputs.bundle_electron }}" >> "$GITHUB_OUTPUT"
+          echo "手动发布: $CHANNEL $VER_NAME (code $VER_CODE, commits $COUNT) -> $TAG targets=$SEL jre=${{ github.event.inputs.bundle_jre }} electron=${{ github.event.inputs.bundle_electron }}"
 
           # 动态更新 workflow run 标题：Release x.y.z（版本号在 shell 内算出，
           # run-name 表达式拿不到，用 Actions API PATCH；失败不阻塞构建）
@@ -177,21 +192,21 @@ jobs:
           BIN="target/${{ matrix.rust_target }}/release/suwayomi-server"
           if [ "${{ matrix.os }}" = "windows-latest" ]; then BIN="${BIN}.exe"; fi
 
+          IS_WIN="false"
+          [ "${{ matrix.os }}" = "windows-latest" ] && IS_WIN="true"
+
+          # ---- 基础 stage：桌面壳(win)、沙箱 jar(win)、oliphaunt runtime(win) 在此装配；
+          #      JRE/Electron 不进基础包，作为可选 flavor 在最后复制加装 ----
           STAGE="dist/SuwayomiNext-${VER}-${CH}-${TGT}"
           mkdir -p "$STAGE/bin"
           cp "$BIN" "$STAGE/bin/"
-          # 桌面壳仅 Windows（Tauri 在 linux/macOS runner 缺 webkit 依赖）
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+          if [ "$IS_WIN" = "true" ]; then
             # 桌面壳（Tauri 托盘）——build-tray.sh 注入真实版本号到 Windows 资源
             bash tauri-app/build-tray.sh
             cp tauri-app/target/release/suwayomi.exe "$STAGE/" 2>/dev/null || true
             # 扩展沙盒（JVM，Kotlin fat jar）——放 bin/（server 自动查找）
             cd jvm-sandbox && ./gradlew -q jar --no-daemon && cd ..
             cp jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar "$STAGE/bin/jvm-sandbox.jar"
-            # 捆绑 Temurin JRE 25（jre/）——sandbox 运行时自包含，无需系统 JDK
-            curl -sL -o temurin-jre.zip "https://api.adoptium.net/v3/binary/latest/25/ga/windows/x64/jre/hotspot/normal/eclipse"
-            python3 -c "import zipfile,os; z=zipfile.ZipFile('temurin-jre.zip'); t=z.namelist()[0].split('/')[0]; z.extractall('jre-tmp'); z.close(); os.rename('jre-tmp/'+t, '$STAGE/jre')"
-            rm -rf jre-tmp temurin-jre.zip
             # 捆绑 oliphaunt 原生 runtime（oliphaunt-build 编译期 staging 到
             # OUT_DIR/oliphaunt/resources——CI 构建的路径在用户机器不存在，
             # server 运行时回退到 exe 同级 oliphaunt-runtime/resources）
@@ -215,18 +230,81 @@ jobs:
           rm -f webui.zip
           mkdir -p "$STAGE/data/autobackup" "$STAGE/data/downloads" "$STAGE/data/local"
 
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            powershell -Command "Compress-Archive -Path 'dist/SuwayomiNext-${VER}-${CH}-${TGT}' -DestinationPath 'dist/SuwayomiNext-${VER}-${CH}-${TGT}.zip' -Force"
-            echo "artifact=dist/SuwayomiNext-${VER}-${CH}-${TGT}.zip" >> "$GITHUB_OUTPUT"
-          else
+          zip_dir() {
+            # $1=stage 目录（去掉 dist/ 前缀的展示名）$2=zip 绝对路径
+            powershell -Command "Compress-Archive -Path '$1' -DestinationPath '$2' -Force"
+          }
+
+          ARTIFACTS=""
+          if [ "$IS_WIN" = "false" ]; then
+            # linux/macOS：仅 server 基础包（可选捆绑仅 Windows 提供）
             tar -C dist -czf "dist/SuwayomiNext-${VER}-${CH}-${TGT}.tar.gz" "SuwayomiNext-${VER}-${CH}-${TGT}"
-            echo "artifact=dist/SuwayomiNext-${VER}-${CH}-${TGT}.tar.gz" >> "$GITHUB_OUTPUT"
+            ARTIFACTS="dist/SuwayomiNext-${VER}-${CH}-${TGT}.tar.gz"
+          else
+            # ---- Windows：基础包（无后缀，两个都不捆绑）----
+            zip_dir "dist/SuwayomiNext-${VER}-${CH}-${TGT}" "dist/SuwayomiNext-${VER}-${CH}-${TGT}.zip"
+            ARTIFACTS="dist/SuwayomiNext-${VER}-${CH}-${TGT}.zip"
+
+            JRE="${{ needs.prep.outputs.bundle_jre }}"
+            EL="${{ needs.prep.outputs.bundle_electron }}"
+
+            # 预下载运行时到 bundle-tmp，供各 flavor 复用（避免重复下载）
+            mkdir -p bundle-tmp
+            JRE_DIR=""
+            if [ "$JRE" = "true" ]; then
+              curl -sL -o temurin-jre.zip "https://api.adoptium.net/v3/binary/latest/25/ga/windows/x64/jre/hotspot/normal/eclipse"
+              python3 -c "import os,zipfile; z=zipfile.ZipFile('temurin-jre.zip'); t=z.namelist()[0].split('/')[0]; z.extractall('bundle-tmp/jre-x'); os.rename('bundle-tmp/jre-x/'+t,'bundle-tmp/jre'); z.close()"
+              rm -rf bundle-tmp/jre-x temurin-jre.zip
+              JRE_DIR="bundle-tmp/jre"
+            fi
+            EL_DIR=""
+            if [ "$EL" = "true" ]; then
+              ELECTRON_VER="v44.1.0"
+              curl -sL -o electron.zip "https://github.com/electron/electron/releases/download/${ELECTRON_VER}/electron-${ELECTRON_VER}-win32-x64.zip"
+              mkdir -p bundle-tmp/electron
+              python3 -c "import zipfile; zipfile.ZipFile('electron.zip').extractall('bundle-tmp/electron')"
+              rm -f electron.zip
+              # 应用入口 + 窗口图标（与 main.js 的 BrowserWindow icon 配套）
+              mkdir -p bundle-tmp/electron/resources/app
+              cp electron-app/main.js electron-app/package.json bundle-tmp/electron/resources/app/
+              cp tauri-app/icons/icon.ico bundle-tmp/electron/resources/app/icon.ico
+              EL_DIR="bundle-tmp/electron"
+            fi
+
+            # ---- 可选捆绑：+jre（base + Temurin JRE 25 jre/）----
+            if [ -n "$JRE_DIR" ]; then
+              ST="dist/SuwayomiNext-${VER}-${CH}-${TGT}+jre"
+              cp -r "$STAGE" "$ST"
+              cp -r "$JRE_DIR" "$ST/jre"
+              zip_dir "$ST" "${ST}.zip"
+              ARTIFACTS+=$'\n'"${ST}.zip"
+            fi
+
+            # ---- 可选捆绑：+electron（base + Electron 运行时；JRE 开启时一并继承，
+            #      命名 +electron+jre 以如实标注内容）----
+            if [ -n "$EL_DIR" ]; then
+              if [ -n "$JRE_DIR" ]; then
+                ST="dist/SuwayomiNext-${VER}-${CH}-${TGT}+electron+jre"
+              else
+                ST="dist/SuwayomiNext-${VER}-${CH}-${TGT}+electron"
+              fi
+              cp -r "$STAGE" "$ST"
+              if [ -n "$JRE_DIR" ]; then cp -r "$JRE_DIR" "$ST/jre"; fi
+              cp -r "$EL_DIR" "$ST/electron"
+              zip_dir "$ST" "${ST}.zip"
+              ARTIFACTS+=$'\n'"${ST}.zip"
+            fi
+            rm -rf bundle-tmp
           fi
+
+          echo "artifacts=$ARTIFACTS" >> "$GITHUB_OUTPUT"
+          echo "packed artifacts:"
+          echo "$ARTIFACTS" | sed 's/^/  /'
       - name: 上传构建产物
         uses: actions/upload-artifact@v7
         with:
           name: SuwayomiNext-${{ needs.prep.outputs.version_name }}-${{ needs.prep.outputs.channel }}-${{ matrix.target }}
-          path: ${{ steps.pack.outputs.artifact }}
+          path: ${{ steps.pack.outputs.artifacts }}
 
   publish:
     name: 发布 ${{ needs.prep.outputs.channel }} (${{ needs.prep.outputs.version_name }})
@@ -253,6 +331,8 @@ jobs:
           CODE: ${{ needs.prep.outputs.version_code }}
           COUNT: ${{ needs.prep.outputs.count }}
           PRE: ${{ needs.prep.outputs.prerelease }}
+          JRE: ${{ needs.prep.outputs.bundle_jre }}
+          EL: ${{ needs.prep.outputs.bundle_electron }}
         run: |
           # release 通道的 tag 可能已存在（同版本重复发布）——先删除旧 tag/release
           if [ "$CH" = "release" ] && gh release view "$TAG" >/dev/null 2>&1; then
@@ -265,6 +345,7 @@ jobs:
           - versionName: $VER
           - versionCode: $CODE
           - commits: $COUNT
-          - channel: $CH（手动触发）" \
+          - channel: $CH（手动触发）
+          - 产物命名：无后缀=基础包（不含 JRE/Electron）；Windows x64 可选 \`+jre\`（捆绑 Temurin JRE 25）与 \`+electron\`(\`+electron+jre\`)（捆绑 Electron 桌面壳）；本次 jre=$JRE electron=$EL" \
             --prerelease="$PRE" \
             --generate-notes

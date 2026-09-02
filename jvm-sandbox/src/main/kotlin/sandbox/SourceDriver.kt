@@ -24,7 +24,15 @@ class SourceDriver(private val src: LoadedSource) {
     }
 
     fun mangaToMap(m: Any?): Map<String, Any?> {
-        val genre: List<Any> = readField(m, "genre") as? List<Any> ?: emptyList()
+        // genre may arrive as a String ("a, b, c") on some lib builds or as a
+        // List<String> on others — never cast it blindly to a List or the
+        // tags silently become empty.
+        val genreValue: Any? = readField(m, "genre")
+        val genreJoined: String = when (genreValue) {
+            is List<*> -> genreValue.filterNotNull().joinToString(", ") { it.toString() }
+            is String -> genreValue
+            else -> ""
+        }
         val out = mutableMapOf<String, Any?>()
         out["url"] = readField(m, "url") ?: ""
         out["title"] = readField(m, "title") ?: ""
@@ -36,7 +44,7 @@ class SourceDriver(private val src: LoadedSource) {
         out["artist"] = readField(m, "artist")
         out["author"] = readField(m, "author")
         out["description"] = readField(m, "description")
-        out["genre"] = genre.joinToString(", ")
+        out["genre"] = genreJoined
         out["status"] = statusToInt(readField(m, "status"))
         return out
     }

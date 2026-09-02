@@ -340,34 +340,55 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
         // stays empty and a follow-up export only contains the pre-existing
         // rows.
         let added_secs = if m.date_added > 0 { m.date_added / 1000 } else { now_secs };
+        let genre_new = m.genre.join(", ");
+        let strategy_new = update_strategy_name(m.update_strategy).to_string();
 
-        // find-or-insert manga by (url, source)
-        let existing: Option<i32> = sqlx::query_scalar("SELECT id FROM manga WHERE url = $1 AND source = $2")
+        // find-or-insert manga by (url, source). When the row already exists,
+        // only UPDATE when something actually changes: manga/chapter tables
+        // have BEFORE UPDATE triggers that stamp last_modified_at and bump
+        // version, so re-importing an identical backup must skip them or the
+        // exported file would change on every restore→export cycle.
+        let existing: Option<(i32, Option<String>, Option<String>, Option<String>, Option<String>, i32, Option<String>, String, Option<i64>, bool, bool)> = sqlx::query_as(
+            "SELECT id, artist, author, description, genre, status, thumbnail_url, update_strategy, in_library_at, initialized, in_library \
+             FROM manga WHERE url = $1 AND source = $2",
+        )
             .bind(&m.url)
             .bind(m.source)
             .fetch_optional(pool)
             .await?;
         let manga_id = match existing {
-            Some(id) => {
-                sqlx::query(
-                    "UPDATE manga SET artist = COALESCE($1, artist), author = COALESCE($2, author), \
-                     description = COALESCE($3, description), genre = COALESCE(NULLIF($4, ''), genre), \
-                     status = $5, thumbnail_url = COALESCE($6, thumbnail_url), update_strategy = $7, \
-                     in_library = TRUE, in_library_at = $8, \
-                     initialized = initialized OR $9 WHERE id = $10",
-                )
-                .bind(&m.artist)
-                .bind(&m.author)
-                .bind(&m.description)
-                .bind(m.genre.join(", "))
-                .bind(m.status)
-                .bind(&m.thumbnail_url)
-                .bind(update_strategy_name(m.update_strategy))
-                .bind(added_secs)
-                .bind(m.description.is_some())
-                .bind(id)
-                .execute(pool)
-                .await?;
+            Some((id, cur_artist, cur_author, cur_desc, cur_genre, cur_status, cur_thumb, cur_strategy, cur_added, cur_init, cur_inlib)) => {
+                let dirty = m.artist.as_deref().map_or(false, |v| cur_artist.as_deref() != Some(v))
+                    || m.author.as_deref().map_or(false, |v| cur_author.as_deref() != Some(v))
+                    || m.description.as_deref().map_or(false, |v| cur_desc.as_deref() != Some(v))
+                    || (!genre_new.is_empty() && cur_genre.as_deref() != Some(genre_new.as_str()))
+                    || m.status != cur_status
+                    || m.thumbnail_url.as_deref().map_or(false, |v| cur_thumb.as_deref() != Some(v))
+                    || cur_strategy != strategy_new
+                    || !cur_inlib
+                    || cur_added != Some(added_secs)
+                    || (m.description.is_some() && !cur_init);
+                if dirty {
+                    sqlx::query(
+                        "UPDATE manga SET artist = COALESCE($1, artist), author = COALESCE($2, author), \
+                         description = COALESCE($3, description), genre = COALESCE(NULLIF($4, ''), genre), \
+                         status = $5, thumbnail_url = COALESCE($6, thumbnail_url), update_strategy = $7, \
+                         in_library = TRUE, in_library_at = $8, \
+                         initialized = initialized OR $9 WHERE id = $10",
+                    )
+                    .bind(&m.artist)
+                    .bind(&m.author)
+                    .bind(&m.description)
+                    .bind(&genre_new)
+                    .bind(m.status)
+                    .bind(&m.thumbnail_url)
+                    .bind(&strategy_new)
+                    .bind(added_secs)
+                    .bind(m.description.is_some())
+                    .bind(id)
+                    .execute(pool)
+                    .await?;
+                }
                 id
             }
             None => {
@@ -400,32 +421,46 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
         // chapters (upsert on (url, manga))
         let mut chapter_ids: Vec<i32> = Vec::new();
         for ch in &m.chapters {
-            let existing_ch: Option<i32> = sqlx::query_scalar("SELECT id FROM chapter WHERE url = $1 AND manga = $2")
+            let existing_ch: Option<(i32, String, Option<String>, bool, bool, i32, i64, f32, i32)> = sqlx::query_as(
+                "SELECT id, name, scanlator, read, bookmark, last_page_read, date_upload, chapter_number::float4, source_order \
+                 FROM chapter WHERE url = $1 AND manga = $2",
+            )
                 .bind(&ch.url)
                 .bind(manga_id)
                 .fetch_optional(pool)
                 .await?;
             match existing_ch {
-                Some(cid) => {
-                    sqlx::query(
-                        "UPDATE chapter SET name = $1, scanlator = $2, read = $3, bookmark = $4, last_page_read = $5, \
-                         date_upload = $6, chapter_number = $7, source_order = $8 WHERE id = $9",
-                    )
-                    .bind(&ch.name)
-                    .bind(&ch.scanlator)
-                    .bind(ch.read)
-                    .bind(ch.bookmark)
-                    .bind(ch.last_page_read)
-                    .bind(ch.date_upload)
-                    .bind(ch.chapter_number)
+                Some((cid, cur_name, cur_scan, cur_read, cur_book, cur_lpr, cur_upload, cur_number, cur_order)) => {
                     // source_order is 1-based here (Mihon/phone backups are
                     // 0-based): the reader indexes chapters by
                     // `len - sourceOrder` on a DESC-sorted list, so a 0-based
                     // chapter (or 0) can never be opened.
-                    .bind(ch.source_order + 1)
-                    .bind(cid)
-                    .execute(pool)
-                    .await?;
+                    let new_order = ch.source_order + 1;
+                    let dirty = cur_name != ch.name
+                        || cur_scan.as_deref() != ch.scanlator.as_deref()
+                        || cur_read != ch.read
+                        || cur_book != ch.bookmark
+                        || cur_lpr != ch.last_page_read
+                        || cur_upload != ch.date_upload
+                        || cur_number != ch.chapter_number
+                        || cur_order != new_order;
+                    if dirty {
+                        sqlx::query(
+                            "UPDATE chapter SET name = $1, scanlator = $2, read = $3, bookmark = $4, last_page_read = $5, \
+                             date_upload = $6, chapter_number = $7, source_order = $8 WHERE id = $9",
+                        )
+                        .bind(&ch.name)
+                        .bind(&ch.scanlator)
+                        .bind(ch.read)
+                        .bind(ch.bookmark)
+                        .bind(ch.last_page_read)
+                        .bind(ch.date_upload)
+                        .bind(ch.chapter_number)
+                        .bind(new_order)
+                        .bind(cid)
+                        .execute(pool)
+                        .await?;
+                    }
                     chapter_ids.push(cid);
                 }
                 None => {

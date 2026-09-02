@@ -309,6 +309,7 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
     };
 
     // 3) restore each manga
+    let now_secs = chrono::Utc::now().timestamp();
     for m in &backup.backup_manga {
         // ensure source exists
         let source_exists: bool = sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM source WHERE id = $1)")
@@ -325,6 +326,14 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
                 .await?;
         }
 
+        // Every manga in a Tachiyomi/Mihon/Suwayomi backup is a library
+        // entry. `BackupManga.favorite` is NOT "in library" (on modern Mihon
+        // it is a separate per-library bookmark), so the restore must mark
+        // rows as in_library regardless — otherwise the restored library
+        // stays empty and a follow-up export only contains the pre-existing
+        // rows.
+        let added_secs = if m.date_added > 0 { m.date_added / 1000 } else { now_secs };
+
         // find-or-insert manga by (url, source)
         let existing: Option<i32> = sqlx::query_scalar("SELECT id FROM manga WHERE url = $1 AND source = $2")
             .bind(&m.url)
@@ -337,8 +346,8 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
                     "UPDATE manga SET artist = COALESCE($1, artist), author = COALESCE($2, author), \
                      description = COALESCE($3, description), genre = COALESCE(NULLIF($4, ''), genre), \
                      status = $5, thumbnail_url = COALESCE($6, thumbnail_url), update_strategy = $7, \
-                     in_library = $8 OR in_library, in_library_at = $9, last_modified_at = $10, \
-                     version = $11, initialized = initialized OR $12 WHERE id = $13",
+                     in_library = TRUE, in_library_at = $8, last_modified_at = $9, \
+                     version = $10, initialized = initialized OR $11 WHERE id = $12",
                 )
                 .bind(&m.artist)
                 .bind(&m.author)
@@ -347,8 +356,7 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
                 .bind(m.status)
                 .bind(&m.thumbnail_url)
                 .bind(update_strategy_name(m.update_strategy))
-                .bind(m.favorite)
-                .bind(m.date_added / 1000)
+                .bind(added_secs)
                 .bind(m.last_modified_at)
                 .bind(m.version)
                 .bind(m.description.is_some())
@@ -361,7 +369,7 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
                 let id: i32 = sqlx::query_scalar(
                     "INSERT INTO manga (url, title, artist, author, description, genre, status, thumbnail_url, \
                      update_strategy, source, initialized, in_library, in_library_at, last_modified_at, version) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING id",
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE, $12, $13, $14) RETURNING id",
                 )
                 .bind(&m.url)
                 .bind(&m.title)
@@ -374,8 +382,7 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
                 .bind(update_strategy_name(m.update_strategy))
                 .bind(m.source)
                 .bind(m.description.is_some())
-                .bind(m.favorite)
-                .bind(m.date_added / 1000)
+                .bind(added_secs)
                 .bind(m.last_modified_at)
                 .bind(m.version)
                 .fetch_one(pool)

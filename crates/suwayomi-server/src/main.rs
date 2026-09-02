@@ -528,6 +528,8 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let graphql_state = suwayomi_graphql::GraphQLState::new(db.clone(), config.clone(), fetcher.clone(), sandbox_base.clone(), resolve_webui_dir(), data_dir_path.clone());
+    // Scheduled auto-backup loop (`autoBackupFrequency`/`backupPath` settings).
+    suwayomi_graphql::autobackup::spawn(graphql_state.clone());
     let schema = suwayomi_graphql::schema::build_schema(graphql_state);
     tracing::info!("graphql schema ready ({} type definitions)", suwayomi_graphql::schema::schema_type_count());
     let state = AppState::new(db, config.clone(), fetcher, sandbox_base, resolve_webui_dir(), data_dir_path.clone());

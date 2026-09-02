@@ -559,6 +559,9 @@ impl DownloadManager {
                 }
         }
         if downloaded.is_empty() {
+            // No page could be fetched — don't leave behind an empty manga
+            // folder (or empty {Source} parent chain) in the downloads tree.
+            remove_empty_dir_ancestors(&dir, &self.data_dir.join("downloads"));
             return Err(format!("no page image could be downloaded: {}", errors.join("; ")));
         }
         if !errors.is_empty() {
@@ -1096,6 +1099,18 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
             total_chapters
         );
     }
+
+    // The downloads tree should only contain content-bearing folders (a CBZ
+    // per chapter). Drop any empty directories left behind by failed runs or
+    // earlier builds — deepest first, keeping the downloads root itself.
+    if let Ok(entries) = std::fs::read_dir(&downloads_root) {
+        for entry in entries.flatten() {
+            if entry.path().is_dir() {
+                prune_empty_dir_tree(&entry.path());
+            }
+        }
+    }
+
     Ok(total_chapters)
 }
 
@@ -1158,6 +1173,44 @@ fn xml_escape(raw: &str) -> String {
         }
     }
     out
+}
+
+/// Recursively removes empty directories below `path` (deepest first); the
+/// passed directory itself is removed once it (and its children) are empty.
+fn prune_empty_dir_tree(path: &std::path::Path) {
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            if entry.path().is_dir() {
+                prune_empty_dir_tree(&entry.path());
+            }
+        }
+    }
+    let is_empty = std::fs::read_dir(path).map(|mut rd| rd.next().is_none()).unwrap_or(false);
+    if is_empty {
+        let _ = std::fs::remove_dir(path);
+    }
+}
+
+/// Walks upward from `start` removing directories that are empty, stopping at
+/// (and never removing) `stop`.
+fn remove_empty_dir_ancestors(start: &std::path::Path, stop: &std::path::Path) {
+    let mut cur = start.to_path_buf();
+    loop {
+        if cur == stop || !cur.starts_with(stop) {
+            break;
+        }
+        let is_empty = std::fs::read_dir(&cur).map(|mut rd| rd.next().is_none()).unwrap_or(false);
+        if !is_empty {
+            break;
+        }
+        if std::fs::remove_dir(&cur).is_err() {
+            break;
+        }
+        match cur.parent() {
+            Some(p) => cur = p.to_path_buf(),
+            None => break,
+        }
+    }
 }
 
 /// Filesystem-safe directory/file name: strip Windows-invalid characters

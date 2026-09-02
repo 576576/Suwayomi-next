@@ -594,18 +594,6 @@ impl DownloadManager {
         Ok((cbz_path, downloaded.into_iter().map(|(i, n, _)| (i, n)).collect()))
     }
 
-    async fn download_bytes(&self, url: &str) -> Result<Vec<u8>, String> {
-        let resp = self.client.get(url).send().await.map_err(|e| format!("{url}: {e}"))?;
-        if !resp.status().is_success() {
-            return Err(format!("{url}: HTTP {}", resp.status()));
-        }
-        let bytes = resp.bytes().await.map_err(|e| format!("{url}: read {e}"))?;
-        if bytes.is_empty() {
-            return Err(format!("{url}: empty body"));
-        }
-        Ok(bytes.to_vec())
-    }
-
     async fn patch_job(&self, job: &DownloadJob) {
         // The processed job stays in the queue while it runs; update it in
         // place. Never (re-)insert here — that used to push a copy back to the

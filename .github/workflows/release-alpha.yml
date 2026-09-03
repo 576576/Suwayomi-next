@@ -80,7 +80,9 @@ jobs:
 
           # 产物命名：Suwayomi-r3046-windows-x64.zip（无 Next、无 -alpha 后缀）。
           # 本 CI 固定捆绑 Temurin JRE 25，故标准包名为 ...+jre；Electron 包在其
-          # 基础上再带桌面壳，命名为 ...+electron+jre（与 release.yml 的后缀约定一致）
+          # 基础上再带桌面壳，命名为 ...+electron+jre（后缀语义与 release.yml 相同）。
+          # NB: 本 CI 没有勾选框，**两个包都产** —— 不适用 release.yml 那条
+          # 「JRE 与 Electron 同时勾选时只产 +electron+jre」的合并规则。
           STAGE="dist/Suwayomi-${VER}-${TGT}+jre"
           STAGE_EL="dist/Suwayomi-${VER}-${TGT}+electron+jre"
           mkdir -p "$STAGE/bin"

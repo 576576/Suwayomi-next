@@ -32,16 +32,18 @@ cargo run --release -p suwayomi-server
 
 ## Release 目录结构与用法
 
-GitHub Release 提供 `Suwayomi-{version}-{platform}-{arch}.zip` 等平台压缩包，解压后即开即用
-（下方目录结构以“含 JRE 的完整版”为例；基础版无 `jre/` 目录，server 会回退到系统 java）。
+GitHub Release 提供 `Suwayomi-{版本号}-{通道}-{平台}-{arch}.zip` 等平台压缩包，解压后即开即用
+（推送 main/dev 自动构建的 alpha 无通道段，形如 `Suwayomi-r3046-windows-x64+jre.zip`；
+下方目录结构以“含 JRE 的完整版”为例；基础版无 `jre/` 目录，server 会回退到系统 java）。
 产物命名约定（Windows x64 可选捆绑，按内容如实加后缀；无后缀 = 不含 JRE/Electron 的基础包）：
 
 > 若发布没有你想要的平台构建，可Fork该仓库后手动运行Release构建，构建参数支持一键配置
 
 - `…-windows-x64.zip` 基础包：桌面壳 + 服务器 + 沙盒 jar + WebUI（不含 JRE/Electron）
-- `…-windows-x64+jre.zip`：基础包 + 捆绑 Temurin JRE 25（`jre/`，沙盒自包含）
-- `…-windows-x64+electron.zip` / `…+electron+jre.zip`：基础包 + `electron/` 桌面壳
-  （Electron 开启时若同时选了 JRE 则命名为 `+electron+jre`，如实标注内含 JRE）
+- 捆绑包在基础包之外**只额外产出一个**，按勾选组合而定：
+  - 仅勾 JRE      -> `…-windows-x64+jre.zip`：基础包 + Temurin JRE 25（`jre/`，沙盒自包含）
+  - 仅勾 Electron -> `…-windows-x64+electron.zip`：基础包 + `electron/` 桌面壳
+  - 两者都勾      -> `…-windows-x64+electron+jre.zip`：内含 JRE（不再单独产 `+jre`）
 
 ```
 suwayomi.exe          桌面壳（Tauri 托盘）：启动/重启/WebUI/数据目录/设置/退出
@@ -52,7 +54,8 @@ bin/
 jre/                  捆绑 Temurin JRE 25（Windows x64）——sandbox 运行时，
                       server 优先使用 jre/bin/java.exe，无需系统 JDK；
                       未捆绑时回退 SUWAYOMI_JAVA → JAVA_HOME → PATH 的 java
-webui/                Suwayomi-WebUI 构建产物（CI 自动捆绑 fork 最新 release）
+webui/                Suwayomi-WebUI 构建产物（CI 自动捆绑：alpha/beta 取最新构建
+                      `r{code}`，release 取最新正式 release `3.y.z`）
                       └─ revision  当前部署的 WebUI 版本（r3487 等，关于页/更新检查读取）
 extensions/           扩展下载目录：仅存放扩展安装包 APK（tachiyomi-*.apk）
 cache/                统一磁盘缓存根（SUWAYOMI_CACHE_DIR 可覆盖，默认发布根下）
@@ -65,7 +68,7 @@ pglite-data/          嵌入式数据库（server 自动创建于发布根目录
 logs/                 运行时日志
 ```
 
-带 Electron 桌面壳的产物命名 `Suwayomi-{version}-{platform}-{arch}+electron+jre.zip`——在
+带 Electron 桌面壳的产物命名 `Suwayomi-{版本号}-{通道}-{平台}-{arch}+electron+jre.zip`——在
 `+jre` 版基础上多一个 `electron/` 目录（electron v44.1.0 win32-x64 运行时 + 应用入口）。托盘
 设置「有 Electron 时优先使用」（默认开）开启后，打开 WebUI 将启动 Electron 窗口
 （`electron/electron.exe --url=http://127.0.0.1:{port}`）而非系统浏览器；托盘退出时
@@ -86,8 +89,10 @@ logs/                 运行时日志
 5. **端口**：默认 8090；启动时若被占用自动顺延。与桌面壳同用时以托盘设置为准。
 6. **日志**：`logs/` 下 server/tray/sandbox 三个日志文件，排查问题优先看这里。
 
-> 版本命名：自动构建产物版本为 `r{versionCode}`（versionCode = commit 数 + 3000）；
-> 手动 beta/release 版本为 `3.y.z`（versionCode 的前三位拆分）。
+> 版本命名：alpha 通道版本为 `r{versionCode}`（versionCode = commit 数 + 3000，
+> 与推送自动构建一致）；beta / release 通道版本为 `3.{n/100}.{n%100，补零两位}`（n = commit 数），
+> 如 182 次提交 → `3.1.82`（versionCode 3182）。补零是为了让版本名去掉非数字后恰等于 versionCode，
+> 更新检查据此做数值比较（见 `crates/suwayomi-graphql/src/query.rs` 的 `tag_to_num`）。
 
 ## 从 Java 版迁移
 

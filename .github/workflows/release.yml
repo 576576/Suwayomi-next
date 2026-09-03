@@ -88,6 +88,11 @@ jobs:
       prerelease: ${{ steps.out.outputs.prerelease }}
       bundle_jre: ${{ steps.out.outputs.bundle_jre }}
       bundle_electron: ${{ steps.out.outputs.bundle_electron }}
+      # 捆绑的 WebUI 在 prep 里解析一次、所有 target 复用：既保证各架构带的是同一份，
+      # 也让 publish 能把它写进发布说明（scripts/resolve-webui.sh 见下）。
+      webui_url: ${{ steps.webui.outputs.url }}
+      webui_tag: ${{ steps.webui.outputs.tag }}
+      webui_kind: ${{ steps.webui.outputs.kind }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -169,6 +174,27 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -d "{\"name\":\"Release ${VER_NAME}\"}" >/dev/null 2>&1 || true
 
+      # 解析一次、所有 target 复用（各 target 各自解析时理论上可能拉到不同构建，
+      # 两份产物版本号会不一致）；拿不到则脚本打 ::error:: 并中止整个 workflow。
+      - name: 解析捆绑的 WebUI 制品
+        id: webui
+        env:
+          # 供 scripts/resolve-webui.sh 的 gh api 使用（跨仓库读公开仓库的 release）
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "${{ github.event.inputs.channel }}" in
+            release) KIND="stable" ;;
+            *)       KIND="build"  ;;
+          esac
+          ZIP="$(bash scripts/resolve-webui.sh "$KIND")"
+          # .../releases/download/<tag>/<asset>.zip -> <tag>
+          TAG="${ZIP#*/download/}"
+          TAG="${TAG%%/*}"
+          echo "url=$ZIP" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "kind=$KIND" >> "$GITHUB_OUTPUT"
+          echo "捆绑 WebUI: $TAG（kind=$KIND）"
+
   build:
     name: 构建 ${{ matrix.target }}
     needs: prep
@@ -217,9 +243,6 @@ jobs:
       - name: 打包
         id: pack
         shell: bash
-        env:
-          # 供 scripts/resolve-webui.sh 的 gh api 使用（跨仓库读公开仓库的 release）
-          GH_TOKEN: ${{ github.token }}
         run: |
           VER="${{ needs.prep.outputs.version_name }}"
           CH="${{ needs.prep.outputs.channel }}"
@@ -255,14 +278,11 @@ jobs:
             fi
           fi
 
-          # ---- WebUI 制品：alpha / beta 跟最新构建（r{code} prerelease），
-          #      release 跟最新正式 release（3.y.z）。解析逻辑见 scripts/resolve-webui.sh
-          #      （gh api → 匿名 API → 匿名 HTML 三级兜底；拿不到则打 ::error:: 并中止）。----
-          case "$CH" in
-            release) WEBUI_KIND="stable" ;;
-            *)       WEBUI_KIND="build"  ;;
-          esac
-          WEBUI_ZIP="$(bash scripts/resolve-webui.sh "$WEBUI_KIND")"
+          # ---- WebUI 制品：prep 已按通道解析好（alpha / beta 跟最新构建 r{code}
+          #      预发布，release 跟最新正式 release 3.y.z），所有 target 复用同一份 URL，
+          #      避免各架构在解析间隙拉到不同构建。----
+          WEBUI_KIND="${{ needs.prep.outputs.webui_kind }}"
+          WEBUI_ZIP="${{ needs.prep.outputs.webui_url }}"
           echo "webui zip ($WEBUI_KIND): $WEBUI_ZIP"
           curl -sL -o webui.zip "$WEBUI_ZIP"
           mkdir -p "$STAGE/webui"
@@ -384,11 +404,19 @@ jobs:
           PRE: ${{ needs.prep.outputs.prerelease }}
           JRE: ${{ needs.prep.outputs.bundle_jre }}
           EL: ${{ needs.prep.outputs.bundle_electron }}
+          WEBUI_TAG: ${{ needs.prep.outputs.webui_tag }}
+          WEBUI_KIND: ${{ needs.prep.outputs.webui_kind }}
         run: |
           # release 通道的 tag 可能已存在（同版本重复发布）——先删除旧 tag/release
           if [ "$CH" = "release" ] && gh release view "$TAG" >/dev/null 2>&1; then
             gh release delete "$TAG" --yes --cleanup-tag || true
           fi
+          # 捆绑的 WebUI 版本随构建自带 version.txt（server aboutWebUI 读取），
+          # 这里把它写进发布说明，便于下载时直接确认这个包带的是哪个 WebUI。
+          case "$WEBUI_KIND" in
+            stable) WEBUI_DESC="最新正式 release" ;;
+            *)      WEBUI_DESC="最新构建（预发布）" ;;
+          esac
           gh release create "$TAG" \
             artifacts/* \
             --title "Suwayomi $VER ($CH)" \
@@ -397,6 +425,7 @@ jobs:
           - versionCode: $CODE
           - commits: $COUNT
           - channel: $CH（手动触发）
+          - bundled WebUI: \`$WEBUI_TAG\` —— 取自 576576/Suwayomi-WebUI 的$WEBUI_DESC
           - prerelease: $PRE（beta 计作正式发布，会出现在 latest）
           - 产物命名：无后缀=基础包（不含 JRE/Electron）；Windows x64 可选捆绑最多再出一个包——仅 JRE \`+jre\`（捆绑 Temurin JRE 25），仅 Electron \`+electron\`（捆绑 Electron 桌面壳），两者都勾 \`+electron+jre\`（内含 JRE）；本次 jre=$JRE electron=$EL" \
             --prerelease="$PRE" \

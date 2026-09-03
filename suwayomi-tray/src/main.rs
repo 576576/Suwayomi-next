@@ -8,7 +8,10 @@
 //! - 系统托盘菜单：启动 Suwayomi / 打开 WebUI / 打开数据目录 / 设置 / 退出
 //! - 设置窗口（暗黑主题）：端口、工作目录、启动打开 WebUI、打开数据目录
 
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+//! 跨平台：Windows / Linux / macOS 同一份代码，差异都用 `cfg` 局部隔离
+//! （Windows 走 Win32 `EnumWindows`，Linux 走外部 `wmctrl`/`xdotool`，
+//! 两者均不可用时退化为「开一个新窗口」）。
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 use std::io::Write;
 use std::net::TcpStream;
@@ -126,14 +129,17 @@ fn find_server_bin() -> Option<PathBuf> {
         Ok(exe) => {
             tray_log(&format!("[tray] current_exe: {}", exe.display()));
             if let Some(dir) = exe.parent() {
-                // 发布布局：server 在 bin/ 子目录（suwayomi-server.exe）；旧布局同目录
+                // 发布布局：server 在 bin/ 子目录（suwayomi-server）；旧布局同目录。
+                //
+                // 绝不能把托盘自身的可执行名（suwayomi / suwayomi.exe）列为候选：
+                // 两者同处发布根目录，一旦 bin/suwayomi-server 缺失就会把托盘
+                // 自己当 server 反复 spawn（fork 炸弹）。要覆盖这种场景请显式
+                // 设 SUWAYOMI_BIN。
                 for cand in [
                     dir.join("bin").join("suwayomi-server.exe"),
                     dir.join("bin").join("suwayomi-server"),
                     dir.join("suwayomi-server.exe"),
                     dir.join("suwayomi-server"),
-                    dir.join("suwayomi.exe"),
-                    dir.join("suwayomi"),
                 ] {
                     tray_log(&format!("[tray] find_server_bin: cand {} is_file={}", cand.display(), cand.is_file()));
                     if cand.is_file() {
@@ -146,7 +152,7 @@ fn find_server_bin() -> Option<PathBuf> {
     }
     if let Ok(path) = std::env::var("PATH") {
         for dir in std::env::split_paths(&path) {
-            for name in ["suwayomi-server.exe", "suwayomi-server", "suwayomi.exe", "suwayomi"] {
+            for name in ["suwayomi-server.exe", "suwayomi-server"] {
                 let cand = dir.join(name);
                 if cand.is_file() {
                     return Some(cand);
@@ -253,7 +259,9 @@ fn ensure_data_dirs(data: &PathBuf) {
     }
 }
 
-fn spawn_server(data: &PathBuf, port: u16) -> Option<Child> {
+/// `inherit_stdio = true` 时不重定向到日志文件（前台模式：控制台直接看 server
+/// 输出）；否则一律落 cache/logs/server.log（后台模式：GUI 应用无控制台）。
+fn spawn_server(data: &PathBuf, port: u16, inherit_stdio: bool) -> Option<Child> {
     let bin = find_server_bin()?;
     // 日志统一放 cache/logs/（cache 目录：封面代理缓存 cache/images/ + 日志；
     // 不混入 data/ 工作数据目录）
@@ -264,7 +272,8 @@ fn spawn_server(data: &PathBuf, port: u16) -> Option<Child> {
         .append(true)
         .open(logs.join("server.log"))
         .ok()?;
-    let child = Command::new(&bin)
+    let mut command = Command::new(&bin);
+    command
         .current_dir(data)
         .env("SUWAYOMI_PORT", port.to_string())
         // pglite 数据目录 = 发布根目录，由 server 自动创建
@@ -278,12 +287,16 @@ fn spawn_server(data: &PathBuf, port: u16) -> Option<Child> {
         .env("SUWAYOMI_DATA_DIR", base_dir().join("data"))
         // 日志目录（server + JVM 沙盒输出统一落位）
         .env("SUWAYOMI_LOGS_DIR", logs.clone())
-        .env("SUWAYOMI_WEBUI_DIR", base_dir().join("webui"))
-        .stdout(Stdio::from(log_file.try_clone().ok()?))
-        .stderr(Stdio::from(log_file))
-        .spawn()
-        .ok()?;
-    eprintln!("[tray] spawned server {:?} on port {port}", bin);
+        .env("SUWAYOMI_WEBUI_DIR", base_dir().join("webui"));
+
+    if !inherit_stdio {
+        let _ = command.stdout(Stdio::from(log_file.try_clone().ok()?)).stderr(Stdio::from(log_file));
+    }
+
+    let child = command.spawn().ok()?;
+    if inherit_stdio {
+        eprintln!("[tray] spawned server {:?} on port {port}", bin);
+    }
     Some(child)
 }
 
@@ -304,13 +317,26 @@ fn webui_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}")
 }
 
-// ---- Electron 桌面壳（_wElectron 产物）----
+// ---- Electron 桌面壳（+electron 产物）----
 
-/// Electron 运行时：_wElectron 产物内置 `electron/electron.exe`（解压后的
-/// electron v44.1.0 win32-x64 完整目录）。普通产物无此目录 → 回退系统浏览器。
+/// Electron 运行时：带 Electron 壳的产物自带解压后的 electron 运行时目录
+/// （Windows `electron/electron.exe`、Linux `electron/electron`、macOS
+/// `electron/Electron.app`）。普通产物无此目录 → 回退系统浏览器。
 fn electron_exe() -> Option<PathBuf> {
-    let cand = base_dir().join("electron").join("electron.exe");
-    if cand.is_file() { Some(cand) } else { None }
+    let dir = base_dir().join("electron");
+
+    if cfg!(windows) {
+        let cand = dir.join("electron.exe");
+        return cand.is_file().then_some(cand);
+    }
+
+    if cfg!(target_os = "macos") {
+        let cand = dir.join("Electron.app").join("Contents").join("MacOS").join("Electron");
+        return cand.is_file().then_some(cand);
+    }
+
+    let cand = dir.join("electron");
+    cand.is_file().then_some(cand)
 }
 
 /// 打开 WebUI：设置了「有 Electron 时优先使用」且存在 Electron 壳 → 启动
@@ -357,6 +383,25 @@ fn launch_webui(state: &AppState, prefer_electron: bool, port: u16) {
     let _ = open::that(webui_url(port));
 }
 
+/// Electron 主进程的可执行名（各平台不同）。
+///
+/// Electron 会 fork 出 zygote / gpu / renderer 等子进程，它们的进程名与主进程
+/// 相同（Windows 也是 `electron.exe`），靠命令行里的 `--type=` 区分——这里只要
+/// 主进程：聚焦窗口要找的是它，杀进程时杀它也会带着子进程一起退。
+fn is_electron_main_process(name: &str, cmd: &[std::ffi::OsString]) -> bool {
+    let matches_name = if cfg!(windows) {
+        name.eq_ignore_ascii_case("electron.exe")
+    } else if cfg!(target_os = "macos") {
+        name.eq_ignore_ascii_case("Electron")
+    } else {
+        name == "electron"
+    };
+    if !matches_name {
+        return false;
+    }
+    !cmd.iter().any(|c| c.to_string_lossy().starts_with("--type="))
+}
+
 /// 本发布目录关联的 Electron 进程（含本托盘启动的与外部启动的）
 fn electron_process_ids(sys: &sysinfo::System) -> Vec<sysinfo::Pid> {
     let base = base_dir().join("electron");
@@ -365,7 +410,7 @@ fn electron_process_ids(sys: &sysinfo::System) -> Vec<sysinfo::Pid> {
         .values()
         .filter(|p| {
             let n = p.name().to_string_lossy();
-            n.eq_ignore_ascii_case("electron.exe")
+            is_electron_main_process(&n, p.cmd())
                 && p.cmd().iter().any(|c| {
                     let s = c.to_string_lossy().to_lowercase();
                     s.contains(&base_str) || s.contains("suwayomi")
@@ -422,7 +467,88 @@ fn focus_electron_window(pids: &[sysinfo::Pid]) -> bool {
     ctx.found && ctx.raised
 }
 
-#[cfg(not(windows))]
+/// 把已存在的 Electron 窗口提到前台（Linux 版）。成功聚焦返回 true。
+///
+/// Linux 没有跨桌面环境的窗口枚举 API（X11 / Wayland 各自为政，原生 Wayland
+/// 还禁止应用互相抬高窗口），所以走外部工具，按可用性依次尝试：
+/// 1. `wmctrl -lp` → 读 `_NET_WM_PID` 列匹配进程 → `wmctrl -i -a <id>` 激活。
+///    X11 与 XWayland 通用，Electron 默认就跑在 XWayland 上，覆盖 GNOME/KDE/Xfce。
+/// 2. `xdotool search --pid <pid>` → `xdotool windowactivate`（X11 专用兜底）。
+/// 两个工具都没有（纯 Wayland 会话且未装兼容层）就返回 false，让调用方按
+/// 原逻辑开一个新窗口——宁可多开一个，也不要点了「打开 WebUI」没反应。
+#[cfg(target_os = "linux")]
+fn focus_electron_window(pids: &[sysinfo::Pid]) -> bool {
+    if pids.is_empty() {
+        return false;
+    }
+    focus_with_wmctrl(pids) || focus_with_xdotool(pids)
+}
+
+/// `wmctrl -lp` 输出格式：`0x04a00003  0 1234    hostname 窗口标题`
+#[cfg(target_os = "linux")]
+fn focus_with_wmctrl(pids: &[sysinfo::Pid]) -> bool {
+    let Ok(out) = Command::new("wmctrl").args(["-lp"]).output() else {
+        return false;
+    };
+    if !out.status.success() {
+        return false;
+    }
+
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let mut it = line.split_whitespace();
+        let Some(win) = it.next() else { continue };
+        let _desktop = it.next();
+        let Some(pid) = it.next().and_then(|p| p.parse::<u32>().ok()) else {
+            continue;
+        };
+        if !pids.iter().any(|p| p.as_u32() == pid) {
+            continue;
+        }
+        tray_log(&format!("[tray] wmctrl: activating existing window {win} (pid {pid})"));
+        if Command::new("wmctrl")
+            .args(["-i", "-a", win])
+            .status()
+            .is_ok_and(|s| s.success())
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// `xdotool search --pid <pid>` 输出每行一个窗口 id（16 进制）。
+#[cfg(target_os = "linux")]
+fn focus_with_xdotool(pids: &[sysinfo::Pid]) -> bool {
+    for pid in pids {
+        let Ok(out) = Command::new("xdotool")
+            .args(["search", "--pid", &pid.as_u32().to_string()])
+            .output()
+        else {
+            return false;
+        };
+        if !out.status.success() {
+            continue;
+        }
+        for win in String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+        {
+            tray_log(&format!("[tray] xdotool: activating existing window {win} (pid {pid})"));
+            if Command::new("xdotool")
+                .args(["windowactivate", win])
+                .status()
+                .is_ok_and(|s| s.success())
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// 其他平台（macOS 等）暂未实现窗口去重：直接返回 false，退化为开新窗口。
+#[cfg(not(any(windows, target_os = "linux")))]
 fn focus_electron_window(_pids: &[sysinfo::Pid]) -> bool {
     false
 }
@@ -504,7 +630,7 @@ fn save_settings(
     if let Some(mut c) = guard.take() {
         let _ = c.wait();
     }
-    let child = spawn_server(&new_data, port)
+    let child = spawn_server(&new_data, port, false)
         .ok_or_else(|| "server 启动失败（找不到 suwayomi-server 可执行文件）".to_string())?;
     *guard = Some(child);
     let _ = wait_ready(port, Duration::from_secs(20));
@@ -529,7 +655,66 @@ fn webui_url_cmd(state: State<AppState>) -> String {
 /// 故通过自定义协议提供，避免设置窗口白屏）。
 const SETTINGS_HTML: &str = include_str!("../frontend/index.html");
 
+/// Linux 上是否有图形会话。Tauri 起 GTK/WebKit 需要它——ssh 到无头服务器时
+/// `DISPLAY`/`WAYLAND_DISPLAY` 都为空，直接 `tauri::Builder::run` 会 panic
+/// （"could not open display"），所以启动前先探测，无会话就走前台 server 模式。
+#[cfg(target_os = "linux")]
+fn has_graphical_session() -> bool {
+    ["DISPLAY", "WAYLAND_DISPLAY"]
+        .iter()
+        .any(|k| std::env::var(k).is_ok_and(|v| !v.trim().is_empty()))
+}
+
+/// 无图形会话时的降级路径：沿用 settings.json 的端口/数据目录，前台跑 server
+/// （等价于直接跑 `bin/suwayomi-server`，只是省得记路径）。不返回。
+#[cfg(target_os = "linux")]
+fn run_server_foreground() -> ! {
+    let settings = load_settings();
+    let port = settings.port;
+    let data = data_dir_of(&settings);
+    ensure_data_dirs(&data);
+
+    if server_running(port) {
+        eprintln!("suwayomi-server already running on port {port}; nothing to do");
+        std::process::exit(1);
+    }
+
+    let Some(mut child) = spawn_server(&data, port, true) else {
+        eprintln!(
+            "suwayomi-server binary not found.\n\
+             Place it in ./bin/ or set SUWAYOMI_BIN=/path/to/suwayomi-server"
+        );
+        std::process::exit(1);
+    };
+
+    if !wait_ready(port, Duration::from_secs(20)) {
+        tray_log("[tray] foreground server did not become ready within 20s");
+    }
+    eprintln!("suwayomi-server ready on {} (Ctrl-C to stop)", webui_url(port));
+
+    match child.wait() {
+        Ok(status) => std::process::exit(status.code().unwrap_or(0)),
+        Err(e) => {
+            eprintln!("failed to wait for server: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn maybe_run_headless() {
+    if !has_graphical_session() {
+        run_server_foreground();
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn maybe_run_headless() {}
+
 fn main() {
+    // 必须早于 tauri::Builder：无图形会话时 GTK 初始化会直接 panic，来不及兜底
+    maybe_run_headless();
+
     tauri::Builder::default()
         // 单实例去重：重复启动 suwayomi.exe 时第二实例直接退出，不产生
         // 第二个托盘图标；已有实例收到通知后聚焦设置窗口。
@@ -564,7 +749,7 @@ fn main() {
                 tray_log("[tray] server already running; not starting another");
                 (None, false)
             } else {
-                let s = spawn_server(&data, port);
+                let s = spawn_server(&data, port, false);
                 tray_log(&format!("[tray] spawn_server result: {}", s.is_some()));
                 if s.is_none() {
                     tray_log("[tray] WARN: server binary not found (set SUWAYOMI_BIN or place suwayomi-server next to this exe)");
@@ -644,7 +829,7 @@ fn main() {
                             drop(child);
                         }
                         let d = st.data_dir.lock().unwrap().clone();
-                        *guard = spawn_server(&d, port);
+                        *guard = spawn_server(&d, port, false);
                         drop(guard);
                         let _ = wait_ready(port, Duration::from_secs(25));
                     }

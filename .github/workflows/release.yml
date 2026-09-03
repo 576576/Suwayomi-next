@@ -227,6 +227,15 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+      - name: 安装 Tauri 桌面壳系统依赖（Linux）
+        # 桌面壳（suwayomi-tray）依赖 webkit2gtk + appindicator。仅 linux-x64
+        # 需要：aarch64 交叉要整套 arm64 sysroot 才编得动 gtk，代价过大，
+        # 该平台只发 server（见下方 DESKTOP_SHELL 判定）。
+        if: matrix.rust_target == 'x86_64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev
       - name: 安装 JDK（扩展沙盒构建，windows 矩阵使用）
         # jvm-sandbox 的 gradle toolchain 统一 25（与发布捆绑的 JRE 25 一致）。
         # 仅 windows 矩阵需要。
@@ -253,15 +262,30 @@ jobs:
           IS_WIN="false"
           [ "${{ matrix.os }}" = "windows-latest" ] && IS_WIN="true"
 
-          # ---- 基础 stage：桌面壳(win)、沙箱 jar(win)、oliphaunt runtime(win) 在此装配；
+          # 桌面壳（Tauri 托盘）可用性：Windows 全支持；Linux 仅 x86_64 原生构建
+          # （aarch64 交叉需要整套 arm64 sysroot 才编得动 webkit2gtk，代价过大）。
+          DESKTOP_SHELL="false"
+          if [ "$IS_WIN" = "true" ] || [ "${{ matrix.rust_target }}" = "x86_64-unknown-linux-gnu" ]; then
+            DESKTOP_SHELL="true"
+          else
+            echo "WARN: ${{ matrix.rust_target }} 不提供桌面壳（仅 Windows 与 linux-x64），只发 server"
+          fi
+
+          # ---- 基础 stage：桌面壳、沙箱 jar(win)、oliphaunt runtime(win) 在此装配；
           #      JRE/Electron 不进基础包，作为可选 flavor 在最后复制加装 ----
           STAGE="dist/Suwayomi-${VER}-${CH}-${TGT}"
           mkdir -p "$STAGE/bin"
           cp "$BIN" "$STAGE/bin/"
-          if [ "$IS_WIN" = "true" ]; then
-            # 桌面壳（Tauri 托盘）——build-tray.sh 注入真实版本号到 Windows 资源
+          if [ "$DESKTOP_SHELL" = "true" ]; then
+            # build-tray.sh 注入真实版本号（Windows 写进版本资源段，
+            # Linux/macOS 写进 tauri.conf.json 供 about 显示）
             bash suwayomi-tray/build-tray.sh
-            cp suwayomi-tray/target/release/suwayomi.exe "$STAGE/" 2>/dev/null || true
+            # 产物名：Windows 带 .exe，Linux/macOS 无后缀
+            cp suwayomi-tray/target/release/suwayomi "$STAGE/" 2>/dev/null \
+              || cp suwayomi-tray/target/release/suwayomi.exe "$STAGE/" 2>/dev/null \
+              || echo "WARN: desktop shell binary not found"
+          fi
+          if [ "$IS_WIN" = "true" ]; then
             # 扩展沙盒（JVM，Kotlin fat jar）——放 bin/（server 自动查找）
             cd jvm-sandbox && ./gradlew -q jar --no-daemon && cd ..
             cp jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar "$STAGE/bin/jvm-sandbox.jar"
@@ -298,7 +322,7 @@ jobs:
 
           ARTIFACTS=""
           if [ "$IS_WIN" = "false" ]; then
-            # linux/macOS：仅 server 基础包（可选捆绑仅 Windows 提供）
+            # linux：server + 桌面壳（x64）基础包（JRE/Electron 捆绑仅 Windows 提供）
             tar -C dist -czf "dist/Suwayomi-${VER}-${CH}-${TGT}.tar.gz" "Suwayomi-${VER}-${CH}-${TGT}"
             ARTIFACTS="dist/Suwayomi-${VER}-${CH}-${TGT}.tar.gz"
           else

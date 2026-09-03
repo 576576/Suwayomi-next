@@ -9,13 +9,18 @@ name: Release
 #
 # 版本号（见 crates/suwayomi-server/build.rs）：
 # - 内部 versionCode = commit count + 3000（38 次提交 -> 3038）
-# - 外部 versionName = 3.{count/100}.{(count/10)%10}（38 -> 3.0.3，100 -> 3.1.0）
+# - release / beta 通道 versionName = 3.{count/100}.{(count/10)%10}（38 -> 3.0.3，100 -> 3.1.0）
+# - alpha 通道 versionName = r{code}（与 release-alpha.yml / Auto build 一致，38 -> r3038），
+#   tag 亦沿用其规则、不带 v 前缀：r3038-alpha.{run_id}
+#
+# 通道语义：release = 正式版；beta = 正式发布（prerelease=false，计入 latest），
+# 仅 tag 带 -beta.{run_id} 区分与保唯一；alpha = 预发布（prerelease=true）。
 
 on:
   workflow_dispatch:
     inputs:
       channel:
-        description: 发布通道
+        description: 发布通道（alpha 用 r+code 版本名，与 Auto build 一致）
         type: choice
         options: [alpha, beta, release]
         default: release
@@ -84,17 +89,25 @@ jobs:
           COUNT="${{ github.event.inputs.version_count }}"
           if [ -z "$COUNT" ]; then COUNT="$(git rev-list --count HEAD)"; fi
 
-          VER_NAME="3.$((COUNT/100)).$(((COUNT/10)%10))"
           VER_CODE="$((COUNT+3000))"
 
-          # tag：release 用干净版本号；alpha/beta 带通道 + 运行号保证唯一
-          if [ "$CHANNEL" = "release" ]; then
-            TAG="v${VER_NAME}"
-            PRE="false"
+          # 版本名：alpha 与 Auto build（release-alpha.yml）保持一致的 r{code}；
+          # release / beta 用外部 3.y.z
+          if [ "$CHANNEL" = "alpha" ]; then
+            VER_NAME="r${VER_CODE}"
           else
-            TAG="v${VER_NAME}-${CHANNEL}.${{ github.run_id }}"
-            PRE="true"
+            VER_NAME="3.$((COUNT/100)).$(((COUNT/10)%10))"
           fi
+
+          # tag：release 用干净版本号；beta/alpha 带通道 + 运行号保证唯一，
+          # alpha 沿用 Auto build 规则（无 v 前缀）。
+          # 预发布标记：beta 计作正式发布（进 latest），alpha 仍为预发布。
+          case "$CHANNEL" in
+            release) TAG="v${VER_NAME}";                          PRE="false" ;;
+            beta)    TAG="v${VER_NAME}-beta.${{ github.run_id }}"; PRE="false" ;;
+            alpha)   TAG="${VER_NAME}-alpha.${{ github.run_id }}"; PRE="true" ;;
+            *)       echo "::error::未知通道 $CHANNEL"; exit 1 ;;
+          esac
 
           # 勾选输入 -> JSON 目标列表（boolean 在 github.event.inputs 中是 "true"/"false"）
           SEL=""
@@ -151,7 +164,8 @@ jobs:
         include: ${{ fromJson(needs.prep.outputs.targets) }}
     env:
       SUWAYOMI_VERSION_COUNT: ${{ needs.prep.outputs.count }}
-      # 手动发布注入外部版本号 3.y.z（build.rs 优先用这个；Auto build 无此变量则用 r{code}）
+      # 注入外部版本号（build.rs 优先用这个）：release/beta 为 3.y.z，alpha 为 r{code}
+      # （与 Auto build 一致；Auto build 不注入此变量，由 build.rs 自行算 r{code}）
       SUWAYOMI_VERSION_NAME: ${{ needs.prep.outputs.version_name }}
     steps:
       - uses: actions/checkout@v7
@@ -380,6 +394,7 @@ jobs:
           - versionCode: $CODE
           - commits: $COUNT
           - channel: $CH（手动触发）
+          - prerelease: $PRE（beta 计作正式发布，会出现在 latest）
           - 产物命名：无后缀=基础包（不含 JRE/Electron）；Windows x64 可选 \`+jre\`（捆绑 Temurin JRE 25）与 \`+electron\`(\`+electron+jre\`)（捆绑 Electron 桌面壳）；本次 jre=$JRE electron=$EL" \
             --prerelease="$PRE" \
             --generate-notes

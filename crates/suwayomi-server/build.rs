@@ -2,7 +2,8 @@
 //!
 //! - internal version code = commit count + 3000  (e.g. 38 commits -> 3038)
 //! - version name, two modes:
-//!   1. `SUWAYOMI_VERSION_NAME` env (manual release.yml injects `3.y.z`)
+//!   1. `SUWAYOMI_VERSION_NAME` env (release.yml injects `3.y.z` for the
+//!      release/beta channels, `r{versionCode}` for alpha)
 //!   2. default `r{versionCode}` (Auto build / local, 38 -> r3038)
 //!
 //! The count comes from, in priority order:
@@ -28,7 +29,7 @@ fn main() {
         .unwrap_or(38);
 
     let version_code = count + 3000;
-    // 手动 release（release.yml）注入 3.y.z；Auto build / 本地默认 r{versionCode}
+    // release.yml 注入（release/beta: 3.y.z；alpha: r{code}）；Auto build / 本地默认 r{versionCode}
     let version_name = std::env::var("SUWAYOMI_VERSION_NAME")
         .ok()
         .filter(|s| !s.is_empty())

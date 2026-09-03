@@ -271,7 +271,7 @@ jobs:
             echo "WARN: ${{ matrix.rust_target }} 不提供桌面壳（仅 Windows 与 linux-x64），只发 server"
           fi
 
-          # ---- 基础 stage：桌面壳、沙箱 jar(win)、oliphaunt runtime(win) 在此装配；
+          # ---- 基础 stage：桌面壳、沙箱 jar(win)、oliphaunt runtime(全平台) 在此装配；
           #      JRE/Electron 不进基础包，作为可选 flavor 在最后复制加装 ----
           STAGE="dist/Suwayomi-${VER}-${CH}-${TGT}"
           mkdir -p "$STAGE/bin"
@@ -289,17 +289,22 @@ jobs:
             # 扩展沙盒（JVM，Kotlin fat jar）——放 bin/（server 自动查找）
             cd jvm-sandbox && ./gradlew -q jar --no-daemon && cd ..
             cp jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar "$STAGE/bin/jvm-sandbox.jar"
-            # 捆绑 oliphaunt 原生 runtime（oliphaunt-build 编译期 staging 到
-            # OUT_DIR/oliphaunt/resources——CI 构建的路径在用户机器不存在，
-            # server 运行时回退到 exe 同级 oliphaunt-runtime/resources）
-            RES=$(find target -path "*/release/build/suwayomi-core-*/out/oliphaunt/resources" -type d 2>/dev/null | head -1)
-            if [ -n "$RES" ] && [ -d "$RES" ]; then
-              mkdir -p "$STAGE/oliphaunt-runtime"
-              cp -r "$RES" "$STAGE/oliphaunt-runtime/resources"
-              echo "bundled oliphaunt runtime from $RES"
-            else
-              echo "WARN: no oliphaunt resources found to bundle"
-            fi
+          fi
+          # 捆绑 oliphaunt 原生 runtime（所有平台：win/linux 矩阵一致）。
+          # oliphaunt-build 编译期把 target-specific artifact crate
+          # （liboliphaunt-native-linux-x64-gnu / broker-linux-x64-gnu / tools 等）
+          # staging 到 OUT_DIR/oliphaunt/resources——那是 CI runner 的路径，
+          # 用户机器上不存在，server 运行时回退到 exe 上级的
+          # oliphaunt-runtime/resources（crates/suwayomi-core/src/db/manager.rs
+          # active_oliphaunt_resources_dir）。缺它 server 秒退：
+          # "embedded oliphaunt error: oliphaunt native resources unavailable"
+          RES=$(find target -path "*/release/build/suwayomi-core-*/out/oliphaunt/resources" -type d 2>/dev/null | head -1)
+          if [ -n "$RES" ] && [ -d "$RES" ]; then
+            mkdir -p "$STAGE/oliphaunt-runtime"
+            cp -r "$RES" "$STAGE/oliphaunt-runtime/resources"
+            echo "bundled oliphaunt runtime from $RES"
+          else
+            echo "WARN: no oliphaunt resources found to bundle"
           fi
 
           # ---- WebUI 制品：prep 已按通道解析好（alpha / beta 跟最新构建 r{code}

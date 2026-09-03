@@ -107,7 +107,11 @@ jobs:
           if [ "$CHANNEL" = "alpha" ]; then
             VER_NAME="r${VER_CODE}"
           else
-            VER_NAME="3.$((COUNT/100)).$(((COUNT/10)%10))"
+            # 末段取 count 的低两位并补零（182 -> 3.1.82，205 -> 3.2.05）：
+            # 补零是为了让 tag 去掉非数字后恰好等于 versionCode（见 crates/suwayomi-graphql/
+            # src/query.rs 的 tag_to_num），否则 3.2.5 -> 325 会被判成比 r3205 旧。
+            # 该等价关系在 count <= 999 时成立（3 + 两位段 + 两位段 = 3000 + count）。
+            VER_NAME="3.$((COUNT/100)).$(printf '%02d' $((COUNT%100)))"
           fi
 
           # tag：release 用干净版本号；beta/alpha 带通道 + 运行号保证唯一，
@@ -263,8 +267,7 @@ jobs:
           curl -sL -o webui.zip "$WEBUI_ZIP"
           mkdir -p "$STAGE/webui"
           python3 -c "import zipfile; zipfile.ZipFile('webui.zip').extractall('$STAGE/webui')"
-          # 记录部署的 WebUI 版本（server aboutWebUI/checkForWebUIUpdate 读取）
-          echo "$WEBUI_ZIP" | python3 -c "import sys; u=sys.stdin.read().strip(); print(u.split('/download/')[1].split('/')[0])" > "$STAGE/webui/revision"
+          # WebUI 版本随构建自带 version.txt（server 只读它，见 local_webui_*）
           rm -f webui.zip
           mkdir -p "$STAGE/data/autobackup" "$STAGE/data/downloads" "$STAGE/data/local"
 

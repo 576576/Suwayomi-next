@@ -40,7 +40,7 @@ pub struct GraphQLState {
     pub sync_yomi: SyncYomiService,
     /// Extension store: repo refresh + online install (Phase 6).
     pub extension_store: ExtensionStoreService,
-    /// WebUI static dir — version check reads `<dir>/revision`, updates swap the dir.
+    /// WebUI static dir — version check reads `<dir>/version.txt`, updates swap the dir.
     pub webui_dir: std::path::PathBuf,
     /// User data root (backups/downloads/local source live under it).
     pub data_dir: std::path::PathBuf,

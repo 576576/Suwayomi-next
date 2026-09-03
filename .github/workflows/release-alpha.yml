@@ -118,8 +118,7 @@ jobs:
           curl -sL -o webui.zip "$WEBUI_ZIP"
           mkdir -p "$STAGE/webui"
           python3 -c "import zipfile; zipfile.ZipFile('webui.zip').extractall('$STAGE/webui')"
-          # 记录部署的 WebUI 版本（server aboutWebUI/checkForWebUIUpdate 读取）
-          echo "$WEBUI_ZIP" | python3 -c "import sys; u=sys.stdin.read().strip(); print(u.split('/download/')[1].split('/')[0])" > "$STAGE/webui/revision"
+          # WebUI 版本随构建自带 version.txt（server 只读它，见 local_webui_*）
           rm -f webui.zip
           mkdir -p "$STAGE/data/autobackup" "$STAGE/data/downloads" "$STAGE/data/local"
           powershell -Command "Compress-Archive -Path 'dist/Suwayomi-${VER}-${TGT}+jre' -DestinationPath 'dist/Suwayomi-${VER}-${TGT}+jre.zip' -Force"

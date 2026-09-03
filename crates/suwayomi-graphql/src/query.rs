@@ -1295,10 +1295,8 @@ impl QueryRoot {
         }
     }
 
-    /// Mirrors `aboutWebUI()` — the locally deployed WebUI version
     /// Mirrors `aboutWebUI()` — version from `<webui_dir>/version.txt`
-    /// (line 1) with the channel on line 2 (written by the WebUI's own CI),
-    /// falling back to the legacy `revision` file.
+    /// (line 1) with the channel on line 2 (written by the WebUI's own build).
     #[graphql(name = "aboutWebUI")]
     async fn about_web_ui(&self, ctx: &Context<'_>) -> AboutWebUI {
         let dir = ctx.data::<GraphQLState>().map(|s| s.webui_dir.clone()).unwrap_or_default();
@@ -1333,8 +1331,8 @@ impl QueryRoot {
         }
     }
 
-    /// Mirrors `checkForWebUIUpdate()` — compares the deployed revision with
-    /// the latest 576576/Suwayomi-WebUI release. Empty tag on network failure
+    /// Mirrors `checkForWebUIUpdate()` — compares the deployed WebUI version
+    /// (line 1 of `version.txt`) with the latest 576576/Suwayomi-WebUI release. Empty tag on network failure
     /// (the WebUI then shows "unable to check for updates").
     #[graphql(name = "checkForWebUIUpdate")]
     async fn check_for_web_ui_update(&self, ctx: &Context<'_>) -> WebUIUpdateCheck {
@@ -2394,19 +2392,14 @@ trait MangaStatusExt {
     fn to_i32(&self) -> i32;
 }
 
-/// Locally deployed WebUI version from `<webui_dir>/revision` (e.g. `r3482`).
+/// Locally deployed WebUI version from `<webui_dir>/version.txt` (e.g. `r3482`).
+///
+/// `version.txt` 由 WebUI 自身构建产出（CI 与本地 `pnpm build` 都会写），三行分别为
+/// 版本号 / 通道 / 构建时间戳（Unix 秒）。文件缺失时返回空串——调用方据此判定"未知版本"。
 pub(crate) fn local_webui_version(dir: &std::path::Path) -> String {
-    // version.txt 第一行为版本号（WebUI CI 构建时写入）；旧产物回退 revision
-    if let Ok(content) = std::fs::read_to_string(dir.join("version.txt")) {
-        if let Some(tag) = content.lines().next() {
-            let tag = tag.trim().to_string();
-            if !tag.is_empty() {
-                return tag;
-            }
-        }
-    }
-    std::fs::read_to_string(dir.join("revision"))
-        .map(|s| s.trim().to_string())
+    std::fs::read_to_string(dir.join("version.txt"))
+        .ok()
+        .and_then(|content| content.lines().next().map(|line| line.trim().to_string()))
         .unwrap_or_default()
 }
 

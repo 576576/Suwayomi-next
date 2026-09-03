@@ -15,6 +15,9 @@ name: Release
 #
 # 通道语义：release = 正式版；beta = 正式发布（prerelease=false，计入 latest），
 # 仅 tag 带 -beta.{run_id} 区分与保唯一；alpha = 预发布（prerelease=true）。
+#
+# 捆绑的 WebUI 制品也按通道分流（见 scripts/resolve-webui.sh）：
+# alpha / beta → 最新构建（r{code} 预发布）；release → 最新正式 release（3.y.z）。
 
 on:
   workflow_dispatch:
@@ -167,6 +170,9 @@ jobs:
       # 注入外部版本号（build.rs 优先用这个）：release/beta 为 3.y.z，alpha 为 r{code}
       # （与 Auto build 一致；Auto build 不注入此变量，由 build.rs 自行算 r{code}）
       SUWAYOMI_VERSION_NAME: ${{ needs.prep.outputs.version_name }}
+      # 发布通道 → aboutServer.buildType。必须编译期注入（core/build.rs 读它生成常量）；
+      # 版本名本身不带通道后缀，不注入的话 alpha/beta 都会被报成 release。
+      SUWAYOMI_BUILD_TYPE: ${{ needs.prep.outputs.channel }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -199,6 +205,9 @@ jobs:
       - name: 打包
         id: pack
         shell: bash
+        env:
+          # 供 scripts/resolve-webui.sh 的 gh api 使用（跨仓库读公开仓库的 release）
+          GH_TOKEN: ${{ github.token }}
         run: |
           VER="${{ needs.prep.outputs.version_name }}"
           CH="${{ needs.prep.outputs.channel }}"
@@ -234,36 +243,15 @@ jobs:
             fi
           fi
 
-          # ---- 解析 WebUI（fork latest release）的 .zip 下载地址。优先匿名 HTML 通道：
-          #      releases.atom 拉最近 tag → 每个 tag 先试 expanded_assets、再试 release 页
-          #      提取下载链接（无 API 限流、跨仓库无需 token；加 UA 减少 bot 页）。gh api
-          #      与 curl API 仅兜底。所有探测命令都带 `|| true`，防止 GH runner 的
-          #      `bash -e -o pipefail` 在探测失败（如跨仓库 GITHUB_TOKEN 404 → gh exit 4）
-          #      时中止整个打包步。latest release 可能没有 .zip（历史无后缀产物），所以
-          #      按 atom 顺序从新到旧扫描，命中第一个带 zip 的 release。----
-          WEBUI_ZIP=""
-          if [ -z "$WEBUI_ZIP" ]; then
-            TAGS="$(curl -sL --max-time 30 -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' "https://github.com/576576/Suwayomi-WebUI/releases.atom" | python3 -c "import re,sys,html; h=sys.stdin.read(); ts=[html.unescape(t).strip() for t in re.findall(r'releases/tag/([^/\"><]+)', h)]; u=[]; [u.append(t) for t in ts if t not in u]; print('\n'.join(u[:10]))")" || true
-            for TAG in $TAGS; do
-              PAGE="$(curl -sL --max-time 30 -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' "https://github.com/576576/Suwayomi-WebUI/releases/expanded_assets/${TAG}")" || true
-              WEBUI_ZIP="$(printf '%s' "$PAGE" | grep -oE '/576576/Suwayomi-WebUI/releases/download/[^"]*\.zip' | head -1 | sed 's|^|https://github.com|')" || true
-              if [ -z "$WEBUI_ZIP" ]; then
-                WEBUI_ZIP="$(curl -sL --max-time 30 -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' "https://github.com/576576/Suwayomi-WebUI/releases/tag/${TAG}" | grep -oE '/576576/Suwayomi-WebUI/releases/download/[^"]*\.zip' | head -1 | sed 's|^|https://github.com|')" || true
-              fi
-              [ -n "$WEBUI_ZIP" ] && break
-            done
-          fi
-          if [ -z "$WEBUI_ZIP" ] && command -v gh >/dev/null 2>&1; then
-            WEBUI_ZIP="$(gh api repos/576576/Suwayomi-WebUI/releases/latest --jq '.assets[]? | select(.name|endswith(".zip")) | .browser_download_url' 2>/dev/null | head -1)" || true
-          fi
-          if [ -z "$WEBUI_ZIP" ]; then
-            WEBUI_ZIP="$(curl -sL --retry 2 --max-time 30 "https://api.github.com/repos/576576/Suwayomi-WebUI/releases?per_page=10" | python3 -c "import json,sys; ds=json.load(sys.stdin); print(next((a[0] for d in ds if isinstance(d,dict) and (a:=[x['browser_download_url'] for x in d.get('assets',[]) if x['name'].endswith('.zip')])), ''))") 2>/dev/null" || true
-          fi
-          if [ -z "$WEBUI_ZIP" ]; then
-            echo "::error::无法解析 576576/Suwayomi-WebUI 的 .zip release 资产（atom/gh/API 均无结果）"
-            exit 1
-          fi
-          echo "webui zip: $WEBUI_ZIP"
+          # ---- WebUI 制品：alpha / beta 跟最新构建（r{code} prerelease），
+          #      release 跟最新正式 release（3.y.z）。解析逻辑见 scripts/resolve-webui.sh
+          #      （gh api → 匿名 API → 匿名 HTML 三级兜底；拿不到则打 ::error:: 并中止）。----
+          case "$CH" in
+            release) WEBUI_KIND="stable" ;;
+            *)       WEBUI_KIND="build"  ;;
+          esac
+          WEBUI_ZIP="$(bash scripts/resolve-webui.sh "$WEBUI_KIND")"
+          echo "webui zip ($WEBUI_KIND): $WEBUI_ZIP"
           curl -sL -o webui.zip "$WEBUI_ZIP"
           mkdir -p "$STAGE/webui"
           python3 -c "import zipfile; zipfile.ZipFile('webui.zip').extractall('$STAGE/webui')"

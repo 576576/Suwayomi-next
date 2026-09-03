@@ -3,6 +3,9 @@ name: Auto build
 # alpha 发布 CI：推送 main / dev 时自动构建 alpha，仅 Windows x64。
 # 手动多通道/多架构发布走 release.yml（workflow_dispatch）。
 #
+# 捆绑的 WebUI 制品固定取最新构建（r{code} 预发布，见 scripts/resolve-webui.sh），
+# 与通道语义一致：alpha 永远跟最新提交，不等正式 release。
+#
 # alpha 版本号（见 crates/suwayomi-server/build.rs）：
 # - 内部 versionCode = commit count + 3000（46 次提交 -> 3046）
 # - alpha versionName = r{versionCode}（46 -> r3046）；正式外部版本号
@@ -53,15 +56,22 @@ jobs:
           distribution: temurin
           java-version: '25'
       - name: 构建
-        # NB: 该步骤使用 bash 语法（行内 env 注入），Windows runner 上必须显式
-        # 声明 shell: bash（否则默认 PowerShell 会把 VAR=val 当命令名解析报错）
+        # 版本计数与发布通道都在编译期注入：core/build.rs 读它们生成常量，
+        # 供 aboutServer.version / buildType 上报给 WebUI。
+        # NB: Windows runner 默认 PowerShell，故显式声明 shell: bash。
         shell: bash
+        env:
+          SUWAYOMI_VERSION_COUNT: ${{ steps.ver.outputs.count }}
+          # alpha CI 固定 alpha 通道（不注入的话 build.rs 会退回 release）
+          SUWAYOMI_BUILD_TYPE: alpha
         run: |
-          SUWAYOMI_VERSION_COUNT="${{ steps.ver.outputs.count }}" \
-            cargo build --release -p suwayomi-server --target x86_64-pc-windows-msvc
+          cargo build --release -p suwayomi-server --target x86_64-pc-windows-msvc
       - name: 打包
         id: pack
         shell: bash
+        env:
+          # 供 scripts/resolve-webui.sh 的 gh api 使用（跨仓库读公开仓库的 release）
+          GH_TOKEN: ${{ github.token }}
         run: |
           VER="${{ steps.ver.outputs.version_name }}"
           CH="alpha"
@@ -98,34 +108,11 @@ jobs:
             echo "WARN: no oliphaunt resources found to bundle"
           fi
 
-          # ---- 捆绑 WebUI（fork 最新 release）+ data 目录。优先匿名 HTML 通道：
-          #      releases.atom 拉最近 tag → 每 tag 先试 expanded_assets 再试 release 页取
-          #      zip（无 API 限流、跨仓库无需 token，加 UA 减 bot 页）；gh/API 仅兜底。
-          #      探测命令均带 `|| true` 防 `bash -e -o pipefail` 中途中止（跨仓库 token
-          #      404 会让 gh 以非零码退出并杀死整个步骤）。----
-          WEBUI_ZIP=""
-          if [ -z "$WEBUI_ZIP" ]; then
-            TAGS="$(curl -sL --max-time 30 -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' "https://github.com/576576/Suwayomi-WebUI/releases.atom" | python3 -c "import re,sys,html; h=sys.stdin.read(); ts=[html.unescape(t).strip() for t in re.findall(r'releases/tag/([^/\"><]+)', h)]; u=[]; [u.append(t) for t in ts if t not in u]; print('\n'.join(u[:10]))")" || true
-            for TAG in $TAGS; do
-              PAGE="$(curl -sL --max-time 30 -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' "https://github.com/576576/Suwayomi-WebUI/releases/expanded_assets/${TAG}")" || true
-              WEBUI_ZIP="$(printf '%s' "$PAGE" | grep -oE '/576576/Suwayomi-WebUI/releases/download/[^"]*\.zip' | head -1 | sed 's|^|https://github.com|')" || true
-              if [ -z "$WEBUI_ZIP" ]; then
-                WEBUI_ZIP="$(curl -sL --max-time 30 -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' "https://github.com/576576/Suwayomi-WebUI/releases/tag/${TAG}" | grep -oE '/576576/Suwayomi-WebUI/releases/download/[^"]*\.zip' | head -1 | sed 's|^|https://github.com|')" || true
-              fi
-              [ -n "$WEBUI_ZIP" ] && break
-            done
-          fi
-          if [ -z "$WEBUI_ZIP" ] && command -v gh >/dev/null 2>&1; then
-            WEBUI_ZIP="$(gh api repos/576576/Suwayomi-WebUI/releases/latest --jq '.assets[]? | select(.name|endswith(".zip")) | .browser_download_url' 2>/dev/null | head -1)" || true
-          fi
-          if [ -z "$WEBUI_ZIP" ]; then
-            WEBUI_ZIP="$(curl -sL --retry 2 --max-time 30 "https://api.github.com/repos/576576/Suwayomi-WebUI/releases?per_page=10" | python3 -c "import json,sys; ds=json.load(sys.stdin); print(next((a[0] for d in ds if isinstance(d,dict) and (a:=[x['browser_download_url'] for x in d.get('assets',[]) if x['name'].endswith('.zip')])), ''))") 2>/dev/null" || true
-          fi
-          if [ -z "$WEBUI_ZIP" ]; then
-            echo "::error::无法解析 576576/Suwayomi-WebUI 的 .zip release 资产"
-            exit 1
-          fi
-          echo "webui zip: $WEBUI_ZIP"
+          # ---- 捆绑 WebUI（fork 最新构建产物 r{code}）+ data 目录。
+          #      alpha 通道始终跟最新构建，与 scripts/resolve-webui.sh 的 build 类型一致；
+          #      三级兜底（gh api → 匿名 API → 匿名 HTML），拿不到则打 ::error:: 并中止。----
+          WEBUI_ZIP="$(bash scripts/resolve-webui.sh build)"
+          echo "webui zip (build): $WEBUI_ZIP"
           curl -sL -o webui.zip "$WEBUI_ZIP"
           mkdir -p "$STAGE/webui"
           python3 -c "import zipfile; zipfile.ZipFile('webui.zip').extractall('$STAGE/webui')"

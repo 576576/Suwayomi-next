@@ -24,5 +24,8 @@ pub mod version {
     pub const VERSION_COUNT: &str = env!("SUWAYOMI_VERSION_COUNT");
     /// Build time as Unix epoch seconds (string, parse at use site).
     pub const BUILD_TIME_EPOCH_SECS: &str = env!("SUWAYOMI_BUILD_TIME");
+    /// Release channel — `alpha` / `beta` / `release` (injected by release CI,
+    /// default `release`). Reported to the WebUI as `aboutServer.buildType`.
+    pub const BUILD_TYPE: &str = env!("SUWAYOMI_BUILD_TYPE");
 }
 

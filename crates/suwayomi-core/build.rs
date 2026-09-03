@@ -7,6 +7,7 @@
 //! - `SUWAYOMI_VERSION_CODE`  — commit count + 3000
 //! - `SUWAYOMI_VERSION_COUNT` — commit count
 //! - `SUWAYOMI_BUILD_TIME`    — epoch seconds at compile time
+//! - `SUWAYOMI_BUILD_TYPE`    — release channel: alpha / beta / release
 
 use std::process::Command;
 
@@ -33,6 +34,24 @@ fn main() {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| format!("r{version_code}"));
 
+    // 发布通道：CI 注入 SUWAYOMI_BUILD_TYPE（alpha / beta / release）。
+    // 注意必须走编译期常量——运行时 env::var 在用户机器上读不到 CI 的变量；
+    // 版本名在 release.yml 里是干净的 3.y.z / r{code}（通道后缀只出现在 tag 与
+    // 文件名上），所以未注入时只能退回 release。
+    let build_type = std::env::var("SUWAYOMI_BUILD_TYPE")
+        .ok()
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| {
+            if version_name.contains("-alpha") {
+                "alpha".to_string()
+            } else if version_name.contains("-beta") {
+                "beta".to_string()
+            } else {
+                "release".to_string()
+            }
+        });
+
     let build_time = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -42,7 +61,9 @@ fn main() {
     println!("cargo:rustc-env=SUWAYOMI_VERSION_CODE={version_code}");
     println!("cargo:rustc-env=SUWAYOMI_VERSION_COUNT={count}");
     println!("cargo:rustc-env=SUWAYOMI_BUILD_TIME={build_time}");
+    println!("cargo:rustc-env=SUWAYOMI_BUILD_TYPE={build_type}");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=SUWAYOMI_VERSION_COUNT");
     println!("cargo:rerun-if-env-changed=SUWAYOMI_VERSION_NAME");
+    println!("cargo:rerun-if-env-changed=SUWAYOMI_BUILD_TYPE");
 }

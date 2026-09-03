@@ -90,8 +90,8 @@ jobs:
           mkdir -p "$STAGE/bin"
           cp "$BIN" "$STAGE/bin/"
           # 桌面壳（Tauri 托盘+设置）——build-tray.sh 注入真实版本号到 Windows 资源
-          bash tauri-app/build-tray.sh
-          cp tauri-app/target/release/suwayomi.exe "$STAGE/" 2>/dev/null || true
+          bash suwayomi-tray/build-tray.sh
+          cp suwayomi-tray/target/release/suwayomi.exe "$STAGE/" 2>/dev/null || true
 
           # 扩展沙盒（JVM，Kotlin fat jar）——放 bin/（server 自动查找）
           cd jvm-sandbox && ./gradlew -q jar --no-daemon && cd ..
@@ -138,7 +138,7 @@ jobs:
           python3 -c "import zipfile; zipfile.ZipFile('electron.zip').extractall('$STAGE_EL/electron')"
           cp electron-app/main.js electron-app/package.json "$STAGE_EL/electron/resources/app/"
           # 窗口图标：与 main.js 的 BrowserWindow icon 配套（替代 Electron 默认图标）
-          cp tauri-app/icons/icon.ico "$STAGE_EL/electron/resources/app/icon.ico"
+          cp suwayomi-tray/icons/icon.ico "$STAGE_EL/electron/resources/app/icon.ico"
           rm -f electron.zip
           powershell -Command "Compress-Archive -Path 'dist/Suwayomi-${VER}-${TGT}+electron+jre' -DestinationPath 'dist/Suwayomi-${VER}-${TGT}+electron+jre.zip' -Force"
 

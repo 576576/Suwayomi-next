@@ -43,7 +43,7 @@
 | server/database/DBTransaction.util.kt | db/mod.rs | ⬜ |
 | server/ServerSetup.kt / JavalinSetup.kt / Migration.kt | server/src（axum 等价） | ⬜ |
 | server/settings/*（SettingsAsMap、SettingsUpdater、SettingsValidator） | core/config/* | ⬜ |
-| server/util/*（AppExit、AppMutex、Browser、CEFManager⏭️、Platform、ServerSubpath、SystemTray→tauri、WebInterfaceManager） | server + tauri-app | ⬜ |
+| server/util/*（AppExit、AppMutex、Browser、CEFManager⏭️、Platform、ServerSubpath、SystemTray→tauri、WebInterfaceManager） | server + suwayomi-tray | ⬜ |
 | server/user/UserType.kt | server（认证） | ⬜ |
 | server-config/**（ServerConfig.kt、SettingDelegate.kt、SettingsRegistry.kt、SettingGroup.kt、graphql/types/*） | core/config/* | ⬜ |
 
@@ -98,21 +98,21 @@
 | --- | --- | --- |
 | OpdsAPI.kt + controller/OpdsV1Controller.kt + impl/* + model/*（XML）+ dto/* + repository/* + util/* + constants | feeds/*.rs | ⬜ |
 
-## 八、suwayomi.global → `suwayomi-rest` + `tauri-app`
+## 八、suwayomi.global → `suwayomi-rest` + `suwayomi-tray`
 
 | Kotlin 文件 | Rust 目标 | 状态 |
 | --- | --- | --- |
 | impl/About.kt、AppUpdate.kt（→ tauri-updater 等价）、GlobalMeta.kt、WebView.kt、KcefWebView.kt（⏭️ CEF 移除）、impl/sync/*（SyncManager、SyncYomiSyncService）、impl/util/Jwt.kt | 分散 | ⬜ |
-| i18n/LocalizationHelper.kt | tauri-app（登录页） | ⬜ |
+| i18n/LocalizationHelper.kt | suwayomi-tray（登录页） | ⬜ |
 
 ## 九、桌面/系统集成（R3 决策：CEF → Tauri）
 
 | Kotlin 文件 | Rust 目标 | 状态 |
 | --- | --- | --- |
 | server/util/CEFManager.kt | ⏭️ 移除（改用 Tauri WebView） | ✅ 已决策 |
-| server/util/SystemTray.kt | tauri-app tray 菜单（补全：打开 WebUI/打开数据目录/启动最小化/退出） | ⬜ |
-| server/util/Browser.kt | tauri-app（open 命令） | ⬜ |
-| server/util/AppMutex.kt | tauri-app（单实例） | ⬜ |
+| server/util/SystemTray.kt | suwayomi-tray tray 菜单（补全：打开 WebUI/打开数据目录/启动最小化/退出） | ⬜ |
+| server/util/Browser.kt | suwayomi-tray（open 命令） | ⬜ |
+| server/util/AppMutex.kt | suwayomi-tray（单实例） | ⬜ |
 
 ## 十、测试用例（源 server/src/test → Rust tests）
 
@@ -166,7 +166,7 @@
   （let _sandbox 保持进程存活）；真实 keiyoushi 仓库实测：刷新 1381 扩展、
   安装 nhentai → sandbox 22 源 → DB 注册 → popular 18 部漫画 → 卸载清零
 
-- **Tauri 桌面壳完成**（tauri-app/）：无头 server 子进程编排（SUWAYOMI_BIN/同目录/PATH 查找、
+- **Tauri 桌面壳完成**（suwayomi-tray/）：无头 server 子进程编排（SUWAYOMI_BIN/同目录/PATH 查找、
   数据目录 %APPDATA%\com.suwayomi.tray + pglite-data + server.log）、WebView 加载 WebUI、
   托盘菜单（打开 WebUI/打开数据目录/退出，退出杀子进程）、关窗驻留托盘；独立工程
   （空 [workspace] 表隔离，不拖慢主构建）；冒烟实测 spawn+8090 200 通过

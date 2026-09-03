@@ -260,8 +260,8 @@ jobs:
           cp "$BIN" "$STAGE/bin/"
           if [ "$IS_WIN" = "true" ]; then
             # 桌面壳（Tauri 托盘）——build-tray.sh 注入真实版本号到 Windows 资源
-            bash tauri-app/build-tray.sh
-            cp tauri-app/target/release/suwayomi.exe "$STAGE/" 2>/dev/null || true
+            bash suwayomi-tray/build-tray.sh
+            cp suwayomi-tray/target/release/suwayomi.exe "$STAGE/" 2>/dev/null || true
             # 扩展沙盒（JVM，Kotlin fat jar）——放 bin/（server 自动查找）
             cd jvm-sandbox && ./gradlew -q jar --no-daemon && cd ..
             cp jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar "$STAGE/bin/jvm-sandbox.jar"
@@ -328,7 +328,7 @@ jobs:
               # 应用入口 + 窗口图标（与 main.js 的 BrowserWindow icon 配套）
               mkdir -p bundle-tmp/electron/resources/app
               cp electron-app/main.js electron-app/package.json bundle-tmp/electron/resources/app/
-              cp tauri-app/icons/icon.ico bundle-tmp/electron/resources/app/icon.ico
+              cp suwayomi-tray/icons/icon.ico bundle-tmp/electron/resources/app/icon.ico
               EL_DIR="bundle-tmp/electron"
             fi
 

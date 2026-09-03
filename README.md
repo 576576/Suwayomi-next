@@ -111,7 +111,7 @@ crates/
   suwayomi-opds/     OPDS（← kotlin opds）
   suwayomi-server/   服务端入口（← kotlin Main.kt + server/）
 jvm-sandbox/         扩展沙盒（Kotlin，AndroidCompat + dex2jar + ChildFirstClassLoader）
-tauri-app/           桌面壳（Tauri 2，独立 workspace，不进主 workspace）
+suwayomi-tray/       桌面壳（Tauri 2，独立 workspace，不进主 workspace；Windows/Linux）
 tools/h2-dump/       H2 → PostgreSQL 迁移工具（Kotlin，Phase 7）
 migrations/          SQL 迁移（PostgreSQL）
 docs/                基线文档（REST 端点 / GraphQL schema / 迁移说明 / 用户指南）

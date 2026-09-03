@@ -76,7 +76,7 @@ Suwayomi-next/
 ├── jvm-sandbox/                      # ← AndroidCompat + 扩展加载逻辑（Kotlin，保持 JVM）
 │   ├── sandbox-core/                 # ChildFirstClassLoader + APK→JAR 转换（dex2jar）+ 扩展加载
 │   └── sandbox-server/               # HTTP 服务（/extensions /sources /source/.../manga 等）
-├── tauri-app/                        # ← 桌面壳（R3 决策：移除 CEF，改用 Tauri）
+├── suwayomi-tray/                        # ← 桌面壳（R3 决策：移除 CEF，改用 Tauri）
 │   ├── src/                          # Rust 侧：窗口管理、系统托盘、进程编排
 │   └── tauri.conf.json               # Tauri 配置（托盘菜单、单实例、开机自启）
 ├── migrations/                       # SQL 迁移（复刻 M0001–M0062 的净效果）
@@ -303,7 +303,7 @@ Rust 主进程 ── HTTP/JSON IPC ──► JVM 沙盒进程（Kotlin，保留
 | Tracker | `impl/track/tracker/*`（MAL/AniList/Kitsu/Bangumi/MangaUpdates/Shikimori） | `suwayomi-domain/src/track/` | OAuth + API 集成测试（mock） |
 | OPDS | `opds/*`（V1 feeds、XML 生成） | `suwayomi-opds/` | 与 Kotlin 版输出 XML 比对 |
 | 同步 | `global/impl/sync/*`、`manga/impl/sync/KoreaderSyncService`、`server/database/trigger/SyncYomiTriggers` | 对应模块 | 触发器语义等价（SQLite 用触发器，PostgreSQL 同） |
-| **桌面壳（R3）** | `server/util/CEFManager.kt`、`server/util/SystemTray.kt`、`server/util/Browser.kt` | `tauri-app/` | 见下方「Tauri 桌面壳」 |
+| **桌面壳（R3）** | `server/util/CEFManager.kt`、`server/util/SystemTray.kt`、`server/util/Browser.kt` | `suwayomi-tray/` | 见下方「Tauri 桌面壳」 |
 
 **Tauri 桌面壳（R3 决策，已确认：移除 CEF，改用 Tauri）**：
 - 服务端（suwayomi-server）以无头模式运行，Tauri 壳负责：窗口（WebUI 前端）、系统托盘、进程编排
@@ -329,7 +329,7 @@ Rust 主进程 ── HTTP/JSON IPC ──► JVM 沙盒进程（Kotlin，保留
 - [ ] `tools/h2-dump`：Kotlin 小工具，读取既有 H2 文件数据库 → **导出为 PostgreSQL 导入脚本（R1 决策）**（保留原库只读，不破坏）
 - [ ] 备份导入路径：Rust 版支持导入 Kotlin 版导出的 Mihon `.proto` 备份（R1 补充路径）
 - [ ] `--migrate` CLI：指定 Kotlin 数据目录 → 自动迁移（经 h2-dump）并启动
-- [ ] **Tauri 打包**：`tauri-app` 构建 Windows/macOS/Linux 安装包；无头服务模式 Docker 镜像（参考 `scripts/bundler.sh`）
+- [ ] **Tauri 打包**：`suwayomi-tray` 构建 Windows/macOS/Linux 安装包；无头服务模式 Docker 镜像（参考 `scripts/bundler.sh`）
 - [ ] 用户文档（迁移自 `docs/*.md` 并补充 Rust 版说明）
 
 **交付物**：迁移工具 + Tauri 桌面安装包 + Docker 镜像 + 文档
@@ -434,7 +434,7 @@ H2 使用 JVM 专有 MVStore 文件格式，**Rust 侧无法直接读取**。兼
 | --- | --- | --- | --- | --- |
 | **R1** | **H2 数据迁移路径** | 🔴 高 | H2 为 JVM 专有格式，Rust 无法直读，迁移必须经过工具/备份 | ✅ **提供导入工具，迁移到 PostgreSQL**：`tools/h2-dump`（Kotlin）导出 → PostgreSQL 导入脚本；Mihon 备份导入作为补充路径；SQLite 仍为全新部署默认后端 |
 | **R2** | **扩展运行方案** | 🔴 高 | Mihon 扩展是 JVM 字节码，必须由 JVM 执行 | ✅ **保留 Mihon 扩展的 JVM 执行 + APK 转换**：jvm-sandbox 完整保留 AndroidCompat + dex2jar（APK→JAR）+ ChildFirstURLClassLoader 链路 |
-| **R3** | **桌面端功能裁剪** | 🟡 中 | CEF WebView、系统托盘、浏览器自动打开、App 自更新（`global/impl/*`、`server/util/CEFManager.kt` 等） | ✅ **移除 CEF，改用 Tauri 桌面壳**：`tauri-app` 提供窗口 + 托盘；**补全系统托盘选项**（打开 WebUI / 打开数据目录 / 启动最小化到托盘 / 退出）；App 自更新走 Tauri updater 替代 |
+| **R3** | **桌面端功能裁剪** | 🟡 中 | CEF WebView、系统托盘、浏览器自动打开、App 自更新（`global/impl/*`、`server/util/CEFManager.kt` 等） | ✅ **移除 CEF，改用 Tauri 桌面壳**：`suwayomi-tray` 提供窗口 + 托盘；**补全系统托盘选项**（打开 WebUI / 打开数据目录 / 启动最小化到托盘 / 退出）；App 自更新走 Tauri updater 替代 |
 | **R4** | **GraphQL schema 生成差异** | 🟡 中 | Kotlin 反射生成 vs Rust 手写 | 以 introspection 基线 + `graphql-inspector` 自动化比对，杜绝漂移 |
 | **R5** | **迁移框架语义对齐** | 🟡 中 | de.neonew.exposed.migrations 的状态表结构/命名需逆向核对 | Phase 1 实现时以 Kotlin 版实际创建的库为准（可用 Docker 跑一次 Kotlin 版生成参考库） |
 | **R6** | **SyncYomi 触发器** | 🟡 中 | `server/database/trigger/SyncYomiTriggers.kt` 用 DB 触发器实现同步 | SQLite/PG 均支持触发器，语义可复刻；需验证数据一致性 |

@@ -22,6 +22,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -170,7 +171,6 @@ const SERVER_PROC_NAMES: [&str; 2] = ["suwayomi-server.exe", "suwayomi-server"];
 /// 2) 端口探测——server 就绪后端口必然可连，作为最终判定。
 /// 两者任一命中即视为「已有实例」，避免重复 spawn。
 fn server_running(port: u16) -> bool {
-    use sysinfo::{ProcessesToUpdate, System};
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All, true);
     let by_name = sys.processes().values().any(|p| {
@@ -185,7 +185,6 @@ fn server_running(port: u16) -> bool {
 
 /// 杀掉所有 suwayomi-server 进程（含外部启动的）
 fn kill_server_processes() {
-    use sysinfo::{ProcessesToUpdate, System};
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All, true);
     let ids: Vec<_> = sys
@@ -351,19 +350,19 @@ fn launch_webui(state: &AppState, prefer_electron: bool, port: u16) {
             // 去重：已经有关联的 Electron 窗口在跑就把它提到前台，不再开第二个
             // （托盘重启后 state.electron 丢失，所以按进程枚举判定，覆盖外部启动的壳）
             let pids = {
-                let mut sys = sysinfo::System::new();
-                sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-                electron_process_ids(&sys)
+                let mut sys = System::new();
+                electron_processes(&mut sys)
             };
             if !pids.is_empty() {
                 tray_log(&format!(
-                    "[tray] electron already running ({} pid(s)); focusing existing window",
-                    pids.len()
+                    "[tray] electron already running ({} pid(s)): {:?}; reusing existing window",
+                    pids.len(),
+                    pids
                 ));
                 if focus_electron_window(&pids) {
                     return;
                 }
-                tray_log("[tray] focusing existing electron window failed; launching a new one");
+                tray_log("[tray] no visible electron window to reuse; launching a new one");
             }
 
             tray_log(&format!("[tray] launching electron shell: {}", exe.display()));
@@ -402,39 +401,104 @@ fn is_electron_main_process(name: &str, cmd: &[std::ffi::OsString]) -> bool {
     !cmd.iter().any(|c| c.to_string_lossy().starts_with("--type="))
 }
 
-/// 本发布目录关联的 Electron 进程（含本托盘启动的与外部启动的）
-fn electron_process_ids(sys: &sysinfo::System) -> Vec<sysinfo::Pid> {
-    let base = base_dir().join("electron");
-    let base_str = base.to_string_lossy().to_lowercase();
-    sys.processes()
+/// 枚举进程并**显式要求刷新 cmd 与 exe**。
+///
+/// 坑：`System::refresh_processes(All, true)` 的第二个 bool 是
+/// `remove_dead_processes`，**不是**刷新开关；它内部用的刷新项只有
+/// memory / cpu / disk_usage / exe，**不含 cmd**。直接调它，`Process::cmd()`
+/// 对所有进程恒为空——而 Electron 主进程与 zygote / gpu / renderer 子进程
+/// 同名，只能靠命令行里的 `--type=` 区分，拿不到 cmd 就永远匹配不到主进程，
+/// 去重逻辑会静默失效（既不聚焦也不报错，照样再开一个窗口）。
+fn refresh_processes_with_cmd(sys: &mut System) {
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .with_cmd(UpdateKind::Always)
+            .with_exe(UpdateKind::Always),
+    );
+}
+
+/// 路径归一比较：先直接比，再退回 `canonicalize`
+/// （Windows 的 `\\?\` 前缀、软链、大小写差异都能吃掉）
+fn same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (a.canonicalize().ok(), b.canonicalize().ok()) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// 本发布目录关联的 Electron 主进程 pid（含本托盘启动的与外部启动的）
+fn electron_processes(sys: &mut System) -> Vec<Pid> {
+    refresh_processes_with_cmd(sys);
+
+    let base_str = base_dir().join("electron").to_string_lossy().to_lowercase();
+    let target = electron_exe();
+
+    let pids: Vec<Pid> = sys
+        .processes()
         .values()
         .filter(|p| {
             let n = p.name().to_string_lossy();
-            is_electron_main_process(&n, p.cmd())
-                && p.cmd().iter().any(|c| {
-                    let s = c.to_string_lossy().to_lowercase();
-                    s.contains(&base_str) || s.contains("suwayomi")
-                })
+            if !is_electron_main_process(&n, p.cmd()) {
+                return false;
+            }
+            // 主判定：进程的可执行文件就是本发布目录里的 electron 运行时
+            if let (Some(t), Some(e)) = (target.as_deref(), p.exe()) {
+                if same_path(e, t) {
+                    return true;
+                }
+            }
+            // 兜底：exe 读不到时（权限受限）退回命令行匹配本发布目录
+            p.cmd()
+                .iter()
+                .any(|c| c.to_string_lossy().to_lowercase().contains(&base_str))
         })
         .map(|p| p.pid())
-        .collect()
+        .collect();
+
+    if pids.is_empty() {
+        // 排查线索：系统里有 electron 在跑但没一个归本发布目录时，别静默
+        let total = sys
+            .processes()
+            .values()
+            .filter(|p| {
+                let n = p.name().to_string_lossy();
+                n.eq_ignore_ascii_case("electron.exe") || n == "electron"
+            })
+            .count();
+        if total > 0 {
+            tray_log(&format!(
+                "[tray] {total} electron process(es) found, but none belongs to {base_str}"
+            ));
+        }
+    }
+    pids
 }
 
-/// 把已存在的 Electron 窗口提到前台（最小化时先还原）。成功聚焦返回 true。
+/// 把已存在的 Electron 窗口提到前台（最小化时先还原）。
+///
+/// 返回 true 表示「找到了本发布目录关联的可见窗口，无需再开新的」——即便
+/// 系统拒绝抢焦点（后台进程 `SetForegroundWindow` 受前台锁限制），窗口本身
+/// 仍在，不该再 spawn 一个，否则点一次托盘多一个窗口，正是要去重的问题。
+/// 抢焦点失败时会退而求其次 `FlashWindow` 闪一下任务栏，让用户注意到。
 #[cfg(windows)]
-fn focus_electron_window(pids: &[sysinfo::Pid]) -> bool {
+fn focus_electron_window(pids: &[Pid]) -> bool {
     use windows::core::BOOL;
     use windows::Win32::Foundation::{HWND, LPARAM};
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow, ShowWindow, SW_RESTORE,
+        EnumWindows, FlashWindow, GetForegroundWindow, GetWindowThreadProcessId, IsWindowVisible,
+        SetForegroundWindow, ShowWindow, SW_RESTORE,
     };
 
     struct EnumCtx {
         pids: Vec<u32>,
-        /// 是否命中了属于目标进程的可见窗口
-        found: bool,
-        /// SetForegroundWindow 是否真的成功（前台切换受系统限制，可能失败）
-        raised: bool,
+        /// 命中的目标进程可见窗口（取第一个）
+        hwnd: Option<HWND>,
     }
 
     unsafe extern "system" fn enum_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -448,45 +512,80 @@ fn focus_electron_window(pids: &[sysinfo::Pid]) -> bool {
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
 
         if ctx.pids.contains(&pid) {
-            let _ = ShowWindow(hwnd, SW_RESTORE);
-            ctx.found = true;
-            ctx.raised = SetForegroundWindow(hwnd).as_bool();
-            // 停止枚举：只聚焦第一个命中的窗口
+            ctx.hwnd = Some(hwnd);
+            // 停止枚举：只取第一个命中的窗口
             return BOOL(0);
         }
 
         BOOL(1)
     }
 
-    let mut ctx = EnumCtx {
-        pids: pids.iter().map(|p| p.as_u32()).collect(),
-        found: false,
-        raised: false,
-    };
+    let mut ctx = EnumCtx { pids: pids.iter().map(|p| p.as_u32()).collect(), hwnd: None };
     let _ = unsafe { EnumWindows(Some(enum_window), LPARAM(&mut ctx as *mut EnumCtx as isize)) };
-    ctx.found && ctx.raised
+
+    let Some(hwnd) = ctx.hwnd else {
+        tray_log("[tray] focus: no visible window for electron pid(s); a new window is needed");
+        return false;
+    };
+
+    unsafe {
+        // 最小化/后台时先还原，否则 SetForegroundWindow 无效
+        let _ = ShowWindow(hwnd, SW_RESTORE);
+
+        if SetForegroundWindow(hwnd).as_bool() {
+            return true;
+        }
+
+        // 兜底：前台切换受系统限制——非前台进程不能抢焦点。把当前线程挂到
+        // 现有前台线程的输入队列上，临时获得「前台进程」身份再切一次。
+        let fg = GetForegroundWindow();
+        let fg_tid = GetWindowThreadProcessId(fg, None);
+        let cur_tid = GetCurrentThreadId();
+        let raised = if fg_tid != 0 && AttachThreadInput(cur_tid, fg_tid, true).as_bool() {
+            let r = SetForegroundWindow(hwnd).as_bool();
+            let _ = AttachThreadInput(cur_tid, fg_tid, false);
+            r
+        } else {
+            false
+        };
+
+        if !raised {
+            // 实在抢不到焦点：至少闪一下任务栏，用户能看到已有窗口还在
+            let _ = FlashWindow(hwnd, true);
+            tray_log("[tray] focus: window found but SetForegroundWindow refused (foreground lock); flashed taskbar");
+        }
+        // 窗口存在，无论是否抢到焦点都不再开新窗口
+        true
+    }
 }
 
-/// 把已存在的 Electron 窗口提到前台（Linux 版）。成功聚焦返回 true。
+/// 把已存在的 Electron 窗口提到前台（Linux 版）。
+///
+/// 返回 true 表示「本发布目录的 Electron 主进程在跑，复用即可、别再开第二个」
+/// ——与 Windows 版语义一致：聚焦只是尽力而为，即使抬不起来也不该 spawn 新
+/// 窗口，否则点一次托盘多一个窗口，正是要去重的问题。
 ///
 /// Linux 没有跨桌面环境的窗口枚举 API（X11 / Wayland 各自为政，原生 Wayland
-/// 还禁止应用互相抬高窗口），所以走外部工具，按可用性依次尝试：
+/// 还禁止应用互相抬高窗口），所以聚焦走外部工具，按可用性依次尝试：
 /// 1. `wmctrl -lp` → 读 `_NET_WM_PID` 列匹配进程 → `wmctrl -i -a <id>` 激活。
 ///    X11 与 XWayland 通用，Electron 默认就跑在 XWayland 上，覆盖 GNOME/KDE/Xfce。
 /// 2. `xdotool search --pid <pid>` → `xdotool windowactivate`（X11 专用兜底）。
-/// 两个工具都没有（纯 Wayland 会话且未装兼容层）就返回 false，让调用方按
-/// 原逻辑开一个新窗口——宁可多开一个，也不要点了「打开 WebUI」没反应。
+/// 两个工具都没有（纯 Wayland 会话且未装兼容层）时只能跳过聚焦，但仍返回
+/// true 复用进程——窗口就在那里，用户自己点一下即可。
 #[cfg(target_os = "linux")]
-fn focus_electron_window(pids: &[sysinfo::Pid]) -> bool {
+fn focus_electron_window(pids: &[Pid]) -> bool {
     if pids.is_empty() {
         return false;
     }
-    focus_with_wmctrl(pids) || focus_with_xdotool(pids)
+    if !(focus_with_wmctrl(pids) || focus_with_xdotool(pids)) {
+        tray_log("[tray] focus: no wmctrl/xdotool available to raise window; reusing process anyway");
+    }
+    true
 }
 
 /// `wmctrl -lp` 输出格式：`0x04a00003  0 1234    hostname 窗口标题`
 #[cfg(target_os = "linux")]
-fn focus_with_wmctrl(pids: &[sysinfo::Pid]) -> bool {
+fn focus_with_wmctrl(pids: &[Pid]) -> bool {
     let Ok(out) = Command::new("wmctrl").args(["-lp"]).output() else {
         return false;
     };
@@ -518,7 +617,7 @@ fn focus_with_wmctrl(pids: &[sysinfo::Pid]) -> bool {
 
 /// `xdotool search --pid <pid>` 输出每行一个窗口 id（16 进制）。
 #[cfg(target_os = "linux")]
-fn focus_with_xdotool(pids: &[sysinfo::Pid]) -> bool {
+fn focus_with_xdotool(pids: &[Pid]) -> bool {
     for pid in pids {
         let Ok(out) = Command::new("xdotool")
             .args(["search", "--pid", &pid.as_u32().to_string()])
@@ -549,17 +648,15 @@ fn focus_with_xdotool(pids: &[sysinfo::Pid]) -> bool {
 
 /// 其他平台（macOS 等）暂未实现窗口去重：直接返回 false，退化为开新窗口。
 #[cfg(not(any(windows, target_os = "linux")))]
-fn focus_electron_window(_pids: &[sysinfo::Pid]) -> bool {
+fn focus_electron_window(_pids: &[Pid]) -> bool {
     false
 }
 
 /// 关闭 Electron 壳：先杀本进程持有的 Child；再兜底枚举命令行指向本发布
 /// 目录 electron\ 的 electron.exe 进程（防外部启动/句柄丢失）。
 fn kill_electron_processes() {
-    use sysinfo::{ProcessesToUpdate, System};
     let mut sys = System::new();
-    sys.refresh_processes(ProcessesToUpdate::All, true);
-    for id in electron_process_ids(&sys) {
+    for id in electron_processes(&mut sys) {
         tray_log(&format!("[tray] killing electron pid {id}"));
         if let Some(p) = sys.process(id) {
             let _ = p.kill();

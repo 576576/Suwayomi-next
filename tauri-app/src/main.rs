@@ -317,9 +317,29 @@ fn electron_exe() -> Option<PathBuf> {
 /// Electron 窗口（通过 SUWAYOMI_WEBUI_URL 环境变量传入本地 server 地址；
 /// electron.exe 无参启动会自动加载 resources/app 里的应用入口）；否则用
 /// 系统默认浏览器。
+///
+/// 已有关联的 Electron 窗口在跑时**不再开第二个**，只把它聚焦到前台。
 fn launch_webui(state: &AppState, prefer_electron: bool, port: u16) {
     if prefer_electron {
         if let Some(exe) = electron_exe() {
+            // 去重：已经有关联的 Electron 窗口在跑就把它提到前台，不再开第二个
+            // （托盘重启后 state.electron 丢失，所以按进程枚举判定，覆盖外部启动的壳）
+            let pids = {
+                let mut sys = sysinfo::System::new();
+                sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+                electron_process_ids(&sys)
+            };
+            if !pids.is_empty() {
+                tray_log(&format!(
+                    "[tray] electron already running ({} pid(s)); focusing existing window",
+                    pids.len()
+                ));
+                if focus_electron_window(&pids) {
+                    return;
+                }
+                tray_log("[tray] focusing existing electron window failed; launching a new one");
+            }
+
             tray_log(&format!("[tray] launching electron shell: {}", exe.display()));
             match Command::new(&exe)
                 .env("SUWAYOMI_WEBUI_URL", webui_url(port))
@@ -337,16 +357,11 @@ fn launch_webui(state: &AppState, prefer_electron: bool, port: u16) {
     let _ = open::that(webui_url(port));
 }
 
-/// 关闭 Electron 壳：先杀本进程持有的 Child；再兜底枚举命令行指向本发布
-/// 目录 electron\ 的 electron.exe 进程（防外部启动/句柄丢失）。
-fn kill_electron_processes() {
-    use sysinfo::{ProcessesToUpdate, System};
-    let mut sys = System::new();
-    sys.refresh_processes(ProcessesToUpdate::All, true);
+/// 本发布目录关联的 Electron 进程（含本托盘启动的与外部启动的）
+fn electron_process_ids(sys: &sysinfo::System) -> Vec<sysinfo::Pid> {
     let base = base_dir().join("electron");
     let base_str = base.to_string_lossy().to_lowercase();
-    let ids: Vec<_> = sys
-        .processes()
+    sys.processes()
         .values()
         .filter(|p| {
             let n = p.name().to_string_lossy();
@@ -357,8 +372,68 @@ fn kill_electron_processes() {
                 })
         })
         .map(|p| p.pid())
-        .collect();
-    for id in ids {
+        .collect()
+}
+
+/// 把已存在的 Electron 窗口提到前台（最小化时先还原）。成功聚焦返回 true。
+#[cfg(windows)]
+fn focus_electron_window(pids: &[sysinfo::Pid]) -> bool {
+    use windows::core::BOOL;
+    use windows::Win32::Foundation::{HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow, ShowWindow, SW_RESTORE,
+    };
+
+    struct EnumCtx {
+        pids: Vec<u32>,
+        /// 是否命中了属于目标进程的可见窗口
+        found: bool,
+        /// SetForegroundWindow 是否真的成功（前台切换受系统限制，可能失败）
+        raised: bool,
+    }
+
+    unsafe extern "system" fn enum_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let ctx = &mut *(lparam.0 as *mut EnumCtx);
+
+        if !IsWindowVisible(hwnd).as_bool() {
+            return BOOL(1);
+        }
+
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+
+        if ctx.pids.contains(&pid) {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+            ctx.found = true;
+            ctx.raised = SetForegroundWindow(hwnd).as_bool();
+            // 停止枚举：只聚焦第一个命中的窗口
+            return BOOL(0);
+        }
+
+        BOOL(1)
+    }
+
+    let mut ctx = EnumCtx {
+        pids: pids.iter().map(|p| p.as_u32()).collect(),
+        found: false,
+        raised: false,
+    };
+    let _ = unsafe { EnumWindows(Some(enum_window), LPARAM(&mut ctx as *mut EnumCtx as isize)) };
+    ctx.found && ctx.raised
+}
+
+#[cfg(not(windows))]
+fn focus_electron_window(_pids: &[sysinfo::Pid]) -> bool {
+    false
+}
+
+/// 关闭 Electron 壳：先杀本进程持有的 Child；再兜底枚举命令行指向本发布
+/// 目录 electron\ 的 electron.exe 进程（防外部启动/句柄丢失）。
+fn kill_electron_processes() {
+    use sysinfo::{ProcessesToUpdate, System};
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    for id in electron_process_ids(&sys) {
         tray_log(&format!("[tray] killing electron pid {id}"));
         if let Some(p) = sys.process(id) {
             let _ = p.kill();

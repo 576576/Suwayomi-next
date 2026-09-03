@@ -3310,6 +3310,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-single-instance",
+ "windows 0.61.3",
 ]
 
 [[package]]

@@ -6,8 +6,10 @@ const path = require('path');
 // 托盘设置环境变量；兜底默认本地 8090（server 默认端口）。
 const url = process.env.SUWAYOMI_WEBUI_URL || 'http://127.0.0.1:8090';
 
+let mainWindow = null;
+
 function createWindow() {
-  const win = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1280,
     height: 860,
     autoHideMenuBar: true,
@@ -22,9 +24,32 @@ function createWindow() {
       sandbox: true,
     },
   });
-  win.loadURL(url);
-  win.on('closed', () => app.quit());
+  mainWindow.loadURL(url);
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+    app.quit();
+  });
 }
 
-app.whenReady().then(createWindow);
+// 单实例兜底：托盘侧已做「已打开则聚焦」的去重，这里再兜一层，防止
+// 直接双击 electron.exe 或托盘枚举失效时开出第二个窗口。
+// 拿不到锁说明已经有一个实例在跑 → 立刻退出（已有实例会聚焦自己的窗口）。
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow) {
+      return;
+    }
+
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore();
+    }
+
+    mainWindow.focus();
+  });
+
+  app.whenReady().then(createWindow);
+}
+
 app.on('window-all-closed', () => app.quit());

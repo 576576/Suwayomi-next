@@ -1,23 +1,18 @@
 # Suwayomi-next
 
-[Suwayomi](https://github.com/Suwayomi/Suwayomi-Server/) （下称Kotlin/Java版）的 Rust 实现。保持既有 Tachiyomi 数据结构、GraphQL/REST/OPDS 接口、Mihon 扩展体系完全兼容，除扩展运行层外均由Rust实现。
+简体中文 | [English](docs/en/README.md)
 
-## 状态
+![128x128](./assets/images/128x128.png)
 
-| Phase | 内容 | 状态 |
-| --- | --- | --- |
-| 0 | 工作区骨架与兼容基线 | 🟢 完成 |
-| 1 | 核心数据模型与数据库层 | 🟢 完成 |
-| 2 | 核心业务逻辑（domain） | 🟢 完成 |
-| 3 | REST API v1 | 🟢 完成 |
-| 4 | GraphQL API | 🟢 完成 |
-| 5 | 扩展桥接层（JVM 沙盒） | 🟢 完成 |
-| 6 | 外围功能（下载/更新/备份/Tracker/OPDS/同步/Tauri 壳） | 🟢 完成 |
-| 7 | 数据迁移工具与发布 | 🟢 完成 |
+[Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server/) 的 Rust 实现，并完善了桌面托盘。保持既有 Tachiyomi 数据结构、GraphQL/REST/OPDS 接口、Mihon 扩展体系完全兼容，除扩展运行层外均由Rust实现。本项目是API参考的实现，并非原 [Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server) 的分支。
 
-**API 兼容性状态**：REST v1 端点基线见 `docs/api/rest-endpoints-baseline.md`，GraphQL
-schema 基线见 `docs/graphql/README.md`，与 Suwayomi 原版保持行为兼容（详见
-`docs/migration/MIGRATION_PLAN.md` 的决策记录 R1–R8）。
+![page-setting](./assets/screenshots/page-setting.png)
+
+## 实现范围
+
+已实现：核心数据模型与数据库层、业务逻辑（domain）、REST API v1、GraphQL API、OPDS、
+下载/更新/备份/Tracker/KOReader·SyncYomi 同步、JVM 扩展沙盒、Tauri 桌面壳与发布 CI。
+REST v1 与 GraphQL schema 基线见 `docs/api/`、`docs/graphql/`，行为与原版 Suwayomi 兼容。
 
 ## 快速开始（源码构建）
 
@@ -30,117 +25,94 @@ cargo run --release -p suwayomi-server
 - GraphQL：`/api/graphql` ｜ REST：`/api/v1` ｜ OPDS：`/api/opds/v1.2`（KOReader 可用）
 - 完整配置说明见 **`docs/user-guide.md`**
 
-## Release 目录结构与用法
+## Release 包结构与用法
 
-GitHub Release 提供 `Suwayomi-{版本号}-{通道}-{平台}-{arch}.zip` 等平台压缩包，解压后即开即用
-（推送 main/dev 自动构建的 alpha 无通道段，形如 `Suwayomi-r3046-windows-x64+jre.zip`；
-下方目录结构以“含 JRE 的完整版”为例；基础版无 `jre/` 目录，server 会回退到系统 java）。
-产物命名约定（Windows 可选捆绑 JRE，按内容如实加后缀；无后缀 = 不捆绑 JRE 的基础包）：
+GitHub Release 提供解压即用的平台包（具体平台与捆绑范围随手动 Release 勾选的目标而定）。
+需要其他平台 / 捆绑组合的产物时：
 
-> 若发布没有你想要的平台构建，可Fork该仓库后手动运行Release构建，构建参数支持一键配置
-
-- `…-windows-x64.zip` 基础包：桌面壳 + 服务器 + 沙盒 jar + WebUI（不含 JRE）
-- `…-windows-x64+jre.zip`：基础包 + Temurin JRE 25（`jre/`，沙盒自包含，无需系统 JDK）
-- Linux 产物为 `…-linux-x64.tar.gz`（alpha 含 JRE；手动 release 基础包需自行安装 JRE 跑扩展）
+1. Fork 本仓库
+2. 在 Actions 页手动运行 `Release` workflow
+3. 勾选目标平台、通道（构建参数支持一键配置）
+4. 运行完成后从 Release 页下载对应产物
 
 ```
-suwayomi.exe          桌面壳（Tauri 托盘）：启动/重启/WebUI/数据目录/设置/退出
+suwayomi             桌面壳（Tauri 托盘）
 bin/
-  ├─ suwayomi-server.exe   无头服务器（核心 Suwayomi-server, 单实例）
-  ├─ jvm-sandbox.jar       扩展沙盒（JVM-server）
-  └─ extensions/*.jar      已安装扩展（dex2jar 输出，自动生成）
-jre/                  捆绑 Temurin JRE 25（Windows x64）——sandbox 运行时，
-                      server 优先使用 jre/bin/java.exe，无需系统 JDK；
-                      未捆绑时回退 SUWAYOMI_JAVA → JAVA_HOME → PATH 的 java
-webui/                Suwayomi-WebUI 构建产物（CI 自动捆绑：alpha/beta 取最新构建
-                      `r{code}`，release 取最新正式 release `3.y.z`）
-                      └─ revision  当前部署的 WebUI 版本（r3487 等，关于页/更新检查读取）
-extensions/           扩展下载目录：仅存放扩展安装包 APK（tachiyomi-*.apk）
-cache/                统一磁盘缓存根（SUWAYOMI_CACHE_DIR 可覆盖，默认发布根下）
-  ├─ extensions/icons/  扩展图标缓存（按内容类型存 .png/.jpg/.webp）
-  ├─ extensions/index/  仓库索引本地缓存（{repo}/index.pb|json）
-  └─ trackers/          追踪源图标缓存（MAL/Anilist/Bangumi logo 等）
-data/                 默认数据目录（Tachiyomi 兼容形式）
-  └─ autobackup/  downloads/  local/
-pglite-data/          嵌入式数据库（server 自动创建于发布根目录）
-logs/                 运行时日志
+  ├─ suwayomi-server   无头服务器（单实例）
+  ├─ jvm-sandbox.jar   扩展沙盒
+  └─ extensions/       已装扩展的转换 jar（自动生成）
+data/                默认数据目录（Tachiyomi 兼容）
+webui/               Suwayomi-WebUI 构建产物（随发布捆绑）
+jre/   oliphaunt-runtime/   运行时依赖（可选）
 ```
 
-WebUI 桌面窗口由托盘的**系统 WebView** 打开（Windows WebView2 / Linux WebKitGTK / macOS
-WKWebView），不捆绑任何浏览器运行时；无系统 WebView 的环境（如精简版 Windows）会自动回退
-系统浏览器。托盘设置可关闭「用窗口打开 WebUI」改为始终浏览器打开。
+> 捆绑的 WebUI 来自 [576576/Suwayomi-WebUI](https://github.com/576576/Suwayomi-WebUI)
+
+WebUI 桌面窗口由托盘的**系统 WebView** 打开（Windows WebView2 / Linux WebKitGTK /
+macOS WKWebView），不捆绑浏览器运行时；无 WebView 时回退系统浏览器。
 
 ### 使用方法
 
-1. **启动**：双击 `suwayomi.exe`（静默托盘，无终端窗口），托盘菜单：
+1. **启动**：双击 `suwayomi`（静默托盘，无终端窗口），托盘菜单：
    - 启动 / 重启 Suwayomi — 未运行时拉起；运行中显示「重启」（优雅关闭后重新拉起，含嵌入式数据库）
    - 打开 WebUI — 系统 WebView 窗口打开 `http://127.0.0.1:{port}`（无 WebView 时回退浏览器）
    - 打开数据目录 / 设置（端口、数据目录、WebUI 地址，保存即重启 server）
    - 退出 — 结束托盘与 server 子进程（嵌入式 postgres 一并关停）
-2. **命令行方式**：直接运行 `bin/suwayomi-server.exe`（`-v` 显示版本与仓库地址）。
+2. **命令行方式**：直接运行 `bin/suwayomi-server`（`-v` 显示版本与仓库地址）。
 3. **添加扩展仓库**：WebUI 扩展页添加仓库索引 URL（支持 Mihon `index.pb` 与
    Tachiyomi `index.json`，如 keiyoushi），刷新后在线安装扩展。
 4. **扩展安装**：APK 下载到 `extensions/`，由 JVM 沙盒 dex2jar 转换并加载，
    转换 jar 落在 `bin/extensions/`，源自动注册进数据库。卸载时两者一并清理。
 5. **端口**：默认 8090；启动时若被占用自动顺延。与桌面壳同用时以托盘设置为准。
-6. **日志**：`logs/` 下 server/tray/sandbox 三个日志文件，排查问题优先看这里。
-
-> 版本命名：alpha 通道版本为 `r{versionCode}`（versionCode = commit 数 + 3000，
-> 与推送自动构建一致）；beta / release 通道版本为 `3.{n/100}.{n%100，补零两位}`（n = commit 数），
-> 如 182 次提交 → `3.1.82`（versionCode 3182）。补零是为了让版本名去掉非数字后恰等于 versionCode，
-> 更新检查据此做数值比较（见 `crates/suwayomi-graphql/src/query.rs` 的 `tag_to_num`）。
-
-## 从 Java 版迁移
-
-迁移操作（H2 → 当前后端）见 **`docs/migration/MIGRATE.md`**：推荐 `suwayomi-server
---migrate <kotlin-data-dir>`（h2-dump 全量导入），或导入 Mihon `.proto` 备份。
-接口/数据/协议兼容性状态见上文状态表与 `docs/api` 基线。
+6. **日志**：`cache/logs/` 下 server/tray/sandbox 三个日志文件，排查问题优先看这里。
 
 ## 仓库结构
 
 ```
 crates/
-  suwayomi-core/     领域模型 + 数据表 + 数据库层（← kotlin manga/model + server/database）
-  suwayomi-domain/   业务逻辑（← kotlin manga/impl）
-  suwayomi-rest/     REST API v1（← kotlin manga/controller + MangaAPI/GlobalAPI）
-  suwayomi-graphql/  GraphQL API（← kotlin graphql）
-  suwayomi-opds/     OPDS（← kotlin opds）
-  suwayomi-server/   服务端入口（← kotlin Main.kt + server/）
-jvm-sandbox/         扩展沙盒（Kotlin，AndroidCompat + dex2jar + ChildFirstClassLoader）
+  suwayomi-core/     领域模型 + 数据表 + 数据库层
+  suwayomi-domain/   业务逻辑
+  suwayomi-rest/     REST API v1
+  suwayomi-graphql/  GraphQL API
+  suwayomi-opds/     OPDS
+  suwayomi-server/   服务端入口
+jvm-sandbox/         扩展沙盒（Kotlin：AndroidCompat + dex2jar + ChildFirstClassLoader）
 suwayomi-tray/       桌面壳（Tauri 2，独立 workspace，不进主 workspace；Windows/Linux）
-tools/h2-dump/       H2 → PostgreSQL 迁移工具（Kotlin，Phase 7）
-migrations/          SQL 迁移（PostgreSQL）
-docs/                基线文档（REST 端点 / GraphQL schema / 迁移说明 / 用户指南）
+tools/h2-dump/       H2 → PostgreSQL 迁移工具（Kotlin）
+migrations/          SQL 迁移（含 pg-only/：SyncYomi 触发器）
+scripts/             CI/辅助脚本（resolve-webui.sh / unzip_any.py 等）
+assets/              图标与截图（images/、screenshots/）
+docs/                文档（api/、graphql/、migration/、en/、release.md、user-guide.md）
 ```
 
 ## 数据库后端
 
-- **默认**：嵌入式 Oliphaunt（PostgreSQL 18 native，数据目录 `./pglite-data`）——零安装即用，支持多连接池
+- **默认**：嵌入式 Oliphaunt（PostgreSQL 18 native，数据目录 `./pglite-data`）
 - **备选**：外部 PostgreSQL（设 `SUWAYOMI_DATABASE_URL`，如 `postgres://user:pass@host:5432/db`）
 
 ## 真实扩展（JVM sandbox）
 
-server 可启动一个 JVM 沙盒进程，通过 HTTP 契约驱动真实 Mihon/Tachiyomi 扩展（APK → dex2jar → ChildFirst 类加载 + 反射，字节码修复 R8 产物）：
+server 可启动一个 JVM 沙盒进程，通过 HTTP 契约驱动真实 Mihon/Tachiyomi 扩展（APK → dex2jar → ChildFirst 类加载 + 反射）：
 
 ```bash
-# 1) 构建 sandbox（JDK 21+，产物 build/libs/suwayomi-jvm-sandbox.jar）
+# 1) 构建 sandbox（JDK 25 toolchain；产物 build/libs/suwayomi-jvm-sandbox.jar）
 cd jvm-sandbox
 gradle build          # 需要 jvm-sandbox/libs/AndroidCompat-1.0.jar（从 Suwayomi-Server
                       #   AndroidCompat 模块构建后复制，或自行替换为等价 Android stub）
 cd ..
 
 # 2) 把扩展 APK 放入目录（默认 ./extensions，或用 SUWAYOMI_EXTENSIONS_DIR 指定）
-# 3) 启动 server 并启用 sandbox（需要 Java 25+，AndroidCompat 以 JDK 21 编译）
+# 3) 启动 server 并启用 sandbox
 SUWAYOMI_SANDBOX_JAR=jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar \
 SUWAYOMI_SANDBOX_PORT=8091 \
-SUWAYOMI_EXTENSIONS_DIR=E:/path/to/extensions \
-SUWAYOMI_SANDBOX_PROXY=127.0.0.1:7890 \   # 可选：出境代理（访问被墙源）
-./target/debug/suwayomi
+SUWAYOMI_EXTENSIONS_DIR=/path/to/extensions \
+SUWAYOMI_SANDBOX_PROXY=127.0.0.1:7890 \   # 可选：HTTP 代理
+./target/release/suwayomi-server
 ```
 
 环境变量：`SUWAYOMI_SANDBOX_JAR`（启用沙盒）、`SUWAYOMI_SANDBOX_PORT`（默认 8091）、`SUWAYOMI_EXTENSIONS_DIR`（默认 ./extensions）、`SUWAYOMI_JAR_DIR`（转换 jar 目录，默认 `<extensions>/../bin/extensions`）、`SUWAYOMI_SANDBOX_PROXY`（可选 HTTP 代理）。未配置时回退内置 `StubFetcher`。
 
-## 扩展安装与源管理（Phase 6）
+## 扩展安装与源管理
 
 扩展从**仓库索引**在线安装，装完自动把源注册进数据库，前后端通用：
 
@@ -148,13 +120,12 @@ SUWAYOMI_SANDBOX_PROXY=127.0.0.1:7890 \   # 可选：出境代理（访问被墙
 - **安装/更新/卸载**：`GET /api/v1/extension/install/{pkgName}`、`/update/{pkgName}`、`/uninstall/{pkgName}`（GraphQL 对应 `updateExtension`/`updateExtensions` patch）。安装下载 APK 到 `SUWAYOMI_EXTENSIONS_DIR`（缺省 `./extensions`，命名 `tachiyomi-{lang}.{pkg}-v{ver}.apk`），触发 JVM sandbox 热加载（`/reload`），随后把 `/sources` 的稳定源 id（扩展 `Source.getId()`）upsert 进 `source` 表。
 - **外部 APK**：GraphQL `installExternalExtension`（multipart 上传）走 sandbox `/inspect` 解析元数据后安装。
 - **代理**：仓库/APK 下载复用 `SUWAYOMI_SANDBOX_PROXY` 代理设置。
-- 实测（keiyoushi 仓库）：刷新 **1381** 个扩展；安装 nhentai → sandbox 热加载 **22 源** → DB 注册 → popular **18 部真实漫画**；卸载后 sandbox 0 源、DB 清空。
 
-## 同步（Phase 6）
+## 同步
 
 - **KOReader**：GraphQL `connectKoSyncAccount` / `pushKoSyncProgress` / `pullKoSyncProgress` / `koSyncStatus`。凭据存 `global_meta`；章节 `koreader_hash` 为 `md5("<manga title> - <chapter name>")`（FILENAME 校验和）。
 - **SyncYomi**：GraphQL `startSync` / `lastSyncStatus`。配置见 ServerConfig：`syncYomiEnabled` / `syncYomiHost` / `syncYomiApiKey`（另有 6 项 `syncData*` 数据范围与 `syncInterval`）。同步以 Mihon Backup protobuf + ETag（If-None-Match/If-Match）在 `{host}/api/sync/content` 上 pull → restore → push。
-- **version 触发器**：`migrations/pg-only/0002_*` 是 `SyncYomiTriggers.kt` 的 PostgreSQL 移植（manga/chapter/category 变更自动 bump version，`is_syncing` 豁免）。嵌入式（oliphaunt 真实 PG）与外部 PostgreSQL 均自动应用（`Db::migrate` 统一执行）。
+- **version 触发器**：`migrations/pg-only/0002_*` 在 manga/chapter/category 变更时自动 bump 版本（`is_syncing` 豁免），嵌入式与外部 PostgreSQL 均自动应用。
 
 ## 构建
 
@@ -169,9 +140,9 @@ Windows 手动构建 release 产物（`suwayomi-server.exe` + 托盘 `suwayomi.e
 
 ## 关键文档
 
+- `docs/user-guide.md` — 用户指南（配置/备份/OPDS/Docker）
+- `docs/release.md` — 发布流程与 CI 约定
 - `docs/migration/MIGRATE.md` — 从 Kotlin 版迁移操作指南（h2-dump / 备份导入）
-- `docs/migration/MIGRATION_PLAN.md` — 分阶段迁移计划（含决策记录 R1–R8）
-- `docs/user-guide.md` — 用户指南（配置/迁移/备份/OPDS/Docker）
 - `docs/api/rest-endpoints-baseline.md` — REST v1 端点兼容基线
 - `docs/graphql/README.md` — GraphQL schema 基线说明
 
@@ -182,6 +153,16 @@ docker build -t suwayomi-next .
 docker run -p 8090:8090 -v suwayomi-data:/data suwayomi-next   # 容器内与宿主均 8090
 ```
 
-## License
+## 许可证
 
-MPL-2.0（与上游一致）
+Mozilla Public License, v.2.0
+
+    Copyright (C) Contributors to the Suwayomi project
+    
+    This Source Code Form is subject to the terms of the Mozilla Public
+    License, v. 2.0. If a copy of the MPL was not distributed with this
+    file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+## 免责声明
+
+本应用的开发者与所提供的内容源 / 内容提供方没有任何关联。

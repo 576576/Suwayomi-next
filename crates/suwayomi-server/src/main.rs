@@ -1,12 +1,7 @@
-//! Suwayomi server entry point.
-//!
-//! Mirrors Suwayomi `Main.kt` + `JavalinSetup.kt`:
-//! - application setup: config → database → migrations
-//! - HTTP server (axum) with `/api/v1/**` (Phase 3), GraphQL (Phase 4),
-//!   OPDS (Phase 6) and static WebUI hosting.
+//! Server 入口（对应 Main.kt + JavalinSetup.kt）：配置 → 数据库 → 迁移 →
+//! HTTP（axum：REST /api/v1、GraphQL /api、OPDS、静态 WebUI）。
 
-// release 版不创建控制台窗口（替代托盘/bat 的隐藏 CLI 启动——隐藏启动在
-// 真实系统上可能被安全软件拦截）。日志仍可被父进程重定向到文件。
+// release 无控制台窗口（隐藏启动在真实系统上可能被安全软件拦截）；日志由父进程重定向
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::net::SocketAddr;
@@ -31,7 +26,7 @@ pub const VERSION_CODE: &str = suwayomi_core::version::VERSION_CODE;
 pub const VERSION_COUNT: &str = suwayomi_core::version::VERSION_COUNT;
 
 fn config_from_env() -> ServerConfig {
-    // Pure-PostgreSQL decision (2026-08-30): Rust backend only supports PG.
+    // Rust 后端只支持 PostgreSQL
     let mut cfg =
         ServerConfig { database_type: suwayomi_core::config::DatabaseType::Postgresql, ..ServerConfig::default() };
     if let Ok(v) = std::env::var("SUWAYOMI_PORT") {
@@ -55,9 +50,7 @@ fn config_from_env() -> ServerConfig {
     cfg
 }
 
-/// Resolves the bundled WebUI directory: `SUWAYOMI_WEBUI_DIR` env, else the
-/// `webui/` folder next to the executable (发布布局：exe 同级 webui/）。
-/// Returns empty path when neither exists.
+/// 解析捆绑 WebUI 目录：`SUWAYOMI_WEBUI_DIR` → exe 同级 webui/（都不含 index.html 返回空）
 fn resolve_webui_dir() -> std::path::PathBuf {
     let from_env = std::env::var("SUWAYOMI_WEBUI_DIR")
         .map(std::path::PathBuf::from)
@@ -76,9 +69,7 @@ fn resolve_webui_dir() -> std::path::PathBuf {
     std::path::PathBuf::new()
 }
 
-/// Resolves the user data root (backups/downloads/local source live under it):
-/// `SUWAYOMI_DATA_DIR` env, else `<release root>/data` (exe under `bin/`),
-/// else `data` under the working directory.
+/// 用户数据根目录（backups/downloads/local 之下）：env → exe 上级 data（bin/ 布局）→ cwd/data
 fn resolve_data_dir() -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("SUWAYOMI_DATA_DIR") {
         if !dir.trim().is_empty() {
@@ -97,9 +88,7 @@ fn resolve_data_dir() -> std::path::PathBuf {
     std::path::PathBuf::from("data")
 }
 
-/// Resolves the JVM extension sandbox jar: `SUWAYOMI_SANDBOX_JAR` env, else the
-/// `jvm-sandbox.jar` bundled next to this executable, else the `bin/` subfolder
-/// (发布布局：suwayomi-server.exe 与 jvm-sandbox.jar 同在 bin/）。
+/// 扩展沙盒 jar：`SUWAYOMI_SANDBOX_JAR` → exe 同级/../bin 的 jvm-sandbox.jar（发布布局）
 fn resolve_sandbox_jar() -> Option<std::path::PathBuf> {
     if let Ok(jar) = std::env::var("SUWAYOMI_SANDBOX_JAR") {
         if !jar.is_empty() {
@@ -130,10 +119,8 @@ fn build_router(
         .nest("/api/v1", suwayomi_rest::routes::api_v1_router())
         .nest("/api", suwayomi_graphql::schema::graphql_router(graphql_schema))
         .nest("/api/opds/v1.2", suwayomi_opds::router::opds_router())
-        // Graceful shutdown endpoint used by the tray app (and scripts):
-        // `POST /api/v1/shutdown` triggers axum's graceful shutdown, letting
-        // the runtime unwind normally (Db drop → oliphaunt `pg_ctl stop`, JVM
-        // sandbox child kill). Only callable from loopback.
+        // 优雅关闭端点（托盘用）：触发 axum graceful shutdown → Db drop 停
+        // postgres、杀 JVM 沙盒子进程。仅限 loopback。
         .route(
             "/api/v1/shutdown",
             post(
@@ -146,10 +133,7 @@ fn build_router(
                 },
             ),
         )
-        // Local-source files (covers, chapter pages) — exposed under both
-        // `/local/...` (relative `local/...` URLs returned by GraphQL) and
-        // `/api/v1/local/...` (which `getValidImgUrlFor` in the WebUI
-        // prefixes with the API version).
+        // 本地图源文件双路径（GraphQL 返回相对 local/，WebUI 前缀 api/v1/local/）
         .route("/local/{*path}", get(local_file))
         .route("/api/v1/local/{*path}", get(local_file));
 
@@ -171,9 +155,7 @@ fn build_router(
     }
 }
 
-/// Serves local-source files from the local source root (default
-/// `data/local/<path>`, or the configured `localSourcePath`) — covers, page
-/// images, and images inside archive chapters. Guards against path traversal.
+/// 服务本地图源文件（封面/页面/归档内图片），防路径穿越
 async fn local_file(State(_state): State<AppState>, path: axum::extract::Path<String>) -> Response {
     let rel = path.replace('\\', "/");
     if rel.is_empty() || rel.split('/').any(|seg| seg == "..") || rel.contains("://") {
@@ -184,8 +166,7 @@ async fn local_file(State(_state): State<AppState>, path: axum::extract::Path<St
     if file.is_file() {
         return read_file_response(&file).await;
     }
-    // Archive member: `local/<manga>/<chapter>.zip/<page>` — find the archive
-    // segment and extract the image by its file name.
+    // 归档成员路径：local/<manga>/<chapter>.zip/<page>
     let segments: Vec<&str> = rel.split('/').collect();
     for split in 0..segments.len() {
         let ext = segments[split].rsplit('.').next().unwrap_or("");
@@ -237,8 +218,7 @@ fn image_content_type(name: &str) -> &'static str {
     }
 }
 
-/// Serves the bundled WebUI: static files when present, otherwise the SPA
-/// `index.html` (client-side routing). Mirrors a classic SPA hosting setup.
+/// WebUI 静态托管 fallback：存在则返回文件，否则回退 index.html（SPA 路由）
 async fn webui_fallback(State(state): State<AppState>, uri: axum::http::Uri) -> Response {
     let dir = &state.webui_dir;
     let rel = uri.path().trim_start_matches('/');
@@ -288,12 +268,11 @@ async fn index(State(_s): State<AppState>) -> Result<String, StatusCode> {
     Ok(format!("Suwayomi (next) v{VERSION} — GraphQL at /api/graphql, REST at /api/v1, OPDS at /api/opds/v1.2"))
 }
 
-/// Phase 7: locates the Kotlin H2 database, dumps it with tools/h2-dump and
-/// imports the generated PostgreSQL script into the configured backend.
+/// Phase 7: 定位 Kotlin H2 库，用 tools/h2-dump 导出并导入到当前后端
 async fn import_h2_data(db: &Db, data_dir: &std::path::Path) -> anyhow::Result<()> {
     use sqlx::Executor;
 
-    // 1) locate the H2 file
+    // 1) 定位 H2 文件
     let h2_file = if data_dir.join("tachidesk.mv.db").exists() {
         data_dir.join("tachidesk.mv.db")
     } else {
@@ -311,7 +290,7 @@ async fn import_h2_data(db: &Db, data_dir: &std::path::Path) -> anyhow::Result<(
     let h2_base = h2_file.to_string_lossy().trim_end_matches(".mv.db").to_string();
     tracing::info!("h2 database found: {}", h2_file.display());
 
-    // 2) resolve the h2-dump jar
+    // 2) 定位 h2-dump jar
     let jar = std::env::var("SUWAYOMI_H2_DUMP_JAR").ok().map(std::path::PathBuf::from).unwrap_or_else(|| {
         std::path::PathBuf::from("tools/h2-dump/build/libs/h2-dump.jar")
     });
@@ -336,7 +315,7 @@ async fn import_h2_data(db: &Db, data_dir: &std::path::Path) -> anyhow::Result<(
     let sql = std::fs::read_to_string(&out_sql)?;
     let _ = std::fs::remove_file(&out_sql);
 
-    // 4) execute statements one by one (FK-safe order is emitted by h2-dump)
+    // 4) 逐条执行（h2-dump 已按 FK 安全序导出）
     let mut applied = 0usize;
     for stmt in sql.split(';').map(str::trim).filter(|s| !s.is_empty() && !s.starts_with("--")) {
         if stmt.is_empty() {
@@ -349,9 +328,8 @@ async fn import_h2_data(db: &Db, data_dir: &std::path::Path) -> anyhow::Result<(
     Ok(())
 }
 
-/// Load a persisted `localSourcePath` (the `settings` global_meta blob saved
-/// via `setSettings`) into the process-wide local source root override, so a
-/// custom local source directory survives restarts.
+/// 把持久化的 localSourcePath（setSettings 存的 global_meta）还原到进程内
+/// 本地图源根目录 override，自定义目录重启后仍生效
 async fn load_local_source_path(db: &Db) {
     let Ok(Some((value,))) = sqlx::query_as::<_, (String,)>(
         "SELECT value FROM global_meta WHERE meta_key = 'settings'",
@@ -420,9 +398,7 @@ async fn main() -> anyhow::Result<()> {
     let config = config_from_env();
     tracing::info!(name = "Suwayomi (next)", version = VERSION, "starting");
 
-    // Phase 7: `--migrate <kotlin-data-dir> [--h2-dump-jar <path>]` — dump the
-    // Kotlin H2 database via tools/h2-dump and import it into the configured
-    // backend, then exit (no HTTP server).
+    // `--migrate <kotlin-data-dir> [--h2-dump-jar <path>]`：H2 数据导入后退出（不起 HTTP）
     let migrate_dir: Option<std::path::PathBuf> = {
         let mut args = std::env::args().skip(1);
         let mut dir = None;
@@ -442,21 +418,16 @@ async fn main() -> anyhow::Result<()> {
         dir
     };
 
-    // Database backend (Phase 6): embedded Oliphaunt (renamed pglite-oxide,
-    // native PostgreSQL) by default; an explicit `SUWAYOMI_DATABASE_URL`
-    // switches to an external PostgreSQL server.
-    //   SUWAYOMI_PGLITE_DATA_DIR   -> embedded data directory
-    //                                (default ./pglite-data; "" = ephemeral)
+    // 后端：默认嵌入式 Oliphaunt（原生 PostgreSQL）；显式 SUWAYOMI_DATABASE_URL → 外部 PG。
+    // SUWAYOMI_PGLITE_DATA_DIR 指定嵌入式数据目录（默认 ./pglite-data；"" = 临时库）
     let db = if config.database_url.is_empty() {
         let data_dir = match std::env::var("SUWAYOMI_PGLITE_DATA_DIR") {
             Ok(v) if !v.is_empty() => Some(std::path::PathBuf::from(v)),
-            Ok(_) => None, // explicitly empty -> ephemeral (tests/dev)
+            Ok(_) => None, // 显式空 → 临时库（测试/开发）
             Err(_) => Some(std::path::PathBuf::from("pglite-data")),
         };
         tracing::info!("database backend: embedded Oliphaunt PostgreSQL (set SUWAYOMI_DATABASE_URL to use external PostgreSQL)");
-        // 预创建数据目录：oliphaunt 的 `stable_root_lock_dir` 从数据目录的父级向上
-        // 找第一个已存在的目录来放 `.oliphaunt-root-<hash>.lock`——目录不存在时
-        // 锁会落到发布根；预先建好目录可让锁文件落在 pglite-data 内。
+        // 预建目录让 oliphaunt 的 stable_root_lock 落在 pglite-data 内而非发布根
         if let Some(dir) = &data_dir {
             std::fs::create_dir_all(dir).map_err(anyhow::Error::from)?;
         }
@@ -468,9 +439,8 @@ async fn main() -> anyhow::Result<()> {
     db.migrate().await?;
     tracing::info!(mode = ?db.mode(), "database ready (migrations applied)");
 
-    // 确保默认分类 (id=0, is_default) 存在——WebUI 书架页依赖它作为首个 tab
-    // （categories 列表 + GET_CATEGORY_MANGAS(id=0)）。ON CONFLICT 幂等，覆盖
-    // 备份恢复后 category 表为空/重建的场景。
+    // 确保默认分类 (id=0) 存在——书架页首个 tab 依赖；ON CONFLICT 幂等（覆盖
+    // 备份恢复后 category 表为空的情况）
     sqlx::query(
         "INSERT INTO category (id, name, sort_order, is_default, include_in_update, include_in_download) \
          VALUES (0, '默认', 0, TRUE, -1, -1) ON CONFLICT (id) DO NOTHING",
@@ -479,8 +449,7 @@ async fn main() -> anyhow::Result<()> {
     .await
     .map_err(anyhow::Error::from)?;
 
-    // Apply a persisted `localSourcePath` (saved via setSettings) to the
-    // local source root so custom directories survive restarts.
+    // 还原持久化的 localSourcePath，重启后自定义本地图源目录仍生效
     load_local_source_path(&db).await;
 
     // Phase 7: import the Kotlin H2 data and stop.
@@ -490,13 +459,9 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Phase 5: launch the JVM extension sandbox when configured.
-    // SUWAYOMI_SANDBOX_JAR  -> path to the built sandbox jar (optional; falls back
-    //                          to `jvm-sandbox.jar` next to this executable, the
-    //                          bundled layout used by the desktop tray / CI zips)
-    // SUWAYOMI_SANDBOX_PORT -> sandbox HTTP port (default 8091; 4501-4900 is
-    //                          reserved by Windows for Hyper-V dynamic ports)
-    // SUWAYOMI_EXTENSIONS_DIR -> directory holding extension jars (default ./extensions)
+    // 启动 JVM 扩展沙盒（见 domain/source/sandbox.rs）。env：
+    // SUWAYOMI_SANDBOX_JAR（缺省 exe 旁 jvm-sandbox.jar）、SUWAYOMI_SANDBOX_PORT
+    // （默认 8091；避开 Windows Hyper-V 动态保留区 4501-4900）、SUWAYOMI_EXTENSIONS_DIR
     let mut sandbox_guard: Option<suwayomi_domain::source::sandbox::SandboxProcess> = None;
     if let Some(jar) = resolve_sandbox_jar() {
         let port = std::env::var("SUWAYOMI_SANDBOX_PORT").unwrap_or_else(|_| "8091".into());
@@ -514,14 +479,11 @@ async fn main() -> anyhow::Result<()> {
     let sandbox_base = sandbox_guard.as_ref().map(|g| g.fetcher().base_url().to_string());
     let fetcher: Arc<dyn SourceFetcher> =
         if let Some(guard) = &sandbox_guard { Arc::new(guard.fetcher()) } else { Arc::new(StubFetcher) };
-    // NB: `let _x = sandbox_guard` (NOT `let _ = ...`) keeps the process alive
-    // for the whole server lifetime — `let _ =` would drop it immediately and
-    // kill the JVM in Drop.
+    // `let _sandbox = sandbox_guard`（非 `let _ =`）：变量名形式保活整个 server
+    // 生命周期，`let _ =` 会立即 drop 杀掉 JVM
     let _sandbox = sandbox_guard;
 
-    // Reconcile on-disk downloads (`data/downloads/**`) with the database so
-    // imported/historical downloads show the "downloaded" badge. Best-effort:
-    // a failure must not block startup.
+    // 用磁盘 downloads/** 对账数据库（历史下载显示"已下载"角标）；失败不阻塞启动
     let data_dir_path = resolve_data_dir();
     if let Err(e) = suwayomi_domain::download::reconcile_downloads(&db, &data_dir_path).await {
         tracing::warn!("downloads reconcile failed: {e}");
@@ -533,16 +495,13 @@ async fn main() -> anyhow::Result<()> {
     let schema = suwayomi_graphql::schema::build_schema(graphql_state);
     tracing::info!("graphql schema ready ({} type definitions)", suwayomi_graphql::schema::schema_type_count());
     let state = AppState::new(db, config.clone(), fetcher, sandbox_base, resolve_webui_dir(), data_dir_path.clone());
-    // Shutdown notification channel: `POST /api/v1/shutdown` (or Ctrl+C)
-    // triggers graceful shutdown so the embedded postgres + sandbox child
-    // processes are stopped cleanly instead of being orphaned.
+    // shutdown 通知通道：POST /api/v1/shutdown（或 Ctrl+C）触发优雅关闭，
+    // 干净停掉嵌入式 postgres 与沙盒子进程而非遗留孤儿
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let app = build_router(state, schema, shutdown_tx);
 
-    // Bind with automatic port fallback. On Windows the configured port may be
-    // inside the Hyper-V dynamic exclusion range (4501-4900) or already taken,
-    // which surfaces as os error 10013 (WSAEACCES) / 10048 (WSAEADDRINUSE).
-    // Instead of crashing, walk upward a few ports and log what happened.
+    // 端口自动回退：Windows 上 4501-4900 可能是 Hyper-V 动态保留段（10013）
+    // 或端口被占（10048）——上探几个端口而不是崩溃
     let start = config.port;
     let mut port = start;
     let (listener, addr) = loop {
@@ -577,25 +536,15 @@ async fn main() -> anyhow::Result<()> {
     .with_graceful_shutdown(shutdown_signal(shutdown_rx))
     .await?;
     tracing::info!("server stopped; shutting down embedded database");
-    // Release every Db reference held through the router (AppState /
-    // GraphQLState) so oliphaunt's session Drop runs `pg_ctl stop` on the
-    // postgres child and the NativeRootLock is unlocked.
+    // 释放 router 持有的 Db/AppState/GraphQLState 引用，让 Oliphaunt 会话 Drop
+    // 执行 pg_ctl stop；再清掉 oliphaunt 遗留的 root lock 文件
     drop(app);
-    // oliphaunt's root locks are unlocked but NOT deleted on Drop — remove
-    // the leftover `.oliphaunt-root-*.lock` (data dir's parent) and the
-    // `.oliphaunt.lock` marker inside the data dir.
     cleanup_oliphaunt_lock_files();
     Ok(())
 }
 
-/// Wait for a shutdown request — Ctrl+C, or the `POST /api/v1/shutdown`
-/// endpoint (watch channel) — and then let the runtime unwind normally. This
-/// is what lets the embedded Oliphaunt PostgreSQL server stop cleanly: `Db`
-/// is dropped as `main` returns and `Oliphaunt`'s session Drop runs `pg_ctl
-/// stop` on the child postgres process (and the JVM sandbox child is killed
-/// in its Drop). Without graceful shutdown, an abrupt process exit leaves
-/// the postgres child running and the next start fails on the
-/// `postmaster.pid` lock.
+/// 等待关闭信号（Ctrl+C / shutdown 端点 watch 通道）。优雅关闭让 Db Drop 停
+/// postgres（否则残留 postmaster 锁阻塞下次启动）、沙盒 Drop 杀 JVM。
 async fn shutdown_signal(mut rx: tokio::sync::watch::Receiver<bool>) {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => tracing::info!("ctrl-c received; graceful shutdown"),
@@ -603,13 +552,9 @@ async fn shutdown_signal(mut rx: tokio::sync::watch::Receiver<bool>) {
     }
 }
 
-/// Remove the oliphaunt root lock files left behind after a graceful stop:
-/// `NativeRootLock` unlocks the files on Drop but does not delete them — the
-/// stable lock `.oliphaunt-root-<hash>.lock` and the root marker
-/// `.oliphaunt.lock` both live inside the data dir (Suwayomi patch moves the
-/// stable lock there; the data dir is pre-created before open). The parent
-/// directory is also swept for the pre-patch location, so deployments that
-/// ran an older oliphaunt get cleaned too. They are recreated on the next open.
+/// 清理优雅停机后 oliphaunt 遗留的 root lock：NativeRootLock Drop 只解锁不删
+/// 文件；数据目录内/父级（含旧版位置的兼容清扫）的 `.oliphaunt-root-*.lock`
+/// 与 `.oliphaunt.lock` 下次 open 会重建
 fn cleanup_oliphaunt_lock_files() {
     let data_dir = std::env::var("SUWAYOMI_PGLITE_DATA_DIR")
         .map(std::path::PathBuf::from)

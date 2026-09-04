@@ -1,11 +1,6 @@
-//! Mihon/Suwayomi protobuf backup (`backup.proto`) — mirrors
-//! `manga/impl/backup/proto/models/*.kt` + `ProtoBackupExport.kt`.
-//!
-//! The message structs are hand-written `prost` derives (no `protoc` needed);
-//! field numbers match the kotlinx-protobuf `@ProtoNumber` annotations.
-//! `create_backup` builds the `Backup` message from the current database and
-//! returns the gzip-compressed protobuf bytes (the wire format the Kotlin
-//! `protobufExport` endpoint streams, and the payload inside a `.tachibk`).
+//! Mihon/Suwayomi protobuf 备份（backup.proto）。消息结构为手写 prost derive
+//! （无需 protoc），字段号对齐 kotlinx-protobuf @ProtoNumber。create_backup 由
+//! 当前数据库构建 Backup 消息，返回 gzip 压缩的 protobuf 字节（.tachibk 载荷）。
 
 use std::collections::HashMap;
 

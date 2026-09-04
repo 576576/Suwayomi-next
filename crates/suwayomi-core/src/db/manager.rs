@@ -1,18 +1,5 @@
-//! Connection management — embedded Oliphaunt (default) or external PostgreSQL.
-//!
-//! Mirrors `DBManager.kt` PostgreSQL path. All tables live in the
-//! `suwayomi` schema (matches M0054).
-//!
-//! Backend selection (Phase 6):
-//! - **Embedded (default)** — `Db::connect_embedded`: an in-process
-//!   Oliphaunt native PostgreSQL server (the renamed pglite-oxide, running a
-//!   real local PostgreSQL 18 process). No external server, Docker or install
-//!   step. Unlike the old pglite-oxide WASI gateway (single serial session,
-//!   proxy terminated on any SQL error), the native server exposes
-//!   independent client sessions, so the pool can use multiple connections
-//!   and SQL errors never kill the server.
-//! - **External PostgreSQL (fallback)** — `Db::connect`: connects to a
-//!   standalone PostgreSQL server through a regular `postgres://` URL.
+//! DB 连接管理：嵌入式 Oliphaunt（默认，进程内原生 PostgreSQL 18）或外部
+//! PostgreSQL（fallback）。所有表在 `suwayomi` schema（同 M0054）。
 
 use std::path::Path;
 use std::sync::Arc;
@@ -45,10 +32,8 @@ pub enum DbMode {
 #[derive(Clone)]
 pub struct Db {
     pool: PgPool,
-    /// Keeps the embedded Oliphaunt native PostgreSQL server alive for the
-    /// lifetime of the app. `None` in external mode. `Arc` keeps `Db` cheap
-    /// to clone; the server shuts down (via `Drop`) when the last clone is
-    /// dropped.
+    /// 保持嵌入式 Oliphaunt server 存活（None=外部模式）。Arc 保证 Db 可廉价
+    /// clone；最后一个 clone drop 时 server 随之关闭。
     _embedded: Option<Arc<Oliphaunt>>,
 }
 
@@ -60,12 +45,7 @@ impl std::fmt::Debug for Db {
     }
 }
 
-/// Shared pool hardening — mirrors `DBManager.kt` + guards against stale
-/// connections:
-/// - `test_before_acquire` — ping before handing out a connection.
-/// - `idle_timeout` — reclaim idle connections so long-sitting clients are
-///   closed by us, not by the server at an arbitrary moment.
-/// - `max_lifetime` — hard ceiling against connection rot.
+/// 池加固（同 DBManager.kt）：取出前 ping、回收闲置、封顶存活时长
 fn hardened(options: PgPoolOptions) -> PgPoolOptions {
     options
         .test_before_acquire(true)
@@ -75,17 +55,9 @@ fn hardened(options: PgPoolOptions) -> PgPoolOptions {
 }
 
 impl Db {
-    /// Connect to an external PostgreSQL server (fallback backend).
-    ///
-    /// Mirrors `DBManager` PostgreSQL path (`databaseUrl` JDBC-style is
-    /// translated by the caller; here we accept a sqlx URL).
-    ///
-    /// Sets `search_path` to the `suwayomi` schema on every connection,
-    /// mirroring the Kotlin side's `defaultSchema` (M0054).
+    /// 连接外部 PostgreSQL（fallback）。每条连接 SET search_path=suwayomi（同 M0054）。
     pub async fn connect(url: &str) -> Result<Self, DbError> {
-        // Cap below Oliphaunt's native_server max_client_sessions(32):
-        // a larger pool queues connections past the server limit and
-        // concurrent GraphQL resolvers hang forever waiting for one.
+        // 池须 < Oliphaunt max_client_sessions(32)，否则并发 GraphQL 解析排队等连接挂死
         let pool = hardened(PgPoolOptions::new().max_connections(24))
             .after_connect(|conn, _meta| {
                 Box::pin(async move {
@@ -98,27 +70,9 @@ impl Db {
         Ok(Self { pool, _embedded: None })
     }
 
-    /// Connect to an embedded Oliphaunt native PostgreSQL server (default
-    /// backend).
-    ///
-    /// `data_dir`:
-    /// - `Some(path)` — persistent database rooted at `path` (created on
-    ///   first open via initdb, reused on later starts).
-    /// - `None` — ephemeral temporary database (fresh per process; ideal
-    ///   for tests).
-    ///
-    /// The native server accepts independent client sessions, so the pool
-    /// is configured with multiple connections (up to the server's
-    /// `max_client_sessions`).
-    ///
-    /// Registers the oliphaunt native resources with a bundled-runtime
-    /// fallback: the compiled-in `OLIPHAUNT_RESOURCES_DIR` is the *build
-    /// machine's* OUT_DIR — valid for local builds, but CI-built release
-    /// packages carry a GitHub-runner path that does not exist on the
-    /// user's machine (server then dies with "could not locate native
-    /// PostgreSQL 18 install tree"). Prefer the compiled path when it
-    /// actually exists; otherwise register the `oliphaunt-runtime/resources`
-    /// bundle shipped next to the executable (release.yml copies it there).
+    /// 注册 oliphaunt 原生资源：编译期 `OLIPHAUNT_RESOURCES_DIR`（本地构建）
+    /// 存在则用，否则回退 exe 旁捆绑的 `oliphaunt-runtime/resources`
+    /// （CI 包的编译路径是 runner 的、用户机器不存在；打包见 docs/release.md）。
     fn register_oliphaunt_resources() -> Result<(), DbError> {
         let Some(resources) = active_oliphaunt_resources_dir() else {
             return Err(DbError::Embedded(anyhow::anyhow!(
@@ -141,31 +95,15 @@ impl Db {
         }
         Ok(())
     }
+    /// 连接嵌入式 Oliphaunt（默认）：Some(path)=持久库（initdb 首建后续复用），
+    /// None=临时库（测试用）。原生 server 支持多会话，池可配多连接。
     pub async fn connect_embedded(data_dir: Option<&Path>) -> Result<Self, DbError> {
-        // Register the native runtime/broker artifact tree staged by
-        // oliphaunt-build (idempotent for the same path). The compiled-in
-        // path is the *build machine's* `OUT_DIR/oliphaunt/resources` — on a
-        // machine running a CI-built release package that path does not
-        // exist, so fall back to the bundled `oliphaunt-runtime/resources`
-        // directory shipped next to the executable (see release.yml).
         Self::register_oliphaunt_resources()?;
-        // Workaround for oliphaunt 0.1.1 on Windows: `materialize_runtime`
-        // copies the runtime tools (exe) and lib/share trees into its cache,
-        // but omits the bin/*.dll files that the PostgreSQL binaries link
-        // against, so the first initdb fails with STATUS_DLL_NOT_FOUND
-        // (0xc0000135). Copy the DLLs from the staged resources into every
-        // existing cache bin; the first materialization creates the cache,
-        // so a failed open is retried once after copying.
-        //
-        // Also retried after cleaning a stale postmaster: if the previous
-        // process was killed without graceful shutdown (crash / taskkill /F),
-        // the oliphaunt postgres child keeps running and the next start fails
-        // on the `postmaster.pid` lock — remove that leftover and retry.
+        // 失败先重试一次：补拷 cache 里缺的 runtime DLL（Windows oliphaunt
+        // 0.1.1 漏拷 bin/*.dll，initdb 报 STATUS_DLL_NOT_FOUND），并清掉上次
+        // 非优雅退出残留的 postmaster（否则 postmaster.pid 锁阻塞下次启动）。
         let open = || async {
-            // PG's max_connections mirrors max_client_sessions; it must be >=
-            // the sqlx pool (64) plus room for PG-internal/utility sessions,
-            // otherwise bursts of concurrent queries exhaust PG and sqlx
-            // reports "pool timed out while waiting for an open connection".
+            // PG max_connections 需 ≥ 池(64)+内部会话，否则并发查询把 PG 打满
             let builder = Oliphaunt::builder().native_server().max_client_sessions(96);
             match data_dir {
                 Some(dir) => builder.path(dir),
@@ -210,21 +148,13 @@ impl Db {
     /// Runs the schema migrations for the active backend.
     pub async fn migrate(&self) -> Result<(), DbError> {
         use sqlx::Executor;
-        // Run the whole migration on ONE connection, serialized with other
-        // concurrent migrators (e.g. parallel test binaries) via a PG
-        // advisory lock. Without the lock, two `_sqlx_migrations` inserts on
-        // the same version race each other ("tuple concurrently updated").
+        // 单连接串行迁移 + PG 咨询锁，避免并发 migrator 抢同一版本
         let mut conn = self.pool.acquire().await?;
-        // The `suwayomi` schema must exist before migration: sqlx's
-        // `ensure_migrations_table` creates `_sqlx_migrations` with an
-        // UNQUALIFIED name that resolves through search_path — on a fresh
-        // database the missing schema would fail with 3F000.
+        // 先建 schema：sqlx 的 _sqlx_migrations 非限定名经 search_path 解析
         conn.execute("CREATE SCHEMA IF NOT EXISTS suwayomi").await?;
         conn.execute("SELECT pg_advisory_lock(728232364)").await?;
         let r = MIGRATOR.run(&mut conn).await;
-        // SyncYomi version-bump triggers (PL/pgSQL) — supported by the real
-        // PostgreSQL engine in both embedded (Oliphaunt native) and external
-        // modes; idempotent: CREATE OR REPLACE + DROP TRIGGER IF EXISTS.
+        // SyncYomi 版本触发的 PL/pgSQL（CREATE OR REPLACE，幂等）
         let f = conn
             .execute(include_str!("../../../../migrations/pg-only/0002_sync_functions.sql"))
             .await;
@@ -242,22 +172,8 @@ impl Db {
     }
 }
 
-/// Workaround for oliphaunt 0.1.1 on Windows: the materialized runtime cache
-/// (see `materialize_runtime` in oliphaunt's `liboliphaunt/root/runtime.rs`)
-/// installs the PostgreSQL tools (exe) and the lib/share trees but omits the
-/// `bin/*.dll` files that those executables link against (libpq.dll, …), so
-/// initdb/postgres fail to start with STATUS_DLL_NOT_FOUND (0xc0000135).
-///
-/// The DLLs exist in the build-staged resources; copy them into every
-/// existing cache `bin/` directory (idempotent). Called before opening the
-/// server and again after a failed first open (the first materialization is
-/// what creates the cache directories in the first place).
-/// Resolves the oliphaunt native resources directory that is actually valid
-/// on this machine:
-/// 1. the compiled-in `OLIPHAUNT_RESOURCES_DIR` when it exists (local builds),
-/// 2. otherwise the bundled `oliphaunt-runtime/resources` shipped next to the
-///    executable (`<release-root>/oliphaunt-runtime/resources`, server lives
-///    in `bin/` so root = exe parent's parent) — CI-built release packages.
+/// 有效资源目录：编译期 OUT_DIR（本地构建）存在则用，否则 exe 上级
+/// `oliphaunt-runtime/resources`（CI 包；server 在 bin/ 下，根=上上级）
 fn active_oliphaunt_resources_dir() -> Option<std::path::PathBuf> {
     if let Some(dir) = option_env!("OLIPHAUNT_RESOURCES_DIR") {
         let p = Path::new(dir);
@@ -276,11 +192,11 @@ fn active_oliphaunt_resources_dir() -> Option<std::path::PathBuf> {
     None
 }
 
+/// Windows oliphaunt 0.1.1 补丁：materialize 的 runtime cache 缺 bin/*.dll
+/// （postgres 链接所需）→ 首次 initdb STATUS_DLL_NOT_FOUND；把有效资源目录
+/// 里的 DLL 拷进每个已有 cache bin/（幂等）。见 connect_embedded 的重试。
 fn copy_runtime_bin_dlls_to_cache() {
-    // The DLL source must be the *effective* resources dir: compiled-in
-    // OUT_DIR on a local build, or the bundled oliphaunt-runtime/resources
-    // on a CI-built release (compiled path is the runner's, nonexistent
-    // here). Same resolution as register_oliphaunt_resources().
+    // DLL 源须与 register_oliphaunt_resources 同源解析（本地 OUT_DIR / CI 捆绑）
     let Some(resources_dir) = active_oliphaunt_resources_dir() else {
         return;
     };
@@ -316,12 +232,9 @@ fn copy_runtime_bin_dlls_to_cache() {
     }
 }
 
-/// Remove a leftover postmaster from a previous run that was killed without
-/// graceful shutdown. The embedded Oliphaunt postgres child survives such a
-/// kill and holds `postmaster.pid`, so the next start fails with
-/// "lock file postmaster.pid already exists". Only touches a postmaster
-/// whose executable lives under the oliphaunt runtime cache (ours), never a
-/// foreign PostgreSQL.
+/// 清掉上次非优雅退出残留的 postmaster（其子进程仍持 postmaster.pid 锁，
+/// 阻塞下次启动）。只动可执行路径在 oliphaunt runtime cache 下的进程，绝不碰
+/// 外部 PostgreSQL。
 fn cleanup_stale_postmaster(data_dir: Option<&Path>) {
     use std::process::Command;
 

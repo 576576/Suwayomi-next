@@ -1,15 +1,7 @@
-//! Extension store management — the online-install half of Phase 6:
-//!
-//! 1. `refresh_stores`  — pull each repo's `index.json` (tachiyomi repo v1
-//!    format) and upsert the `extension` table (available + apkUrl).
-//! 2. `install`/`update`/`uninstall` — download the APK into the extensions
-//!    directory, ask the JVM sandbox to hot-reload, then register sources.
-//! 3. `sync_sources` — read the sandbox `/sources` (stable ids from the
-//!    extension's `Source.getId()`) and upsert the `source` table so the
-//!    manga list / library can use them.
-//!
-//! The sandbox base URL and the extensions directory are optional: without a
-//! sandbox the store still refreshes its index, but install is a no-op error.
+//! 扩展仓库管理（Phase 6 在线安装半）：refresh_stores（拉各 repo index 并
+//! upsert extension 表）→ install/update/uninstall（APK 下载 + 沙盒热载 +
+//! 注册源）→ sync_sources（读沙盒 /sources 稳定 id upsert source 表）。
+//! 无沙盒时仅刷新可用，install 报错。
 
 use reqwest::Client;
 use serde::Deserialize;
@@ -246,12 +238,9 @@ impl ExtensionStoreService {
         Ok(total)
     }
 
-    /// Fetches one repo index and upserts its entries.
-    ///
-    /// The downloaded index is cached at `<cache>/extensions/index/<repo>/index.pb`
-    /// (or `index.json` for legacy tachiyomi repos). Network/HTTP failures and
-    /// unparseable downloads fall back to the local cache, so a refresh never
-    /// hangs or wipes the store just because a repo is temporarily down.
+    /// 拉取单个 repo 的 index 并 upsert。index 缓存到
+    /// `<cache>/extensions/index/<repo>/index.pb|index.json`；网络失败/解析失败
+    /// 回退本地缓存——仓库暂时宕机不会挂起刷新或清空仓库
     pub async fn refresh_one(&self, index_url: &str, store_name: &str) -> Result<usize> {
         let _ = store_name;
         let url = normalize_index_url(index_url);
@@ -873,16 +862,10 @@ mod tests {
 }
 
 // ----------------------------------------------------------------------
-// Mihon 扩展仓库协议（index.pb）——gzip 压缩的 protobuf
-//
-// 协议（对齐 mihon `NetworkExtensionStore`，字段号为 protobuf 编号）：
-//   Index:           1=name, 2=badge, 3=signingKey, 4=contact, 101=extensionList
-//   ExtensionList:   1=repeated Extension
-//   Extension:       1=name, 2=packageName, 3=resources, 4=extensionLib,
-//                    5=versionCode(int64), 6=versionName, 7=contentWarning(enum),
-//                    8=repeated Source
-//   Resources:       1=apkUrl, 2=iconUrl
-//   Source:          1=id(int64), 2=name, 3=language, 4=homeUrl, 5=mirrorUrls, 7=message
+// Mihon 扩展仓库协议（index.pb，gzip+protobuf；字段号同 mihon
+// NetworkExtensionStore）：Index 1=name 2=badge 3=signingKey 101=extensionList；
+// Extension 1=name 2=packageName 5=versionCode 6=versionName 8=Source；
+// Resources 1=apkUrl 2=iconUrl；Source 1=id 2=name 3=language 4=homeUrl
 // ----------------------------------------------------------------------
 
 /// protobuf 解析的错误类型（避免与 crate 的单参数 Result 别名冲突）

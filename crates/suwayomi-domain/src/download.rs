@@ -500,20 +500,12 @@ impl DownloadManager {
         std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {e}"))?;
         let cbz_path = dir.join(&chapter_file);
 
-        // ComicInfo.xml (ComicRack standard) so the archive carries metadata
-        // (manga/chapter identity, author/artist, genre, …) like a proper CBZ.
+        // ComicInfo.xml（ComicRack 标准）随包写入，携带作品/章节元数据
         let comic_info = self.build_comic_info(job, pages.len()).await;
 
-        // Download page bytes concurrently. Each URL goes through the
-        // same-origin image proxy (`/api/v1/image/{b64}`) so:
-        //   * online-reading pages already cached by the proxy return
-        //     instantly from disk (warm path)
-        //   * cold pages still bypass CORS / hotlink issues
-        //   * failed/interrupted downloads naturally resume by re-hitting
-        //     the same proxy path; missing pages fall through to a fresh
-        //     download.
-        // 8 in-flight keeps us gentle on the CDN while still ~8× faster
-        // than the previous sequential loop on warm paths.
+        // 并发经同源图片代理下载页面：已代理缓存的在线阅读页命中磁盘秒回
+        // （warm path），冷页绕开 CORS/hotlink，中断后可断点续拉。
+        // 8 并发对 CDN 友好且比旧的串行循环快约 8×。
         const CONCURRENCY: usize = 8;
         let fetches: Vec<(i32, String)> = pages
             .iter()
@@ -699,19 +691,15 @@ mod tests {
 // ---------------------------------------------------------------------------
 // Downloads-dir reconciliation
 // ---------------------------------------------------------------------------
+// 布局：{downloads}/{SourceName} ({LANG})/{MangaTitle}/{Chapter}.cbz。
+// 匹配：目录名先对 manga.title，再以解析出的 manga.url 匹配该源所有语言变体
+// 的行；章节按 (manga,url) upsert 并标 is_downloaded。
 
-/// Reconciles the on-disk `data/downloads/` tree with the database so that
-/// chapters downloaded on-disk (e.g. imported from a Tachiyomi/Tachidesk
-/// backup, or written by an earlier build) show the "downloaded" badge in the
-/// WebUI.
-///
-/// Layout: `{downloads}/{SourceName} ({LANG})/{MangaTitle}/{Chapter}.cbz`
-///
-/// Matching strategy: the manga directory name is matched against
-/// `manga.title` first; the resolved `manga.url` then matches ALL rows with
-/// that url across every language variant of the source, so browsing/searching
-/// any variant surfaces the downloaded state. Chapters are upserted by
-/// (manga, url) and marked `is_downloaded = TRUE`.
+/// 用磁盘 data/downloads/ 对账数据库：让磁盘上已有（如备份导入或旧版本写的）
+/// 下载在 WebUI 显示「已下载」角标。
+/// 布局：{downloads}/{SourceName} ({LANG})/{MangaTitle}/{Chapter}.cbz。
+/// 匹配：目录名先对 manga.title，再以解析出的 manga.url 匹配该源所有语言
+/// 变体的行；章节按 (manga,url) upsert 并标 is_downloaded。
 pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::error::Result<usize> {
     let downloads_root = data_dir.join("downloads");
     // Older builds "downloaded" chapters by flipping is_downloaded without

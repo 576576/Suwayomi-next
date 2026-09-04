@@ -1,14 +1,8 @@
-//! Local source scanner — mirrors Tachidesk `LocalSource`.
-//!
-//! Folder layout (see the Local Source wiki):
-//! ```text
-//! data/local/<MangaTitle>/<ChapterName>/page01.jpg ...
-//! data/local/<MangaTitle>/ch001.zip        (archive chapter)
-//! data/local/<MangaTitle>/cover.jpg        (optional custom cover)
-//! data/local/<MangaTitle>/details.json     (optional metadata)
-//! ```
-//! `details.json` supports `title` / `author` / `artist` / `description` /
-//! `genre` (array or comma string) / `status` (numeric string).
+//! 本地图源扫描（对应 Tachidesk LocalSource）。目录布局：
+//!   data/local/<MangaTitle>/<ChapterName>/page01.jpg …（目录章节）
+//!   data/local/<MangaTitle>/ch001.zip …（归档章节）/ cover.jpg / details.json
+//! details.json 支持 title/author/artist/description/genre/status 字段
+//! （genre 可为数组或逗号串）；归档常带 nhentai 格式 meta.json。
 
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
@@ -35,13 +29,9 @@ pub fn set_local_source_root(path: Option<PathBuf>) {
     }
 }
 
-/// The root directory of the local source. Resolution order:
-/// 1. `localSourcePath` override (set_local_source_root / settings)
-/// 2. `SUWAYOMI_LOCAL_SOURCE_DIR` env (tray spawns the server with the release
-///    root's `data/local` — the server's cwd is the *data dir* there, so the
-///    plain `<cwd>/data/local` default would resolve to `data/data/local`).
-/// 3. exe in a `bin/` layout → `<release root>/data/local`
-/// 4. `<cwd>/data/local` fallback.
+/// 本地图源根目录。解析顺序：localSourcePath override → SUWAYOMI_LOCAL_SOURCE_DIR
+/// env（托盘 spawn 时 server cwd=data，默认会解析成 data/data/local）→ exe bin/
+/// 布局的发布根 data/local → cwd/data/local
 pub fn local_source_root() -> PathBuf {
     if let Some(lock) = LOCAL_ROOT_OVERRIDE.get() {
         if let Ok(guard) = lock.read() {
@@ -324,16 +314,13 @@ fn scan_manga_archive_meta(manga_dir: &Path) -> Option<ArchiveMeta> {
     None
 }
 
-/// Parse `meta.json` — the nhentai/export format used by Tachiyomi
-/// LocalSource:
+/// 解析 nhentai/导出用的 `meta.json`：
 /// ```json
-/// { "title": {"english": "...", "japanese": "..."}, "upload_date": 1594958203,
-///   "num_pages": 24, "num_favorites": 4445, "scanlator": "",
-///   "tags": [{"type": "artist|group|category|tag|parody|character", "name": "..."}] }
+/// { "title": {"english": "…", "japanese": "…"}, "upload_date": 1594958203,
+///   "num_pages": 24, "tags": [{"type": "artist|…|character", "name": "…"}] }
 /// ```
 fn parse_meta_json(bytes: &[u8]) -> Option<ArchiveMeta> {
-    // Any language key is accepted (english/japanese/korean/chinese/…);
-    // `serde(flatten)` keeps the unknown keys in a map so nothing is dropped.
+    // 任意语言键都接受；serde(flatten) 保留未知键不丢
     #[derive(serde::Deserialize, Default)]
     struct MetaJsonTitle {
         #[serde(default)]
@@ -471,13 +458,8 @@ fn parse_comic_info_xml(bytes: &[u8]) -> Option<ArchiveMeta> {
     genre_parts.dedup();
     let genre = if genre_parts.is_empty() { None } else { Some(genre_parts.join(", ")) };
 
-    // ComicInfo.Summary is a multi-line block like:
-    //   Alternative Title: ...
-    //   Groups: ...
-    //   Description: <free text | null>
-    //   Pages: N / Category / Language / Parodies / Characters ...
-    // The details page renders the whole summary as the manga description;
-    // alt-titles are pulled out into their own field.
+    // ComicInfo.Summary 是多行块（Alternative Title / Groups / Description /
+    // Pages / Category …）：整体作漫画简介渲染，另抽出 Alternative Title 行
     let mut alt_titles: Vec<String> = Vec::new();
     if let Some(summary) = text("summary") {
         for line in summary.lines() {

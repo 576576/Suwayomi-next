@@ -275,6 +275,12 @@ fn webui_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}")
 }
 
+/// WebView 内只允许 WebUI 自身源（127.0.0.1/localhost）的顶层导航
+fn is_webui_origin(url: &tauri::Url) -> bool {
+    matches!(url.scheme(), "http" | "https")
+        && matches!(url.host_str(), Some("127.0.0.1") | Some("localhost"))
+}
+
 /// 打开/聚焦 WebUI 窗口（label "webui"，已存在→show+focus，销毁后重建）。
 /// 返回 false = 系统 WebView 不可用，调用方应回退系统浏览器。
 fn open_webui_window(app: &tauri::AppHandle, port: u16) -> bool {
@@ -293,6 +299,21 @@ fn open_webui_window(app: &tauri::AppHandle, port: u16) -> bool {
     )
     .title("Suwayomi")
     .inner_size(1280.0, 860.0)
+    // WebUI 里的外部链接（关于/文档等）一律交系统浏览器：拦截顶层导航
+    // 与 target=_blank/window.open 新窗请求，不在 WebView 里打开
+    .on_navigation(move |url| {
+        if is_webui_origin(url) {
+            return true;
+        }
+        tray_log(&format!("[tray] external link -> browser: {url}"));
+        let _ = open::that(url.to_string());
+        false
+    })
+    .on_new_window(move |url, _features| {
+        tray_log(&format!("[tray] external link (new window) -> browser: {url}"));
+        let _ = open::that(url.to_string());
+        tauri::webview::NewWindowResponse::Deny
+    })
     .build()
     {
         Ok(w) => {

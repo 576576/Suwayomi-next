@@ -1,16 +1,8 @@
-//! Suwayomi 桌面壳（Tauri 2）——只负责托盘与 WebUI/设置窗口
-//!
-//! - 无头启动 `suwayomi-server` 子进程；启动时静默驻托盘（不弹设置窗口）
-//! - 发布布局（exe 同级）：
-//!     suwayomi(.exe) + suwayomi-server(.exe) + bin/jvm-sandbox.jar + webui/ + data/
-//!     data/ 为工作数据目录（autobackup/downloads/local，可在设置中更换）；
-//!     pglite-data/ 与 extensions/ 由 server 自动建在发布根目录；日志在 logs/
-//! - 系统托盘菜单：启动 Suwayomi / 打开 WebUI / 打开数据目录 / 设置 / 退出
-//! - 设置窗口（暗黑主题）：端口、工作目录、启动打开 WebUI、打开数据目录
-
-//! 打开 WebUI 用**系统 WebView 窗口**（Windows WebView2 / Linux WebKitGTK /
-//! macOS WKWebView，tauri 提供），不捆绑任何浏览器运行时；WebView 不可用
-//! 时回退系统浏览器。跨平台同一份代码，差异都由 tauri 底层吸收。
+//! Suwayomi 桌面壳（Tauri 2）：驻托盘，拉起 suwayomi-server，用系统 WebView
+//! （Win WebView2 / Linux WebKitGTK / macOS WKWebView）打开 WebUI/设置窗口；
+//! WebView 不可用时回退系统浏览器。无图形会话（Linux）降级为前台跑 server。
+//! 发布布局（exe 同级）：bin/suwayomi-server(.exe) + bin/jvm-sandbox.jar +
+//! webui/ + data/(工作数据) + extensions/ + pglite-data/。
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 use std::io::Write;
@@ -34,8 +26,8 @@ struct Settings {
     data_dir: Option<String>,
     /// 启动时自动打开 WebUI（默认开）
     open_webui: bool,
-    /// 用窗口（系统 WebView）打开 WebUI，否则系统浏览器（默认开）。
-    /// 字段名保留旧 JSON key `prefer_electron` 以兼容既有 settings.json。
+    /// 用窗口（系统 WebView）打开 WebUI，否则系统浏览器。保留旧 JSON key
+    /// `prefer_electron` 兼容既有 settings.json。
     prefer_electron: bool,
 }
 
@@ -49,30 +41,23 @@ struct AppState {
     port: AtomicU16,
     data_dir: Mutex<PathBuf>,
     server: Mutex<Option<Child>>,
-    /// true = 「隐藏托盘」退出：只退出托盘进程，server 保持后台运行；
-    /// Drop 时跳过一切 server 清理（不 POST shutdown、不强杀、不 wait）。
+    /// true = 「隐藏托盘」退出：托盘退出、server 保持后台，Drop 不做任何清理。
     keep_server_on_exit: AtomicBool,
 }
 
 impl Drop for AppState {
     fn drop(&mut self) {
         if self.keep_server_on_exit.load(Ordering::Relaxed) {
-            // 隐藏托盘：server 继续运行。`Child` drop 只释放句柄不杀进程，
-            // server 的日志文件句柄由 server 自身持有，不受影响。
             return;
         }
-        // 退出托盘：通知 server 优雅关闭（若还在运行），但**不等待**——托盘
-        // 进程必须立即退出（视觉上立刻消失）。server 收到 shutdown 请求后在
-        // 后台自行收尾（pg_ctl stop postgres、杀 JVM 沙盒），完成后进程自然
-        // 退出；即使异常残留，下次启动的 stale-postmaster 自愈会兜底。
+        // 退出托盘：通知 server 优雅关闭但不等待（托盘须立即消失）；server
+        // 自行收尾（停 postgres、杀 JVM 沙盒），异常残留由下次启动自愈兜底。
         let port = self.port.load(Ordering::Relaxed);
         if server_running(port) {
             request_graceful_shutdown(port);
         }
-        // 只释放 Child 句柄，不 kill / 不 wait：server 作为独立进程继续完成
-        // 优雅关闭（Windows 父进程退出不会自动终止子进程）。
         if let Some(child) = self.server.lock().unwrap().take() {
-            drop(child);
+            drop(child); // 只放句柄不 kill/wait：Windows 父进程退出不杀子进程
         }
     }
 }
@@ -110,10 +95,7 @@ fn save_settings_file(settings: &Settings) -> std::io::Result<()> {
     std::fs::write(settings_path(), json)
 }
 
-/// Locate the headless server binary:
-/// 1. `SUWAYOMI_BIN` env
-/// 2. next to this tray executable (`suwayomi-server.exe` / `suwayomi-server`)
-/// 3. on `PATH`
+/// 定位 server 二进制：`SUWAYOMI_BIN` → exe 同级/`bin/` → PATH
 fn find_server_bin() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("SUWAYOMI_BIN") {
         let pb = PathBuf::from(p);
@@ -125,12 +107,8 @@ fn find_server_bin() -> Option<PathBuf> {
         Ok(exe) => {
             tray_log(&format!("[tray] current_exe: {}", exe.display()));
             if let Some(dir) = exe.parent() {
-                // 发布布局：server 在 bin/ 子目录（suwayomi-server）；旧布局同目录。
-                //
-                // 绝不能把托盘自身的可执行名（suwayomi / suwayomi.exe）列为候选：
-                // 两者同处发布根目录，一旦 bin/suwayomi-server 缺失就会把托盘
-                // 自己当 server 反复 spawn（fork 炸弹）。要覆盖这种场景请显式
-                // 设 SUWAYOMI_BIN。
+                // 候选绝不含托盘自身（suwayomi(.exe)，同目录）：server 缺失时
+                // 会把托盘自己当 server 反复 spawn（fork 炸弹）；覆盖用 SUWAYOMI_BIN。
                 for cand in [
                     dir.join("bin").join("suwayomi-server.exe"),
                     dir.join("bin").join("suwayomi-server"),
@@ -161,10 +139,7 @@ fn find_server_bin() -> Option<PathBuf> {
 
 const SERVER_PROC_NAMES: [&str; 2] = ["suwayomi-server.exe", "suwayomi-server"];
 
-/// 是否已有 suwayomi-server 在运行。双检测兜底：
-/// 1) 进程名匹配（sysinfo 枚举，个别情况下可能漏判/竞态）；
-/// 2) 端口探测——server 就绪后端口必然可连，作为最终判定。
-/// 两者任一命中即视为「已有实例」，避免重复 spawn。
+/// 是否已有 suwayomi-server 在运行：进程名匹配或端口可连，任一命中即视为已有。
 fn server_running(port: u16) -> bool {
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All, true);
@@ -198,9 +173,7 @@ fn kill_server_processes() {
     }
 }
 
-/// 请求 server 优雅关闭（POST /api/v1/shutdown，loopback）。server 收到后会
-/// 走 graceful shutdown：Db drop → oliphaunt `pg_ctl stop` 停 postgres 子进程、
-/// JVM 沙盒子进程随 Drop 终止——所有进程干净退出，不留 postgres/java 残留。
+/// 请求 server 优雅关闭（POST loopback /api/v1/shutdown：停 postgres、杀 JVM 沙盒）
 fn request_graceful_shutdown(port: u16) {
     use std::io::{Read, Write};
     tray_log(&format!("[tray] requesting graceful shutdown on port {port}"));
@@ -215,8 +188,8 @@ fn request_graceful_shutdown(port: u16) {
     }
 }
 
-/// 优雅停掉 server：先请求 shutdown，等待进程自然退出（graceful），超时再强杀
-/// 兜底（强杀会残留 oliphaunt postgres 子进程，server 下次启动时自愈清理）。
+/// 优雅停 server：请求 shutdown 后等进程退出，超时强杀兜底（强杀残留的
+/// postgres 子进程由 server 下次启动自愈清理）。
 fn stop_server_gracefully(port: u16) {
     if !server_running(port) {
         return;
@@ -245,20 +218,16 @@ fn wait_ready(port: u16, timeout: Duration) -> bool {
     false
 }
 
-/// 工作数据目录（不存在时创建）。pglite-data 不在此列——
-/// server 启动时会在 data 同级（发布根目录）自动创建。
+/// 数据子目录（autobackup/downloads/local）不存在时创建
 fn ensure_data_dirs(data: &PathBuf) {
     for d in ["autobackup", "downloads", "local"] {
         let _ = std::fs::create_dir_all(data.join(d));
     }
 }
 
-/// `inherit_stdio = true` 时不重定向到日志文件（前台模式：控制台直接看 server
-/// 输出）；否则一律落 cache/logs/server.log（后台模式：GUI 应用无控制台）。
+/// `inherit_stdio=true` 前台模式直接继承控制台；否则输出落 cache/logs/server.log
 fn spawn_server(data: &PathBuf, port: u16, inherit_stdio: bool) -> Option<Child> {
     let bin = find_server_bin()?;
-    // 日志统一放 cache/logs/（cache 目录：封面代理缓存 cache/images/ + 日志；
-    // 不混入 data/ 工作数据目录）
     let logs = base_dir().join("cache").join("logs");
     let _ = std::fs::create_dir_all(&logs);
     let log_file = std::fs::OpenOptions::new()
@@ -270,16 +239,11 @@ fn spawn_server(data: &PathBuf, port: u16, inherit_stdio: bool) -> Option<Child>
     command
         .current_dir(data)
         .env("SUWAYOMI_PORT", port.to_string())
-        // pglite 数据目录 = 发布根目录，由 server 自动创建
         .env("SUWAYOMI_PGLITE_DATA_DIR", base_dir().join("pglite-data"))
-        // 扩展安装目录 = 发布根目录（与 data/ 同级，也不是 cwd=data 下）
         .env("SUWAYOMI_EXTENSIONS_DIR", base_dir().join("extensions"))
-        // 本地图源根目录 = 发布根 data/local（server 的 cwd 是 data 目录，
-        // 不显式传 env 的话 local_source_root 会解析到 data/data/local）
+        // server cwd=data，不传 env 时 local_source_root 会落到 data/data/local
         .env("SUWAYOMI_LOCAL_SOURCE_DIR", base_dir().join("data").join("local"))
-        // 数据根目录（aboutServer.dataDir / WebUI 数据与存储页显示）
         .env("SUWAYOMI_DATA_DIR", base_dir().join("data"))
-        // 日志目录（server + JVM 沙盒输出统一落位）
         .env("SUWAYOMI_LOGS_DIR", logs.clone())
         .env("SUWAYOMI_WEBUI_DIR", base_dir().join("webui"));
 
@@ -311,14 +275,8 @@ fn webui_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}")
 }
 
-// ---- 打开 WebUI：系统 WebView 窗口（tauri，引擎由 OS 提供）----
-
-/// 打开（或聚焦）WebUI 窗口，label 恒为 "webui"：
-/// 窗口已存在（最小化/后台）→ show + 聚焦，不开第二个；已被用户关闭
-/// （销毁）→ `get_webview_window` 返回 None，按当前端口重建。
-///
-/// 返回 false = 系统 WebView 不可用（Windows 无 WebView2 Runtime 的精简
-/// 系统、Linux 缺 webkit2gtk 等），调用方应回退系统浏览器。
+/// 打开/聚焦 WebUI 窗口（label "webui"，已存在→show+focus，销毁后重建）。
+/// 返回 false = 系统 WebView 不可用，调用方应回退系统浏览器。
 fn open_webui_window(app: &tauri::AppHandle, port: u16) -> bool {
     if let Some(w) = app.get_webview_window("webui") {
         let _ = w.show();
@@ -338,8 +296,7 @@ fn open_webui_window(app: &tauri::AppHandle, port: u16) -> bool {
     .build()
     {
         Ok(w) => {
-            // 注意：窗口标题栏与任务栏按钮共用 WM_SETICON，无法只改其一；
-            // 不 set_icon → 两者都用 exe 内嵌多帧 ICO（master 设计），见 commit 回滚。
+            // 不 set_icon：标题栏与任务栏共用 WM_SETICON，set 后任务栏也会变
             let _ = w.show();
             let _ = w.set_focus();
             tray_log(&format!("[tray] opened webui window: {}", webui_url(port)));
@@ -354,9 +311,7 @@ fn open_webui_window(app: &tauri::AppHandle, port: u16) -> bool {
     }
 }
 
-/// 打开 WebUI：窗口模式（设置项「用窗口打开」，旧字段名 prefer_electron）
-/// → 优先系统 WebView 窗口；WebView 不可用或设置关闭 → 系统浏览器。
-/// WebUI 自身是普通网页，可被任意现代浏览器/引擎打开，无 Electron 依赖。
+/// 打开 WebUI：设置开启且 WebView 窗口可用 → 窗口，否则系统浏览器
 fn launch_webui(app: &tauri::AppHandle, port: u16) {
     let settings = load_settings();
     if settings.prefer_electron && open_webui_window(app, port) {
@@ -413,9 +368,8 @@ fn save_settings(
     ensure_data_dirs(&new_data);
     std::fs::create_dir_all(&new_data).map_err(|e| format!("创建数据目录失败: {e}"))?;
 
-    // 端口/目录变更：优雅结束旧 server 并以新配置重启（不残留 postgres）
+    // 端口/目录变更：优雅停旧 server 再按新配置重启；关掉旧端口的 WebUI 窗口
     stop_server_gracefully(state.port.load(Ordering::Relaxed));
-    // WebUI 窗口指向旧端口/旧目录，一并关闭（下次打开时按新配置重建）
     if let Some(w) = app.get_webview_window("webui") {
         let _ = w.close();
     }
@@ -444,13 +398,11 @@ fn webui_url_cmd(state: State<AppState>) -> String {
     webui_url(state.port.load(Ordering::Relaxed))
 }
 
-/// 设置页前端（编译期内联；纯 cargo build 不嵌入 frontendDist 资产，
-/// 故通过自定义协议提供，避免设置窗口白屏）。
+/// 设置页前端：编译期内联，经自定义协议提供（纯 cargo build 不嵌 frontendDist）
 const SETTINGS_HTML: &str = include_str!("../frontend/index.html");
 
-/// Linux 上是否有图形会话。Tauri 起 GTK/WebKit 需要它——ssh 到无头服务器时
-/// `DISPLAY`/`WAYLAND_DISPLAY` 都为空，直接 `tauri::Builder::run` 会 panic
-/// （"could not open display"），所以启动前先探测，无会话就走前台 server 模式。
+/// Linux 是否有图形会话（DISPLAY/WAYLAND_DISPLAY）。无会话时直接跑 GTK 会
+/// panic，启动前探测并降级为前台 server 模式。
 #[cfg(target_os = "linux")]
 fn has_graphical_session() -> bool {
     ["DISPLAY", "WAYLAND_DISPLAY"]
@@ -458,8 +410,8 @@ fn has_graphical_session() -> bool {
         .any(|k| std::env::var(k).is_ok_and(|v| !v.trim().is_empty()))
 }
 
-/// 无图形会话时的降级路径：沿用 settings.json 的端口/数据目录，前台跑 server
-/// （等价于直接跑 `bin/suwayomi-server`，只是省得记路径）。不返回。
+/// 无图形会话降级：沿用 settings 的端口/数据目录前台跑 server（等价于直接
+/// 跑 bin/suwayomi-server），不返回。
 #[cfg(target_os = "linux")]
 fn run_server_foreground() -> ! {
     let settings = load_settings();
@@ -504,8 +456,7 @@ fn maybe_run_headless() {
 #[cfg(not(target_os = "linux"))]
 fn maybe_run_headless() {}
 
-/// 把编译期内联的 PNG 图标解码为 tauri Image（托盘用）。
-/// 只支持 8-bit RGBA/RGB——图标由 Pillow 生成，固定 RGBA。
+/// 编译期内联 PNG（8-bit RGBA/RGB）解码为 tauri Image（托盘图标用）
 fn decode_png_icon(data: &[u8]) -> tauri::image::Image<'static> {
     use png::ColorType;
     let mut reader = png::Decoder::new(data).read_info().expect("tray icon: png info");
@@ -534,10 +485,8 @@ fn main() {
     maybe_run_headless();
 
     tauri::Builder::default()
-        // 单实例去重：重复启动 suwayomi.exe 时第二实例直接退出，不产生
-        // 第二个托盘图标；已有实例收到通知后聚焦设置窗口。
+        // 单实例：重复启动时第二实例直接退出，聚焦已有窗口
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            // 重复启动：把已在跑的窗口带到前台——优先 WebUI 窗口，其次设置窗口。
             tray_log("[tray] single-instance: second launch detected, focusing existing window");
             if let Some(w) = app.get_webview_window("webui") {
                 let _ = w.show();
@@ -581,9 +530,7 @@ fn main() {
                 (s, ready)
             };
 
-            // 设置窗口：静默创建（build 后隐藏，托盘菜单唤起）；暗黑主题跟随。
-            // 无系统 WebView 的精简系统上创建会失败——托盘与 WebUI（浏览器
-            // 回退）必须照常工作，这里只告警、不中断 setup。
+            // 设置窗口：不可见创建（托盘菜单唤起）；WebView 不可用仅告警不中断
             let _settings_built = match WebviewWindowBuilder::new(
                 app,
                 "settings",
@@ -608,7 +555,7 @@ fn main() {
                 }
             };
 
-            // 系统托盘：启动/重启Suwayomi（运行中显示「重启」）→ 打开WebUI → 数据目录 → 设置 → 隐藏托盘 → 退出
+            // 托盘菜单：启动/重启 → 打开 WebUI → 数据目录 → 设置 → 隐藏托盘 → 退出
             let start_item = MenuItem::with_id(app, "start_suwayomi", "启动 Suwayomi", true, None::<&str>)?;
             let open_webui = MenuItem::with_id(app, "open_webui", "打开 WebUI", true, None::<&str>)?;
             let open_data = MenuItem::with_id(app, "open_data", "打开数据目录", true, None::<&str>)?;
@@ -626,9 +573,8 @@ fn main() {
             let _ = start_item.set_enabled(true);
             let _ = start_item.set_text(if running { "重启 Suwayomi" } else { "启动 Suwayomi" });
 
-            // 托盘小图标：用专用 tray.png（「坐」字形放大版，占比 0.72，小尺寸可读）；
-            // 32px 源而非 exe 大图标（系统按 DPI 缩放 32→16/20，从 256 缩会发糊）；
-            // 窗口/任务栏图标仍走 exe 内嵌的多尺寸 .ico。
+            // 托盘小图标用专用 tray.png（「坐」放大版，小尺寸可读）；不用
+            // default_window_icon/exe ICO（缩放会糊）。窗口/任务栏仍走 exe ICO。
             let tray_icon = decode_png_icon(include_bytes!("../icons/tray.png"));
             let _tray = TrayIconBuilder::with_id("main")
                 .icon(tray_icon)
@@ -654,9 +600,7 @@ fn main() {
                         let st = app.state::<AppState>();
                         let port = st.port.load(Ordering::Relaxed);
                         if server_running(port) {
-                            // 运行中 → 重启：优雅停止（等进程退出，超时强杀）
-                            // 后重新拉起。stop_server_gracefully 内部已等待
-                            // 进程消失，单实例互斥体随进程退出释放。
+                            // 重启：优雅停（内部已等进程退出）后重新拉起
                             tray_log("[tray] restart: stopping running server");
                             stop_server_gracefully(port);
                             std::thread::sleep(Duration::from_secs(2));
@@ -690,18 +634,14 @@ fn main() {
                         }
                     }
                     "hide_tray" => {
-                        // 只退出托盘进程，server 保持后台运行（下次打开
-                        // suwayomi.exe 时会检测到已有实例而跳过重复启动）。
+                        // 托盘退出、server 保持后台运行
                         tray_log("[tray] hide_tray: keeping server running, exiting tray");
                         let st = app.state::<AppState>();
                         st.keep_server_on_exit.store(true, Ordering::Relaxed);
                         app.exit(0);
                     }
                     "quit" => {
-                        // 托盘立刻关闭（视觉上不等待）：只发优雅关闭请求，
-                        // server 在后台自行收尾（pg_ctl stop postgres、杀 JVM
-                        // 沙盒）后退出；AppState::drop 同样不阻塞。WebUI/设置
-                        // 窗口随 app.exit 一并销毁。
+                        // 托盘立即退出：只发优雅关闭请求，server 后台自行收尾
                         let st = app.state::<AppState>();
                         let port = st.port.load(Ordering::Relaxed);
                         request_graceful_shutdown(port);
@@ -719,19 +659,14 @@ fn main() {
                 keep_server_on_exit: AtomicBool::new(false),
             });
 
-            // 启动时自动打开 WebUI（默认开启，设置里可关；窗口模式打开）——
-            // 放在 manage 之后，launch_webui 需要 state。
-            // 条件：open_webui 开启 且（本托盘刚拉起 server 或 server 已在运行）。
-            // 之前误用 `started`（仅本托盘 spawn 的才算），导致 server 已运行
-            // 时（如隐藏托盘后重启托盘、或外部启动的 server）不自动打开 WebUI。
+            // 启动即打开 WebUI（设置可关）：本托盘拉起或 server 已在运行都要开
             if settings.open_webui && (started || running) {
                 launch_webui(app.handle(), port);
             }
             Ok(())
         })
         .on_window_event(|window, event| {
-            // 设置窗口关闭 = 隐藏（驻托盘）；WebUI 窗口关闭 = 真正关闭（销毁），
-            // 再次打开时重建——托盘/浏览器才是 WebUI 的持久形态。
+            // settings 关闭=隐藏（驻托盘）；webui 关闭=真销毁（下次打开重建）
             if window.label() == "settings" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     let _ = window.hide();

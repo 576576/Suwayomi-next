@@ -461,6 +461,14 @@ impl ExtensionStoreService {
         .bind(&meta.class_name)
         .execute(self.db.pool())
         .await?;
+        // 新行 content_warning 恒 0；若该包已有源行（此前 sync_sources 注册过），
+        // 让它们继承扩展行标记
+        sqlx::query(
+            "UPDATE suwayomi.source AS s SET content_warning = e.content_warning \
+             FROM suwayomi.extension AS e WHERE s.extension = e.id",
+        )
+        .execute(self.db.pool())
+        .await?;
         Ok(())
     }
 
@@ -521,6 +529,15 @@ impl ExtensionStoreService {
             .execute(pool)
             .await?;
         }
+
+        // 源行继承所属扩展的 content_warning（来源：仓库索引）。sync_sources 此前
+        // 从不写该列，源行恒为 0(Safe)，导致"图源列表隐藏 NSFW"过滤永远放行
+        sqlx::query(
+            "UPDATE suwayomi.source AS s SET content_warning = e.content_warning \
+             FROM suwayomi.extension AS e WHERE s.extension = e.id",
+        )
+        .execute(pool)
+        .await?;
         Ok(n)
     }
 

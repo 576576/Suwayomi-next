@@ -624,9 +624,10 @@ fn main() {
             let _ = start_item.set_enabled(true);
             let _ = start_item.set_text(if running { "重启 Suwayomi" } else { "启动 Suwayomi" });
 
-            // 托盘小图标：用 32px 源而非 exe 大图标（系统按 DPI 缩放 32→16/20，
-            // 从 256 缩会发糊）；窗口/任务栏图标仍走 exe 内嵌的多尺寸 .ico。
-            let tray_icon = decode_png_icon(include_bytes!("../icons/32x32.png"));
+            // 托盘小图标：用专用 tray.png（「坐」字形放大版，占比 0.72，小尺寸可读）；
+            // 32px 源而非 exe 大图标（系统按 DPI 缩放 32→16/20，从 256 缩会发糊）；
+            // 窗口/任务栏图标仍走 exe 内嵌的多尺寸 .ico。
+            let tray_icon = decode_png_icon(include_bytes!("../icons/tray.png"));
             let _tray = TrayIconBuilder::with_id("main")
                 .icon(tray_icon)
                 .menu(&menu)

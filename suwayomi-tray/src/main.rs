@@ -502,6 +502,31 @@ fn maybe_run_headless() {
 #[cfg(not(target_os = "linux"))]
 fn maybe_run_headless() {}
 
+/// 把编译期内联的 PNG 图标解码为 tauri Image（托盘用）。
+/// 只支持 8-bit RGBA/RGB——图标由 Pillow 生成，固定 RGBA。
+fn decode_png_icon(data: &[u8]) -> tauri::image::Image<'static> {
+    use png::ColorType;
+    let mut reader = png::Decoder::new(data).read_info().expect("tray icon: png info");
+    let mut buf = vec![0u8; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).expect("tray icon: png frame");
+    let (w, h) = (info.width, info.height);
+    let len = (w as usize) * (h as usize);
+    let rgba = match (info.color_type, info.bit_depth) {
+        (ColorType::Rgba, png::BitDepth::Eight) => buf[..len * 4].to_vec(),
+        (ColorType::Rgb, png::BitDepth::Eight) => {
+            let rgb = &buf[..len * 3];
+            let mut out = Vec::with_capacity(len * 4);
+            for px in rgb.chunks_exact(3) {
+                out.extend_from_slice(px);
+                out.push(255);
+            }
+            out
+        }
+        other => panic!("tray icon: unsupported png format {other:?}"),
+    };
+    tauri::image::Image::new_owned(rgba, w, h)
+}
+
 fn main() {
     // 必须早于 tauri::Builder：无图形会话时 GTK 初始化会直接 panic，来不及兜底
     maybe_run_headless();
@@ -599,8 +624,11 @@ fn main() {
             let _ = start_item.set_enabled(true);
             let _ = start_item.set_text(if running { "重启 Suwayomi" } else { "启动 Suwayomi" });
 
+            // 托盘小图标：用 32px 源而非 exe 大图标（系统按 DPI 缩放 32→16/20，
+            // 从 256 缩会发糊）；窗口/任务栏图标仍走 exe 内嵌的多尺寸 .ico。
+            let tray_icon = decode_png_icon(include_bytes!("../icons/32x32.png"));
             let _tray = TrayIconBuilder::with_id("main")
-                .icon(app.default_window_icon().expect("default window icon").clone())
+                .icon(tray_icon)
                 .menu(&menu)
                 .tooltip("Suwayomi")
                 .show_menu_on_left_click(false)

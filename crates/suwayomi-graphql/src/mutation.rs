@@ -1536,13 +1536,8 @@ impl MutationRoot {
                 Err(e) => tracing::warn!("fetchChapterPages: source fetch failed for chapter {}: {e}", input.chapter_id),
             }
         }
-        // Keep chapter.page_count in sync with the actual page rows — the
-        // reader clamps its current page index against pageCount, so a stale
-        // -1 (older builds wrote it with invalid '?' placeholders) freezes
-        // page turning at the first page even though the page list is fine.
-        // Note: fetched_at is intentionally NOT touched here — it denotes when
-        // a chapter was discovered (epoch seconds, matching in_library_at) and
-        // must not be rewritten every time pages are hydrated.
+        // 同步 chapter.page_count 与真实页数（阅读器按它夹住页码，旧构建的
+        // 坏 -1 会让翻页冻结）；fetched_at 刻意不动（表示发现章节的 epoch 秒）
         if !pages.is_empty() {
             let sql = bind_placeholders("UPDATE chapter SET page_count = ? WHERE id = ?");
             let _ = sqlx::query(&sql)
@@ -1551,11 +1546,8 @@ impl MutationRoot {
                 .execute(state.db.pool())
                 .await;
         }
-        // Serve every external page through the same-origin image proxy
-        // (`/api/v1/image/{b64}`): the WebUI loads reader images with
-        // crossOrigin='anonymous', which fails against CDNs that omit CORS
-        // headers (zrocdn.xyz, i2.nhentaimg.com, …). Same-origin proxying
-        // fixes that for any source and reuses the disk cache.
+        // 外部页面统一走同源图片代理：阅读器以 crossOrigin='anonymous' 加载，
+        // 对无 CORS 头的 CDN（zrocdn/i2.nhentaimg 等）会失败；代理顺带复用磁盘缓存
         let pages: Vec<String> = pages.into_iter().map(|u| image_proxy_url(&u)).collect();
         // Re-read so the returned chapter reflects the freshly stored page count.
         let chapter = ChapterType::from_row(&fetch_chapter_row(state, input.chapter_id).await?);

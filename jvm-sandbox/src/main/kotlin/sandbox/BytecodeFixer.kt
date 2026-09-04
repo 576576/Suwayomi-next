@@ -1,12 +1,7 @@
-//! Bytecode repair for R8-obfuscated extension classes.
-//!
-//! keiyoushi builds are processed by R8, which sometimes emits a broken
-//! `<clinit>` for companion objects: `new java/lang/Object` followed (possibly
-//! after a store/load pair) by `putstatic <owner>.Companion:L<actual-type>;`.
-//! Android's dex verifier tolerates it; the JVM verifier rejects it with a
-//! `VerifyError`. This transformer rewrites the offending sequence to
-//! construct the real type (or null when the type has no constructor and is
-//! never dereferenced). It also synthesizes missing no-arg constructors.
+//! R8 混淆扩展字节码修复：keiyoushi 系构建经 R8 后偶发坏 `<clinit>`
+//! （companion 对象：`new java/lang/Object` + `putstatic …Companion:L<实际类型>`）。
+//! dex 校验器容忍、JVM 校验器抛 VerifyError——本转换把该序列改写为构造真实类型
+//! （类型无构造器且不被解引用时置 null），并合成缺失的无参构造器。
 package sandbox
 
 import org.objectweb.asm.ClassReader
@@ -18,15 +13,11 @@ import org.objectweb.asm.Opcodes
 object BytecodeFixer {
 
     /**
-     * COMPUTE_FRAMES is deliberately NOT used: dex2jar emits StackMapTables
-     * whose declared types are sometimes wider than a re-derived dataflow
-     * (e.g. a merge point typed `int` in the table but `Object` per the
-     * instructions). The JVM verifier trusts the table at basic-block entry,
-     * so the original frames pass — but recomputing them surfaces
-     * `VerifyError: Bad type on operand stack`. The interceptor rewrite
-     * below is length-preserving precisely so the original frames stay valid.
+     * 刻意不用 COMPUTE_FRAMES：dex2jar 的 StackMapTable 声明的类型可能比重推
+     * 数据流更宽（表里 int、指令流实际 Object），JVM 校验器在基本块入口信任
+     * 原表——重算反而报 VerifyError。下面的改写是等长的，正是为保原帧有效。
      */
-    /** Rewrites broken `<clinit>` sequences in [bytes]. */
+    /** 修复 [bytes] 中坏的 `<clinit>` 序列。 */
     fun fix(bytes: ByteArray, hasDefaultCtor: (String) -> Boolean = { true }): ByteArray {
         val cr = ClassReader(bytes)
         val cw = ClassWriter(cr, 0)
@@ -71,21 +62,12 @@ object BytecodeFixer {
     private class Pending(val opcode: Int, val type: String?, val owner: String?, val name: String?, val desc: String?)
 
     /**
-     * Repairs a dex2jar conversion defect seen in keiyoushi builds: a custom
-     * interceptor that R8 kept (e.g. `IgnoreGzipInterceptor`) sometimes comes
-     * out of dex2jar as a bare `new java/lang/Object` passed to
-     * `OkHttpClient$Builder.addInterceptor/addNetworkInterceptor`. Android's
-     * dex verifier tolerates it (the original type was a normal object), but
-     * on the JVM it becomes a `ClassCastException: Object cannot be cast to
-     * okhttp3.Interceptor` the first time the client runs a request — which
-     * bricks popular/search entirely for the affected source.
-     *
-     * The original interceptor's behaviour is unrecoverable from the jar, so
-     * the broken `new Object; dup; <init>` sequence is replaced with a load
-     * of [BytecodeCompat.NOOP_INTERCEPTOR] (transparent pass-through). The
-     * substitution is length-preserving (GETSTATIC 3B ≈ NEW 3B, DUP/INVOKESPECIAL
-     * → NOP), so code offsets and the original StackMapTable stay valid and
-     * the class still verifies.
+     * 修 dex2jar 另一类缺陷：keiyoushi 里被 R8 保留的自定义拦截器（如
+     * IgnoreGzipInterceptor）经 dex2jar 后变成裸 `new java/lang/Object` 传给
+     * OkHttpClient.Builder.addInterceptor——dex 校验器容忍，JVM 上首次请求即
+     * ClassCastException，整个源的热门/搜索瘫痪。原始行为不可恢复，故替换为
+     * 透传的 [BytecodeCompat.NOOP_INTERCEPTOR]；替换等长（GETSTATIC≈NEW，
+     * DUP/INVOKESPECIAL→NOP），保偏移与 StackMapTable 有效。
      */
     private class InterceptorAddFixer(
         mv: MethodVisitor?,
@@ -128,12 +110,9 @@ object BytecodeFixer {
                     return
                 }
             }
-            // Second dex2jar defect: `new java/lang/Object` where an interface
-            // argument is expected, e.g. the transform lambda of
-            // `joinToString$default(...)` — other arguments sit between the
-            // broken `new` and the call, so the whole expression is buffered.
-            // Null is a valid value for any interface parameter, so substitute
-            // NULL (length-preserving) and replay the remaining args unchanged.
+            // 第二类缺陷：接口形参位置出现 `new java/lang/Object`（如
+            // joinToString$default 的 lambda）。参数被缓冲，替换为 NULL
+            // （接口形参合法值，等长）并原样重放其余参数。
             val desc = descriptor.orEmpty()
             val params = desc.substringBefore(')').removePrefix("(")
             // lambda-typed interfaces that R8 emits `new Object` for

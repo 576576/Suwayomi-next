@@ -107,11 +107,7 @@ pub struct MetaOrder {
     pub by_type: Option<SortOrder>,
 }
 
-// ---------------------------------------------------------------------------
-// Filter inputs (shape parity with the baseline; filtering semantics applied
-// incrementally — many filters are accepted and currently ignored).
-// ---------------------------------------------------------------------------
-
+// Filter inputs：与 baseline 形状对齐；语义逐步增量实现（多数 filter 接受但暂忽略）
 macro_rules! scalar_filter_input {
     ($name:ident, $ty:ty) => {
         #[derive(InputObject, Default)]
@@ -2427,15 +2423,10 @@ fn local_webui_build_time(dir: &std::path::Path) -> LongString {
     LongString(0)
 }
 
-/// Normalizes a release tag to a comparable number by stripping every
-/// non-digit character: `r3482` → 3482, `v3.4.82` → 3482, `3.5.16` → 3516.
-/// Both the `r{versionCode}` style and the dot-style stable tags
-/// encode the same version code, so numeric comparison stays correct across
-/// mixed formats (plain string compare would break on `r349` vs `r3480`).
-/// This holds because release.yml builds the dot version as
-/// `3.{count/100}.{count%100, zero-padded}` — 482 commits → `3.4.82`, whose
-/// digits are exactly `3482` = versionCode. Keep the zero padding if you ever
-/// touch that formula, or `3.2.05` would collapse to 325 and sort below `r3205`.
+/// 发布 tag 归一化为可比较的数字：剥掉所有非数字（r3482 → 3482，
+/// 3.4.82 → 3482）。r{code} 与点式 stable tag 编码同一 versionCode，数字比较
+/// 跨格式正确；依赖 release 点式补零公式（3.{c/100}.{c%100 补零}），改动该
+/// 公式须保持补零，否则 3.2.05→325 会小于 r3205。
 fn tag_to_num(tag: &str) -> i64 {
     tag.chars()
         .filter(|c| c.is_ascii_digit())
@@ -2495,14 +2486,9 @@ pub(crate) async fn github_get_with_fallback(url: &str) -> Result<reqwest::Respo
     Err(last_err)
 }
 
-/// Latest 576576/Suwayomi-WebUI release: `(tag, asset_download_url)`.
-///
-/// Prefers the HTML `releases/latest` page (follows the redirect to
-/// `/releases/tag/{tag}` and reads the tag from the final URL) — the GitHub
-/// *API* is rate-limited (403 `API rate limit exceeded`) on shared/CN exit
-/// IPs, while the website is not. The download URL is then derived from the
-/// known asset naming scheme `Suwayomi-WebUI-{tag}.zip`. Falls back to the
-/// API only if the page fetch fails entirely.
+/// 取最新 576576/Suwayomi-WebUI release：(tag, 下载 URL)。优先走 HTML
+/// `releases/latest`（重定向终点的 URL 里读 tag、按已知命名拼下载地址）——
+/// GitHub API 在共享/CN IP 上易触发限流（403）。HTML 失败才回退 API。
 pub(crate) async fn fetch_latest_webui_release() -> Result<(String, String), String> {
     // 1) HTML page: tag from the redirect target URL
     if let Ok(resp) = github_get_with_fallback("https://github.com/576576/Suwayomi-WebUI/releases/latest").await {
@@ -2530,12 +2516,9 @@ pub(crate) async fn fetch_latest_webui_release() -> Result<(String, String), Str
     Ok((tag, url))
 }
 
-/// Latest 576576/Suwayomi-next release: `(tag, release_page_url)`.
-///
-/// The `releases/latest` shortcut redirects to the plain `/releases` list
-/// because every next release is a pre-release, so parse the first
-/// `releases/tag/r\d+` link from the list page HTML (the GitHub API is
-/// rate-limited on shared/CN exit IPs). Falls back to the API list.
+/// 取最新 576576/Suwayomi-next release：(tag, 页面 URL)。因 next 全是预发布，
+/// `releases/latest` 会重定向到 /releases 列表——从列表页 HTML 解析首个
+/// `releases/tag/r\d+` 链接（API 在共享/CN IP 上易限流），失败回退 API。
 pub(crate) async fn fetch_latest_server_release() -> Result<(String, String), String> {
     // 1) HTML list page: first `releases/tag/rNNNN` link
     if let Ok(resp) = github_get_with_fallback("https://github.com/576576/Suwayomi-next/releases").await {

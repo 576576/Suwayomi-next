@@ -338,6 +338,9 @@ fn open_webui_window(app: &tauri::AppHandle, port: u16) -> bool {
     .build()
     {
         Ok(w) => {
+            // 标题栏/任务栏图标用托盘大字版（tray.png）：与托盘一致的观感；
+            // 设置失败（如异常图像）静默忽略，不影响窗口/回退逻辑。
+            let _ = w.set_icon(decode_png_icon(include_bytes!("../icons/tray.png")));
             let _ = w.show();
             let _ = w.set_focus();
             tray_log(&format!("[tray] opened webui window: {}", webui_url(port)));
@@ -597,7 +600,10 @@ fn main() {
             .visible(false)
             .build()
             {
-                Ok(_) => true,
+                Ok(win) => {
+                    let _ = win.set_icon(decode_png_icon(include_bytes!("../icons/tray.png")));
+                    true
+                }
                 Err(e) => {
                     tray_log(&format!(
                         "[tray] settings window unavailable (no system webview?): {e}"

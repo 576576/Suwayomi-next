@@ -1,9 +1,9 @@
 @echo off
 REM ============================================================
 REM  Suwayomi (next) - manual build producing the base artifact
-REM  (no bundled JRE, no Electron) — naming matches the CI suffix
-REM  convention: an un-suffixed name means neither bundle.
-REM  CI variants: ...+jre / ...+electron(+jre) via release.yml.
+REM  (no bundled JRE) — naming matches the CI suffix convention:
+REM  an un-suffixed name means no JRE bundle.
+REM  CI variants: ...+jre via release.yml / release-alpha.yml.
 REM
 REM  Output: target\artifacts\  (cleared on every run)
 REM    Suwayomi-r{code}-windows-x64\           unpacked stage
@@ -35,7 +35,7 @@ if errorlevel 1 goto :error
 
 REM [2/6] tray shell
 echo [2/6] Building tray shell suwayomi.exe (release) ...
-cargo build --release --manifest-path tauri-app\Cargo.toml
+cargo build --release --manifest-path suwayomi-tray\Cargo.toml
 if errorlevel 1 goto :error
 
 REM [3/6] jvm-sandbox fat jar
@@ -51,7 +51,7 @@ popd
 REM [4/6] assemble stage layout (matches CI: exe top-level, server+jar in bin/)
 echo [4/6] Assembling %STAGE% ...
 mkdir "%STAGE%\bin"
-copy /y tauri-app\target\release\suwayomi.exe "%STAGE%\" >nul
+copy /y suwayomi-tray\target\release\suwayomi.exe "%STAGE%\" >nul
 copy /y target\release\suwayomi-server.exe "%STAGE%\bin\" >nul
 copy /y jvm-sandbox\build\libs\suwayomi-jvm-sandbox.jar "%STAGE%\bin\jvm-sandbox.jar" >nul
 

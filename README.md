@@ -35,15 +35,13 @@ cargo run --release -p suwayomi-server
 GitHub Release 提供 `Suwayomi-{版本号}-{通道}-{平台}-{arch}.zip` 等平台压缩包，解压后即开即用
 （推送 main/dev 自动构建的 alpha 无通道段，形如 `Suwayomi-r3046-windows-x64+jre.zip`；
 下方目录结构以“含 JRE 的完整版”为例；基础版无 `jre/` 目录，server 会回退到系统 java）。
-产物命名约定（Windows x64 可选捆绑，按内容如实加后缀；无后缀 = 不含 JRE/Electron 的基础包）：
+产物命名约定（Windows 可选捆绑 JRE，按内容如实加后缀；无后缀 = 不捆绑 JRE 的基础包）：
 
 > 若发布没有你想要的平台构建，可Fork该仓库后手动运行Release构建，构建参数支持一键配置
 
-- `…-windows-x64.zip` 基础包：桌面壳 + 服务器 + 沙盒 jar + WebUI（不含 JRE/Electron）
-- 捆绑包在基础包之外**只额外产出一个**，按勾选组合而定：
-  - 仅勾 JRE      -> `…-windows-x64+jre.zip`：基础包 + Temurin JRE 25（`jre/`，沙盒自包含）
-  - 仅勾 Electron -> `…-windows-x64+electron.zip`：基础包 + `electron/` 桌面壳
-  - 两者都勾      -> `…-windows-x64+electron+jre.zip`：内含 JRE（不再单独产 `+jre`）
+- `…-windows-x64.zip` 基础包：桌面壳 + 服务器 + 沙盒 jar + WebUI（不含 JRE）
+- `…-windows-x64+jre.zip`：基础包 + Temurin JRE 25（`jre/`，沙盒自包含，无需系统 JDK）
+- Linux 产物为 `…-linux-x64.tar.gz`（alpha 含 JRE；手动 release 基础包需自行安装 JRE 跑扩展）
 
 ```
 suwayomi.exe          桌面壳（Tauri 托盘）：启动/重启/WebUI/数据目录/设置/退出
@@ -68,17 +66,15 @@ pglite-data/          嵌入式数据库（server 自动创建于发布根目录
 logs/                 运行时日志
 ```
 
-带 Electron 桌面壳的产物命名 `Suwayomi-{版本号}-{通道}-{平台}-{arch}+electron+jre.zip`——在
-`+jre` 版基础上多一个 `electron/` 目录（electron v44.1.0 win32-x64 运行时 + 应用入口）。托盘
-设置「有 Electron 时优先使用」（默认开）开启后，打开 WebUI 将启动 Electron 窗口
-（`electron/electron.exe --url=http://127.0.0.1:{port}`）而非系统浏览器；托盘退出时
-会一并关闭 Electron 进程。
+WebUI 桌面窗口由托盘的**系统 WebView** 打开（Windows WebView2 / Linux WebKitGTK / macOS
+WKWebView），不捆绑任何浏览器运行时；无系统 WebView 的环境（如精简版 Windows）会自动回退
+系统浏览器。托盘设置可关闭「用窗口打开 WebUI」改为始终浏览器打开。
 
 ### 使用方法
 
 1. **启动**：双击 `suwayomi.exe`（静默托盘，无终端窗口），托盘菜单：
    - 启动 / 重启 Suwayomi — 未运行时拉起；运行中显示「重启」（优雅关闭后重新拉起，含嵌入式数据库）
-   - 打开 WebUI — 浏览器打开 `http://127.0.0.1:{port}`
+   - 打开 WebUI — 系统 WebView 窗口打开 `http://127.0.0.1:{port}`（无 WebView 时回退浏览器）
    - 打开数据目录 / 设置（端口、数据目录、WebUI 地址，保存即重启 server）
    - 退出 — 结束托盘与 server 子进程（嵌入式 postgres 一并关停）
 2. **命令行方式**：直接运行 `bin/suwayomi-server.exe`（`-v` 显示版本与仓库地址）。

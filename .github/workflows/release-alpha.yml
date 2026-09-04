@@ -1,6 +1,6 @@
 name: Auto build
 
-# alpha 发布 CI：推送 main / dev 时自动构建 alpha，仅 Windows x64。
+# alpha 发布 CI：推送 main / dev 时自动构建 alpha，Windows x64 + Linux x64。
 # 手动多通道/多架构发布走 release.yml（workflow_dispatch）。
 #
 # 捆绑的 WebUI 制品固定取最新构建（r{code} 预发布，见 scripts/resolve-webui.sh），
@@ -10,6 +10,10 @@ name: Auto build
 # - 内部 versionCode = commit count + 3000（46 次提交 -> 3046）
 # - alpha versionName = r{versionCode}（46 -> r3046）；正式外部版本号
 #   （3.x.y）由 release.yml 手动发布使用
+#
+# 产物命名沿用无通道段规则：Suwayomi-r{code}-windows-x64+jre.zip /
+# Suwayomi-r{code}-linux-x64+jre.tar.gz。两平台都捆绑 Temurin JRE 25 + 桌面壳
+# （扩展沙盒开箱即用）；WebUI 桌面窗口经托盘 + 系统 WebView 打开，不捆绑 Electron。
 
 on:
   push:
@@ -19,16 +23,16 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    name: 构建 alpha (windows-x64)
-    runs-on: windows-latest
+  prep:
+    name: 计算版本与 WebUI
+    runs-on: ubuntu-latest
     outputs:
       version_name: ${{ steps.ver.outputs.version_name }}
       version_code: ${{ steps.ver.outputs.version_code }}
       count: ${{ steps.ver.outputs.count }}
       tag: ${{ steps.ver.outputs.tag }}
-      # 捆绑的 WebUI 版本（打包时解析），供 publish 写进发布说明
-      webui_tag: ${{ steps.pack.outputs.webui_tag }}
+      webui_url: ${{ steps.webui.outputs.url }}
+      webui_tag: ${{ steps.webui.outputs.tag }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -46,11 +50,56 @@ jobs:
           echo "version_code=$VER_CODE" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "alpha build: $VER_NAME (code $VER_CODE, commits $COUNT) -> $TAG"
+      # WebUI 在 prep 解析一次、所有 target 复用（与 release.yml 同策略，防止
+      # 两次调用间隙 WebUI 推新构建导致各架构包带不同版本）
+      - name: 解析捆绑的 WebUI 制品
+        id: webui
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ZIP="$(bash scripts/resolve-webui.sh build)"
+          TAG="${ZIP#*/download/}"
+          TAG="${TAG%%/*}"
+          echo "url=$ZIP" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "捆绑 WebUI: $TAG（build，最新构建）"
+
+  build:
+    name: 构建 ${{ matrix.target }}
+    needs: prep
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x64
+            os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+          - target: linux-x64
+            os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+    env:
+      # 版本计数在编译期注入（core/build.rs 读它生成常量，供 aboutServer 上报）
+      SUWAYOMI_VERSION_COUNT: ${{ needs.prep.outputs.count }}
+      # alpha CI 固定 alpha 通道（不注入的话 build.rs 会退回 release）
+      SUWAYOMI_BUILD_TYPE: alpha
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-msvc
+          targets: ${{ matrix.rust_target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: 安装 Tauri 桌面壳系统依赖（Linux）
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev
       - name: 安装 JDK（扩展沙盒构建）
         # jvm-sandbox 的 gradle toolchain 统一 25（与发布捆绑的 JRE 25 一致）
         uses: actions/setup-java@v5
@@ -58,49 +107,37 @@ jobs:
           distribution: temurin
           java-version: '25'
       - name: 构建
-        # 版本计数与发布通道都在编译期注入：core/build.rs 读它们生成常量，
-        # 供 aboutServer.version / buildType 上报给 WebUI。
-        # NB: Windows runner 默认 PowerShell，故显式声明 shell: bash。
         shell: bash
-        env:
-          SUWAYOMI_VERSION_COUNT: ${{ steps.ver.outputs.count }}
-          # alpha CI 固定 alpha 通道（不注入的话 build.rs 会退回 release）
-          SUWAYOMI_BUILD_TYPE: alpha
         run: |
-          cargo build --release -p suwayomi-server --target x86_64-pc-windows-msvc
+          cargo build --release -p suwayomi-server --target ${{ matrix.rust_target }}
       - name: 打包
         id: pack
         shell: bash
-        env:
-          # 供 scripts/resolve-webui.sh 的 gh api 使用（跨仓库读公开仓库的 release）
-          GH_TOKEN: ${{ github.token }}
         run: |
-          VER="${{ steps.ver.outputs.version_name }}"
-          CH="alpha"
-          TGT="windows-x64"
-          BIN="target/x86_64-pc-windows-msvc/release/suwayomi-server.exe"
+          VER="${{ needs.prep.outputs.version_name }}"
+          TGT="${{ matrix.target }}"
+          RT="${{ matrix.rust_target }}"
+          BIN="target/${RT}/release/suwayomi-server"
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then BIN="${BIN}.exe"; fi
+          IS_WIN="false"
+          [ "${{ matrix.os }}" = "windows-latest" ] && IS_WIN="true"
 
-          # 产物命名：Suwayomi-r3046-windows-x64.zip（无 Next、无 -alpha 后缀）。
-          # 本 CI 固定捆绑 Temurin JRE 25，故标准包名为 ...+jre；Electron 包在其
-          # 基础上再带桌面壳，命名为 ...+electron+jre（后缀语义与 release.yml 相同）。
-          # NB: 本 CI 没有勾选框，**两个包都产** —— 不适用 release.yml 那条
-          # 「JRE 与 Electron 同时勾选时只产 +electron+jre」的合并规则。
+          # 产物：+jre（server + 桌面壳 + jar + oliphaunt + webui + Temurin JRE 25）
           STAGE="dist/Suwayomi-${VER}-${TGT}+jre"
-          STAGE_EL="dist/Suwayomi-${VER}-${TGT}+electron+jre"
           mkdir -p "$STAGE/bin"
           cp "$BIN" "$STAGE/bin/"
-          # 桌面壳（Tauri 托盘+设置）——build-tray.sh 注入真实版本号到 Windows 资源
-          bash suwayomi-tray/build-tray.sh
-          cp suwayomi-tray/target/release/suwayomi.exe "$STAGE/" 2>/dev/null || true
 
-          # 扩展沙盒（JVM，Kotlin fat jar）——放 bin/（server 自动查找）
+          # 桌面壳（Tauri 托盘 + WebView 窗口）——build-tray.sh 注入版本号并构建；
+          # 产物名 Windows 带 .exe，Linux/macOS 无后缀
+          bash suwayomi-tray/build-tray.sh
+          cp suwayomi-tray/target/release/suwayomi "$STAGE/" 2>/dev/null \
+            || cp suwayomi-tray/target/release/suwayomi.exe "$STAGE/" 2>/dev/null \
+            || echo "WARN: desktop shell binary not found"
+
+          # 扩展沙盒（JVM，Kotlin fat jar，跨平台字节码）——放 bin/（server 自动查找）
           cd jvm-sandbox && ./gradlew -q jar --no-daemon && cd ..
           cp jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar "$STAGE/bin/jvm-sandbox.jar"
 
-          # 捆绑 Temurin JRE 25（jre/）——sandbox 运行时自包含，无需系统 JDK
-          curl -sL -o temurin-jre.zip "https://api.adoptium.net/v3/binary/latest/25/ga/windows/x64/jre/hotspot/normal/eclipse"
-          python3 -c "import zipfile,os; z=zipfile.ZipFile('temurin-jre.zip'); t=z.namelist()[0].split('/')[0]; z.extractall('jre-tmp'); z.close(); os.rename('jre-tmp/'+t, '$STAGE/jre')"
-          rm -rf jre-tmp temurin-jre.zip
           # 捆绑 oliphaunt 原生 runtime（编译期 OUT_DIR 路径在用户机器不存在，
           # server 运行时回退到 exe 同级 oliphaunt-runtime/resources）
           RES=$(find target -path "*/release/build/suwayomi-core-*/out/oliphaunt/resources" -type d 2>/dev/null | head -1)
@@ -112,49 +149,55 @@ jobs:
             echo "WARN: no oliphaunt resources found to bundle"
           fi
 
-          # ---- 捆绑 WebUI（fork 最新构建产物 r{code}）+ data 目录。
-          #      alpha 通道始终跟最新构建，与 scripts/resolve-webui.sh 的 build 类型一致；
-          #      三级兜底（gh api → 匿名 API → 匿名 HTML），拿不到则打 ::error:: 并中止。----
-          WEBUI_ZIP="$(bash scripts/resolve-webui.sh build)"
-          # .../releases/download/<tag>/<asset>.zip -> <tag>
-          WEBUI_TAG="${WEBUI_ZIP#*/download/}"
-          WEBUI_TAG="${WEBUI_TAG%%/*}"
-          echo "webui_tag=$WEBUI_TAG" >> "$GITHUB_OUTPUT"
-          echo "webui zip (build): $WEBUI_ZIP"
-          curl -sL -o webui.zip "$WEBUI_ZIP"
+          # ---- 捆绑 WebUI（prep 已按通道解析，两平台同一份）+ data 目录 ----
+          curl -sL -o webui.zip "${{ needs.prep.outputs.webui_url }}"
           mkdir -p "$STAGE/webui"
           python3 -c "import zipfile; zipfile.ZipFile('webui.zip').extractall('$STAGE/webui')"
           # WebUI 版本随构建自带 version.txt（server 只读它，见 local_webui_*）
           rm -f webui.zip
           mkdir -p "$STAGE/data/autobackup" "$STAGE/data/downloads" "$STAGE/data/local"
-          powershell -Command "Compress-Archive -Path 'dist/Suwayomi-${VER}-${TGT}+jre' -DestinationPath 'dist/Suwayomi-${VER}-${TGT}+jre.zip' -Force"
 
-          # ---- 带 Electron 壳的产物（+electron+jre，桌面窗口化 WebUI）----
-          # 复制 JRE 版产物为基底，附加 electron v44.1.0 win32-x64 运行时 + 应用入口
-          cp -r "$STAGE" "$STAGE_EL"
-          ELECTRON_VER="v44.1.0"
-          curl -sL -o electron.zip "https://github.com/electron/electron/releases/download/${ELECTRON_VER}/electron-${ELECTRON_VER}-win32-x64.zip"
-          mkdir -p "$STAGE_EL/electron/resources/app"
-          python3 -c "import zipfile; zipfile.ZipFile('electron.zip').extractall('$STAGE_EL/electron')"
-          cp electron-app/main.js electron-app/package.json "$STAGE_EL/electron/resources/app/"
-          # 窗口图标：与 main.js 的 BrowserWindow icon 配套（替代 Electron 默认图标）
-          cp suwayomi-tray/icons/icon.ico "$STAGE_EL/electron/resources/app/icon.ico"
-          rm -f electron.zip
-          powershell -Command "Compress-Archive -Path 'dist/Suwayomi-${VER}-${TGT}+electron+jre' -DestinationPath 'dist/Suwayomi-${VER}-${TGT}+electron+jre.zip' -Force"
+          # ---- 捆绑 Temurin JRE 25（jre/）——sandbox 运行时自包含，无需系统 JDK ----
+          if [ "$IS_WIN" = "true" ]; then
+            curl -sL -o temurin-jre.zip "https://api.adoptium.net/v3/binary/latest/25/ga/windows/x64/jre/hotspot/normal/eclipse"
+            python3 -c "import os,zipfile; z=zipfile.ZipFile('temurin-jre.zip'); t=z.namelist()[0].split('/')[0]; z.extractall('jre-x'); os.rename('jre-x/'+t,'jre'); z.close()"
+            rm -rf jre-x temurin-jre.zip
+          else
+            curl -sL -o temurin-jre.tar.gz "https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jre/hotspot/normal/eclipse"
+            mkdir -p jre-x && tar -xzf temurin-jre.tar.gz -C jre-x
+            mv jre-x/jdk-* jre
+            rm -rf jre-x temurin-jre.tar.gz
+          fi
+          cp -r jre "$STAGE/jre"
+          rm -rf jre
 
-          echo "artifact=dist/Suwayomi-${VER}-${TGT}+jre.zip" >> "$GITHUB_OUTPUT"
-          echo "artifact_el=dist/Suwayomi-${VER}-${TGT}+electron+jre.zip" >> "$GITHUB_OUTPUT"
+          # ---- 压缩产物：Windows zip / Linux tar.gz ----
+          ARTIFACTS=""
+          if [ "$IS_WIN" = "true" ]; then
+            powershell -Command "Compress-Archive -Path '$STAGE' -DestinationPath '${STAGE}.zip' -Force"
+            ARTIFACTS="${STAGE}.zip"
+          else
+            tar -C dist -czf "${STAGE}.tar.gz" "Suwayomi-${VER}-${TGT}+jre"
+            ARTIFACTS="${STAGE}.tar.gz"
+          fi
+
+          # GITHUB_OUTPUT 多行值必须用 name<<DELIM 定界格式
+          {
+            echo "artifacts<<ARTIFACTS_EOF"
+            printf '%s\n' "$ARTIFACTS"
+            echo "ARTIFACTS_EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "packed artifacts:"
+          echo "$ARTIFACTS"
       - name: 上传构建产物
         uses: actions/upload-artifact@v7
         with:
-          name: Suwayomi-${{ steps.ver.outputs.version_name }}-windows-x64
-          path: |
-            dist/Suwayomi-${{ steps.ver.outputs.version_name }}-windows-x64+jre.zip
-            dist/Suwayomi-${{ steps.ver.outputs.version_name }}-windows-x64+electron+jre.zip
+          name: Suwayomi-${{ needs.prep.outputs.version_name }}-${{ matrix.target }}
+          path: ${{ steps.pack.outputs.artifacts }}
 
   publish:
-    name: 发布 alpha (${{ needs.build.outputs.version_name }})
-    needs: build
+    name: 发布 alpha (${{ needs.prep.outputs.version_name }})
+    needs: [prep, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -171,11 +214,11 @@ jobs:
       - name: 创建 alpha Release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.build.outputs.tag }}
-          VER: ${{ needs.build.outputs.version_name }}
-          CODE: ${{ needs.build.outputs.version_code }}
-          COUNT: ${{ needs.build.outputs.count }}
-          WEBUI_TAG: ${{ needs.build.outputs.webui_tag }}
+          TAG: ${{ needs.prep.outputs.tag }}
+          VER: ${{ needs.prep.outputs.version_name }}
+          CODE: ${{ needs.prep.outputs.version_code }}
+          COUNT: ${{ needs.prep.outputs.count }}
+          WEBUI_TAG: ${{ needs.prep.outputs.webui_tag }}
         run: |
           gh release create "$TAG" \
             artifacts/* \
@@ -185,8 +228,9 @@ jobs:
           - versionCode: $CODE
           - commits: $COUNT
           - bundled WebUI: \`$WEBUI_TAG\` —— 取自 576576/Suwayomi-WebUI 的最新构建（预发布）
-          - 构建: windows-x64（推送 main/dev 自动触发）
-          - 产物: Suwayomi-${VER}-windows-x64+jre.zip（含捆绑 Temurin JRE 25）
-          - 产物: Suwayomi-${VER}-windows-x64+electron+jre.zip（内置 Electron 桌面壳 + JRE）" \
+          - 构建: windows-x64 / linux-x64（推送 main/dev 自动触发）
+          - 产物: Suwayomi-${VER}-windows-x64+jre.zip（server + 桌面壳 + Temurin JRE 25）
+          - 产物: Suwayomi-${VER}-linux-x64+jre.tar.gz（server + 桌面壳 + Temurin JRE 25）
+          - WebUI 桌面窗口由托盘经系统 WebView 打开（WebView2 / WebKitGTK），不捆绑 Electron" \
             --prerelease \
             --generate-notes

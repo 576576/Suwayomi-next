@@ -1,19 +1,7 @@
 name: Auto build
 
-# alpha 发布 CI：推送 main / dev 时自动构建 alpha，Windows x64 + Linux x64。
-# 手动多通道/多架构发布走 release.yml（workflow_dispatch）。
-#
-# 捆绑的 WebUI 制品固定取最新构建（r{code} 预发布，见 scripts/resolve-webui.sh），
-# 与通道语义一致：alpha 永远跟最新提交，不等正式 release。
-#
-# alpha 版本号（见 crates/suwayomi-server/build.rs）：
-# - 内部 versionCode = commit count + 3000（46 次提交 -> 3046）
-# - alpha versionName = r{versionCode}（46 -> r3046）；正式外部版本号
-#   （3.x.y）由 release.yml 手动发布使用
-#
-# 产物命名沿用无通道段规则：Suwayomi-r{code}-windows-x64+jre.zip /
-# Suwayomi-r{code}-linux-x64+jre.tar.gz。两平台都捆绑 Temurin JRE 25 + 桌面壳
-# （扩展沙盒开箱即用）；WebUI 桌面窗口经托盘 + 系统 WebView 打开，不捆绑 Electron。
+# 推送 main/dev 自动构建 alpha（windows-x64 + linux-x64，均捆绑 JRE）。
+# 版本/产物/WebUI 分流规则见 docs/release.md。
 
 on:
   push:
@@ -50,8 +38,6 @@ jobs:
           echo "version_code=$VER_CODE" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "alpha build: $VER_NAME (code $VER_CODE, commits $COUNT) -> $TAG"
-      # WebUI 在 prep 解析一次、所有 target 复用（与 release.yml 同策略，防止
-      # 两次调用间隙 WebUI 推新构建导致各架构包带不同版本）
       - name: 解析捆绑的 WebUI 制品
         id: webui
         env:
@@ -79,9 +65,7 @@ jobs:
             os: ubuntu-latest
             rust_target: x86_64-unknown-linux-gnu
     env:
-      # 版本计数在编译期注入（core/build.rs 读它生成常量，供 aboutServer 上报）
       SUWAYOMI_VERSION_COUNT: ${{ needs.prep.outputs.count }}
-      # alpha CI 固定 alpha 通道（不注入的话 build.rs 会退回 release）
       SUWAYOMI_BUILD_TYPE: alpha
     steps:
       - uses: actions/checkout@v7
@@ -94,14 +78,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
-      - name: 安装 Tauri 桌面壳系统依赖（Linux）
+      - name: 安装桌面壳系统依赖（Linux）
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
             librsvg2-dev libxdo-dev libssl-dev
-      - name: 安装 JDK（扩展沙盒构建）
-        # jvm-sandbox 的 gradle toolchain 统一 25（与发布捆绑的 JRE 25 一致）
+      - name: 安装 JDK
+        # 构建 bin/jvm-sandbox.jar（gradle toolchain 25 与捆绑 JRE 一致）
         uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -122,24 +106,22 @@ jobs:
           IS_WIN="false"
           [ "${{ matrix.os }}" = "windows-latest" ] && IS_WIN="true"
 
-          # 产物：+jre（server + 桌面壳 + jar + oliphaunt + webui + Temurin JRE 25）
+          # 产物：server + 桌面壳 + jvm-sandbox.jar + oliphaunt + webui + Temurin JRE 25
           STAGE="dist/Suwayomi-${VER}-${TGT}+jre"
           mkdir -p "$STAGE/bin"
           cp "$BIN" "$STAGE/bin/"
 
-          # 桌面壳（Tauri 托盘 + WebView 窗口）——build-tray.sh 注入版本号并构建；
-          # 产物名 Windows 带 .exe，Linux/macOS 无后缀
+          # 桌面壳（Tauri 托盘 + WebView 窗口）；Windows 带 .exe
           bash suwayomi-tray/build-tray.sh
           cp suwayomi-tray/target/release/suwayomi "$STAGE/" 2>/dev/null \
             || cp suwayomi-tray/target/release/suwayomi.exe "$STAGE/" 2>/dev/null \
             || echo "WARN: desktop shell binary not found"
 
-          # 扩展沙盒（JVM，Kotlin fat jar，跨平台字节码）——放 bin/（server 自动查找）
+          # 扩展沙盒 jar 进 bin/（server 自动查找）
           cd jvm-sandbox && ./gradlew -q jar --no-daemon && cd ..
           cp jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar "$STAGE/bin/jvm-sandbox.jar"
 
-          # 捆绑 oliphaunt 原生 runtime（编译期 OUT_DIR 路径在用户机器不存在，
-          # server 运行时回退到 exe 同级 oliphaunt-runtime/resources）
+          # oliphaunt 原生 runtime（运行时回退 exe 上级 bundled 目录，见 docs/release.md）
           RES=$(find target -path "*/release/build/suwayomi-core-*/out/oliphaunt/resources" -type d 2>/dev/null | head -1)
           if [ -n "$RES" ] && [ -d "$RES" ]; then
             mkdir -p "$STAGE/oliphaunt-runtime"
@@ -149,15 +131,14 @@ jobs:
             echo "WARN: no oliphaunt resources found to bundle"
           fi
 
-          # ---- 捆绑 WebUI（prep 已按通道解析，两平台同一份）+ data 目录 ----
+          # 捆绑 WebUI（两平台同一份）+ data 目录
           curl -sL -o webui.zip "${{ needs.prep.outputs.webui_url }}"
           mkdir -p "$STAGE/webui"
           python3 -c "import zipfile; zipfile.ZipFile('webui.zip').extractall('$STAGE/webui')"
-          # WebUI 版本随构建自带 version.txt（server 只读它，见 local_webui_*）
           rm -f webui.zip
           mkdir -p "$STAGE/data/autobackup" "$STAGE/data/downloads" "$STAGE/data/local"
 
-          # ---- 捆绑 Temurin JRE 25（jre/）——sandbox 运行时自包含，无需系统 JDK ----
+          # 捆绑 Temurin JRE 25 到 jre/
           if [ "$IS_WIN" = "true" ]; then
             curl -sL -o temurin-jre.zip "https://api.adoptium.net/v3/binary/latest/25/ga/windows/x64/jre/hotspot/normal/eclipse"
             python3 -c "import os,zipfile; z=zipfile.ZipFile('temurin-jre.zip'); t=z.namelist()[0].split('/')[0]; z.extractall('jre-x'); os.rename('jre-x/'+t,'jre'); z.close()"
@@ -171,7 +152,7 @@ jobs:
           cp -r jre "$STAGE/jre"
           rm -rf jre
 
-          # ---- 压缩产物：Windows zip / Linux tar.gz ----
+          # 压缩：Windows zip / Linux tar.gz
           ARTIFACTS=""
           if [ "$IS_WIN" = "true" ]; then
             powershell -Command "Compress-Archive -Path '$STAGE' -DestinationPath '${STAGE}.zip' -Force"
@@ -181,7 +162,6 @@ jobs:
             ARTIFACTS="${STAGE}.tar.gz"
           fi
 
-          # GITHUB_OUTPUT 多行值必须用 name<<DELIM 定界格式
           {
             echo "artifacts<<ARTIFACTS_EOF"
             printf '%s\n' "$ARTIFACTS"
@@ -202,8 +182,6 @@ jobs:
     permissions:
       contents: write
     steps:
-      # gh release create --generate-notes 需要 git 仓库（读历史生成 changelog），
-      # 而 publish job 无构建上下文——必须先 checkout（fetch-depth: 0 拿完整历史）
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -227,10 +205,7 @@ jobs:
           - versionName: $VER
           - versionCode: $CODE
           - commits: $COUNT
-          - bundled WebUI: \`$WEBUI_TAG\` —— 取自 576576/Suwayomi-WebUI 的最新构建（预发布）
-          - 构建: windows-x64 / linux-x64（推送 main/dev 自动触发）
-          - 产物: Suwayomi-${VER}-windows-x64+jre.zip（server + 桌面壳 + Temurin JRE 25）
-          - 产物: Suwayomi-${VER}-linux-x64+jre.tar.gz（server + 桌面壳 + Temurin JRE 25）
-          - WebUI 桌面窗口由托盘经系统 WebView 打开（WebView2 / WebKitGTK），不捆绑 Electron" \
+          - bundled WebUI: \`$WEBUI_TAG\`（最新构建）
+          - 产物: windows-x64 + linux-x64，均含 server + 桌面壳 + Temurin JRE 25（+jre）" \
             --prerelease \
             --generate-notes

@@ -597,10 +597,13 @@ pub struct AboutServerPayload {
     /// User data root (backups/downloads/local source live under it) —
     /// displayed by the WebUI "Data & Storage" settings page.
     pub data_dir: String,
+    /// Epoch seconds of the last automatic backup (0 = never ran yet).
+    /// Suwayomi-next 扩展字段：WebUI「数据与存储」页在自动备份频率下显示为副标题。
+    pub last_auto_backup_at: LongString,
 }
 
 impl AboutServerPayload {
-    pub fn current(data_dir: &str, jvm: JvmInfo) -> Self {
+    pub fn current(data_dir: &str, jvm: JvmInfo, last_auto_backup_at: i64) -> Self {
         let os_name = std::env::consts::OS.to_string();
         let arch = std::env::consts::ARCH.to_string();
         // 真实构建类型：编译期常量（core/build.rs 由 CI 注入的
@@ -626,6 +629,7 @@ impl AboutServerPayload {
             revision: suwayomi_core::version::VERSION_CODE.into(),
             version: suwayomi_core::version::VERSION.into(),
             data_dir: data_dir.to_string(),
+            last_auto_backup_at: LongString(last_auto_backup_at),
         }
     }
 }

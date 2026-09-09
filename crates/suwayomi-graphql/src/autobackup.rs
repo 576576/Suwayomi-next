@@ -22,6 +22,19 @@ const LAST_AUTO_BACKUP_AT: &str = "last_auto_backup_at";
 /// How often the scheduler re-checks whether a backup is due.
 const TICK_SECS: u64 = 30;
 
+/// Epoch seconds of the last automatic backup (0 = never ran yet).
+///
+/// Exposed to the WebUI through `aboutServer.lastAutoBackupAt` so the
+/// "Data & Storage" page can show it as a subtitle under the frequency slider.
+pub async fn last_auto_backup_at(state: &GraphQLState) -> i64 {
+    MetaService::new(state.db.clone())
+        .get_map(MetaTable::Global, 0)
+        .await
+        .ok()
+        .and_then(|m| m.get(LAST_AUTO_BACKUP_AT).and_then(|v| v.parse().ok()))
+        .unwrap_or(0)
+}
+
 pub fn spawn(state: GraphQLState) {
     tokio::spawn(async move {
         loop {
@@ -42,12 +55,7 @@ pub async fn run_if_due(state: &GraphQLState) {
     }
 
     let meta = MetaService::new(state.db.clone());
-    let last: i64 = meta
-        .get_map(MetaTable::Global, 0)
-        .await
-        .ok()
-        .and_then(|m| m.get(LAST_AUTO_BACKUP_AT).and_then(|v| v.parse().ok()))
-        .unwrap_or(0);
+    let last = last_auto_backup_at(state).await;
     let now = suwayomi_core::models::now_epoch_secs();
     // First run (no timestamp yet) backs up immediately; afterwards only once
     // the configured interval has elapsed.

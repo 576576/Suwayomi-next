@@ -1413,7 +1413,12 @@ impl QueryRoot {
         let data_dir = state.as_ref().map(|s| s.data_dir.to_string_lossy().to_string()).unwrap_or_default();
         let sandbox_base = state.as_ref().ok().and_then(|s| s.sandbox_base.clone());
         let jvm = fetch_sandbox_jvm_info(sandbox_base.as_deref()).await;
-        AboutServerPayload::current(&data_dir, jvm)
+        // 「上次自动备份时间」——由 autobackup 任务写入 global_meta；从未跑过为 0。
+        let last_auto_backup_at = match state.as_ref() {
+            Ok(state) => crate::autobackup::last_auto_backup_at(state).await,
+            Err(_) => 0,
+        };
+        AboutServerPayload::current(&data_dir, jvm, last_auto_backup_at)
     }
 }
 

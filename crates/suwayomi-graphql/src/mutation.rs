@@ -40,17 +40,17 @@ fn local_scan_signature(root: &std::path::Path) -> Option<String> {
 
 fn cached_local_scan(root: &std::path::Path) -> Vec<suwayomi_core::source::SManga> {
     let sig = local_scan_signature(root);
-    if let Some(sig) = &sig {
-        if let Ok(mut guard) = LOCAL_SCAN_CACHE.lock() {
-            if let Some((cached_sig, list)) = guard.as_ref()
-                && cached_sig == sig
-            {
-                return list.clone();
-            }
-            let list = suwayomi_domain::source::local::scan_local_source(root);
-            *guard = Some((sig.clone(), list.clone()));
-            return list;
+    if let Some(sig) = &sig
+        && let Ok(mut guard) = LOCAL_SCAN_CACHE.lock()
+    {
+        if let Some((cached_sig, list)) = guard.as_ref()
+            && cached_sig == sig
+        {
+            return list.clone();
         }
+        let list = suwayomi_domain::source::local::scan_local_source(root);
+        *guard = Some((sig.clone(), list.clone()));
+        return list;
     }
     suwayomi_domain::source::local::scan_local_source(root)
 }
@@ -723,10 +723,10 @@ impl MutationRoot {
         if name.eq_ignore_ascii_case("Default") {
             return Err(async_graphql::Error::new("'name' must not be Default"));
         }
-        if let Some(order) = input.order {
-            if order <= 0 {
-                return Err(async_graphql::Error::new("'order' must not be <= 0"));
-            }
+        if let Some(order) = input.order
+            && order <= 0
+        {
+            return Err(async_graphql::Error::new("'order' must not be <= 0"));
         }
         if let Some(order) = input.order {
             sqlx::query(
@@ -831,7 +831,8 @@ impl MutationRoot {
         let row = fetch_category_row(state, input.id).await?;
         state.category.reorder_category(row.sort_order, input.position).await.map_err(async_graphql::Error::from)?;
         state.category.normalize_categories().await.map_err(async_graphql::Error::from)?;
-        let list = state.category.get_category_list().await.map_err(async_graphql::Error::from)?;
+        // 与上游一致：mutation 回包也读全表，保证返回列表含默认分类
+        let list = state.category.list_categories_for_graphql().await.map_err(async_graphql::Error::from)?;
         let categories = list
             .iter()
             .map(|c| CategoryType {
@@ -1442,15 +1443,14 @@ impl MutationRoot {
         };
         // Local source: seed chapters from disk so the chapter list populates
         // without a prior browse call.
-        if input.fetch_chapters {
-            if let Ok(row) = fetch_manga_row(state, input.id).await {
-                if row.source == suwayomi_domain::source::LOCAL_SOURCE_ID {
-                    let root = suwayomi_domain::source::local::local_source_root();
-                    if let Some(dir) = suwayomi_domain::source::local::local_manga_dir(&root, &row.url) {
-                        let chapters = suwayomi_domain::source::local::scan_local_chapters(&dir);
-                        upsert_local_chapters(state, row.id, &chapters, Some(&dir)).await?;
-                    }
-                }
+        if input.fetch_chapters
+            && let Ok(row) = fetch_manga_row(state, input.id).await
+            && row.source == suwayomi_domain::source::LOCAL_SOURCE_ID
+        {
+            let root = suwayomi_domain::source::local::local_source_root();
+            if let Some(dir) = suwayomi_domain::source::local::local_manga_dir(&root, &row.url) {
+                let chapters = suwayomi_domain::source::local::scan_local_chapters(&dir);
+                upsert_local_chapters(state, row.id, &chapters, Some(&dir)).await?;
             }
         }
         let chapters = if input.fetch_chapters {
@@ -1929,11 +1929,11 @@ async fn apply_manga_categories_patch(
     ids: &[i32],
     patch: &UpdateMangaCategoriesPatchInput,
 ) -> async_graphql::Result<()> {
-    if let Some(clear) = patch.clear_categories {
-        if clear {
-            for id in ids {
-                state.category_manga.remove_manga_from_all_categories(*id).await.map_err(async_graphql::Error::from)?;
-            }
+    if let Some(clear) = patch.clear_categories
+        && clear
+    {
+        for id in ids {
+            state.category_manga.remove_manga_from_all_categories(*id).await.map_err(async_graphql::Error::from)?;
         }
     }
     if let Some(add) = &patch.add_to_categories {

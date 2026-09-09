@@ -87,12 +87,11 @@ async fn load_settings(state: &GraphQLState) -> Option<(i32, PathBuf)> {
     use sqlx::Row;
     let mut settings = SettingsType::from_config(&state.config);
     let sql = "SELECT value FROM global_meta WHERE meta_key = 'settings'";
-    if let Ok(Some(row)) = sqlx::query(sql).fetch_optional(state.db.pool()).await {
-        if let Ok(value) = row.try_get::<String, _>("value") {
-            if let Ok(blob) = serde_json::from_str::<serde_json::Value>(&value) {
-                settings.apply_overrides(&blob);
-            }
-        }
+    if let Ok(Some(row)) = sqlx::query(sql).fetch_optional(state.db.pool()).await
+        && let Ok(value) = row.try_get::<String, _>("value")
+        && let Ok(blob) = serde_json::from_str::<serde_json::Value>(&value)
+    {
+        settings.apply_overrides(&blob);
     }
     let frequency = settings.auto_backup_frequency;
     let folder = if settings.backup_path.trim().is_empty() {

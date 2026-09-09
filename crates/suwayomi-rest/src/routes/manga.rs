@@ -281,7 +281,7 @@ async fn page_image(
         Ok(v) => v,
         Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     };
-    let Some(bytes) = suwayomi_domain::source::local::read_archive_image(&std::path::Path::new(&archive), &file_name)
+    let Some(bytes) = suwayomi_domain::source::local::read_archive_image(std::path::Path::new(&archive), &file_name)
     else {
         return (StatusCode::NOT_FOUND, "image not found in archive").into_response();
     };

@@ -626,7 +626,9 @@ impl QueryRoot {
     ) -> async_graphql::Result<CategoryNodeList> {
         let _ = (filter, order, before, after, first, last, offset); // shape parity
         let state = ctx.data::<GraphQLState>()?;
-        let list = state.category.get_category_list().await.map_err(async_graphql::Error::from)?;
+        // 上游 categories resolver 直接读全表（不过滤默认分类），WebUI 的分类
+        // 计数与「编辑分类」页都依赖默认分类恒在。
+        let list = state.category.list_categories_for_graphql().await.map_err(async_graphql::Error::from)?;
         let nodes: Vec<CategoryType> = list
             .iter()
             .filter(|c| {
@@ -726,11 +728,11 @@ impl QueryRoot {
                 binds.push(BindVal::Str(v));
             }
         }
-        if let Some(cursor) = after {
-            if let Ok(id) = cursor.0.parse::<i32>() {
-                where_clauses.push("id > ?".into());
-                binds.push(BindVal::I32(id));
-            }
+        if let Some(cursor) = after
+            && let Ok(id) = cursor.0.parse::<i32>()
+        {
+            where_clauses.push("id > ?".into());
+            binds.push(BindVal::I32(id));
         }
         if !where_clauses.is_empty() {
             sql.push_str(" WHERE ");
@@ -930,7 +932,7 @@ impl QueryRoot {
             nodes.push(SourceType::local_source());
         }
         if order.is_none() {
-            nodes.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            nodes.sort_by_key(|a| a.name.to_lowercase());
         }
         Ok(SourceNodeList::from_nodes(nodes))
     }
@@ -1395,14 +1397,12 @@ impl QueryRoot {
         // Apply persisted overrides (the `settings` global_meta JSON blob
         // written by setSettings) so saved values survive restarts.
         let sql = bind_placeholders("SELECT value FROM global_meta WHERE meta_key = ?");
-        if let Ok(row) = sqlx::query(&sql).bind("settings").fetch_optional(state.db.pool()).await {
-            if let Some(row) = row {
-                if let Ok(value) = row.try_get::<String, _>("value") {
-                    if let Ok(blob) = serde_json::from_str::<serde_json::Value>(&value) {
-                        settings.apply_overrides(&blob);
-                    }
-                }
-            }
+        if let Ok(row) = sqlx::query(&sql).bind("settings").fetch_optional(state.db.pool()).await
+            && let Some(row) = row
+            && let Ok(value) = row.try_get::<String, _>("value")
+            && let Ok(blob) = serde_json::from_str::<serde_json::Value>(&value)
+        {
+            settings.apply_overrides(&blob);
         }
         Ok(settings)
     }
@@ -1505,22 +1505,22 @@ async fn query_mangas(
             where_clauses.push("status = ?".into());
             binds.push(BindVal::I32(v.to_i32()));
         }
-        if let Some(ids) = &cond.category_ids {
-            if !ids.is_empty() {
-                let ph = vec!["?"; ids.len()].join(", ");
-                where_clauses.push(format!("id IN (SELECT manga FROM category_manga WHERE category IN ({ph}))"));
-                binds.extend(ids.iter().copied().map(BindVal::I32));
-            }
+        if let Some(ids) = &cond.category_ids
+            && !ids.is_empty()
+        {
+            let ph = vec!["?"; ids.len()].join(", ");
+            where_clauses.push(format!("id IN (SELECT manga FROM category_manga WHERE category IN ({ph}))"));
+            binds.extend(ids.iter().copied().map(BindVal::I32));
         }
     }
     if let Some(f) = filter {
         build_manga_filter(&mut where_clauses, &mut binds, f);
     }
-    if let Some(cursor) = after {
-        if let Ok(id) = cursor.0.parse::<i32>() {
-            where_clauses.push("id > ?".into());
-            binds.push(BindVal::I32(id));
-        }
+    if let Some(cursor) = after
+        && let Ok(id) = cursor.0.parse::<i32>()
+    {
+        where_clauses.push("id > ?".into());
+        binds.push(BindVal::I32(id));
     }
     if !where_clauses.is_empty() {
         sql.push_str(" WHERE ");
@@ -1647,10 +1647,10 @@ async fn query_chapters(
         let limit = limit.clamp(1, 500);
         sql.push_str(&format!(" LIMIT {limit}"));
     }
-    if let Some(off) = offset {
-        if off > 0 {
-            sql.push_str(&format!(" OFFSET {off}"));
-        }
+    if let Some(off) = offset
+        && off > 0
+    {
+        sql.push_str(&format!(" OFFSET {off}"));
     }
     let sql = bind_placeholders(&sql);
     fetch_chapters(state, &sql, &binds).await
@@ -1784,26 +1784,26 @@ fn build_numeric_filter<T: NumericFilterOps>(
         where_clauses.push(format!("{col} != ?"));
         binds.push(v);
     }
-    if let Some(vs) = f.neq_all() {
-        if !vs.is_empty() {
-            let ph = vec!["?"; vs.len()].join(", ");
-            where_clauses.push(format!("{col} NOT IN ({ph})"));
-            binds.extend(vs);
-        }
+    if let Some(vs) = f.neq_all()
+        && !vs.is_empty()
+    {
+        let ph = vec!["?"; vs.len()].join(", ");
+        where_clauses.push(format!("{col} NOT IN ({ph})"));
+        binds.extend(vs);
     }
-    if let Some(vs) = f.in_v() {
-        if !vs.is_empty() {
-            let ph = vec!["?"; vs.len()].join(", ");
-            where_clauses.push(format!("{col} IN ({ph})"));
-            binds.extend(vs);
-        }
+    if let Some(vs) = f.in_v()
+        && !vs.is_empty()
+    {
+        let ph = vec!["?"; vs.len()].join(", ");
+        where_clauses.push(format!("{col} IN ({ph})"));
+        binds.extend(vs);
     }
-    if let Some(vs) = f.not_in_v() {
-        if !vs.is_empty() {
-            let ph = vec!["?"; vs.len()].join(", ");
-            where_clauses.push(format!("{col} NOT IN ({ph})"));
-            binds.extend(vs);
-        }
+    if let Some(vs) = f.not_in_v()
+        && !vs.is_empty()
+    {
+        let ph = vec!["?"; vs.len()].join(", ");
+        where_clauses.push(format!("{col} NOT IN ({ph})"));
+        binds.extend(vs);
     }
     if let Some(v) = f.gt() {
         where_clauses.push(format!("{col} > ?"));
@@ -1861,6 +1861,10 @@ fn push_str_cmp_insensitive(w: &mut Vec<String>, b: &mut Vec<BindVal>, col: &str
 }
 
 /// `col [NOT] LIKE/ILIKE 'left{value}right'`（单值，AND 语义）。
+///
+/// 8 个参数是刻意的：调用点由「字段 × 匹配模式」笛卡尔积批量生成（48 处），
+/// 全部传字面量；改成参数结构体只会让调用点膨胀且不增可读性。
+#[allow(clippy::too_many_arguments)]
 fn push_like(w: &mut Vec<String>, b: &mut Vec<BindVal>, col: &str, v: &str, not: bool, insensitive: bool, left: &str, right: &str) {
     let kw = if insensitive { "ILIKE" } else { "LIKE" };
     let neg = if not { "NOT " } else { "" };
@@ -1869,6 +1873,7 @@ fn push_like(w: &mut Vec<String>, b: &mut Vec<BindVal>, col: &str, v: &str, not:
 }
 
 /// 多值 ALL：每个值一条 clause（调用方 AND 连接）。
+#[allow(clippy::too_many_arguments)] // 见 `push_like`
 fn push_like_all(w: &mut Vec<String>, b: &mut Vec<BindVal>, col: &str, vs: &[String], not: bool, insensitive: bool, left: &str, right: &str) {
     for v in vs {
         push_like(w, b, col, v, not, insensitive, left, right);
@@ -1876,6 +1881,7 @@ fn push_like_all(w: &mut Vec<String>, b: &mut Vec<BindVal>, col: &str, vs: &[Str
 }
 
 /// 多值 ANY：OR 组合成单条 clause。
+#[allow(clippy::too_many_arguments)] // 见 `push_like`
 fn push_like_any(w: &mut Vec<String>, b: &mut Vec<BindVal>, col: &str, vs: &[String], not: bool, insensitive: bool, left: &str, right: &str) {
     if vs.is_empty() {
         return;
@@ -1921,24 +1927,24 @@ fn build_string_filter(where_clauses: &mut Vec<String>, binds: &mut Vec<BindVal>
             push_str_cmp(where_clauses, binds, col, "!=", v);
         }
     }
-    if let Some(vs) = &f.not_equal_to_any {
-        if !vs.is_empty() {
-            let parts: Vec<String> = vs.iter().map(|_| format!("{col} != ?")).collect();
-            where_clauses.push(format!("({})", parts.join(" OR ")));
-            binds.extend(vs.iter().cloned().map(BindVal::Str));
-        }
+    if let Some(vs) = &f.not_equal_to_any
+        && !vs.is_empty()
+    {
+        let parts: Vec<String> = vs.iter().map(|_| format!("{col} != ?")).collect();
+        where_clauses.push(format!("({})", parts.join(" OR ")));
+        binds.extend(vs.iter().cloned().map(BindVal::Str));
     }
     if let Some(vs) = &f.not_equal_to_insensitive_all {
         for v in vs {
             push_str_cmp_insensitive(where_clauses, binds, col, "!=", v);
         }
     }
-    if let Some(vs) = &f.not_equal_to_insensitive_any {
-        if !vs.is_empty() {
-            let parts: Vec<String> = vs.iter().map(|_| format!("LOWER({col}) != LOWER(?)")).collect();
-            where_clauses.push(format!("({})", parts.join(" OR ")));
-            binds.extend(vs.iter().cloned().map(BindVal::Str));
-        }
+    if let Some(vs) = &f.not_equal_to_insensitive_any
+        && !vs.is_empty()
+    {
+        let parts: Vec<String> = vs.iter().map(|_| format!("LOWER({col}) != LOWER(?)")).collect();
+        where_clauses.push(format!("({})", parts.join(" OR ")));
+        binds.extend(vs.iter().cloned().map(BindVal::Str));
     }
     // 比较（> < >= <=，可选大小写不敏感）
     if let Some(v) = &f.greater_than {
@@ -1977,24 +1983,24 @@ fn build_string_filter(where_clauses: &mut Vec<String>, binds: &mut Vec<BindVal>
             push_str_cmp(where_clauses, binds, col, "!=", v);
         }
     }
-    if let Some(vs) = &f.distinct_from_any {
-        if !vs.is_empty() {
-            let parts: Vec<String> = vs.iter().map(|_| format!("{col} != ?")).collect();
-            where_clauses.push(format!("({})", parts.join(" OR ")));
-            binds.extend(vs.iter().cloned().map(BindVal::Str));
-        }
+    if let Some(vs) = &f.distinct_from_any
+        && !vs.is_empty()
+    {
+        let parts: Vec<String> = vs.iter().map(|_| format!("{col} != ?")).collect();
+        where_clauses.push(format!("({})", parts.join(" OR ")));
+        binds.extend(vs.iter().cloned().map(BindVal::Str));
     }
     if let Some(vs) = &f.distinct_from_insensitive_all {
         for v in vs {
             push_str_cmp_insensitive(where_clauses, binds, col, "!=", v);
         }
     }
-    if let Some(vs) = &f.distinct_from_insensitive_any {
-        if !vs.is_empty() {
-            let parts: Vec<String> = vs.iter().map(|_| format!("LOWER({col}) != LOWER(?)")).collect();
-            where_clauses.push(format!("({})", parts.join(" OR ")));
-            binds.extend(vs.iter().cloned().map(BindVal::Str));
-        }
+    if let Some(vs) = &f.distinct_from_insensitive_any
+        && !vs.is_empty()
+    {
+        let parts: Vec<String> = vs.iter().map(|_| format!("LOWER({col}) != LOWER(?)")).collect();
+        where_clauses.push(format!("({})", parts.join(" OR ")));
+        binds.extend(vs.iter().cloned().map(BindVal::Str));
     }
     if let Some(v) = &f.not_distinct_from {
         push_str_cmp(where_clauses, binds, col, "=", v);
@@ -2168,11 +2174,11 @@ fn build_chapter_filter(where_clauses: &mut Vec<String>, binds: &mut Vec<BindVal
     if let Some(v) = &f.id {
         build_numeric_filter(where_clauses, binds, "id", v);
     }
-    if let Some(v) = &f.in_library {
-        if let Some(b) = v.equal_to {
-            where_clauses.push("manga IN (SELECT id FROM manga WHERE in_library = ?)".into());
-            binds.push(BindVal::Bool(b));
-        }
+    if let Some(v) = &f.in_library
+        && let Some(b) = v.equal_to
+    {
+        where_clauses.push("manga IN (SELECT id FROM manga WHERE in_library = ?)".into());
+        binds.push(BindVal::Bool(b));
     }
     if let Some(v) = &f.is_bookmarked {
         build_bool_filter(where_clauses, binds, "bookmark", v);
@@ -2264,11 +2270,11 @@ fn build_manga_filter(where_clauses: &mut Vec<String>, binds: &mut Vec<BindVal>,
     if let Some(v) = &f.author {
         build_string_filter(where_clauses, binds, "author", v);
     }
-    if let Some(v) = &f.category_id {
-        if let Some(cid) = v.equal_to {
-            where_clauses.push("id IN (SELECT manga FROM category_manga WHERE category = ?)".into());
-            binds.push(BindVal::I32(cid));
-        }
+    if let Some(v) = &f.category_id
+        && let Some(cid) = v.equal_to
+    {
+        where_clauses.push("id IN (SELECT manga FROM category_manga WHERE category = ?)".into());
+        binds.push(BindVal::I32(cid));
     }
     if let Some(v) = &f.chapters_last_fetched_at {
         build_numeric_filter(where_clauses, binds, "chapters_last_fetched_at", v);
@@ -2413,12 +2419,11 @@ fn local_webui_channel(dir: &std::path::Path) -> crate::settings::WebUIChannel {
 
 /// version.txt 第三行为构建时间戳（Unix 秒），缺省返回 0。
 fn local_webui_build_time(dir: &std::path::Path) -> LongString {
-    if let Ok(content) = std::fs::read_to_string(dir.join("version.txt")) {
-        if let Some(ts) = content.lines().nth(2) {
-            if let Ok(secs) = ts.trim().parse::<i64>() {
-                return LongString(secs);
-            }
-        }
+    if let Ok(content) = std::fs::read_to_string(dir.join("version.txt"))
+        && let Some(ts) = content.lines().nth(2)
+        && let Ok(secs) = ts.trim().parse::<i64>()
+    {
+        return LongString(secs);
     }
     LongString(0)
 }
@@ -2441,10 +2446,10 @@ fn tag_to_num(tag: &str) -> i64 {
 fn github_proxy_candidates() -> Vec<Option<String>> {
     let mut out = Vec::new();
     for key in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
-        if let Ok(v) = std::env::var(key) {
-            if !v.trim().is_empty() {
-                out.push(Some(v));
-            }
+        if let Ok(v) = std::env::var(key)
+            && !v.trim().is_empty()
+        {
+            out.push(Some(v));
         }
     }
     for port in [7890u16, 7897, 10809, 1080] {
@@ -2491,13 +2496,13 @@ pub(crate) async fn github_get_with_fallback(url: &str) -> Result<reqwest::Respo
 /// GitHub API 在共享/CN IP 上易触发限流（403）。HTML 失败才回退 API。
 pub(crate) async fn fetch_latest_webui_release() -> Result<(String, String), String> {
     // 1) HTML page: tag from the redirect target URL
-    if let Ok(resp) = github_get_with_fallback("https://github.com/576576/Suwayomi-WebUI/releases/latest").await {
-        if let Some(tag) = resp.url().path_segments().and_then(|mut s| s.next_back()) {
-            let tag = tag.to_string();
-            if !tag.is_empty() && tag != "latest" {
-                let url = format!("https://github.com/576576/Suwayomi-WebUI/releases/download/{tag}/Suwayomi-WebUI-{tag}.zip");
-                return Ok((tag, url));
-            }
+    if let Ok(resp) = github_get_with_fallback("https://github.com/576576/Suwayomi-WebUI/releases/latest").await
+        && let Some(tag) = resp.url().path_segments().and_then(|mut s| s.next_back())
+    {
+        let tag = tag.to_string();
+        if !tag.is_empty() && tag != "latest" {
+            let url = format!("https://github.com/576576/Suwayomi-WebUI/releases/download/{tag}/Suwayomi-WebUI-{tag}.zip");
+            return Ok((tag, url));
         }
     }
     // 2) API fallback
@@ -2521,17 +2526,17 @@ pub(crate) async fn fetch_latest_webui_release() -> Result<(String, String), Str
 /// `releases/tag/r\d+` 链接（API 在共享/CN IP 上易限流），失败回退 API。
 pub(crate) async fn fetch_latest_server_release() -> Result<(String, String), String> {
     // 1) HTML list page: first `releases/tag/rNNNN` link
-    if let Ok(resp) = github_get_with_fallback("https://github.com/576576/Suwayomi-next/releases").await {
-        if let Ok(html) = resp.text().await {
-            let marker = "/576576/Suwayomi-next/releases/tag/r";
-            if let Some(i) = html.find(marker) {
-                let rest = &html[i + marker.len()..];
-                let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-                if !digits.is_empty() {
-                    let tag = format!("r{digits}");
-                    let url = format!("https://github.com/576576/Suwayomi-next/releases/tag/{tag}");
-                    return Ok((tag, url));
-                }
+    if let Ok(resp) = github_get_with_fallback("https://github.com/576576/Suwayomi-next/releases").await
+        && let Ok(html) = resp.text().await
+    {
+        let marker = "/576576/Suwayomi-next/releases/tag/r";
+        if let Some(i) = html.find(marker) {
+            let rest = &html[i + marker.len()..];
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if !digits.is_empty() {
+                let tag = format!("r{digits}");
+                let url = format!("https://github.com/576576/Suwayomi-next/releases/tag/{tag}");
+                return Ok((tag, url));
             }
         }
     }
@@ -2559,10 +2564,10 @@ async fn fetch_sandbox_jvm_info(sandbox_base: Option<&str>) -> crate::settings::
         vm_vendor: "n/a".into(),
         vm_version: "n/a".into(),
     })));
-    if let Ok(guard) = cache.lock() {
-        if guard.0 > now - 60 {
-            return guard.1.clone();
-        }
+    if let Ok(guard) = cache.lock()
+        && guard.0 > now - 60
+    {
+        return guard.1.clone();
     }
     let fallback = || crate::settings::JvmInfo {
         java_version: "n/a".into(),

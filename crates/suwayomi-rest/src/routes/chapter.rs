@@ -18,10 +18,10 @@ async fn batch(
     // mangaId-less batch edit by chapter ids
     let change = body.change;
     let ids = body.chapter_ids.clone();
-    if change.delete == Some(true) {
-        if let Some(ids) = &ids {
-            s.chapter.delete_chapters(ids).await?;
-        }
+    if change.delete == Some(true)
+        && let Some(ids) = &ids
+    {
+        s.chapter.delete_chapters(ids).await?;
     }
     if let Some(ids) = &ids {
         s.chapter.modify_chapters_by_ids(ids, change.is_read, change.is_bookmarked, change.last_page_read).await?;

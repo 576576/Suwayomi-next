@@ -33,26 +33,23 @@ pub fn set_local_source_root(path: Option<PathBuf>) {
 /// env（托盘 spawn 时 server cwd=data，默认会解析成 data/data/local）→ exe bin/
 /// 布局的发布根 data/local → cwd/data/local
 pub fn local_source_root() -> PathBuf {
-    if let Some(lock) = LOCAL_ROOT_OVERRIDE.get() {
-        if let Ok(guard) = lock.read() {
-            if let Some(path) = guard.as_ref() {
-                return path.clone();
-            }
-        }
+    if let Some(lock) = LOCAL_ROOT_OVERRIDE.get()
+        && let Ok(guard) = lock.read()
+        && let Some(path) = guard.as_ref()
+    {
+        return path.clone();
     }
-    if let Ok(dir) = std::env::var("SUWAYOMI_LOCAL_SOURCE_DIR") {
-        if !dir.is_empty() {
-            return PathBuf::from(dir);
-        }
+    if let Ok(dir) = std::env::var("SUWAYOMI_LOCAL_SOURCE_DIR")
+        && !dir.is_empty()
+    {
+        return PathBuf::from(dir);
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            if dir.file_name().map(|n| n == "bin").unwrap_or(false) {
-                if let Some(base) = dir.parent() {
-                    return base.join("data").join("local");
-                }
-            }
-        }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+        && dir.file_name().map(|n| n == "bin").unwrap_or(false)
+        && let Some(base) = dir.parent()
+    {
+        return base.join("data").join("local");
     }
     std::env::current_dir()
         .unwrap_or_default()
@@ -302,12 +299,11 @@ fn scan_manga_archive_meta(manga_dir: &Path) -> Option<ArchiveMeta> {
         let path = entry.path();
         if path.is_file() {
             let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("").to_lowercase();
-            if ARCHIVE_EXTS.contains(&ext.as_str()) {
-                if let Some(meta) = read_archive_meta(&path) {
-                    if meta.manga_title.is_some() || meta.artist.is_some() || meta.genre.is_some() {
-                        return Some(meta);
-                    }
-                }
+            if ARCHIVE_EXTS.contains(&ext.as_str())
+                && let Some(meta) = read_archive_meta(&path)
+                && (meta.manga_title.is_some() || meta.artist.is_some() || meta.genre.is_some())
+            {
+                return Some(meta);
             }
         }
     }
@@ -510,10 +506,10 @@ fn parse_comic_info_xml(bytes: &[u8]) -> Option<ArchiveMeta> {
 /// seconds (UTC). Used for `ComicInfo.PublicationDate`.
 fn parse_date_str(s: &str) -> Option<i64> {
     let s = s.trim();
-    if s.len() >= 10 {
-        if let Ok(d) = chrono::NaiveDate::parse_from_str(&s[..10], "%Y-%m-%d") {
-            return Some(d.and_hms_opt(0, 0, 0)?.and_utc().timestamp());
-        }
+    if s.len() >= 10
+        && let Ok(d) = chrono::NaiveDate::parse_from_str(&s[..10], "%Y-%m-%d")
+    {
+        return Some(d.and_hms_opt(0, 0, 0)?.and_utc().timestamp());
     }
     chrono::DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.timestamp())
 }

@@ -1766,10 +1766,9 @@ impl MutationRootB4 {
         if let Ok(Some(existing)) = sqlx::query_scalar::<_, String>(&existing_sql)
             .fetch_optional(state.db.pool())
             .await
+            && let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(&existing)
         {
-            if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(&existing) {
-                merged = map;
-            }
+            merged = map;
         }
         if let serde_json::Value::Object(input_map) = json {
             for (k, v) in input_map {

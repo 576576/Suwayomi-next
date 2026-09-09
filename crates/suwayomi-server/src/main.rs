@@ -58,12 +58,12 @@ fn resolve_webui_dir() -> std::path::PathBuf {
     if from_env.join("index.html").is_file() {
         return from_env;
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let cand = dir.join("webui");
-            if cand.join("index.html").is_file() {
-                return cand;
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let cand = dir.join("webui");
+        if cand.join("index.html").is_file() {
+            return cand;
         }
     }
     std::path::PathBuf::new()
@@ -71,39 +71,37 @@ fn resolve_webui_dir() -> std::path::PathBuf {
 
 /// 用户数据根目录（backups/downloads/local 之下）：env → exe 上级 data（bin/ 布局）→ cwd/data
 fn resolve_data_dir() -> std::path::PathBuf {
-    if let Ok(dir) = std::env::var("SUWAYOMI_DATA_DIR") {
-        if !dir.trim().is_empty() {
-            return std::path::PathBuf::from(dir);
-        }
+    if let Ok(dir) = std::env::var("SUWAYOMI_DATA_DIR")
+        && !dir.trim().is_empty()
+    {
+        return std::path::PathBuf::from(dir);
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            if dir.file_name().map(|n| n == "bin").unwrap_or(false) {
-                if let Some(base) = dir.parent() {
-                    return base.join("data");
-                }
-            }
-        }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+        && dir.file_name().map(|n| n == "bin").unwrap_or(false)
+        && let Some(base) = dir.parent()
+    {
+        return base.join("data");
     }
     std::path::PathBuf::from("data")
 }
 
 /// 扩展沙盒 jar：`SUWAYOMI_SANDBOX_JAR` → exe 同级/../bin 的 jvm-sandbox.jar（发布布局）
 fn resolve_sandbox_jar() -> Option<std::path::PathBuf> {
-    if let Ok(jar) = std::env::var("SUWAYOMI_SANDBOX_JAR") {
-        if !jar.is_empty() {
-            let p = std::path::PathBuf::from(jar);
-            if p.is_file() {
-                return Some(p);
-            }
+    if let Ok(jar) = std::env::var("SUWAYOMI_SANDBOX_JAR")
+        && !jar.is_empty()
+    {
+        let p = std::path::PathBuf::from(jar);
+        if p.is_file() {
+            return Some(p);
         }
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            for cand in [dir.join("jvm-sandbox.jar"), dir.join("bin").join("jvm-sandbox.jar")] {
-                if cand.is_file() {
-                    return Some(cand);
-                }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        for cand in [dir.join("jvm-sandbox.jar"), dir.join("bin").join("jvm-sandbox.jar")] {
+            if cand.is_file() {
+                return Some(cand);
             }
         }
     }
@@ -440,10 +438,15 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(mode = ?db.mode(), "database ready (migrations applied)");
 
     // 确保默认分类 (id=0) 存在——书架页首个 tab 依赖；ON CONFLICT 幂等（覆盖
-    // 备份恢复后 category 表为空的情况）
+    // 备份恢复后 category 表为空的情况）。
+    // 名字必须与上游 M0027_AddDefaultCategory 一致，固定英文 'Default'：
+    // 上游 WebUI 的「编辑分类」页正是按 `nodes[0].name === 'Default'` 这个字面量
+    // 把默认分类从列表里剔除的（CategorySettings.tsx）。若写成中文「默认」，该判据
+    // 失效，默认分类会混进可排序列表。DO UPDATE 用于纠正历史库里已有的中文名。
     sqlx::query(
         "INSERT INTO category (id, name, sort_order, is_default, include_in_update, include_in_download) \
-         VALUES (0, '默认', 0, TRUE, -1, -1) ON CONFLICT (id) DO NOTHING",
+         VALUES (0, 'Default', 0, TRUE, -1, -1) \
+         ON CONFLICT (id) DO UPDATE SET name = 'Default' WHERE category.name <> 'Default'",
     )
     .execute(db.pool())
     .await

@@ -181,12 +181,12 @@ fn active_oliphaunt_resources_dir() -> Option<std::path::PathBuf> {
             return Some(p.to_path_buf());
         }
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(root) = exe.parent().and_then(|b| b.parent()) {
-            let bundled = root.join("oliphaunt-runtime").join("resources");
-            if bundled.join("native-runtime").is_dir() {
-                return Some(bundled);
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(root) = exe.parent().and_then(|b| b.parent())
+    {
+        let bundled = root.join("oliphaunt-runtime").join("resources");
+        if bundled.join("native-runtime").is_dir() {
+            return Some(bundled);
         }
     }
     None

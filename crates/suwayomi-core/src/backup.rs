@@ -9,6 +9,23 @@ use sqlx::PgPool;
 
 use crate::schema::{CategoryRow, ChapterRow, MangaRow};
 
+// 恢复时「查找现有行」用的宽行类型：列多但只作一次性比对，抽别名避免 clippy
+// `type_complexity` 噪音，也让 SELECT 与解构处的形状一目了然。
+type ExistingMangaRow = (
+    i32,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    i32,
+    Option<String>,
+    String,
+    Option<i64>,
+    bool,
+    bool,
+);
+type ExistingChapterRow = (i32, String, Option<String>, bool, bool, i32, i64, f32, i32);
+
 // ---------------------------------------------------------------------------
 // protobuf messages (0.x Suwayomi backup format)
 // ---------------------------------------------------------------------------
@@ -343,7 +360,7 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
         // have BEFORE UPDATE triggers that stamp last_modified_at and bump
         // version, so re-importing an identical backup must skip them or the
         // exported file would change on every restore→export cycle.
-        let existing: Option<(i32, Option<String>, Option<String>, Option<String>, Option<String>, i32, Option<String>, String, Option<i64>, bool, bool)> = sqlx::query_as(
+        let existing: Option<ExistingMangaRow> = sqlx::query_as(
             "SELECT id, artist, author, description, genre, status, thumbnail_url, update_strategy, in_library_at, initialized, in_library \
              FROM manga WHERE url = $1 AND source = $2",
         )
@@ -353,12 +370,12 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
             .await?;
         let manga_id = match existing {
             Some((id, cur_artist, cur_author, cur_desc, cur_genre, cur_status, cur_thumb, cur_strategy, cur_added, cur_init, cur_inlib)) => {
-                let dirty = m.artist.as_deref().map_or(false, |v| cur_artist.as_deref() != Some(v))
-                    || m.author.as_deref().map_or(false, |v| cur_author.as_deref() != Some(v))
-                    || m.description.as_deref().map_or(false, |v| cur_desc.as_deref() != Some(v))
+                let dirty = m.artist.as_deref().is_some_and(|v| cur_artist.as_deref() != Some(v))
+                    || m.author.as_deref().is_some_and(|v| cur_author.as_deref() != Some(v))
+                    || m.description.as_deref().is_some_and(|v| cur_desc.as_deref() != Some(v))
                     || (!genre_new.is_empty() && cur_genre.as_deref() != Some(genre_new.as_str()))
                     || m.status != cur_status
-                    || m.thumbnail_url.as_deref().map_or(false, |v| cur_thumb.as_deref() != Some(v))
+                    || m.thumbnail_url.as_deref().is_some_and(|v| cur_thumb.as_deref() != Some(v))
                     || cur_strategy != strategy_new
                     || !cur_inlib
                     || cur_added != Some(added_secs)
@@ -416,7 +433,7 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
         // chapters (upsert on (url, manga))
         let mut chapter_ids: Vec<i32> = Vec::new();
         for ch in &m.chapters {
-            let existing_ch: Option<(i32, String, Option<String>, bool, bool, i32, i64, f32, i32)> = sqlx::query_as(
+            let existing_ch: Option<ExistingChapterRow> = sqlx::query_as(
                 "SELECT id, name, scanlator, read, bookmark, last_page_read, date_upload, chapter_number::float4, source_order \
                  FROM chapter WHERE url = $1 AND manga = $2",
             )

@@ -118,10 +118,10 @@ impl KoreaderSyncService {
     }
 
     async fn get_or_generate_device_id(&self) -> Result<String> {
-        if let Some(id) = self.meta_get(KEY_DEVICE_ID).await? {
-            if !id.is_empty() {
-                return Ok(id);
-            }
+        if let Some(id) = self.meta_get(KEY_DEVICE_ID).await?
+            && !id.is_empty()
+        {
+            return Ok(id);
         }
         let id = uuid::Uuid::new_v4().simple().to_string().to_uppercase();
         self.meta_set(KEY_DEVICE_ID, &id).await?;
@@ -147,10 +147,10 @@ impl KoreaderSyncService {
         .map(|(h, n, t)| Row { koreader_hash: h, name: n, manga_title: t });
 
         let Some(r) = row else { return Ok(None) };
-        if let Some(h) = &r.koreader_hash {
-            if !h.is_empty() {
-                return Ok(Some(h.clone()));
-            }
+        if let Some(h) = &r.koreader_hash
+            && !h.is_empty()
+        {
+            return Ok(Some(h.clone()));
         }
 
         // BINARY would hash the downloaded CBZ; this build uses the filename

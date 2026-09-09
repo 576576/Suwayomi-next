@@ -36,3 +36,4 @@ jvm-sandbox/libs/*
 !jvm-sandbox/libs/AndroidCompat-1.0.jar
 .workbuddy/
 extensions
+/.idea

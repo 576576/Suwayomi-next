@@ -6,12 +6,12 @@ use suwayomi_core::db::Db;
 use suwayomi_core::models::{
     now_epoch_secs, IncludeOrExclude as DomainInclude, MangaStatus as DomainStatus, UpdateStrategy as DomainStrategy,
 };
-use suwayomi_core::schema::{CategoryRow, ChapterRow, MangaRow};
+use suwayomi_core::schema::{CategoryRow, ChapterRow, MangaRow, TrackRecordRow};
 
 use crate::scalars::{Cursor, LongString};
 use base64::Engine;
 use crate::state::GraphQLState;
-use crate::track::TrackRecordNodeList;
+use crate::track::{TrackRecordNodeList, TrackRecordType};
 use sqlx::Row;
 use suwayomi_domain::sql::bind_placeholders;
 
@@ -365,9 +365,16 @@ impl MangaType {
         Ok(self.chapters_of(db).await.iter().filter(|c| c.bookmark).count() as i32)
     }
     async fn has_duplicate_chapters(&self, ctx: &Context<'_>) -> async_graphql::Result<bool> {
+        // 对齐上游 `HasDuplicateChaptersForMangaDataLoader`：
+        // 按 chapter_number 分组（仅统计 chapter_number >= 0 的章节），存在
+        // 出现次数 > 1 的编号即视为有重复章节。旧实现按 (url, chapter_number)
+        // 判重，会把同编号但不同 url 的章节漏判，与 WebUI「重复章节」筛选不一致。
         let chapters = self.chapters_of(&ctx.data::<GraphQLState>()?.db).await;
-        let mut seen = std::collections::HashSet::new();
-        Ok(chapters.iter().any(|c| !seen.insert((c.url.clone(), c.chapter_number.to_bits()))))
+        let mut counts: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+        for chapter in chapters.iter().filter(|c| c.chapter_number >= 0.0) {
+            *counts.entry(chapter.chapter_number.to_bits()).or_insert(0) += 1;
+        }
+        Ok(counts.values().any(|count| *count > 1))
     }
 
     async fn chapters(&self, ctx: &Context<'_>) -> async_graphql::Result<ChapterNodeList> {
@@ -418,11 +425,35 @@ impl MangaType {
         Ok(row.map(|r| SourceType::from_row(&r)))
     }
 
-    async fn track_records(&self) -> TrackRecordNodeList {
-        TrackRecordNodeList::empty()
+    /// 对齐上游 `TrackRecordsForMangaIdDataLoader`：按 manga_id 查询绑定记录。
+    /// 旧实现恒返回空列表，导致 WebUI 书架的「按追踪器筛选」永远筛不出结果。
+    async fn track_records(&self, ctx: &Context<'_>) -> async_graphql::Result<TrackRecordNodeList> {
+        let state = ctx.data::<GraphQLState>()?;
+        let sql = bind_placeholders("SELECT * FROM track_record WHERE manga_id = ?");
+        let rows = sqlx::query_as::<_, TrackRecordRow>(&sql)
+            .bind(self.id)
+            .fetch_all(state.db.pool())
+            .await
+            .map_err(async_graphql::Error::from)?;
+        let nodes: Vec<TrackRecordType> = rows.iter().map(TrackRecordType::from_row).collect();
+        Ok(TrackRecordNodeList::from_nodes(nodes))
     }
 
+    /// 对齐上游 `LastReadChapterForMangaDataLoader`：按 lastReadAt 降序取首条
+    /// （**不过滤是否已读**，与 latestReadChapter 的语义正好互换）。
+    /// 书架「按最后一次阅读」排序依赖该字段，旧实现取「已读中 sourceOrder 最大」，
+    /// 导致阅读后排序键不更新、顺序不刷新。
     async fn last_read_chapter(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<ChapterType>> {
+        Ok(self
+            .chapters_of(&ctx.data::<GraphQLState>()?.db)
+            .await
+            .into_iter()
+            .max_by_key(|c| c.last_read_at)
+            .map(|c| ChapterType::from_row(&c)))
+    }
+
+    /// 对齐上游 `LatestReadChapterForMangaDataLoader`：已读章节中 sourceOrder 最大者。
+    async fn latest_read_chapter(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<ChapterType>> {
         Ok(self
             .chapters_of(&ctx.data::<GraphQLState>()?.db)
             .await
@@ -431,42 +462,50 @@ impl MangaType {
             .max_by_key(|c| c.source_order)
             .map(|c| ChapterType::from_row(&c)))
     }
-    async fn latest_read_chapter(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<ChapterType>> {
+
+    /// 对齐上游 `FirstUnreadChapterForMangaDataLoader`：未读章节中 sourceOrder 最小者
+    /// （「继续阅读」应指向最靠前的未读章节，旧实现按 sourceOrder 倒序取首个未读）。
+    async fn first_unread_chapter(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<ChapterType>> {
         Ok(self
             .chapters_of(&ctx.data::<GraphQLState>()?.db)
             .await
             .into_iter()
-            .filter(|c| c.read && c.last_read_at > 0)
-            .max_by_key(|c| c.last_read_at)
+            .filter(|c| !c.read)
+            .min_by_key(|c| c.source_order)
             .map(|c| ChapterType::from_row(&c)))
     }
-    async fn first_unread_chapter(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<ChapterType>> {
-        let mut chapters = self.chapters_of(&ctx.data::<GraphQLState>()?.db).await;
-        chapters.sort_by_key(|c| std::cmp::Reverse(c.source_order));
-        Ok(chapters.into_iter().find(|c| !c.read).map(|c| ChapterType::from_row(&c)))
-    }
+
+    /// 对齐上游 `HighestNumberedChapterForMangaDataLoader`：仅在 chapter_number > 0
+    /// 的章节中取最大编号（编号 0 / 负数表示未知编号，不应参与）。
     async fn highest_numbered_chapter(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<ChapterType>> {
         Ok(self
             .chapters_of(&ctx.data::<GraphQLState>()?.db)
             .await
             .into_iter()
+            .filter(|c| c.chapter_number > 0.0)
             .max_by(|a, b| a.chapter_number.partial_cmp(&b.chapter_number).unwrap_or(std::cmp::Ordering::Equal))
             .map(|c| ChapterType::from_row(&c)))
     }
+
+    /// 对齐上游 `LatestFetchedChapterForMangaDataLoader`：fetchedAt 降序，
+    /// 同一时间戳时以 sourceOrder 降序作为次级排序。
     async fn latest_fetched_chapter(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<ChapterType>> {
         Ok(self
             .chapters_of(&ctx.data::<GraphQLState>()?.db)
             .await
             .into_iter()
-            .max_by_key(|c| c.fetched_at)
+            .max_by_key(|c| (c.fetched_at, c.source_order))
             .map(|c| ChapterType::from_row(&c)))
     }
+
+    /// 对齐上游 `LatestUploadedChapterForMangaDataLoader`：date_upload 降序，
+    /// 同一时间戳时以 sourceOrder 降序作为次级排序。
     async fn latest_uploaded_chapter(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<ChapterType>> {
         Ok(self
             .chapters_of(&ctx.data::<GraphQLState>()?.db)
             .await
             .into_iter()
-            .max_by_key(|c| c.date_upload)
+            .max_by_key(|c| (c.date_upload, c.source_order))
             .map(|c| ChapterType::from_row(&c)))
     }
 }

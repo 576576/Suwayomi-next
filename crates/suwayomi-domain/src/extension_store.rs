@@ -173,6 +173,9 @@ pub struct ExtensionStoreService {
     extensions_dir: PathBuf,
     /// Directory for dex2jar-converted jars (release layout: `bin/extensions`).
     jar_dir: PathBuf,
+    /// 统一缓存根（`<发布根>/cache`），仓库索引缓存落在其 `extensions/index/` 下。
+    /// 单独持有而非每次调 `cache_root()`，测试才能注入独立目录（见 `with_dirs`）。
+    cache_dir: PathBuf,
 }
 
 impl ExtensionStoreService {
@@ -188,15 +191,41 @@ impl ExtensionStoreService {
                     .map(|p| p.join("bin").join("extensions"))
                     .unwrap_or_else(|| PathBuf::from("bin/extensions"))
             });
+        Self::with_dirs(db, sandbox_base, extensions_dir, jar_dir)
+    }
+
+    /// 显式指定扩展目录 / jar 目录 / 缓存根的构造器。
+    ///
+    /// 测试专用：`new()` 从进程环境变量读取目录，而 `std::env::set_var` 在
+    /// Rust 2024 起是 `unsafe`（且多线程下修改进程环境本身就是数据竞争），
+    /// 并行测试还会互相覆盖 `SUWAYOMI_EXTENSIONS_DIR` / `SUWAYOMI_CACHE_DIR`。
+    /// 改为注入路径后，各测试持有独立临时目录，无需触碰环境变量。
+    pub fn with_dirs(
+        db: Db,
+        sandbox_base: Option<String>,
+        extensions_dir: PathBuf,
+        jar_dir: PathBuf,
+    ) -> Self {
+        Self::with_cache_dir(db, sandbox_base, extensions_dir, jar_dir, suwayomi_core::config::cache_root())
+    }
+
+    /// 同 [`Self::with_dirs`]，但额外显式指定缓存根（`index_cache_path` 用）。
+    pub fn with_cache_dir(
+        db: Db,
+        sandbox_base: Option<String>,
+        extensions_dir: PathBuf,
+        jar_dir: PathBuf,
+        cache_dir: PathBuf,
+    ) -> Self {
         let mut builder = Client::builder()
             .connect_timeout(std::time::Duration::from_secs(30))
             .read_timeout(std::time::Duration::from_secs(60));
         // reuse the sandbox outbound proxy for repo fetches / APK downloads
-        if let Ok(proxy) = std::env::var("SUWAYOMI_SANDBOX_PROXY") { if !proxy.is_empty() {
-                if let Ok(p) = reqwest::Proxy::all(&proxy) {
-                    builder = builder.proxy(p);
-                }
-            }
+        if let Ok(proxy) = std::env::var("SUWAYOMI_SANDBOX_PROXY")
+            && !proxy.is_empty()
+            && let Ok(p) = reqwest::Proxy::all(&proxy)
+        {
+            builder = builder.proxy(p);
         }
         Self {
             db,
@@ -204,6 +233,7 @@ impl ExtensionStoreService {
             sandbox: sandbox_base.map(HttpSandboxFetcher::new),
             extensions_dir,
             jar_dir,
+            cache_dir,
         }
     }
 
@@ -345,7 +375,7 @@ impl ExtensionStoreService {
         let url = normalize_index_url(index_url);
         let repo = repo_dir_name(&url);
         let file = if url.ends_with("index.pb") { "index.pb" } else { "index.json" };
-        suwayomi_core::config::cache_root()
+        self.cache_dir
             .join("extensions")
             .join("index")
             .join(repo)
@@ -556,19 +586,20 @@ impl RepoIndexEntry {
             return false;
         }
         let name = self.apk.as_deref().map(apk_file_name);
-        if let Some(n) = name {
-            if dir.join(n).exists() {
-                return true;
-            }
+        if let Some(n) = name
+            && dir.join(n).exists()
+        {
+            return true;
         }
         // fall back: any file named tachiyomi-{lang}.{pkg}* in the dir
         let prefix = format!("{}.{}", self.lang, self.pkg);
         if let Ok(rd) = std::fs::read_dir(dir) {
             for f in rd.flatten() {
-                if let Some(fn_) = f.file_name().to_str() {
-                    if fn_.starts_with(&prefix) && fn_.ends_with(".apk") {
-                        return true;
-                    }
+                if let Some(fn_) = f.file_name().to_str()
+                    && fn_.starts_with(&prefix)
+                    && fn_.ends_with(".apk")
+                {
+                    return true;
                 }
             }
         }
@@ -631,10 +662,10 @@ fn repo_dir_name(index_url: &str) -> String {
     let rest = index_url.split("://").nth(1).unwrap_or(index_url);
     let mut segments = rest.split('/').filter(|s| !s.is_empty());
     let host = segments.next().unwrap_or("repo");
-    if let Some(first_path) = segments.next() {
-        if !first_path.is_empty() {
-            return first_path.to_string();
-        }
+    if let Some(first_path) = segments.next()
+        && !first_path.is_empty()
+    {
+        return first_path.to_string();
     }
     host.trim_start_matches("www.")
         .trim_start_matches("raw.")
@@ -676,6 +707,27 @@ mod tests {
         Some(db)
     }
 
+    /// 建一个独立临时根目录（不改进程环境变量，测试可并行）。
+    /// 调用方负责在结尾 `remove_dir_all`。
+    fn tmp_root() -> PathBuf {
+        let tmp = std::env::temp_dir().join(format!("ext-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        tmp
+    }
+
+    /// 构造指向独立临时目录的 service（不改进程环境变量，测试可并行）。
+    fn service_in(tmp: &Path, db: Db, sandbox_base: Option<String>) -> ExtensionStoreService {
+        let extensions = tmp.join("extensions");
+        std::fs::create_dir_all(&extensions).unwrap();
+        ExtensionStoreService::with_cache_dir(
+            db,
+            sandbox_base,
+            extensions,
+            tmp.join("bin").join("extensions"),
+            tmp.join("cache"),
+        )
+    }
+
     /// Serves canned HTTP responses for one request then closes.
     fn serve_once(listener: TcpListener, body: &'static [u8], status: &'static str) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
@@ -701,7 +753,8 @@ mod tests {
         let index = br#"[{"name":"nhentai.com","pkg":"tachiyomi-all.nhentaicom","apk":"http://127.0.0.1:1/dl.apk","lang":"all","versionName":"1.4.10","versionCode":14,"nsfw":true,"sources":[{"name":"nhentai.com","lang":"en","id":"5591830863732393712"}]},{"name":"MangaDex","pkg":"tachiyomi-all.mangadex","apk":"http://127.0.0.1:1/md.apk","lang":"all","versionName":"1.2.3","versionCode":9,"nsfw":false}]"#;
         let _srv = serve_once(listener, index, "HTTP/1.1 200 OK");
 
-        let svc = ExtensionStoreService::new(db.clone(), None);
+        let tmp = tmp_root();
+        let svc = service_in(&tmp, db.clone(), None);
         let n = svc.refresh_one(&format!("http://{addr}/index.json"), "t").await.expect("refresh");
         assert_eq!(n, 2, "two extensions upserted");
 
@@ -719,9 +772,8 @@ mod tests {
     #[tokio::test]
     async fn install_downloads_apk_and_registers_sources() {
         let Some(db) = setup_db().await else { eprintln!("SKIP: requires DATABASE_URL"); return };
-        let tmp = std::env::temp_dir().join(format!("ext-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&tmp).unwrap();
-        std::env::set_var("SUWAYOMI_EXTENSIONS_DIR", &tmp);
+        let tmp = tmp_root();
+        let extensions_dir = tmp.join("extensions");
 
         // fake sandbox: /extensions + /sources + /reload
         let sb = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -760,10 +812,10 @@ mod tests {
         .bind(format!("http://{dl_addr}/tachiyomi-all.nhentaicom-v1.4.10.apk"))
         .execute(db.pool()).await.unwrap();
 
-        let svc = ExtensionStoreService::new(db.clone(), Some(format!("http://{sb_addr}")));
+        let svc = service_in(&tmp, db.clone(), Some(format!("http://{sb_addr}")));
         svc.install("tachiyomi-all.nhentaicom").await.expect("install");
 
-        let files: Vec<String> = std::fs::read_dir(&tmp)
+        let files: Vec<String> = std::fs::read_dir(&extensions_dir)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
@@ -789,10 +841,10 @@ mod tests {
     #[tokio::test]
     async fn uninstall_removes_apk_and_sources() {
         let Some(db) = setup_db().await else { eprintln!("SKIP: requires DATABASE_URL"); return };
-        let tmp = std::env::temp_dir().join(format!("ext-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&tmp).unwrap();
-        std::env::set_var("SUWAYOMI_EXTENSIONS_DIR", &tmp);
-        std::fs::write(tmp.join("tachiyomi-all.mangadex-v1.2.3.apk"), b"PK fake").unwrap();
+        let tmp = tmp_root();
+        let extensions_dir = tmp.join("extensions");
+        std::fs::create_dir_all(&extensions_dir).unwrap();
+        std::fs::write(extensions_dir.join("tachiyomi-all.mangadex-v1.2.3.apk"), b"PK fake").unwrap();
 
         sqlx::query("INSERT INTO suwayomi.extension (name, pkg_name, version_name, version_code, lang, content_warning, is_installed) \
                      VALUES ('mangadex.org', 'tachiyomi-all.mangadex', '1.2.3', 9, 'all', 0, TRUE)")
@@ -816,10 +868,10 @@ mod tests {
             let _ = sock.shutdown().await;
         });
 
-        let svc = ExtensionStoreService::new(db.clone(), Some(format!("http://{sb_addr}")));
+        let svc = service_in(&tmp, db.clone(), Some(format!("http://{sb_addr}")));
         svc.uninstall("tachiyomi-all.mangadex").await.expect("uninstall");
 
-        let remaining: Vec<String> = std::fs::read_dir(&tmp)
+        let remaining: Vec<String> = std::fs::read_dir(&extensions_dir)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
@@ -838,17 +890,14 @@ mod tests {
     #[tokio::test]
     async fn repo_index_refresh_falls_back_to_cache() {
         let Some(db) = setup_db().await else { eprintln!("SKIP: requires DATABASE_URL"); return };
-        let tmp = std::env::temp_dir().join(format!("ext-test-cache-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&tmp).unwrap();
-        std::env::set_var("SUWAYOMI_EXTENSIONS_DIR", &tmp);
-        std::env::set_var("SUWAYOMI_CACHE_DIR", tmp.join("cache"));
+        let tmp = tmp_root();
 
         let index = br#"[{"name":"nhentai.com","pkg":"tachiyomi-all.nhentaicom","apk":"http://127.0.0.1:1/dl.apk","lang":"all","versionName":"1.4.10","versionCode":14,"nsfw":true}]"#;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let _srv = serve_once(listener, index, "HTTP/1.1 200 OK");
 
-        let svc = ExtensionStoreService::new(db.clone(), None);
+        let svc = service_in(&tmp, db.clone(), None);
         let n = svc
             .refresh_one(&format!("http://{addr}/repo-1/index.json"), "t")
             .await

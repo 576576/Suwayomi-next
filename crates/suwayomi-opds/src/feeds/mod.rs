@@ -88,10 +88,10 @@ impl<'a> FeedBuilder<'a> {
 
     fn url_with(&self, page: Option<usize>) -> String {
         let mut params: Vec<String> = Vec::new();
-        if let Some(q) = &self.explicit_query_params {
-            if !q.is_empty() {
-                params.push(q.clone());
-            }
+        if let Some(q) = &self.explicit_query_params
+            && !q.is_empty()
+        {
+            params.push(q.clone());
         }
         if let Some(p) = page {
             params.push(format!("pageNumber={p}"));
@@ -307,10 +307,10 @@ fn chapter_list_entry(ctx: &FeedCtx, chapter: &ChapterListEntry, add_manga_title
     let manga_part = if add_manga_title { format!(" {}:", chapter.manga_title) } else { String::new() };
     let entry_title = format!("{title_prefix}{manga_part} {chapter_name}");
     let mut details = format!("{} — {}", chapter.manga_title, chapter_name);
-    if let Some(s) = &chapter.scanlator {
-        if !s.is_empty() {
-            details.push_str(&format!(" (Scanlator: {s})"));
-        }
+    if let Some(s) = &chapter.scanlator
+        && !s.is_empty()
+    {
+        details.push_str(&format!(" (Scanlator: {s})"));
     }
     if chapter.page_count > 0 {
         details.push_str(&format!(" — {} of {} pages read", chapter.last_page_read, chapter.page_count));

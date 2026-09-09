@@ -599,95 +599,6 @@ impl DownloadManager {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::source::StubFetcher;
-    use suwayomi_core::db::Db;
-
-    async fn seed() -> Db {
-        let db = Db::connect_embedded(None).await.expect("connect");
-        db.migrate().await.expect("migrate");
-        let pool = db.pool();
-        sqlx::query("INSERT INTO extension (name, pkg_name, version_name, version_code, lang, content_warning) VALUES ('E','p','1',1,'en',0)")
-            .execute(pool)
-            .await
-            .expect("ext");
-        sqlx::query("INSERT INTO source (name, lang, extension) VALUES ('S','en',1)").execute(pool).await.expect("src");
-        sqlx::query("INSERT INTO manga (url, title, in_library, source) VALUES ('/m','M',TRUE,1)").execute(pool).await.expect("manga");
-        sqlx::query("INSERT INTO chapter (url, name, source_order, manga) VALUES ('/m/c1','Ch1',0,1)").execute(pool).await.expect("ch");
-        db
-    }
-
-    #[tokio::test]
-    async fn enqueue_dequeue_clear_roundtrip() {
-        let db = seed().await;
-        let mgr = DownloadManager::new(db, Arc::new(StubFetcher), std::env::temp_dir());
-
-        mgr.enqueue_chapter(1).await.expect("enqueue");
-        let jobs = mgr.snapshot().await;
-        assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].chapter_id, 1);
-        assert_eq!(jobs[0].manga_title, "M");
-
-        // duplicate enqueue is a no-op
-        mgr.enqueue_chapter(1).await.expect("enqueue again");
-        assert_eq!(mgr.snapshot().await.len(), 1);
-
-        mgr.dequeue_chapter(1).await.expect("dequeue");
-        assert!(mgr.snapshot().await.is_empty());
-
-        mgr.enqueue_chapter(1).await.expect("enqueue 2");
-        mgr.clear().await;
-        assert!(mgr.snapshot().await.is_empty());
-    }
-
-    #[tokio::test]
-    async fn enqueue_unknown_chapter_errors() {
-        let db = seed().await;
-        let mgr = DownloadManager::new(db, Arc::new(StubFetcher), std::env::temp_dir());
-        let err = mgr.enqueue_chapter(999).await.unwrap_err();
-        assert!(err.contains("not found"), "got: {err}");
-    }
-
-    #[tokio::test]
-    async fn start_stop_marks_jobs_failed_with_stub_fetcher() {
-        let db = seed().await;
-        let mgr = DownloadManager::new(db.clone(), Arc::new(StubFetcher), std::env::temp_dir());
-        let mut rx = mgr.subscribe();
-
-        mgr.enqueue_chapter(1).await.expect("enqueue");
-        mgr.start().await;
-        assert!(mgr.is_running());
-
-        // wait until the job leaves the queue (processed) or times out
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
-        let mut seen_snapshot = false;
-        while tokio::time::Instant::now() < deadline {
-            let ev = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await;
-            match ev {
-                Ok(Ok(DownloadEvent::Snapshot { queue, .. })) => {
-                    seen_snapshot = true;
-                    if queue.is_empty() {
-                        break;
-                    }
-                    // the job stays in the queue with Error state
-                    if queue[0].state == JobState::Error || queue[0].state == JobState::Finished {
-                        break;
-                    }
-                }
-                Ok(Ok(_)) => {}
-                _ => break,
-            }
-        }
-        assert!(seen_snapshot, "must see snapshots from the worker");
-        mgr.stop().await;
-        // stub fetcher → job failed, not downloaded
-        let downloaded: bool = sqlx::query_scalar("SELECT is_downloaded FROM chapter WHERE id = 1").fetch_one(db.pool()).await.expect("flag");
-        assert!(!downloaded, "stub fetcher cannot download");
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Downloads-dir reconciliation
 // ---------------------------------------------------------------------------
@@ -814,25 +725,20 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
             // under JA) is the user's data to fix, not something to paper
             // over with a source-blind title match.
             let sql = bind_placeholders("SELECT id, url FROM manga WHERE source = ? AND title = ? LIMIT 1");
-            let row: Option<(i32, String)> = match sqlx::query_as(&sql)
+            let row: Option<(i32, String)> = sqlx::query_as(&sql)
                 .bind(source_id)
                 .bind(&manga_title)
                 .fetch_optional(db.pool())
                 .await
-            {
-                Ok(v) => v,
-                Err(_) => None,
-            };
+                .unwrap_or_default();
             let Some((_manga_id, manga_url)) = row else {
                 tracing::warn!(%manga_title, "downloads: no matching manga row");
                 continue;
             };
             // 2) all variants sharing the same url
             let sql = bind_placeholders("SELECT id FROM manga WHERE url = ?");
-            let variants: Vec<(i32,)> = match sqlx::query_as(&sql).bind(&manga_url).fetch_all(db.pool()).await {
-                Ok(v) => v,
-                Err(_) => Vec::new(),
-            };
+            let variants: Vec<(i32,)> =
+                sqlx::query_as(&sql).bind(&manga_url).fetch_all(db.pool()).await.unwrap_or_default();
             let variant_ids: Vec<i32> = variants.iter().map(|(id,)| *id).collect();
             for vid in &variant_ids {
                 matched_mangas.insert(*vid);
@@ -1007,61 +913,61 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                     // page rows from the archive so the downloaded CBZ is
                     // readable: image_url points at the server's image
                     // endpoint, which extracts the bytes from the archive.
-                    if let Some(cid) = res {
-                        if entry.path().is_file() {
-                            let pages = crate::source::local::list_archive_pages(&entry.path());
-                            let page_count = pages.len() as i32;
-                            let img_base = format!("/api/v1/manga/{vid}/chapter/{source_order}/page");
-                            for (pi, pname) in &pages {
-                                // real upsert by (chapter, index) — the page
-                                // table has no unique constraint, so
-                                // ON CONFLICT would silently re-insert.
-                                let image_url = format!("{img_base}/{pi}/image");
-                                let sql = bind_placeholders("SELECT id FROM page WHERE chapter = ? AND index = ?");
-                                let existing_page: Option<(i32,)> = sqlx::query_as(&sql)
-                                    .bind(cid)
-                                    .bind(*pi as i32)
-                                    .fetch_optional(db.pool())
-                                    .await
-                                    .ok()
-                                    .flatten();
-                                match existing_page {
-                                    Some((pid,)) => {
-                                        let sql = bind_placeholders(
-                                            "UPDATE page SET url = ?, image_url = ? WHERE id = ?",
-                                        );
-                                        let _ = sqlx::query(&sql)
-                                            .bind(&pname)
-                                            .bind(&image_url)
-                                            .bind(pid)
-                                            .execute(db.pool())
-                                            .await;
-                                    }
-                                    None => {
-                                        let sql = bind_placeholders(
-                                            "INSERT INTO page (index, url, image_url, chapter) VALUES (?, ?, ?, ?)",
-                                        );
-                                        let _ = sqlx::query(&sql)
-                                            .bind(*pi as i32)
-                                            .bind(&pname)
-                                            .bind(&image_url)
-                                            .bind(cid)
-                                            .execute(db.pool())
-                                            .await;
-                                    }
+                    if let Some(cid) = res
+                        && entry.path().is_file()
+                    {
+                        let pages = crate::source::local::list_archive_pages(&entry.path());
+                        let page_count = pages.len() as i32;
+                        let img_base = format!("/api/v1/manga/{vid}/chapter/{source_order}/page");
+                        for (pi, pname) in &pages {
+                            // real upsert by (chapter, index) — the page
+                            // table has no unique constraint, so
+                            // ON CONFLICT would silently re-insert.
+                            let image_url = format!("{img_base}/{pi}/image");
+                            let sql = bind_placeholders("SELECT id FROM page WHERE chapter = ? AND index = ?");
+                            let existing_page: Option<(i32,)> = sqlx::query_as(&sql)
+                                .bind(cid)
+                                .bind(*pi as i32)
+                                .fetch_optional(db.pool())
+                                .await
+                                .ok()
+                                .flatten();
+                            match existing_page {
+                                Some((pid,)) => {
+                                    let sql = bind_placeholders(
+                                        "UPDATE page SET url = ?, image_url = ? WHERE id = ?",
+                                    );
+                                    let _ = sqlx::query(&sql)
+                                        .bind(pname)
+                                        .bind(&image_url)
+                                        .bind(pid)
+                                        .execute(db.pool())
+                                        .await;
+                                }
+                                None => {
+                                    let sql = bind_placeholders(
+                                        "INSERT INTO page (index, url, image_url, chapter) VALUES (?, ?, ?, ?)",
+                                    );
+                                    let _ = sqlx::query(&sql)
+                                        .bind(*pi as i32)
+                                        .bind(pname)
+                                        .bind(&image_url)
+                                        .bind(cid)
+                                        .execute(db.pool())
+                                        .await;
                                 }
                             }
-                            // Reflect the page count on the chapter row —
-                            // the reader relies on it for paged-mode state.
-                            let sql = bind_placeholders(
-                                "UPDATE chapter SET page_count = ? WHERE id = ?",
-                            );
-                            let _ = sqlx::query(&sql)
-                                .bind(page_count)
-                                .bind(cid)
-                                .execute(db.pool())
-                                .await;
                         }
+                        // Reflect the page count on the chapter row —
+                        // the reader relies on it for paged-mode state.
+                        let sql = bind_placeholders(
+                            "UPDATE chapter SET page_count = ? WHERE id = ?",
+                        );
+                        let _ = sqlx::query(&sql)
+                            .bind(page_count)
+                            .bind(cid)
+                            .execute(db.pool())
+                            .await;
                     }
                 }
             }
@@ -1222,11 +1128,100 @@ fn image_ext_from_content_type(bytes: &[u8]) -> &'static str {
         "jpg"
     } else if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
         "webp"
-    } else if bytes.starts_with(&[b'G', b'I', b'F']) {
+    } else if bytes.starts_with(b"GIF") {
         "gif"
     } else if bytes.len() > 8 && &bytes[4..8] == b"ftyp" {
         "avif"
     } else {
         "jpg"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::source::StubFetcher;
+    use suwayomi_core::db::Db;
+
+    async fn seed() -> Db {
+        let db = Db::connect_embedded(None).await.expect("connect");
+        db.migrate().await.expect("migrate");
+        let pool = db.pool();
+        sqlx::query("INSERT INTO extension (name, pkg_name, version_name, version_code, lang, content_warning) VALUES ('E','p','1',1,'en',0)")
+            .execute(pool)
+            .await
+            .expect("ext");
+        sqlx::query("INSERT INTO source (name, lang, extension) VALUES ('S','en',1)").execute(pool).await.expect("src");
+        sqlx::query("INSERT INTO manga (url, title, in_library, source) VALUES ('/m','M',TRUE,1)").execute(pool).await.expect("manga");
+        sqlx::query("INSERT INTO chapter (url, name, source_order, manga) VALUES ('/m/c1','Ch1',0,1)").execute(pool).await.expect("ch");
+        db
+    }
+
+    #[tokio::test]
+    async fn enqueue_dequeue_clear_roundtrip() {
+        let db = seed().await;
+        let mgr = DownloadManager::new(db, Arc::new(StubFetcher), std::env::temp_dir());
+
+        mgr.enqueue_chapter(1).await.expect("enqueue");
+        let jobs = mgr.snapshot().await;
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].chapter_id, 1);
+        assert_eq!(jobs[0].manga_title, "M");
+
+        // duplicate enqueue is a no-op
+        mgr.enqueue_chapter(1).await.expect("enqueue again");
+        assert_eq!(mgr.snapshot().await.len(), 1);
+
+        mgr.dequeue_chapter(1).await.expect("dequeue");
+        assert!(mgr.snapshot().await.is_empty());
+
+        mgr.enqueue_chapter(1).await.expect("enqueue 2");
+        mgr.clear().await;
+        assert!(mgr.snapshot().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn enqueue_unknown_chapter_errors() {
+        let db = seed().await;
+        let mgr = DownloadManager::new(db, Arc::new(StubFetcher), std::env::temp_dir());
+        let err = mgr.enqueue_chapter(999).await.unwrap_err();
+        assert!(err.contains("not found"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn start_stop_marks_jobs_failed_with_stub_fetcher() {
+        let db = seed().await;
+        let mgr = DownloadManager::new(db.clone(), Arc::new(StubFetcher), std::env::temp_dir());
+        let mut rx = mgr.subscribe();
+
+        mgr.enqueue_chapter(1).await.expect("enqueue");
+        mgr.start().await;
+        assert!(mgr.is_running());
+
+        // wait until the job leaves the queue (processed) or times out
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        let mut seen_snapshot = false;
+        while tokio::time::Instant::now() < deadline {
+            let ev = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await;
+            match ev {
+                Ok(Ok(DownloadEvent::Snapshot { queue, .. })) => {
+                    seen_snapshot = true;
+                    if queue.is_empty() {
+                        break;
+                    }
+                    // the job stays in the queue with Error state
+                    if queue[0].state == JobState::Error || queue[0].state == JobState::Finished {
+                        break;
+                    }
+                }
+                Ok(Ok(_)) => {}
+                _ => break,
+            }
+        }
+        assert!(seen_snapshot, "must see snapshots from the worker");
+        mgr.stop().await;
+        // stub fetcher → job failed, not downloaded
+        let downloaded: bool = sqlx::query_scalar("SELECT is_downloaded FROM chapter WHERE id = 1").fetch_one(db.pool()).await.expect("flag");
+        assert!(!downloaded, "stub fetcher cannot download");
     }
 }

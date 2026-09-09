@@ -380,10 +380,17 @@ mod tests {
         (db, FakeFetcher::default())
     }
 
+    /// 测试用 GraphQLState：webui/data 目录指向独立的临时目录（更新器不用
+    /// WebUI，data 目录仅作 DownloadManager 的根，避免污染工作目录）。
+    fn test_state(db: Db, fetcher: Arc<dyn SourceFetcher>) -> GraphQLState {
+        let tmp = std::env::temp_dir().join(format!("updater-test-{}", std::process::id()));
+        GraphQLState::new(db, ServerConfig::default(), fetcher, None, tmp.join("webui"), tmp.join("data"))
+    }
+
     #[tokio::test]
     async fn updater_inserts_chapters_and_emits_events() {
         let (db, fetcher) = setup().await;
-        let state = GraphQLState::new(db.clone(), ServerConfig::default(), Arc::new(fetcher), None);
+        let state = test_state(db.clone(), Arc::new(fetcher));
         let mut rx = state.update.subscribe();
 
         state.update.start(None).await;
@@ -424,7 +431,7 @@ mod tests {
     #[tokio::test]
     async fn updater_marks_manga_failed_when_source_errors() {
         let (db, _fetcher) = setup().await;
-        let state = GraphQLState::new(db.clone(), ServerConfig::default(), Arc::new(suwayomi_domain::source::StubFetcher), None);
+        let state = test_state(db.clone(), Arc::new(suwayomi_domain::source::StubFetcher));
         let mut rx = state.update.subscribe();
         state.update.start(None).await;
 

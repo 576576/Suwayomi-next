@@ -238,46 +238,46 @@ impl SourceFetcher for HttpSandboxFetcher {
         let mut updated = manga.clone();
         if fetch_details {
             let resp = self.client.get(&url).send().await.map_err(DomainError::from)?;
-            if resp.status().is_success() {
-                if let Ok(m) = resp.json::<SandboxManga>().await {
-                    updated.title = if m.title.is_empty() { manga.title.clone() } else { m.title };
-                    updated.thumbnail_url = m.thumbnail_url.or_else(|| manga.thumbnail_url.clone());
-                    updated.author = m.author.or_else(|| manga.author.clone());
-                    updated.artist = m.artist.or_else(|| manga.artist.clone());
-                    updated.description = m.description.or_else(|| manga.description.clone());
-                    if m.status != 0 {
-                        updated.status = m.status;
-                    }
-                    // The sandbox returns `genre` as a ", "-joined string
-                    // (mangaToMap). Without this copy, every online manga
-                    // ended up with an empty genre column in the DB even
-                    // after the detail page re-fetched the source.
-                    if let Some(g) = m.genre {
-                        if !g.is_empty() {
-                            updated.genre = Some(g);
-                        }
-                    }
+            if resp.status().is_success()
+                && let Ok(m) = resp.json::<SandboxManga>().await
+            {
+                updated.title = if m.title.is_empty() { manga.title.clone() } else { m.title };
+                updated.thumbnail_url = m.thumbnail_url.or_else(|| manga.thumbnail_url.clone());
+                updated.author = m.author.or_else(|| manga.author.clone());
+                updated.artist = m.artist.or_else(|| manga.artist.clone());
+                updated.description = m.description.or_else(|| manga.description.clone());
+                if m.status != 0 {
+                    updated.status = m.status;
+                }
+                // The sandbox returns `genre` as a ", "-joined string
+                // (mangaToMap). Without this copy, every online manga
+                // ended up with an empty genre column in the DB even
+                // after the detail page re-fetched the source.
+                if let Some(g) = m.genre
+                    && !g.is_empty()
+                {
+                    updated.genre = Some(g);
                 }
             }
         }
         let mut chapters_out = Vec::new();
         if fetch_chapters {
             let resp = self.client.get(format!("{url}/chapters")).send().await.map_err(DomainError::from)?;
-            if resp.status().is_success() {
-                if let Ok(cs) = resp.json::<SandboxChapters>().await {
-                    chapters_out = cs
-                        .chapters
-                        .into_iter()
-                        .map(|c| SChapter {
-                            url: c.url,
-                            name: c.name,
-                            date_upload: c.date_upload,
-                            chapter_number: c.chapter_number,
-                            scanlator: c.scanlator,
-                            memo: serde_json::Value::Null,
-                        })
-                        .collect();
-                }
+            if resp.status().is_success()
+                && let Ok(cs) = resp.json::<SandboxChapters>().await
+            {
+                chapters_out = cs
+                    .chapters
+                    .into_iter()
+                    .map(|c| SChapter {
+                        url: c.url,
+                        name: c.name,
+                        date_upload: c.date_upload,
+                        chapter_number: c.chapter_number,
+                        scanlator: c.scanlator,
+                        memo: serde_json::Value::Null,
+                    })
+                    .collect();
             }
         }
         Ok((updated, chapters_out))
@@ -359,13 +359,13 @@ fn kill_port_listener(port: u16) {
         let text = String::from_utf8_lossy(&out.stdout);
         for line in text.lines() {
             let l = line.to_ascii_lowercase();
-            if l.contains(&format!(":{port}")) && l.contains("listening") {
-                if let Some(pid) = line.split_whitespace().last() {
-                    let _ = Command::new("taskkill")
-                        .args(["/F", "/PID", pid])
-                        .creation_flags(0x08000000)
-                        .output();
-                }
+            if l.contains(&format!(":{port}")) && l.contains("listening")
+                && let Some(pid) = line.split_whitespace().last()
+            {
+                let _ = Command::new("taskkill")
+                    .args(["/F", "/PID", pid])
+                    .creation_flags(0x08000000)
+                    .output();
             }
         }
     }
@@ -396,23 +396,23 @@ fn java_bin(root: &std::path::Path) -> Option<std::path::PathBuf> {
 /// 4. `java` on PATH.
 fn resolve_java(jar_path: &str) -> std::path::PathBuf {
     // 1) explicit env override
-    if let Ok(java) = std::env::var("SUWAYOMI_JAVA") {
-        if !java.is_empty() {
-            let p = std::path::PathBuf::from(&java);
-            if p.is_file() || p.with_extension("exe").is_file() {
-                return p;
-            }
+    if let Ok(java) = std::env::var("SUWAYOMI_JAVA")
+        && !java.is_empty()
+    {
+        let p = std::path::PathBuf::from(&java);
+        if p.is_file() || p.with_extension("exe").is_file() {
+            return p;
         }
     }
     // 2) bundled jre — jre/ sits at the release root, i.e. either next to the
     //    executable or one level up from `bin/` (where exe/jar live).
     let mut roots: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            roots.push(dir.to_path_buf()); // exe at release root
-            if let Some(p) = dir.parent() {
-                roots.push(p.to_path_buf()); // exe inside bin/ → root is one up
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        roots.push(dir.to_path_buf()); // exe at release root
+        if let Some(p) = dir.parent() {
+            roots.push(p.to_path_buf()); // exe inside bin/ → root is one up
         }
     }
     let jar = std::path::Path::new(jar_path);
@@ -428,10 +428,10 @@ fn resolve_java(jar_path: &str) -> std::path::PathBuf {
         }
     }
     // 3) JAVA_HOME
-    if let Ok(jh) = std::env::var("JAVA_HOME") {
-        if let Some(p) = java_bin(std::path::Path::new(&jh)) {
-            return p;
-        }
+    if let Ok(jh) = std::env::var("JAVA_HOME")
+        && let Some(p) = java_bin(std::path::Path::new(&jh))
+    {
+        return p;
     }
     // 4) PATH
     std::path::PathBuf::from("java")

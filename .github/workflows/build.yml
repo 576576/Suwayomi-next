@@ -1,0 +1,219 @@
+name: Build
+
+# 可复用构建工作流（workflow_call）：所有 target 的编译 + 打包都在这里完成。
+# 调用方 release.yml 负责算版本号、解析 WebUI 制品、创建 Release；本文件只负责把包做出来。
+#
+# pack_mode 对应合并前两个 workflow 各自的产物约定（注意：两种模式都能构建全部 target）：
+#   channel —— 旧 release.yml（手动发布）：产物名带通道段 Suwayomi-{VER}-{CH}-{TGT}；
+#              JRE 仅在 bundle_jre=true 且平台为 Windows 时，另外多出一个 +jre 包。
+#   alpha   —— 旧 release-alpha.yml（推送自动构建）：产物名 Suwayomi-{VER}-{TGT}+jre；
+#              Windows / Linux 都捆绑 Temurin JRE 25。
+# 通道语义 / 版本规则 / 捆绑细节见 docs/release.md。
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: alpha / beta / release —— 写入编译期 SUWAYOMI_BUILD_TYPE，并作为产物名的通道段
+        required: true
+        type: string
+      pack_mode:
+        description: channel = 手动发布产物约定；alpha = 自动构建产物约定
+        required: true
+        type: string
+      version_name:
+        description: 版本名（release/beta 为 3.y.z，alpha 为 r{code}）
+        required: true
+        type: string
+      count:
+        description: 提交数（versionCode = count + 3000，由 build.rs 推导）
+        required: true
+        type: string
+      webui_url:
+        description: 捆绑的 WebUI zip 下载地址（调用方解析一次，所有 target 复用同一份）
+        required: true
+        type: string
+      targets:
+        description: 构建矩阵 include 数组（JSON 字符串）
+        required: true
+        type: string
+      bundle_jre:
+        description: pack_mode=channel 时是否额外产出 Windows +jre 包
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    name: 构建 ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(inputs.targets) }}
+    env:
+      CARGO_TERM_COLOR: always
+      SUWAYOMI_VERSION_COUNT: ${{ inputs.count }}
+      # 合并前的自动构建（alpha）不传 VERSION_NAME，由 build.rs 回退到 r{versionCode}；
+      # 此处两种模式统一传入，值与回退结果完全一致（调用方算出的 alpha 版本名即 r{count+3000}）。
+      SUWAYOMI_VERSION_NAME: ${{ inputs.version_name }}
+      SUWAYOMI_BUILD_TYPE: ${{ inputs.channel }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: 安装交叉编译工具链
+        if: matrix.rust_target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+      - name: 安装桌面壳系统依赖（Linux）
+        # 仅 linux-x64 需桌面壳（webkit2gtk + appindicator）；aarch64 只发 server
+        if: matrix.rust_target == 'x86_64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev
+      - name: 安装 JDK
+        # 构建 bin/jvm-sandbox.jar（gradle toolchain 25 与捆绑 JRE 一致）。
+        # 自动构建的矩阵只有 windows-x64 / linux-x64（两者都命中本条件），故与旧的"无条件安装"等价。
+        if: matrix.os == 'windows-latest' || matrix.rust_target == 'x86_64-unknown-linux-gnu'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: 构建
+        shell: bash
+        run: |
+          cargo build --release -p suwayomi-server --target ${{ matrix.rust_target }}
+      - name: 打包
+        id: pack
+        shell: bash
+        run: |
+          VER="${{ inputs.version_name }}"
+          CH="${{ inputs.channel }}"
+          TGT="${{ matrix.target }}"
+          MODE="${{ inputs.pack_mode }}"
+          BIN="target/${{ matrix.rust_target }}/release/suwayomi-server"
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then BIN="${BIN}.exe"; fi
+
+          IS_WIN="false"
+          [ "${{ matrix.os }}" = "windows-latest" ] && IS_WIN="true"
+
+          # 桌面壳（Tauri 托盘）：Windows 全支持；Linux 仅 x86_64 原生构建
+          DESKTOP_SHELL="false"
+          if [ "$IS_WIN" = "true" ] || [ "${{ matrix.rust_target }}" = "x86_64-unknown-linux-gnu" ]; then
+            DESKTOP_SHELL="true"
+          else
+            echo "WARN: ${{ matrix.rust_target }} 不提供桌面壳（仅 Windows 与 linux-x64），只发 server"
+          fi
+
+          # 产物名两套约定（见文件头 pack_mode 说明）
+          if [ "$MODE" = "alpha" ]; then
+            STAGE="dist/Suwayomi-${VER}-${TGT}+jre"
+            ART_NAME="Suwayomi-${VER}-${TGT}"
+          else
+            STAGE="dist/Suwayomi-${VER}-${CH}-${TGT}"
+            ART_NAME="Suwayomi-${VER}-${CH}-${TGT}"
+          fi
+
+          mkdir -p "$STAGE/bin"
+          cp "$BIN" "$STAGE/bin/"
+          if [ "$DESKTOP_SHELL" = "true" ]; then
+            bash suwayomi-tray/build-tray.sh
+            cp suwayomi-tray/target/release/suwayomi "$STAGE/" 2>/dev/null \
+              || cp suwayomi-tray/target/release/suwayomi.exe "$STAGE/" 2>/dev/null \
+              || echo "WARN: desktop shell binary not found"
+          fi
+          if [ "$DESKTOP_SHELL" = "true" ]; then
+            # 扩展沙盒 jar 进 bin/（server 自动查找）；跨平台字节码，win/linux-x64 共用
+            cd jvm-sandbox && ./gradlew -q jar --no-daemon && cd ..
+            cp jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar "$STAGE/bin/jvm-sandbox.jar"
+          fi
+          # oliphaunt 原生 runtime（全平台捆绑；编译期 OUT_DIR 仅 runner 存在，运行时回退 exe 上级 bundled 目录）
+          RES=$(find target -path "*/release/build/suwayomi-core-*/out/oliphaunt/resources" -type d 2>/dev/null | head -1)
+          if [ -n "$RES" ] && [ -d "$RES" ]; then
+            mkdir -p "$STAGE/oliphaunt-runtime"
+            cp -r "$RES" "$STAGE/oliphaunt-runtime/resources"
+            echo "bundled oliphaunt runtime from $RES"
+          else
+            echo "WARN: no oliphaunt resources found to bundle"
+          fi
+
+          # WebUI：调用方已按通道解析好，所有 target 用同一份
+          curl -sL -o webui.zip "${{ inputs.webui_url }}"
+          mkdir -p "$STAGE/webui"
+          python3 -c "import zipfile; zipfile.ZipFile('webui.zip').extractall('$STAGE/webui')"
+          rm -f webui.zip
+          mkdir -p "$STAGE/data/autobackup" "$STAGE/data/downloads" "$STAGE/data/local"
+
+          zip_dir() {
+            powershell -Command "Compress-Archive -Path '$1' -DestinationPath '$2' -Force"
+          }
+
+          ARTIFACTS=""
+          if [ "$MODE" = "alpha" ]; then
+            # 自动构建：两平台都捆绑 Temurin JRE 25 到 jre/（产物名固定带 +jre）
+            if [ "$IS_WIN" = "true" ]; then
+              curl -sL -o temurin-jre.zip "https://api.adoptium.net/v3/binary/latest/25/ga/windows/x64/jre/hotspot/normal/eclipse"
+              python3 -c "import os,zipfile; z=zipfile.ZipFile('temurin-jre.zip'); t=z.namelist()[0].split('/')[0]; z.extractall('jre-x'); os.rename('jre-x/'+t,'jre'); z.close()"
+              rm -rf jre-x temurin-jre.zip
+            else
+              curl -sL -o temurin-jre.tar.gz "https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jre/hotspot/normal/eclipse"
+              mkdir -p jre-x && tar -xzf temurin-jre.tar.gz -C jre-x
+              mv jre-x/jdk-* jre
+              rm -rf jre-x temurin-jre.tar.gz
+            fi
+            cp -r jre "$STAGE/jre"
+            rm -rf jre
+
+            if [ "$IS_WIN" = "true" ]; then
+              zip_dir "$STAGE" "${STAGE}.zip"
+              ARTIFACTS="${STAGE}.zip"
+            else
+              tar -C dist -czf "${STAGE}.tar.gz" "Suwayomi-${VER}-${TGT}+jre"
+              ARTIFACTS="${STAGE}.tar.gz"
+            fi
+          else
+            # 手动通道：基础包；Windows 勾选 JRE 时另出一个独立的 +jre 包
+            if [ "$IS_WIN" = "false" ]; then
+              tar -C dist -czf "dist/Suwayomi-${VER}-${CH}-${TGT}.tar.gz" "Suwayomi-${VER}-${CH}-${TGT}"
+              ARTIFACTS="dist/Suwayomi-${VER}-${CH}-${TGT}.tar.gz"
+            else
+              zip_dir "dist/Suwayomi-${VER}-${CH}-${TGT}" "dist/Suwayomi-${VER}-${CH}-${TGT}.zip"
+              ARTIFACTS="dist/Suwayomi-${VER}-${CH}-${TGT}.zip"
+
+              if [ "${{ inputs.bundle_jre }}" = "true" ]; then
+                curl -sL -o temurin-jre.zip "https://api.adoptium.net/v3/binary/latest/25/ga/windows/x64/jre/hotspot/normal/eclipse"
+                python3 -c "import os,zipfile; z=zipfile.ZipFile('temurin-jre.zip'); t=z.namelist()[0].split('/')[0]; z.extractall('jre-x'); os.rename('jre-x/'+t,'jre'); z.close()"
+                rm -rf jre-x temurin-jre.zip
+                ST="dist/Suwayomi-${VER}-${CH}-${TGT}+jre"
+                cp -r "$STAGE" "$ST"
+                cp -r jre "$ST/jre"
+                zip_dir "$ST" "${ST}.zip"
+                ARTIFACTS+=$'\n'"${ST}.zip"
+                rm -rf jre
+              fi
+            fi
+          fi
+
+          {
+            echo "artifacts<<ARTIFACTS_EOF"
+            printf '%s\n' "$ARTIFACTS"
+            echo "ARTIFACTS_EOF"
+            echo "artifact_name=$ART_NAME"
+          } >> "$GITHUB_OUTPUT"
+          echo "packed artifacts:"
+          echo "$ARTIFACTS" | sed 's/^/  /'
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.pack.outputs.artifact_name }}
+          path: ${{ steps.pack.outputs.artifacts }}

@@ -1,9 +1,15 @@
 name: Release
 
-# 手动发布 CI（channel + 目标复选）。自动 alpha 走 release-alpha.yml。
-# 通道语义/版本规则/产物命名/WebUI 分流等背景见 docs/release.md。
+# 发布 CI（唯一入口，合并了旧的 release.yml 与 release-alpha.yml）：
+#   - 推送 main/dev   → 自动构建 alpha（windows-x64 + linux-x64，均捆绑 JRE），行为同旧 Auto build
+#   - 手动 dispatch   → alpha / beta / release（通道 + 目标复选 + 可选 +jre），行为同旧 Release
+# 所有编译与打包委托给可复用工作流 .github/workflows/build.yml；本文件只负责
+# 算版本号、解析 WebUI 制品、把构建结果发布成 Release。
+# 通道语义 / 版本规则 / 产物命名 / WebUI 分流等背景见 docs/release.md。
 
 on:
+  push:
+    branches: [main, dev]
   workflow_dispatch:
     inputs:
       channel:
@@ -48,9 +54,15 @@ jobs:
     name: 准备构建参数
     runs-on: ubuntu-latest
     permissions:
+      # actions: write 供下面那段 run 标题 PATCH 用（当前是空 token 的死代码，见该步骤注释）；
+      # contents: read 是 checkout 所需：合并前推送流程的 prep 走仓库默认权限，这里显式补上，
+      # 避免显式 permissions 块把它压成 none（只读权限，不会改变任何步骤的行为）。
       actions: write
+      contents: read
     outputs:
+      flow: ${{ steps.out.outputs.flow }}
       channel: ${{ steps.out.outputs.channel }}
+      pack_mode: ${{ steps.out.outputs.pack_mode }}
       targets: ${{ steps.out.outputs.targets }}
       version_name: ${{ steps.out.outputs.version_name }}
       version_code: ${{ steps.out.outputs.version_code }}
@@ -68,9 +80,31 @@ jobs:
           fetch-depth: 0
       - id: out
         run: |
-          CHANNEL="${{ github.event.inputs.channel }}"
+          EVENT="${{ github.event_name }}"
 
-          COUNT="${{ github.event.inputs.version_count }}"
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            FLOW="manual"
+            PACK_MODE="channel"
+            CHANNEL="${{ github.event.inputs.channel }}"
+            COUNT="${{ github.event.inputs.version_count }}"
+            BUNDLE_JRE="${{ github.event.inputs.bundle_jre }}"
+
+            SEL=""
+            [ "${{ github.event.inputs.build_windows_x64 }}" = "true" ] && SEL="$SEL windows-x64"
+            [ "${{ github.event.inputs.build_linux_x64 }}" = "true" ] && SEL="$SEL linux-x64"
+            [ "${{ github.event.inputs.build_linux_arm64 }}" = "true" ] && SEL="$SEL linux-arm64"
+            [ "${{ github.event.inputs.build_macos_x64 }}" = "true" ] && SEL="$SEL macos-x64"
+            [ "${{ github.event.inputs.build_macos_arm64 }}" = "true" ] && SEL="$SEL macos-arm64"
+          else
+            # 推送 main/dev：自动 alpha，固定 windows-x64 + linux-x64（均捆绑 JRE）
+            FLOW="auto"
+            PACK_MODE="alpha"
+            CHANNEL="alpha"
+            COUNT=""
+            BUNDLE_JRE="true"
+            SEL="windows-x64 linux-x64"
+          fi
+
           if [ -z "$COUNT" ]; then COUNT="$(git rev-list --count HEAD)"; fi
 
           VER_CODE="$((COUNT+3000))"
@@ -88,13 +122,6 @@ jobs:
             alpha)   TAG="${VER_NAME}-alpha.${{ github.run_id }}"; PRE="true" ;;
             *)       echo "::error::未知通道 $CHANNEL"; exit 1 ;;
           esac
-
-          SEL=""
-          [ "${{ github.event.inputs.build_windows_x64 }}" = "true" ] && SEL="$SEL windows-x64"
-          [ "${{ github.event.inputs.build_linux_x64 }}" = "true" ] && SEL="$SEL linux-x64"
-          [ "${{ github.event.inputs.build_linux_arm64 }}" = "true" ] && SEL="$SEL linux-arm64"
-          [ "${{ github.event.inputs.build_macos_x64 }}" = "true" ] && SEL="$SEL macos-x64"
-          [ "${{ github.event.inputs.build_macos_arm64 }}" = "true" ] && SEL="$SEL macos-arm64"
 
           INCLUDE="$(python3 - "$SEL" <<'PY'
           import json, sys
@@ -115,28 +142,38 @@ jobs:
             exit 1
           fi
 
-          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
-          echo "targets=$INCLUDE" >> "$GITHUB_OUTPUT"
-          echo "version_name=$VER_NAME" >> "$GITHUB_OUTPUT"
-          echo "version_code=$VER_CODE" >> "$GITHUB_OUTPUT"
-          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$PRE" >> "$GITHUB_OUTPUT"
-          echo "bundle_jre=${{ github.event.inputs.bundle_jre }}" >> "$GITHUB_OUTPUT"
-          echo "手动发布: $CHANNEL $VER_NAME (code $VER_CODE, commits $COUNT) -> $TAG targets=$SEL jre=${{ github.event.inputs.bundle_jre }}"
+          {
+            echo "flow=$FLOW"
+            echo "channel=$CHANNEL"
+            echo "pack_mode=$PACK_MODE"
+            echo "targets=$INCLUDE"
+            echo "version_name=$VER_NAME"
+            echo "version_code=$VER_CODE"
+            echo "count=$COUNT"
+            echo "tag=$TAG"
+            echo "prerelease=$PRE"
+            echo "bundle_jre=$BUNDLE_JRE"
+          } >> "$GITHUB_OUTPUT"
+          echo "$FLOW 发布: $CHANNEL $VER_NAME (code $VER_CODE, commits $COUNT) -> $TAG"
+          echo "   targets=$SEL jre=$BUNDLE_JRE pack_mode=$PACK_MODE"
 
-          # 动态更新 workflow run 标题（版本号在 shell 内算出，run-name 拿不到）；失败不阻塞
-          curl -s -X PATCH "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
-            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -d "{\"name\":\"Release ${VER_NAME}\"}" >/dev/null 2>&1 || true
+          # 动态更新 workflow run 标题（版本号在 shell 内算出，run-name 拿不到）。
+          # 注：这里没有把 GITHUB_TOKEN 注入 env，${GITHUB_TOKEN} 恒为空 → 请求 401 被 || true 吞掉，
+          # run 标题实际一直是默认值。合并 CI 时原样保留（不改行为）；若要生效，补 env: GH_TOKEN: ${{ github.token }}。
+          if [ "$FLOW" = "manual" ]; then
+            curl -s -X PATCH "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -d "{\"name\":\"Release ${VER_NAME}\"}" >/dev/null 2>&1 || true
+          fi
 
       - name: 解析捆绑的 WebUI 制品
         id: webui
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          case "${{ github.event.inputs.channel }}" in
+          # 手动 release 跟最新正式版；alpha/beta（含推送自动构建）跟最新构建
+          case "${{ steps.out.outputs.channel }}" in
             release) KIND="stable" ;;
             *)       KIND="build"  ;;
           esac
@@ -149,141 +186,17 @@ jobs:
           echo "捆绑 WebUI: $TAG（kind=$KIND）"
 
   build:
-    name: 构建 ${{ matrix.target }}
+    name: 构建（复用 build.yml）
     needs: prep
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJson(needs.prep.outputs.targets) }}
-    env:
-      SUWAYOMI_VERSION_COUNT: ${{ needs.prep.outputs.count }}
-      SUWAYOMI_VERSION_NAME: ${{ needs.prep.outputs.version_name }}
-      SUWAYOMI_BUILD_TYPE: ${{ needs.prep.outputs.channel }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - name: 安装 Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust_target }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-      - name: 安装交叉编译工具链
-        if: matrix.rust_target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-      - name: 安装桌面壳系统依赖（Linux）
-        # 仅 linux-x64 需桌面壳（webkit2gtk + appindicator）；aarch64 只发 server
-        if: matrix.rust_target == 'x86_64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
-            librsvg2-dev libxdo-dev libssl-dev
-      - name: 安装 JDK
-        # 构建 bin/jvm-sandbox.jar（gradle toolchain 25 与捆绑 JRE 一致）
-        if: matrix.os == 'windows-latest' || matrix.rust_target == 'x86_64-unknown-linux-gnu'
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '25'
-      - name: 构建
-        shell: bash
-        run: |
-          cargo build --release -p suwayomi-server --target ${{ matrix.rust_target }}
-      - name: 打包
-        id: pack
-        shell: bash
-        run: |
-          VER="${{ needs.prep.outputs.version_name }}"
-          CH="${{ needs.prep.outputs.channel }}"
-          TGT="${{ matrix.target }}"
-          BIN="target/${{ matrix.rust_target }}/release/suwayomi-server"
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then BIN="${BIN}.exe"; fi
-
-          IS_WIN="false"
-          [ "${{ matrix.os }}" = "windows-latest" ] && IS_WIN="true"
-
-          # 桌面壳（Tauri 托盘）：Windows 全支持；Linux 仅 x86_64 原生构建
-          DESKTOP_SHELL="false"
-          if [ "$IS_WIN" = "true" ] || [ "${{ matrix.rust_target }}" = "x86_64-unknown-linux-gnu" ]; then
-            DESKTOP_SHELL="true"
-          else
-            echo "WARN: ${{ matrix.rust_target }} 不提供桌面壳（仅 Windows 与 linux-x64），只发 server"
-          fi
-
-          STAGE="dist/Suwayomi-${VER}-${CH}-${TGT}"
-          mkdir -p "$STAGE/bin"
-          cp "$BIN" "$STAGE/bin/"
-          if [ "$DESKTOP_SHELL" = "true" ]; then
-            bash suwayomi-tray/build-tray.sh
-            cp suwayomi-tray/target/release/suwayomi "$STAGE/" 2>/dev/null \
-              || cp suwayomi-tray/target/release/suwayomi.exe "$STAGE/" 2>/dev/null \
-              || echo "WARN: desktop shell binary not found"
-          fi
-          if [ "$DESKTOP_SHELL" = "true" ]; then
-            # 扩展沙盒 jar 进 bin/（server 自动查找）；跨平台字节码，win/linux-x64 共用
-            cd jvm-sandbox && ./gradlew -q jar --no-daemon && cd ..
-            cp jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar "$STAGE/bin/jvm-sandbox.jar"
-          fi
-          # oliphaunt 原生 runtime（全平台捆绑；编译期 OUT_DIR 仅 runner 存在，运行时回退 exe 上级 bundled 目录）
-          RES=$(find target -path "*/release/build/suwayomi-core-*/out/oliphaunt/resources" -type d 2>/dev/null | head -1)
-          if [ -n "$RES" ] && [ -d "$RES" ]; then
-            mkdir -p "$STAGE/oliphaunt-runtime"
-            cp -r "$RES" "$STAGE/oliphaunt-runtime/resources"
-            echo "bundled oliphaunt runtime from $RES"
-          else
-            echo "WARN: no oliphaunt resources found to bundle"
-          fi
-
-          # WebUI：prep 已按通道解析好，所有 target 用同一份
-          curl -sL -o webui.zip "${{ needs.prep.outputs.webui_url }}"
-          mkdir -p "$STAGE/webui"
-          python3 -c "import zipfile; zipfile.ZipFile('webui.zip').extractall('$STAGE/webui')"
-          rm -f webui.zip
-          mkdir -p "$STAGE/data/autobackup" "$STAGE/data/downloads" "$STAGE/data/local"
-
-          zip_dir() {
-            powershell -Command "Compress-Archive -Path '$1' -DestinationPath '$2' -Force"
-          }
-
-          ARTIFACTS=""
-          if [ "$IS_WIN" = "false" ]; then
-            tar -C dist -czf "dist/Suwayomi-${VER}-${CH}-${TGT}.tar.gz" "Suwayomi-${VER}-${CH}-${TGT}"
-            ARTIFACTS="dist/Suwayomi-${VER}-${CH}-${TGT}.tar.gz"
-          else
-            zip_dir "dist/Suwayomi-${VER}-${CH}-${TGT}" "dist/Suwayomi-${VER}-${CH}-${TGT}.zip"
-            ARTIFACTS="dist/Suwayomi-${VER}-${CH}-${TGT}.zip"
-
-            # 可选 +jre：基础包 + Temurin JRE 25 jre/
-            if [ "${{ needs.prep.outputs.bundle_jre }}" = "true" ]; then
-              curl -sL -o temurin-jre.zip "https://api.adoptium.net/v3/binary/latest/25/ga/windows/x64/jre/hotspot/normal/eclipse"
-              python3 -c "import os,zipfile; z=zipfile.ZipFile('temurin-jre.zip'); t=z.namelist()[0].split('/')[0]; z.extractall('jre-x'); os.rename('jre-x/'+t,'jre'); z.close()"
-              rm -rf jre-x temurin-jre.zip
-              ST="dist/Suwayomi-${VER}-${CH}-${TGT}+jre"
-              cp -r "$STAGE" "$ST"
-              cp -r jre "$ST/jre"
-              zip_dir "$ST" "${ST}.zip"
-              ARTIFACTS+=$'\n'"${ST}.zip"
-              rm -rf jre
-            fi
-          fi
-
-          {
-            echo "artifacts<<ARTIFACTS_EOF"
-            printf '%s\n' "$ARTIFACTS"
-            echo "ARTIFACTS_EOF"
-          } >> "$GITHUB_OUTPUT"
-          echo "packed artifacts:"
-          echo "$ARTIFACTS" | sed 's/^/  /'
-      - name: 上传构建产物
-        uses: actions/upload-artifact@v7
-        with:
-          name: Suwayomi-${{ needs.prep.outputs.version_name }}-${{ needs.prep.outputs.channel }}-${{ matrix.target }}
-          path: ${{ steps.pack.outputs.artifacts }}
+    uses: ./.github/workflows/build.yml
+    with:
+      channel: ${{ needs.prep.outputs.channel }}
+      pack_mode: ${{ needs.prep.outputs.pack_mode }}
+      version_name: ${{ needs.prep.outputs.version_name }}
+      count: ${{ needs.prep.outputs.count }}
+      webui_url: ${{ needs.prep.outputs.webui_url }}
+      targets: ${{ needs.prep.outputs.targets }}
+      bundle_jre: ${{ needs.prep.outputs.bundle_jre == 'true' }}
 
   publish:
     name: 发布 ${{ needs.prep.outputs.channel }} (${{ needs.prep.outputs.version_name }})
@@ -299,9 +212,12 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+      - name: 收到的构建产物
+        run: ls -la artifacts
       - name: 创建 Release
         env:
           GH_TOKEN: ${{ github.token }}
+          FLOW: ${{ needs.prep.outputs.flow }}
           TAG: ${{ needs.prep.outputs.tag }}
           VER: ${{ needs.prep.outputs.version_name }}
           CH: ${{ needs.prep.outputs.channel }}
@@ -312,10 +228,27 @@ jobs:
           WEBUI_TAG: ${{ needs.prep.outputs.webui_tag }}
           WEBUI_KIND: ${{ needs.prep.outputs.webui_kind }}
         run: |
-          # release 通道同版本重复发布：先删旧 tag/release
+          # release 通道同版本重复发布：先删旧 tag/release（alpha/beta 的 tag 天然唯一，不删）
           if [ "$CH" = "release" ] && gh release view "$TAG" >/dev/null 2>&1; then
             gh release delete "$TAG" --yes --cleanup-tag || true
           fi
+
+          # 推送触发的自动构建：标题/说明与手动通道不同（与旧 Auto build 逐字一致）
+          if [ "$FLOW" = "auto" ]; then
+            gh release create "$TAG" \
+              artifacts/* \
+              --title "Suwayomi $VER (alpha)" \
+              --notes "## Suwayomi $VER · alpha
+          - versionName: $VER
+          - versionCode: $CODE
+          - commits: $COUNT
+          - bundled WebUI: \`$WEBUI_TAG\`（最新构建）
+          - 产物: windows-x64 + linux-x64，均含 server + 桌面壳 + Temurin JRE 25（+jre）" \
+              --prerelease \
+              --generate-notes
+            exit 0
+          fi
+
           case "$WEBUI_KIND" in
             stable) WEBUI_DESC="最新正式 release" ;;
             *)      WEBUI_DESC="最新构建（预发布）" ;;

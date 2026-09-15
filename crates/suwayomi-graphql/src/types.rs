@@ -12,7 +12,6 @@ use crate::scalars::{Cursor, LongString};
 use base64::Engine;
 use crate::state::GraphQLState;
 use crate::track::{TrackRecordNodeList, TrackRecordType};
-use sqlx::Row;
 use suwayomi_domain::sql::bind_placeholders;
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -193,7 +192,7 @@ impl CategoryMetaType {
     async fn category(&self, ctx: &Context<'_>) -> async_graphql::Result<CategoryType> {
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT * FROM category WHERE id = ?");
-        let row = sqlx::query_as::<_, CategoryRow>(&sql)
+        let row = suwayomi_db::query_as::<CategoryRow>(&sql)
             .bind(self.category_id)
             .fetch_one(state.db.pool())
             .await
@@ -282,7 +281,7 @@ impl MangaType {
     async fn chapters_of(&self, db: &Db) -> Vec<ChapterRow> {
         let sql = bind_placeholders("SELECT * FROM chapter WHERE manga = ? ORDER BY source_order DESC");
         let pool = db.pool();
-        sqlx::query_as::<_, ChapterRow>(&sql).bind(self.id).fetch_all(pool).await.unwrap_or_default()
+        suwayomi_db::query_as::<ChapterRow>(&sql).bind(self.id).fetch_all(pool).await.unwrap_or_default()
     }
 }
 
@@ -417,7 +416,7 @@ impl MangaType {
             return Ok(Some(SourceType::local_source()));
         }
         let sql = bind_placeholders("SELECT * FROM source WHERE id = ?");
-        let row = sqlx::query_as::<_, suwayomi_core::schema::SourceRow>(&sql)
+        let row = suwayomi_db::query_as::<suwayomi_core::schema::SourceRow>(&sql)
             .bind(self.source_id)
             .fetch_optional(state.db.pool())
             .await
@@ -430,7 +429,7 @@ impl MangaType {
     async fn track_records(&self, ctx: &Context<'_>) -> async_graphql::Result<TrackRecordNodeList> {
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT * FROM track_record WHERE manga_id = ?");
-        let rows = sqlx::query_as::<_, TrackRecordRow>(&sql)
+        let rows = suwayomi_db::query_as::<TrackRecordRow>(&sql)
             .bind(self.id)
             .fetch_all(state.db.pool())
             .await
@@ -617,7 +616,7 @@ impl ChapterType {
 
 async fn fetch_manga_row(state: &GraphQLState, id: i32) -> async_graphql::Result<MangaRow> {
     let sql = bind_placeholders("SELECT * FROM manga WHERE id = ?");
-    sqlx::query_as::<_, MangaRow>(&sql).bind(id).fetch_one(state.db.pool()).await.map_err(async_graphql::Error::from)
+    suwayomi_db::query_as::<MangaRow>(&sql).bind(id).fetch_one(state.db.pool()).await.map_err(async_graphql::Error::from)
 }
 
 /// CategoryType — mirrors `graphql/types/CategoryType.kt`.
@@ -670,7 +669,7 @@ impl CategoryType {
         let mut nodes = Vec::new();
         for dc in list {
             let sql = bind_placeholders("SELECT * FROM manga WHERE id = ?");
-            let row = sqlx::query_as::<_, MangaRow>(&sql)
+            let row = suwayomi_db::query_as::<MangaRow>(&sql)
                 .bind(dc.id)
                 .fetch_one(state.db.pool())
                 .await
@@ -1096,7 +1095,7 @@ impl ExtensionType {
         let Some(idx) = &self.row.store_index_url else { return Ok(None) };
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT * FROM extension_store WHERE index_url = ?");
-        let row = sqlx::query_as::<_, suwayomi_core::schema::ExtensionStoreRow>(&sql)
+        let row = suwayomi_db::query_as::<suwayomi_core::schema::ExtensionStoreRow>(&sql)
             .bind(idx)
             .fetch_optional(state.db.pool())
             .await
@@ -1106,7 +1105,7 @@ impl ExtensionType {
     async fn source(&self, ctx: &Context<'_>) -> async_graphql::Result<SourceNodeList> {
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT * FROM source WHERE extension = ?");
-        let rows = sqlx::query_as::<_, suwayomi_core::schema::SourceRow>(&sql)
+        let rows = suwayomi_db::query_as::<suwayomi_core::schema::SourceRow>(&sql)
             .bind(self.row.id)
             .fetch_all(state.db.pool())
             .await
@@ -1157,7 +1156,7 @@ impl ExtensionStoreType {
     async fn extensions(&self, ctx: &Context<'_>) -> async_graphql::Result<ExtensionNodeList> {
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT * FROM extension WHERE store_index_url = ?");
-        let rows = sqlx::query_as::<_, suwayomi_core::schema::ExtensionRow>(&sql)
+        let rows = suwayomi_db::query_as::<suwayomi_core::schema::ExtensionRow>(&sql)
             .bind(&self.row.index_url)
             .fetch_all(state.db.pool())
             .await
@@ -1261,7 +1260,7 @@ impl SourceType {
         }
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT pkg_name FROM extension WHERE id = ?");
-        let pkg: Option<String> = sqlx::query_scalar(&sql)
+        let pkg: Option<String> = suwayomi_db::query_scalar(&sql)
             .bind(self.extension_id)
             .fetch_optional(state.db.pool())
             .await
@@ -1290,7 +1289,7 @@ impl SourceType {
         let sql = bind_placeholders(
             "SELECT EXISTS(SELECT 1 FROM extension WHERE id = ? AND store_index_url IS NOT NULL)",
         );
-        let has: bool = sqlx::query_scalar(&sql)
+        let has: bool = suwayomi_db::query_scalar(&sql)
             .bind(self.extension_id)
             .fetch_one(state.db.pool())
             .await
@@ -1312,7 +1311,7 @@ impl SourceType {
         }
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT * FROM extension WHERE id = ?");
-        let row = sqlx::query_as::<_, suwayomi_core::schema::ExtensionRow>(&sql)
+        let row = suwayomi_db::query_as::<suwayomi_core::schema::ExtensionRow>(&sql)
             .bind(self.extension_id())
             .fetch_optional(state.db.pool())
             .await
@@ -1325,7 +1324,7 @@ impl SourceType {
     async fn manga(&self, ctx: &Context<'_>) -> async_graphql::Result<MangaNodeList> {
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT * FROM manga WHERE source = ? ORDER BY title ASC");
-        let rows = sqlx::query_as::<_, MangaRow>(&sql)
+        let rows = suwayomi_db::query_as::<MangaRow>(&sql)
             .bind(self.id)
             .fetch_all(state.db.pool())
             .await
@@ -1341,7 +1340,7 @@ impl SourceType {
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT meta_key, value FROM source_meta WHERE source_ref = ?");
         let rows =
-            sqlx::query(&sql).bind(self.id).fetch_all(state.db.pool()).await.map_err(async_graphql::Error::from)?;
+            suwayomi_db::query(&sql).bind(self.id).fetch_all(state.db.pool()).await.map_err(async_graphql::Error::from)?;
         Ok(rows
             .iter()
             .map(|r| SourceMetaType {

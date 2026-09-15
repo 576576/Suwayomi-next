@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use sqlx::Row;
 use suwayomi_core::db::Db;
 use suwayomi_core::models::{now_epoch_secs, ChapterDataClass, MangaChapterDataClass, PaginatedList};
 use suwayomi_core::schema::{ChapterRow, MangaRow};
@@ -67,7 +66,7 @@ impl ChapterService {
     /// Mirrors `getChapterList(mangaId, onlineFetch)` (DB path).
     pub async fn get_chapter_list(&self, manga_id: i32, online_fetch: bool) -> Result<Vec<ChapterDataClass>> {
         let sql = bind_placeholders("SELECT * FROM chapter WHERE manga = ? ORDER BY source_order DESC");
-        let rows = sqlx::query_as::<_, ChapterRow>(&sql).bind(manga_id).fetch_all(self.db.pool()).await?;
+        let rows = suwayomi_db::query_as::<ChapterRow>(&sql).bind(manga_id).fetch_all(self.db.pool()).await?;
         let list: Vec<ChapterDataClass> = rows.iter().map(chapter_row_to_data_class).collect();
         if !list.is_empty() || !online_fetch {
             return Ok(list);
@@ -77,7 +76,7 @@ impl ChapterService {
         // has rows to show. The manga row carries the source id + url the
         // fetcher needs to drive the JVM sandbox.
         let manga_row: Option<MangaRow> =
-            sqlx::query_as(bind_placeholders("SELECT * FROM manga WHERE id = ?").as_str())
+            suwayomi_db::query_as(bind_placeholders("SELECT * FROM manga WHERE id = ?").as_str())
                 .bind(manga_id)
                 .fetch_optional(self.db.pool())
                 .await?;
@@ -100,7 +99,7 @@ impl ChapterService {
             // sourceOrder is 1-based (Tachiyomi/WebUI convention).
             let source_order = i as i32 + 1;
             let sql = bind_placeholders("SELECT id FROM chapter WHERE manga = ? AND url = ?");
-            let existing: Option<(i32,)> = sqlx::query_as(&sql)
+            let existing: Option<(i32,)> = suwayomi_db::query_as(&sql)
                 .bind(manga_id)
                 .bind(&c.url)
                 .fetch_optional(self.db.pool())
@@ -110,7 +109,7 @@ impl ChapterService {
                     let sql = bind_placeholders(
                         "UPDATE chapter SET name = ?, chapter_number = ?, source_order = ?, fetched_at = ?, last_modified_at = ?, date_upload = ?, scanlator = ? WHERE id = ?",
                     );
-                    sqlx::query(&sql)
+                    suwayomi_db::query(&sql)
                         .bind(&c.name)
                         .bind(c.chapter_number)
                         .bind(source_order)
@@ -126,7 +125,7 @@ impl ChapterService {
                     let sql = bind_placeholders(
                         "INSERT INTO chapter (url, name, chapter_number, source_order, manga, fetched_at, last_modified_at, date_upload, scanlator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     );
-                    sqlx::query(&sql)
+                    suwayomi_db::query(&sql)
                         .bind(&c.url)
                         .bind(&c.name)
                         .bind(c.chapter_number)
@@ -143,9 +142,9 @@ impl ChapterService {
         }
         // also stamp the manga's chapters-fetched time
         let sql = bind_placeholders("UPDATE manga SET chapters_last_fetched_at = ? WHERE id = ?");
-        sqlx::query(&sql).bind(now).bind(manga_id).execute(self.db.pool()).await?;
+        suwayomi_db::query(&sql).bind(now).bind(manga_id).execute(self.db.pool()).await?;
         // re-read what we just persisted
-        let rows = sqlx::query_as::<_, ChapterRow>(&bind_placeholders("SELECT * FROM chapter WHERE manga = ? ORDER BY source_order DESC"))
+        let rows = suwayomi_db::query_as::<ChapterRow>(&bind_placeholders("SELECT * FROM chapter WHERE manga = ? ORDER BY source_order DESC"))
             .bind(manga_id)
             .fetch_all(self.db.pool())
             .await?;
@@ -154,7 +153,7 @@ impl ChapterService {
 
     pub async fn get_count_of_manga_chapters(&self, manga_id: i32) -> Result<i64> {
         let sql = bind_placeholders("SELECT count(*) FROM chapter WHERE manga = ?");
-        let count = sqlx::query_scalar::<_, i64>(&sql).bind(manga_id).fetch_one(self.db.pool()).await?;
+        let count = suwayomi_db::query_scalar::<i64>(&sql).bind(manga_id).fetch_one(self.db.pool()).await?;
         Ok(count)
     }
 
@@ -195,7 +194,7 @@ impl ChapterService {
         if let Some(mark) = mark_prev_read {
             let sql = bind_placeholders("UPDATE chapter SET read = ? WHERE manga = ? AND source_order < ?");
             {
-                sqlx::query(&sql).bind(mark).bind(manga_id).bind(chapter_index).execute(self.db.pool()).await?;
+                suwayomi_db::query(&sql).bind(mark).bind(manga_id).bind(chapter_index).execute(self.db.pool()).await?;
             }
         }
 
@@ -213,7 +212,7 @@ impl ChapterService {
     ) -> Result<()> {
         let now = now_epoch_secs();
         {
-            let mut q = sqlx::query(sql);
+            let mut q = suwayomi_db::query(sql);
             if let Some(v) = is_read {
                 q = q.bind(v);
             }
@@ -231,7 +230,7 @@ impl ChapterService {
     /// Mirrors `updateChapterProgress` — pageNo is 0-based; read when pageCount == pageNo+1.
     pub async fn update_chapter_progress(&self, manga_id: i32, chapter_index: i32, page_no: i32) -> Result<i32> {
         let sql = bind_placeholders("SELECT * FROM chapter WHERE manga = ? AND source_order = ?");
-        let row = sqlx::query_as::<_, ChapterRow>(&sql)
+        let row = suwayomi_db::query_as::<ChapterRow>(&sql)
             .bind(manga_id)
             .bind(chapter_index)
             .fetch_optional(self.db.pool())
@@ -275,7 +274,7 @@ impl ChapterService {
             vec!["?"; indexes.len()].join(", ")
         ));
         {
-            let mut q = sqlx::query(&sql);
+            let mut q = suwayomi_db::query(&sql);
             if let Some(v) = is_read {
                 q = q.bind(v);
             }
@@ -324,7 +323,7 @@ impl ChapterService {
             vec!["?"; ids.len()].join(", ")
         ));
         {
-            let mut q = sqlx::query(&sql);
+            let mut q = suwayomi_db::query(&sql);
             if let Some(v) = is_read {
                 q = q.bind(v);
             }
@@ -367,7 +366,7 @@ impl ChapterService {
             vec!["?"; chapter_ids.len()].join(", ")
         ));
         {
-            let mut q = sqlx::query(&sql);
+            let mut q = suwayomi_db::query(&sql);
             for id in chapter_ids {
                 q = q.bind(id);
             }
@@ -381,7 +380,7 @@ impl ChapterService {
     pub async fn get_recent_chapters(&self, page_num: usize) -> Result<PaginatedList<MangaChapterDataClass>> {
         let sql = "SELECT c.id AS cid FROM chapter c INNER JOIN manga m ON m.id = c.manga WHERE m.in_library = TRUE AND c.fetched_at > m.in_library_at ORDER BY c.fetched_at DESC";
         let chapter_ids: Vec<i32> = {
-            let rows = sqlx::query(sql).fetch_all(self.db.pool()).await?;
+            let rows = suwayomi_db::query(sql).fetch_all(self.db.pool()).await?;
             rows.iter().map(|r| r.try_get::<i32, _>("cid").unwrap_or(0)).collect()
         };
         let mut items = Vec::new();
@@ -389,7 +388,7 @@ impl ChapterService {
             let chapter = self.fetch_by_id(cid).await?;
             let manga_sql = bind_placeholders("SELECT * FROM manga WHERE id = ?");
             let manga =
-                { sqlx::query_as::<_, MangaRow>(&manga_sql).bind(chapter.manga).fetch_optional(self.db.pool()).await? };
+                { suwayomi_db::query_as::<MangaRow>(&manga_sql).bind(chapter.manga).fetch_optional(self.db.pool()).await? };
             if let Some(m) = manga {
                 items.push(MangaChapterDataClass {
                     manga: manga_row_to_data_class(&m),
@@ -403,7 +402,7 @@ impl ChapterService {
 
     async fn find_id_by_index(&self, manga_id: i32, chapter_index: i32) -> Result<i32> {
         let sql = bind_placeholders("SELECT id FROM chapter WHERE manga = ? AND source_order = ?");
-        let id = sqlx::query_scalar::<_, i32>(&sql)
+        let id = suwayomi_db::query_scalar::<i32>(&sql)
             .bind(manga_id)
             .bind(chapter_index)
             .fetch_optional(self.db.pool())
@@ -415,7 +414,7 @@ impl ChapterService {
     /// Helper used by chapter updates (also referenced by other services).
     pub async fn fetch_by_id(&self, chapter_id: i32) -> Result<ChapterRow> {
         let sql = bind_placeholders("SELECT * FROM chapter WHERE id = ?");
-        sqlx::query_as::<_, ChapterRow>(&sql)
+        suwayomi_db::query_as::<ChapterRow>(&sql)
             .bind(chapter_id)
             .fetch_optional(self.db.pool())
             .await?

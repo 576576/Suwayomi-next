@@ -1,6 +1,5 @@
 //! Category↔Manga relations — mirrors `suwayomi.manga.impl.CategoryManga`.
 
-use sqlx::Row;
 use suwayomi_core::db::Db;
 use suwayomi_core::models::{CategoryDataClass, IncludeOrExclude, MangaDataClass};
 use suwayomi_core::schema::{CategoryRow, MangaRow};
@@ -30,7 +29,7 @@ impl CategoryMangaService {
                 if !exists {
                     let sql = bind_placeholders("INSERT INTO category_manga (category, manga) VALUES (?, ?)");
                     {
-                        sqlx::query(&sql).bind(category_id).bind(manga_id).execute(self.db.pool()).await?;
+                        suwayomi_db::query(&sql).bind(category_id).bind(manga_id).execute(self.db.pool()).await?;
                     }
                 }
             }
@@ -45,7 +44,7 @@ impl CategoryMangaService {
         }
         let sql = bind_placeholders("DELETE FROM category_manga WHERE category = ? AND manga = ?");
         {
-            sqlx::query(&sql).bind(category_id).bind(manga_id).execute(self.db.pool()).await?;
+            suwayomi_db::query(&sql).bind(category_id).bind(manga_id).execute(self.db.pool()).await?;
         }
         Ok(())
     }
@@ -53,7 +52,7 @@ impl CategoryMangaService {
     pub async fn remove_manga_from_all_categories(&self, manga_id: i32) -> Result<()> {
         let sql = bind_placeholders("DELETE FROM category_manga WHERE manga = ?");
         {
-            sqlx::query(&sql).bind(manga_id).execute(self.db.pool()).await?;
+            suwayomi_db::query(&sql).bind(manga_id).execute(self.db.pool()).await?;
         }
         Ok(())
     }
@@ -62,7 +61,7 @@ impl CategoryMangaService {
     pub async fn get_manga_categories(&self, manga_id: i32) -> Result<Vec<CategoryDataClass>> {
         let sql = bind_placeholders(
             "SELECT c.* FROM category_manga cm INNER JOIN category c ON c.id = cm.category WHERE cm.manga = ? ORDER BY c.sort_order ASC");
-        let rows = sqlx::query_as::<_, CategoryRow>(&sql).bind(manga_id).fetch_all(self.db.pool()).await?;
+        let rows = suwayomi_db::query_as::<CategoryRow>(&sql).bind(manga_id).fetch_all(self.db.pool()).await?;
         Ok(rows
             .iter()
             .map(|r| CategoryDataClass {
@@ -90,9 +89,9 @@ impl CategoryMangaService {
         };
         let rows = {
             if category_id == CategoryService::DEFAULT_CATEGORY_ID {
-                sqlx::query_as::<_, MangaRow>(&sql).fetch_all(self.db.pool()).await?
+                suwayomi_db::query_as::<MangaRow>(&sql).fetch_all(self.db.pool()).await?
             } else {
-                sqlx::query_as::<_, MangaRow>(&sql).bind(category_id).fetch_all(self.db.pool()).await?
+                suwayomi_db::query_as::<MangaRow>(&sql).bind(category_id).fetch_all(self.db.pool()).await?
             }
         };
         let mut out = Vec::new();
@@ -134,7 +133,7 @@ impl CategoryMangaService {
         }
 
         {
-            let rows = sqlx::query(&sql).bind(manga_id).fetch_all(self.db.pool()).await?;
+            let rows = suwayomi_db::query(&sql).bind(manga_id).fetch_all(self.db.pool()).await?;
             tally!(rows.iter());
         }
         Ok((unread, downloaded, total, last_read_at))
@@ -142,7 +141,7 @@ impl CategoryMangaService {
 
     async fn exists(&self, manga_id: i32, category_id: i32) -> Result<bool> {
         let sql = bind_placeholders("SELECT count(*) FROM category_manga WHERE manga = ? AND category = ?");
-        let n: i64 = sqlx::query_scalar(&sql).bind(manga_id).bind(category_id).fetch_one(self.db.pool()).await?;
+        let n: i64 = suwayomi_db::query_scalar(&sql).bind(manga_id).bind(category_id).fetch_one(self.db.pool()).await?;
         Ok(n > 0)
     }
 }

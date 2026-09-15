@@ -139,7 +139,7 @@ impl TrackerType {
     async fn track_records(&self, ctx: &Context<'_>) -> async_graphql::Result<TrackRecordNodeList> {
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT * FROM track_record WHERE sync_id = ?");
-        let rows = sqlx::query_as::<_, TrackRecordRow>(&sql)
+        let rows = suwayomi_db::query_as::<TrackRecordRow>(&sql)
             .bind(self.id)
             .fetch_all(state.db.pool())
             .await
@@ -245,7 +245,7 @@ impl TrackRecordType {
     async fn manga(&self, ctx: &Context<'_>) -> async_graphql::Result<MangaType> {
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT * FROM manga WHERE id = ?");
-        let row = sqlx::query_as::<_, suwayomi_core::schema::MangaRow>(&sql)
+        let row = suwayomi_db::query_as::<suwayomi_core::schema::MangaRow>(&sql)
             .bind(self.manga_id)
             .fetch_one(state.db.pool())
             .await

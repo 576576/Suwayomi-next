@@ -1068,7 +1068,7 @@ impl MutationRootB4 {
         input: DeleteDownloadedChapterInput,
     ) -> async_graphql::Result<DeleteDownloadedChapterPayload> {
         let state = ctx.data::<GraphQLState>()?;
-        sqlx::query(bind_placeholders("UPDATE chapter SET is_downloaded = FALSE WHERE id = ?").as_str())
+        suwayomi_db::query(bind_placeholders("UPDATE chapter SET is_downloaded = FALSE WHERE id = ?").as_str())
             .bind(input.id)
             .execute(state.db.pool())
             .await
@@ -1085,7 +1085,7 @@ impl MutationRootB4 {
         let state = ctx.data::<GraphQLState>()?;
         let mut chapters = Vec::new();
         for id in &input.ids {
-            sqlx::query(bind_placeholders("UPDATE chapter SET is_downloaded = FALSE WHERE id = ?").as_str())
+            suwayomi_db::query(bind_placeholders("UPDATE chapter SET is_downloaded = FALSE WHERE id = ?").as_str())
                 .bind(id)
                 .execute(state.db.pool())
                 .await
@@ -1200,7 +1200,7 @@ impl MutationRootB4 {
     async fn bind_track(&self, ctx: &Context<'_>, input: BindTrackInput) -> async_graphql::Result<BindTrackPayload> {
         let state = ctx.data::<GraphQLState>()?;
         // upsert track_record for (manga, tracker)
-        let existing: Option<i32> = sqlx::query_scalar(
+        let existing: Option<i32> = suwayomi_db::query_scalar(
             bind_placeholders("SELECT id FROM track_record WHERE manga_id = ? AND sync_id = ?").as_str(),
         )
         .bind(input.manga_id)
@@ -1209,7 +1209,7 @@ impl MutationRootB4 {
         .await
         .map_err(async_graphql::Error::from)?;
         let id: i32 = if let Some(id) = existing {
-            sqlx::query(bind_placeholders("UPDATE track_record SET remote_id = ?, private = ? WHERE id = ?").as_str())
+            suwayomi_db::query(bind_placeholders("UPDATE track_record SET remote_id = ?, private = ? WHERE id = ?").as_str())
                 .bind(input.remote_id.0)
                 .bind(input.private.unwrap_or(false))
                 .bind(id)
@@ -1218,7 +1218,7 @@ impl MutationRootB4 {
                 .map_err(async_graphql::Error::from)?;
             id
         } else {
-            sqlx::query_scalar(
+            suwayomi_db::query_scalar(
                 bind_placeholders(
                     "INSERT INTO track_record (manga_id, sync_id, remote_id, title, last_chapter_read, total_chapters, status, score, remote_url, start_date, finish_date, private) VALUES (?, ?, ?, '', 0, 0, 0, 0, '', 0, 0, ?) RETURNING id",
                 )
@@ -1247,13 +1247,13 @@ impl MutationRootB4 {
     ) -> async_graphql::Result<BindTrackRecordPayload> {
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT * FROM track_record WHERE id = ?");
-        let row = sqlx::query_as::<_, TrackRecordRow>(&sql)
+        let row = suwayomi_db::query_as::<TrackRecordRow>(&sql)
             .bind(input.track_record_id)
             .fetch_optional(state.db.pool())
             .await
             .map_err(async_graphql::Error::from)?
             .ok_or_else(|| async_graphql::Error::new("TrackRecord not found"))?;
-        sqlx::query(bind_placeholders("UPDATE track_record SET manga_id = ? WHERE id = ?").as_str())
+        suwayomi_db::query(bind_placeholders("UPDATE track_record SET manga_id = ? WHERE id = ?").as_str())
             .bind(input.manga_id)
             .bind(input.track_record_id)
             .execute(state.db.pool())
@@ -1274,12 +1274,12 @@ impl MutationRootB4 {
         let state = ctx.data::<GraphQLState>()?;
         let _ = input.delete_remote_track;
         let sql = bind_placeholders("SELECT * FROM track_record WHERE id = ?");
-        let row = sqlx::query_as::<_, TrackRecordRow>(&sql)
+        let row = suwayomi_db::query_as::<TrackRecordRow>(&sql)
             .bind(input.record_id)
             .fetch_optional(state.db.pool())
             .await
             .map_err(async_graphql::Error::from)?;
-        sqlx::query(bind_placeholders("DELETE FROM track_record WHERE id = ?").as_str())
+        suwayomi_db::query(bind_placeholders("DELETE FROM track_record WHERE id = ?").as_str())
             .bind(input.record_id)
             .execute(state.db.pool())
             .await
@@ -1298,7 +1298,7 @@ impl MutationRootB4 {
     ) -> async_graphql::Result<TrackProgressPayload> {
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT * FROM track_record WHERE manga_id = ?");
-        let rows = sqlx::query_as::<_, TrackRecordRow>(&sql)
+        let rows = suwayomi_db::query_as::<TrackRecordRow>(&sql)
             .bind(input.manga_id)
             .fetch_all(state.db.pool())
             .await
@@ -1341,7 +1341,7 @@ impl MutationRootB4 {
         }
         if !sets.is_empty() {
             let sql = bind_placeholders(&format!("UPDATE track_record SET {} WHERE id = ?", sets.join(", ")));
-            let mut q = sqlx::query(sql.as_str());
+            let mut q = suwayomi_db::query(sql.as_str());
             if let Some(v) = last_chapter_read {
                 q = q.bind(v);
             }
@@ -1367,7 +1367,7 @@ impl MutationRootB4 {
             q.bind(input.record_id).execute(state.db.pool()).await.map_err(async_graphql::Error::from)?;
         }
         let sql = bind_placeholders("SELECT * FROM track_record WHERE id = ?");
-        let row = sqlx::query_as::<_, TrackRecordRow>(&sql)
+        let row = suwayomi_db::query_as::<TrackRecordRow>(&sql)
             .bind(input.record_id)
             .fetch_optional(state.db.pool())
             .await
@@ -1382,7 +1382,7 @@ impl MutationRootB4 {
     async fn fetch_track(&self, ctx: &Context<'_>, input: FetchTrackInput) -> async_graphql::Result<FetchTrackPayload> {
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT * FROM track_record WHERE id = ?");
-        let row = sqlx::query_as::<_, TrackRecordRow>(&sql)
+        let row = suwayomi_db::query_as::<TrackRecordRow>(&sql)
             .bind(input.record_id)
             .fetch_optional(state.db.pool())
             .await
@@ -1496,7 +1496,7 @@ impl MutationRootB4 {
                 sync_conflict = Some(crate::mutation::SyncConflictInfoType { device_name: r.device.clone(), remote_page: r.page_read });
             }
             if r.should_update {
-                sqlx::query("UPDATE suwayomi.chapter SET last_page_read = $1, last_read_at = $2 WHERE id = $3")
+                suwayomi_db::query("UPDATE suwayomi.chapter SET last_page_read = $1, last_read_at = $2 WHERE id = $3")
                     .bind(r.page_read)
                     .bind(r.timestamp)
                     .bind(input.chapter_id)
@@ -1528,11 +1528,11 @@ impl MutationRootB4 {
         if store.sandbox_available() {
             let _ = store.sync_sources().await;
         }
-        let exts = sqlx::query_as::<_, suwayomi_core::schema::ExtensionRow>("SELECT * FROM extension")
+        let exts = suwayomi_db::query_as::<suwayomi_core::schema::ExtensionRow>("SELECT * FROM extension")
             .fetch_all(state.db.pool())
             .await
             .map_err(async_graphql::Error::from)?;
-        let stores = sqlx::query_as::<_, suwayomi_core::schema::ExtensionStoreRow>("SELECT * FROM extension_store")
+        let stores = suwayomi_db::query_as::<suwayomi_core::schema::ExtensionStoreRow>("SELECT * FROM extension_store")
             .fetch_all(state.db.pool())
             .await
             .map_err(async_graphql::Error::from)?;
@@ -1593,7 +1593,7 @@ impl MutationRootB4 {
         let _ = meta;
         // resolve the freshly installed package (inspect told us the name;
         // simplest: the newest is_installed row without a store link)
-        let ext = sqlx::query_as::<_, suwayomi_core::schema::ExtensionRow>(
+        let ext = suwayomi_db::query_as::<suwayomi_core::schema::ExtensionRow>(
             "SELECT * FROM suwayomi.extension WHERE is_installed AND apk_url IS NULL ORDER BY id DESC LIMIT 1",
         )
         .fetch_optional(state.db.pool())
@@ -1612,7 +1612,7 @@ impl MutationRootB4 {
         input: AddExtensionStoreInput,
     ) -> async_graphql::Result<AddExtensionStorePayload> {
         let state = ctx.data::<GraphQLState>()?;
-        let id: i32 = sqlx::query_scalar(
+        let id: i32 = suwayomi_db::query_scalar(
             bind_placeholders(
                 "INSERT INTO extension_store (index_url, name, is_legacy, badge_label, contact_website, signing_key) VALUES (?, '', FALSE, '', '', '') ON CONFLICT (index_url) DO UPDATE SET index_url = EXCLUDED.index_url RETURNING id",
             )
@@ -1622,7 +1622,7 @@ impl MutationRootB4 {
         .fetch_one(state.db.pool())
         .await
         .map_err(async_graphql::Error::from)?;
-        let row = sqlx::query_as::<_, suwayomi_core::schema::ExtensionStoreRow>(
+        let row = suwayomi_db::query_as::<suwayomi_core::schema::ExtensionStoreRow>(
             bind_placeholders("SELECT * FROM extension_store WHERE id = ?").as_str(),
         )
         .bind(id)
@@ -1641,14 +1641,14 @@ impl MutationRootB4 {
         input: RemoveExtensionStoreInput,
     ) -> async_graphql::Result<RemoveExtensionStorePayload> {
         let state = ctx.data::<GraphQLState>()?;
-        let row = sqlx::query_as::<_, suwayomi_core::schema::ExtensionStoreRow>(
+        let row = suwayomi_db::query_as::<suwayomi_core::schema::ExtensionStoreRow>(
             bind_placeholders("SELECT * FROM extension_store WHERE index_url = ?").as_str(),
         )
         .bind(&input.index_url)
         .fetch_optional(state.db.pool())
         .await
         .map_err(async_graphql::Error::from)?;
-        sqlx::query(bind_placeholders("DELETE FROM extension_store WHERE index_url = ?").as_str())
+        suwayomi_db::query(bind_placeholders("DELETE FROM extension_store WHERE index_url = ?").as_str())
             .bind(&input.index_url)
             .execute(state.db.pool())
             .await
@@ -1763,7 +1763,7 @@ impl MutationRootB4 {
         let json = partial_settings_to_json(&input.settings);
         let mut merged: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
         let existing_sql = bind_placeholders("SELECT value FROM global_meta WHERE meta_key = 'settings'");
-        if let Ok(Some(existing)) = sqlx::query_scalar::<_, String>(&existing_sql)
+        if let Ok(Some(existing)) = suwayomi_db::query_scalar::<String>(&existing_sql)
             .fetch_optional(state.db.pool())
             .await
             && let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(&existing)
@@ -1816,7 +1816,7 @@ impl MutationRootB4 {
 
 async fn fetch_chapter_row(state: &GraphQLState, id: i32) -> async_graphql::Result<suwayomi_core::schema::ChapterRow> {
     let sql = bind_placeholders("SELECT * FROM chapter WHERE id = ?");
-    sqlx::query_as::<_, suwayomi_core::schema::ChapterRow>(&sql)
+    suwayomi_db::query_as::<suwayomi_core::schema::ChapterRow>(&sql)
         .bind(id)
         .fetch_one(state.db.pool())
         .await
@@ -1825,7 +1825,7 @@ async fn fetch_chapter_row(state: &GraphQLState, id: i32) -> async_graphql::Resu
 
 async fn fetch_track_record_row(state: &GraphQLState, id: i32) -> async_graphql::Result<TrackRecordRow> {
     let sql = bind_placeholders("SELECT * FROM track_record WHERE id = ?");
-    sqlx::query_as::<_, TrackRecordRow>(&sql)
+    suwayomi_db::query_as::<TrackRecordRow>(&sql)
         .bind(id)
         .fetch_one(state.db.pool())
         .await
@@ -1839,7 +1839,7 @@ pub(crate) async fn download_status(state: &GraphQLState) -> async_graphql::Resu
     let mut queue = Vec::with_capacity(jobs.len());
     for (i, job) in jobs.iter().enumerate() {
         let chapter = fetch_chapter_row(state, job.chapter_id).await?;
-        let manga: suwayomi_core::schema::MangaRow = sqlx::query_as("SELECT * FROM manga WHERE id = $1")
+        let manga: suwayomi_core::schema::MangaRow = suwayomi_db::query_as("SELECT * FROM manga WHERE id = $1")
             .bind(job.manga_id)
             .fetch_one(state.db.pool())
             .await
@@ -1876,7 +1876,7 @@ async fn apply_extension_patch(
     let svc = state.extension_store.clone();
     for pkg in pkgs {
         let row: Option<suwayomi_core::schema::ExtensionRow> =
-            sqlx::query_as("SELECT * FROM suwayomi.extension WHERE pkg_name = $1")
+            suwayomi_db::query_as("SELECT * FROM suwayomi.extension WHERE pkg_name = $1")
                 .bind(pkg)
                 .fetch_optional(state.db.pool())
                 .await
@@ -1894,7 +1894,7 @@ async fn apply_extension_patch(
 }
 
 async fn fetch_extension_by_pkg(state: &GraphQLState, pkg: &str) -> async_graphql::Result<Option<suwayomi_core::schema::ExtensionRow>> {
-    sqlx::query_as("SELECT * FROM suwayomi.extension WHERE pkg_name = $1")
+    suwayomi_db::query_as("SELECT * FROM suwayomi.extension WHERE pkg_name = $1")
         .bind(pkg)
         .fetch_optional(state.db.pool())
         .await

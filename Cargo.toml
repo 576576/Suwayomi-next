@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "crates/suwayomi-core",
+    "crates/suwayomi-db",
+    "crates/suwayomi-db-macros",
     "crates/suwayomi-domain",
     "crates/suwayomi-rest",
     "crates/suwayomi-graphql",
@@ -26,7 +28,7 @@ thiserror = "2"
 anyhow = "1"
 async-trait = "0.1"
 futures = "0.3"
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "migrate", "json"] }
+suwayomi-db = { path = "crates/suwayomi-db" }
 axum = "0.8"
 tower-http = { version = "0.6", features = ["fs"] }
 async-graphql = "7"
@@ -38,10 +40,6 @@ uuid = { version = "1", features = ["v4", "serde"] }
 md-5 = "0.10"
 base64 = "0.22"
 flate2 = "1"
-# Embedded PostgreSQL — default database backend (Phase 6).
-# Oliphaunt (the renamed pglite-oxide) native server: real local PostgreSQL
-# process with independent client sessions, no external server/Docker.
-oliphaunt = "0.1.1"
 # Local-source archive chapters (ZIP/CBZ read support; deflate only).
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # Local-source archive metadata (ComicInfo.xml inside CBZ).
@@ -49,11 +47,3 @@ quick-xml = "0.36"
 
 [profile.release]
 lto = "thin"
-
-# 本地 patch oliphaunt（crates.io 0.1.1 + 两处 Windows 修复）：
-# - server.rs/broker.rs 的 postgres/broker 子进程加 CREATE_NO_WINDOW——父进程
-#   （托盘/server）是 GUI 无控制台时，console 子进程会被分配新控制台窗口
-#   （postgres.exe 弹终端）。分支基于 oliphaunt-rust-v0.1.1 tag，仅此改动。
-# fork: https://github.com/576576/oliphaunt (branch suwayomi-patch)
-[patch.crates-io]
-oliphaunt = { git = "https://github.com/576576/oliphaunt", branch = "suwayomi-patch" }

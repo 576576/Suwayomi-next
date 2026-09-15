@@ -52,7 +52,7 @@ async fn clear(State(s): State<AppState>) -> Json<serde_json::Value> {
 
 /// Resolves (mangaId, chapterIndex=source_order) to a chapter id.
 async fn chapter_id_by_index(state: &AppState, manga_id: i32, chapter_index: i32) -> Option<i32> {
-    sqlx::query_scalar("SELECT id FROM chapter WHERE manga = $1 AND source_order = $2")
+    suwayomi_db::query_scalar("SELECT id FROM chapter WHERE manga = $1 AND source_order = $2")
         .bind(manga_id)
         .bind(chapter_index)
         .fetch_optional(state.db.pool())

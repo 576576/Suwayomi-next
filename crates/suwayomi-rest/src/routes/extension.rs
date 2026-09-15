@@ -7,7 +7,6 @@ use axum::{Json, Router};
 
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
-use sqlx::Row;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -20,7 +19,7 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn list(State(s): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
-    let rows = sqlx::query("SELECT * FROM extension ORDER BY name ASC")
+    let rows = suwayomi_db::query("SELECT * FROM extension ORDER BY name ASC")
         .fetch_all(s.db.pool())
         .await
         .map_err(ApiError::from)?;
@@ -47,7 +46,7 @@ async fn list(State(s): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
 
 async fn icon(State(s): State<AppState>, Path(pkg): Path<String>) -> ApiResult<axum::response::Response> {
     let icon_url: Option<String> =
-        sqlx::query_scalar("SELECT icon_url FROM extension WHERE pkg_name = $1")
+        suwayomi_db::query_scalar("SELECT icon_url FROM extension WHERE pkg_name = $1")
             .bind(&pkg)
             .fetch_optional(s.db.pool())
             .await

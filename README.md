@@ -17,7 +17,7 @@ REST v1 与 GraphQL schema 基线见 `docs/api/`、`docs/graphql/`，行为与�
 ## 快速开始（源码构建）
 
 ```bash
-# 构建 + 启动（默认端口 8090，内置嵌入式 Oliphaunt PostgreSQL 18，零外部依赖；启动失败时自动顺延端口）
+# 构建 + 启动（默认端口 8090，本地 SQLite 数据库，零外部依赖；启动失败时自动顺延端口）
 cargo run --release -p suwayomi-server
 ```
 
@@ -43,7 +43,7 @@ bin/
   └─ extensions/       已装扩展的转换 jar（自动生成）
 data/                默认数据目录（Tachiyomi 兼容）
 webui/               Suwayomi-WebUI 构建产物（随发布捆绑）
-jre/   oliphaunt-runtime/   运行时依赖（可选）
+jre/                        运行时依赖（可选）
 ```
 
 > 捆绑的 WebUI 来自 [576576/Suwayomi-WebUI](https://github.com/576576/Suwayomi-WebUI)
@@ -57,7 +57,7 @@ macOS WKWebView），不捆绑浏览器运行时；无 WebView 时回退系统�
    - 启动 / 重启 Suwayomi — 未运行时拉起；运行中显示「重启」（优雅关闭后重新拉起，含嵌入式数据库）
    - 打开 WebUI — 系统 WebView 窗口打开 `http://127.0.0.1:{port}`（无 WebView 时回退浏览器）
    - 打开数据目录 / 设置（端口、数据目录、WebUI 地址，保存即重启 server）
-   - 退出 — 结束托盘与 server 子进程（嵌入式 postgres 一并关停）
+   - 退出 — 结束托盘与 server 子进程（数据库连接一并关停）
 2. **命令行方式**：直接运行 `bin/suwayomi-server`（`-v` 显示版本与仓库地址）。
 3. **添加扩展仓库**：WebUI 扩展页添加仓库索引 URL（支持 Mihon `index.pb` 与
    Tachiyomi `index.json`，如 keiyoushi），刷新后在线安装扩展。
@@ -87,8 +87,8 @@ docs/                文档（api/、graphql/、migration/、en/、release.md、
 
 ## 数据库后端
 
-- **默认**：嵌入式 Oliphaunt（PostgreSQL 18 native，数据目录 `./pglite-data`）
-- **备选**：外部 PostgreSQL（设 `SUWAYOMI_DATABASE_URL`，如 `postgres://user:pass@host:5432/db`）
+- **默认**：本地 SQLite 文件（`data/suwayomi.db`，可用 `SUWAYOMI_SQLITE_PATH` 指定路径）
+- **备选**：外部 PostgreSQL（设 `SUWAYOMI_DB_BACKEND=postgres` + `SUWAYOMI_DATABASE_URL`，如 `postgres://user:pass@host:5432/db`）
 
 ## 真实扩展（JVM sandbox）
 
@@ -125,7 +125,7 @@ SUWAYOMI_SANDBOX_PROXY=127.0.0.1:7890 \   # 可选：HTTP 代理
 
 - **KOReader**：GraphQL `connectKoSyncAccount` / `pushKoSyncProgress` / `pullKoSyncProgress` / `koSyncStatus`。凭据存 `global_meta`；章节 `koreader_hash` 为 `md5("<manga title> - <chapter name>")`（FILENAME 校验和）。
 - **SyncYomi**：GraphQL `startSync` / `lastSyncStatus`。配置见 ServerConfig：`syncYomiEnabled` / `syncYomiHost` / `syncYomiApiKey`（另有 6 项 `syncData*` 数据范围与 `syncInterval`）。同步以 Mihon Backup protobuf + ETag（If-None-Match/If-Match）在 `{host}/api/sync/content` 上 pull → restore → push。
-- **version 触发器**：`migrations/pg-only/0002_*` 在 manga/chapter/category 变更时自动 bump 版本（`is_syncing` 豁免），嵌入式与外部 PostgreSQL 均自动应用。
+- **version 触发器**：在 manga/chapter/category 变更时自动 bump 版本（`is_syncing` 豁免），两种后端分别由 `migrations/sqlite/0002_*` 与 PostgreSQL 侧 PL/pgSQL 实现。
 
 ## 构建
 

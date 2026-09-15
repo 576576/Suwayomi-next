@@ -5,7 +5,6 @@ use axum::extract::{Path, Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::Deserialize;
-use sqlx::Row;
 
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
@@ -40,7 +39,7 @@ pub fn router() -> Router<AppState> {
 
 async fn list(State(s): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
     let sql = "SELECT * FROM source ORDER BY name ASC";
-    let rows = sqlx::query(sql).fetch_all(s.db.pool()).await.map_err(ApiError::from)?;
+    let rows = suwayomi_db::query(sql).fetch_all(s.db.pool()).await.map_err(ApiError::from)?;
     let out: Vec<serde_json::Value> = rows
         .iter()
         .map(|r| {
@@ -57,7 +56,7 @@ async fn list(State(s): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
 
 async fn retrieve(State(s): State<AppState>, Path(source_id): Path<i64>) -> ApiResult<Json<serde_json::Value>> {
     let sql = suwayomi_domain::sql::bind_placeholders("SELECT * FROM source WHERE id = ?");
-    let row = sqlx::query(&sql)
+    let row = suwayomi_db::query(&sql)
         .bind(source_id)
         .fetch_optional(s.db.pool())
         .await

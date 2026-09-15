@@ -1,13 +1,9 @@
 //! Domain-layer error type.
 
-use suwayomi_core::db::DbError;
-
 #[derive(Debug, thiserror::Error)]
 pub enum DomainError {
     #[error("database error: {0}")]
-    Db(#[from] sqlx::Error),
-    #[error("db setup error: {0}")]
-    DbSetup(#[from] DbError),
+    Db(#[from] suwayomi_db::Error),
     #[error("{0}")]
     NotFound(String),
     #[error("{0}")]

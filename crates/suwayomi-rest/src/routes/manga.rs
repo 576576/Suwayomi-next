@@ -162,7 +162,7 @@ async fn resolve_indexes(s: &AppState, manga_id: i32, indexes: &[i32]) -> Vec<i3
 
 async fn find_chapter_id(s: &AppState, manga_id: i32, index: i32) -> Result<i32, suwayomi_domain::error::DomainError> {
     let sql = suwayomi_domain::sql::bind_placeholders("SELECT id FROM chapter WHERE manga = ? AND source_order = ?");
-    sqlx::query_scalar::<_, i32>(&sql)
+    suwayomi_db::query_scalar::<i32>(&sql)
         .bind(manga_id)
         .bind(index)
         .fetch_optional(s.db.pool())
@@ -181,7 +181,7 @@ async fn find_chapter_id_offline(s: &AppState, manga_id: i32, index: i32) -> Res
         return Ok(id);
     }
     let sql = suwayomi_domain::sql::bind_placeholders("SELECT id FROM chapter WHERE manga = ? AND chapter_number = ?");
-    sqlx::query_scalar::<_, i32>(&sql)
+    suwayomi_db::query_scalar::<i32>(&sql)
         .bind(manga_id)
         .bind(index)
         .fetch_optional(s.db.pool())
@@ -269,7 +269,7 @@ async fn page_image(
     let find = async {
         let cid = find_chapter_id_offline(&s, manga_id, chapter_index).await?;
         let sql = suwayomi_domain::sql::bind_placeholders("SELECT real_url FROM chapter WHERE id = ?");
-        let real: Option<String> = sqlx::query_scalar(&sql).bind(cid).fetch_optional(s.db.pool()).await?;
+        let real: Option<String> = suwayomi_db::query_scalar(&sql).bind(cid).fetch_optional(s.db.pool()).await?;
         let real = real.filter(|r| !r.is_empty()).ok_or_else(|| {
             suwayomi_domain::error::DomainError::NotFound("no archive for this chapter".into())
         })?;

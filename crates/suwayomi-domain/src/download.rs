@@ -145,7 +145,7 @@ impl DownloadManager {
     /// Enqueues a chapter by id (idempotent: skips if already queued).
     pub async fn enqueue_chapter(&self, chapter_id: i32) -> Result<(), String> {
         let pool = self.db.pool();
-        #[derive(sqlx::FromRow)]
+        #[derive(suwayomi_db::FromRow)]
         #[allow(dead_code)] // FromRow maps all selected columns
         struct Row {
             chapter_id: i32,
@@ -157,7 +157,7 @@ impl DownloadManager {
             manga_source: i64,
             manga_url: String,
         }
-        let row: Option<Row> = sqlx::query_as(
+        let row: Option<Row> = suwayomi_db::query_as(
             "SELECT c.id AS chapter_id, c.name AS chapter_name, c.url AS chapter_url, c.is_downloaded, \
              m.id AS manga_id, m.title AS manga_title, m.source AS manga_source, m.url AS manga_url \
              FROM chapter c JOIN manga m ON m.id = c.manga WHERE c.id = $1",
@@ -334,7 +334,7 @@ impl DownloadManager {
                     // Register the download so offline reading works through
                     // `/api/v1/manga/{manga}/chapter/{order}/page/{n}/image`.
                     let pool = self.db.pool();
-                    let chapter_row: Option<(i32, i32)> = sqlx::query_as(
+                    let chapter_row: Option<(i32, i32)> = suwayomi_db::query_as(
                         "SELECT c.manga, c.source_order FROM chapter c WHERE c.id = $1",
                     )
                     .bind(job.chapter_id)
@@ -347,8 +347,8 @@ impl DownloadManager {
                         .unwrap_or_default();
                     for (pi, name) in &page_files {
                         let image_url = format!("{img_base}/{pi}/image");
-                        let sql = bind_placeholders("SELECT id FROM page WHERE chapter = ? AND index = ?");
-                        let existing: Option<(i32,)> = sqlx::query_as(&sql)
+                        let sql = bind_placeholders("SELECT id FROM page WHERE chapter = ? AND \"index\" = ?");
+                        let existing: Option<(i32,)> = suwayomi_db::query_as(&sql)
                             .bind(job.chapter_id)
                             .bind(pi)
                             .fetch_optional(pool)
@@ -358,15 +358,15 @@ impl DownloadManager {
                         match existing {
                             Some((pid,)) => {
                                 let sql = bind_placeholders("UPDATE page SET url = ?, image_url = ? WHERE id = ?");
-                                let _ = sqlx::query(&sql).bind(name).bind(&image_url).bind(pid).execute(pool).await;
+                                let _ = suwayomi_db::query(&sql).bind(name).bind(&image_url).bind(pid).execute(pool).await;
                             }
                             None => {
-                                let sql = bind_placeholders("INSERT INTO page (index, url, image_url, chapter) VALUES (?, ?, ?, ?)");
-                                let _ = sqlx::query(&sql).bind(pi).bind(name).bind(&image_url).bind(job.chapter_id).execute(pool).await;
+                                let sql = bind_placeholders("INSERT INTO page (\"index\", url, image_url, chapter) VALUES (?, ?, ?, ?)");
+                                let _ = suwayomi_db::query(&sql).bind(pi).bind(name).bind(&image_url).bind(job.chapter_id).execute(pool).await;
                             }
                         }
                     }
-                    let _ = sqlx::query(
+                    let _ = suwayomi_db::query(
                         "UPDATE chapter SET is_downloaded = TRUE, real_url = $1, page_count = $2, fetched_at = $3 WHERE id = $4",
                     )
                     .bind(archive.to_string_lossy().to_string())
@@ -399,7 +399,6 @@ impl DownloadManager {
     /// Builds a `ComicInfo.xml` (ComicRack standard) payload for the archive,
     /// based on the manga/chapter rows in the DB.
     async fn build_comic_info(&self, job: &DownloadJob, page_count: usize) -> Option<String> {
-        use sqlx::Row;
         #[derive(Clone, Default)]
         struct Meta {
             title: String,
@@ -413,7 +412,7 @@ impl DownloadManager {
             page_count: String,
             pub_date: String,
         }
-        let row = sqlx::query(
+        let row = suwayomi_db::query(
             "SELECT m.title, m.author, m.artist, m.genre, m.description, \
                     c.chapter_number, c.scanlator, c.date_upload \
              FROM chapter c JOIN manga m ON m.id = c.manga WHERE c.id = $1",
@@ -482,7 +481,7 @@ impl DownloadManager {
         progress: &mut (dyn FnMut(usize) + Send),
     ) -> Result<(std::path::PathBuf, Vec<(i32, String)>), String> {
         // Resolve the source directory tag "{name} ({LANG})".
-        let src: Option<(String, String)> = sqlx::query_as("SELECT name, lang FROM source WHERE id = $1")
+        let src: Option<(String, String)> = suwayomi_db::query_as("SELECT name, lang FROM source WHERE id = $1")
             .bind(job.source_id)
             .fetch_optional(self.db.pool())
             .await
@@ -619,11 +618,10 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
     // again; real downloads always set real_url to the CBZ path.
     // Same for markers whose archive file has since disappeared from disk.
     let stale_ids: Vec<i32> = {
-        use sqlx::Row;
         let sql = bind_placeholders(
             "SELECT id, real_url FROM chapter WHERE is_downloaded = TRUE",
         );
-        let rows = sqlx::query(&sql).fetch_all(db.pool()).await.unwrap_or_default();
+        let rows = suwayomi_db::query(&sql).fetch_all(db.pool()).await.unwrap_or_default();
         let mut ids: Vec<i32> = Vec::new();
         for r in rows {
             let id: i32 = r.get("id");
@@ -639,7 +637,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
         ids
     };
     let cleared = if stale_ids.is_empty() {
-        sqlx::query(
+        suwayomi_db::query(
             bind_placeholders(
                 "UPDATE chapter SET is_downloaded = FALSE WHERE is_downloaded = TRUE AND (real_url IS NULL OR real_url = '')",
             ).as_str(),
@@ -649,7 +647,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
         .map(|r| r.rows_affected())
         .unwrap_or(0)
     } else {
-        sqlx::query(
+        suwayomi_db::query(
             bind_placeholders("UPDATE chapter SET is_downloaded = FALSE WHERE id = ANY($1)").as_str(),
         )
         .bind(&stale_ids)
@@ -666,7 +664,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
         // re-hydrates from the source instead of reusing archive endpoints
         // (`/api/v1/...`) that no longer serve bytes.
         let sql = bind_placeholders("DELETE FROM page WHERE chapter = ANY($1)");
-        let _ = sqlx::query(&sql).bind(&stale_ids).execute(db.pool()).await;
+        let _ = suwayomi_db::query(&sql).bind(&stale_ids).execute(db.pool()).await;
     }
     if !downloads_root.is_dir() {
         return Ok(0);
@@ -675,8 +673,8 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
     // is a no-op without a unique constraint — every startup re-inserted the
     // same pages, so readers saw the first page repeated. Dedupe once:
     // keep the lowest id per (chapter, index).
-    let _ = sqlx::query(
-        bind_placeholders("DELETE FROM page WHERE id NOT IN (SELECT MIN(id) FROM page GROUP BY chapter, index)").as_str(),
+    let _ = suwayomi_db::query(
+        bind_placeholders("DELETE FROM page WHERE id NOT IN (SELECT MIN(id) FROM page GROUP BY chapter, \"index\")").as_str(),
     )
     .execute(db.pool())
     .await;
@@ -699,7 +697,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
         };
         // resolve source row by name+lang (case-insensitive)
         let sql = bind_placeholders("SELECT id FROM source WHERE LOWER(name) = LOWER(?) AND LOWER(lang) = LOWER(?)");
-        let source_id: Option<(i64,)> = match sqlx::query_as(&sql)
+        let source_id: Option<(i64,)> = match suwayomi_db::query_as(&sql)
             .bind(&name)
             .bind(&lang)
             .fetch_optional(db.pool())
@@ -725,7 +723,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
             // under JA) is the user's data to fix, not something to paper
             // over with a source-blind title match.
             let sql = bind_placeholders("SELECT id, url FROM manga WHERE source = ? AND title = ? LIMIT 1");
-            let row: Option<(i32, String)> = sqlx::query_as(&sql)
+            let row: Option<(i32, String)> = suwayomi_db::query_as(&sql)
                 .bind(source_id)
                 .bind(&manga_title)
                 .fetch_optional(db.pool())
@@ -738,7 +736,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
             // 2) all variants sharing the same url
             let sql = bind_placeholders("SELECT id FROM manga WHERE url = ?");
             let variants: Vec<(i32,)> =
-                sqlx::query_as(&sql).bind(&manga_url).fetch_all(db.pool()).await.unwrap_or_default();
+                suwayomi_db::query_as(&sql).bind(&manga_url).fetch_all(db.pool()).await.unwrap_or_default();
             let variant_ids: Vec<i32> = variants.iter().map(|(id,)| *id).collect();
             for vid in &variant_ids {
                 matched_mangas.insert(*vid);
@@ -782,7 +780,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                 );
                 let alt = serde_json::to_string(&m.alt_titles).unwrap_or_else(|_| "[]".into());
                 for vid in &variant_ids {
-                    let _ = sqlx::query(&sql)
+                    let _ = suwayomi_db::query(&sql)
                         .bind(&alt)
                         .bind(&m.author)
                         .bind(&m.artist)
@@ -806,7 +804,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                     // name. Without the real_url match, reconcile re-inserted
                     // our own downloads as duplicate "Chapter.cbz" chapters.
                     let sql = bind_placeholders("SELECT id FROM chapter WHERE manga = ? AND real_url = ?");
-                    let mut existing: Option<(i32, bool)> = match sqlx::query_as::<_, (i32,)>(&sql)
+                    let mut existing: Option<(i32, bool)> = match suwayomi_db::query_as::<(i32,)>(&sql)
                         .bind(vid)
                         .bind(&cbz_path)
                         .fetch_optional(db.pool())
@@ -817,7 +815,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                     };
                     if existing.is_none() {
                         let sql = bind_placeholders("SELECT id FROM chapter WHERE manga = ? AND url = ?");
-                        existing = match sqlx::query_as::<_, (i32,)>(&sql)
+                        existing = match suwayomi_db::query_as::<(i32,)>(&sql)
                             .bind(vid)
                             .bind(&cname)
                             .fetch_optional(db.pool())
@@ -856,7 +854,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                             // Our own download: keep the chapter's source
                             // order and name (they mirror the remote chapter
                             // list / extension metadata), just sync state.
-                            let _ = sqlx::query(
+                            let _ = suwayomi_db::query(
                                 bind_placeholders(
                                     "UPDATE chapter SET is_downloaded = TRUE, fetched_at = ?, real_url = ? WHERE id = ?",
                                 )
@@ -872,7 +870,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                         Some((cid, false)) => {
                             // External import matched by url = file name:
                             // keep the original ordering behaviour.
-                            let _ = sqlx::query(
+                            let _ = suwayomi_db::query(
                                 bind_placeholders(
                                     "UPDATE chapter SET is_downloaded = TRUE, source_order = ?, fetched_at = ?, real_url = ?, name = ? WHERE id = ?",
                                 )
@@ -891,7 +889,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                             let sql = bind_placeholders(
                                 "INSERT INTO chapter (url, name, chapter_number, source_order, manga, fetched_at, last_modified_at, is_downloaded, real_url) VALUES (?, ?, ?, ?, ?, ?, ?, TRUE, ?) RETURNING id",
                             );
-                            sqlx::query_as::<_, (i32,)>(&sql)
+                            suwayomi_db::query_as::<(i32,)>(&sql)
                                 .bind(&cname)
                                 .bind(&chapter_name)
                                 .bind(-1f32)
@@ -924,8 +922,8 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                             // table has no unique constraint, so
                             // ON CONFLICT would silently re-insert.
                             let image_url = format!("{img_base}/{pi}/image");
-                            let sql = bind_placeholders("SELECT id FROM page WHERE chapter = ? AND index = ?");
-                            let existing_page: Option<(i32,)> = sqlx::query_as(&sql)
+                            let sql = bind_placeholders("SELECT id FROM page WHERE chapter = ? AND \"index\" = ?");
+                            let existing_page: Option<(i32,)> = suwayomi_db::query_as(&sql)
                                 .bind(cid)
                                 .bind(*pi as i32)
                                 .fetch_optional(db.pool())
@@ -937,7 +935,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                                     let sql = bind_placeholders(
                                         "UPDATE page SET url = ?, image_url = ? WHERE id = ?",
                                     );
-                                    let _ = sqlx::query(&sql)
+                                    let _ = suwayomi_db::query(&sql)
                                         .bind(pname)
                                         .bind(&image_url)
                                         .bind(pid)
@@ -946,9 +944,9 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                                 }
                                 None => {
                                     let sql = bind_placeholders(
-                                        "INSERT INTO page (index, url, image_url, chapter) VALUES (?, ?, ?, ?)",
+                                        "INSERT INTO page (\"index\", url, image_url, chapter) VALUES (?, ?, ?, ?)",
                                     );
-                                    let _ = sqlx::query(&sql)
+                                    let _ = suwayomi_db::query(&sql)
                                         .bind(*pi as i32)
                                         .bind(pname)
                                         .bind(&image_url)
@@ -963,7 +961,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                         let sql = bind_placeholders(
                             "UPDATE chapter SET page_count = ? WHERE id = ?",
                         );
-                        let _ = sqlx::query(&sql)
+                        let _ = suwayomi_db::query(&sql)
                             .bind(page_count)
                             .bind(cid)
                             .execute(db.pool())
@@ -998,21 +996,20 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
 
 /// Read page rows already in the DB for a chapter.
 async fn read_db_pages(
-    pool: &sqlx::PgPool,
+    pool: &suwayomi_db::Db,
     chapter_id: i32,
-) -> sqlx::Result<Vec<suwayomi_core::source::SourcePage>> {
-    use sqlx::Row;
+) -> suwayomi_db::Result<Vec<suwayomi_core::source::SourcePage>> {
     // Skip rows whose image_url points at the offline archive endpoint
     // (`/api/v1/manga/.../page/N/image`): after a chapter has been downloaded
     // the download step rewrites rows to serve the CBZ. Those rows are only
     // usable while the archive exists, and re-downloading (archive removed)
     // must fall back to the source instead of re-fetching the archive URLs.
     let sql = bind_placeholders(
-        "SELECT index, url, image_url FROM page \
+        "SELECT \"index\", url, image_url FROM page \
          WHERE chapter = ? AND (image_url IS NULL OR image_url NOT LIKE '/api/v1/%') \
-         ORDER BY index ASC ",
+         ORDER BY \"index\" ASC ",
     );
-    let rows = sqlx::query(&sql).bind(chapter_id).fetch_all(pool).await?;
+    let rows = suwayomi_db::query(&sql).bind(chapter_id).fetch_all(pool).await?;
     Ok(rows.into_iter().map(|r| {
         let url: String = r.try_get("url").unwrap_or_default();
         let image_url: Option<String> = r.try_get("image_url").ok().flatten();
@@ -1144,16 +1141,16 @@ mod tests {
     use suwayomi_core::db::Db;
 
     async fn seed() -> Db {
-        let db = Db::connect_embedded(None).await.expect("connect");
+        let db = Db::sqlite_in_memory().await.expect("connect");
         db.migrate().await.expect("migrate");
         let pool = db.pool();
-        sqlx::query("INSERT INTO extension (name, pkg_name, version_name, version_code, lang, content_warning) VALUES ('E','p','1',1,'en',0)")
+        suwayomi_db::query("INSERT INTO extension (name, pkg_name, version_name, version_code, lang, content_warning) VALUES ('E','p','1',1,'en',0)")
             .execute(pool)
             .await
             .expect("ext");
-        sqlx::query("INSERT INTO source (name, lang, extension) VALUES ('S','en',1)").execute(pool).await.expect("src");
-        sqlx::query("INSERT INTO manga (url, title, in_library, source) VALUES ('/m','M',TRUE,1)").execute(pool).await.expect("manga");
-        sqlx::query("INSERT INTO chapter (url, name, source_order, manga) VALUES ('/m/c1','Ch1',0,1)").execute(pool).await.expect("ch");
+        suwayomi_db::query("INSERT INTO source (name, lang, extension) VALUES ('S','en',1)").execute(pool).await.expect("src");
+        suwayomi_db::query("INSERT INTO manga (url, title, in_library, source) VALUES ('/m','M',TRUE,1)").execute(pool).await.expect("manga");
+        suwayomi_db::query("INSERT INTO chapter (url, name, source_order, manga) VALUES ('/m/c1','Ch1',0,1)").execute(pool).await.expect("ch");
         db
     }
 
@@ -1221,7 +1218,7 @@ mod tests {
         assert!(seen_snapshot, "must see snapshots from the worker");
         mgr.stop().await;
         // stub fetcher → job failed, not downloaded
-        let downloaded: bool = sqlx::query_scalar("SELECT is_downloaded FROM chapter WHERE id = 1").fetch_one(db.pool()).await.expect("flag");
+        let downloaded: bool = suwayomi_db::query_scalar("SELECT is_downloaded FROM chapter WHERE id = 1").fetch_one(db.pool()).await.expect("flag");
         assert!(!downloaded, "stub fetcher cannot download");
     }
 }

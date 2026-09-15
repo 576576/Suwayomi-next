@@ -2,7 +2,6 @@
 //! Batch B1: Category + Meta mutations (DB-driven; fully implemented).
 
 use async_graphql::{Context, Enum, InputObject, Object, SimpleObject};
-use sqlx::Row;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -712,7 +711,7 @@ impl MutationRoot {
         let name = input.name;
         // uniqueness check
         let exists: i64 =
-            sqlx::query_scalar(bind_placeholders("SELECT COUNT(*) FROM category WHERE name = ?").as_str())
+            suwayomi_db::query_scalar(bind_placeholders("SELECT COUNT(*) FROM category WHERE name = ?").as_str())
                 .bind(&name)
                 .fetch_one(pool)
                 .await
@@ -729,7 +728,7 @@ impl MutationRoot {
             return Err(async_graphql::Error::new("'order' must not be <= 0"));
         }
         if let Some(order) = input.order {
-            sqlx::query(
+            suwayomi_db::query(
                 bind_placeholders("UPDATE category SET sort_order = sort_order + 1 WHERE sort_order >= ?").as_str(),
             )
             .bind(order)
@@ -737,7 +736,7 @@ impl MutationRoot {
             .await
             .map_err(async_graphql::Error::from)?;
         }
-        let id: i32 = sqlx::query_scalar(
+        let id: i32 = suwayomi_db::query_scalar(
             bind_placeholders(
                 "INSERT INTO category (name, sort_order, is_default, include_in_update, include_in_download) VALUES (?, ?, ?, ?, ?) RETURNING id",
             )
@@ -773,7 +772,7 @@ impl MutationRoot {
         let pool = state.db.pool();
         let cat_row = fetch_category_row_opt(state, id).await?;
         // mangas in this category
-        let mangas: Vec<MangaRow> = sqlx::query_as::<_, MangaRow>(
+        let mangas: Vec<MangaRow> = suwayomi_db::query_as::<MangaRow>(
             bind_placeholders(
                 "SELECT m.* FROM manga m INNER JOIN category_manga cm ON cm.manga = m.id WHERE cm.category = ?",
             )
@@ -783,7 +782,7 @@ impl MutationRoot {
         .fetch_all(pool)
         .await
         .map_err(async_graphql::Error::from)?;
-        sqlx::query(bind_placeholders("DELETE FROM category WHERE id = ?").as_str())
+        suwayomi_db::query(bind_placeholders("DELETE FROM category WHERE id = ?").as_str())
             .bind(id)
             .execute(pool)
             .await
@@ -939,7 +938,7 @@ impl MutationRoot {
     ) -> async_graphql::Result<DeleteCategoryMetaPayload> {
         let state = ctx.data::<GraphQLState>()?;
         let old = fetch_category_meta(state, input.category_id, &input.key).await?;
-        sqlx::query(bind_placeholders("DELETE FROM category_meta WHERE category_ref = ? AND meta_key = ?").as_str())
+        suwayomi_db::query(bind_placeholders("DELETE FROM category_meta WHERE category_ref = ? AND meta_key = ?").as_str())
             .bind(input.category_id)
             .bind(&input.key)
             .execute(state.db.pool())
@@ -1025,7 +1024,7 @@ impl MutationRoot {
     ) -> async_graphql::Result<DeleteGlobalMetaPayload> {
         let state = ctx.data::<GraphQLState>()?;
         let old = fetch_global_meta(state, &input.key).await?;
-        sqlx::query(bind_placeholders("DELETE FROM global_meta WHERE meta_key = ?").as_str())
+        suwayomi_db::query(bind_placeholders("DELETE FROM global_meta WHERE meta_key = ?").as_str())
             .bind(&input.key)
             .execute(state.db.pool())
             .await
@@ -1108,7 +1107,7 @@ impl MutationRoot {
     ) -> async_graphql::Result<DeleteMangaMetaPayload> {
         let state = ctx.data::<GraphQLState>()?;
         let old = fetch_manga_meta(state, input.manga_id, &input.key).await?;
-        sqlx::query(bind_placeholders("DELETE FROM manga_meta WHERE manga_ref = ? AND meta_key = ?").as_str())
+        suwayomi_db::query(bind_placeholders("DELETE FROM manga_meta WHERE manga_ref = ? AND meta_key = ?").as_str())
             .bind(input.manga_id)
             .bind(&input.key)
             .execute(state.db.pool())
@@ -1208,7 +1207,7 @@ impl MutationRoot {
     ) -> async_graphql::Result<DeleteChapterMetaPayload> {
         let state = ctx.data::<GraphQLState>()?;
         let old = fetch_chapter_meta(state, input.chapter_id, &input.key).await?;
-        sqlx::query(bind_placeholders("DELETE FROM chapter_meta WHERE chapter_ref = ? AND meta_key = ?").as_str())
+        suwayomi_db::query(bind_placeholders("DELETE FROM chapter_meta WHERE chapter_ref = ? AND meta_key = ?").as_str())
             .bind(input.chapter_id)
             .bind(&input.key)
             .execute(state.db.pool())
@@ -1308,7 +1307,7 @@ impl MutationRoot {
     ) -> async_graphql::Result<DeleteSourceMetaPayload> {
         let state = ctx.data::<GraphQLState>()?;
         let old = fetch_source_meta(state, input.source_id.0, &input.key).await?;
-        sqlx::query(bind_placeholders("DELETE FROM source_meta WHERE source_ref = ? AND meta_key = ?").as_str())
+        suwayomi_db::query(bind_placeholders("DELETE FROM source_meta WHERE source_ref = ? AND meta_key = ?").as_str())
             .bind(input.source_id.0)
             .bind(&input.key)
             .execute(state.db.pool())
@@ -1494,8 +1493,8 @@ impl MutationRoot {
         if manga_row.source == suwayomi_domain::source::LOCAL_SOURCE_ID {
             seed_local_pages(state, &manga_row, &chapter_type).await?;
         }
-        let sql = bind_placeholders("SELECT url, image_url FROM page WHERE chapter = ? ORDER BY index ASC");
-        let rows = sqlx::query(&sql)
+        let sql = bind_placeholders("SELECT url, image_url FROM page WHERE chapter = ? ORDER BY \"index\" ASC");
+        let rows = suwayomi_db::query(&sql)
             .bind(input.chapter_id)
             .fetch_all(state.db.pool())
             .await
@@ -1518,8 +1517,8 @@ impl MutationRoot {
             {
                 Ok(source_pages) if !source_pages.is_empty() => {
                     for p in &source_pages {
-                        let sql = bind_placeholders("INSERT INTO page (index, url, image_url, chapter) VALUES (?, ?, ?, ?)");
-                        let _ = sqlx::query(&sql)
+                        let sql = bind_placeholders("INSERT INTO page (\"index\", url, image_url, chapter) VALUES (?, ?, ?, ?)");
+                        let _ = suwayomi_db::query(&sql)
                             .bind(p.index)
                             .bind(&p.url)
                             .bind(&p.image_url)
@@ -1540,7 +1539,7 @@ impl MutationRoot {
         // 坏 -1 会让翻页冻结）；fetched_at 刻意不动（表示发现章节的 epoch 秒）
         if !pages.is_empty() {
             let sql = bind_placeholders("UPDATE chapter SET page_count = ? WHERE id = ?");
-            let _ = sqlx::query(&sql)
+            let _ = suwayomi_db::query(&sql)
                 .bind(pages.len() as i32)
                 .bind(input.chapter_id)
                 .execute(state.db.pool())
@@ -1598,7 +1597,7 @@ impl MutationRoot {
                 let mut complete = true;
                 for m in &mangas {
                     let sql = bind_placeholders("SELECT id FROM manga WHERE source = ? AND url = ?");
-                    match sqlx::query_scalar::<_, i32>(&sql)
+                    match suwayomi_db::query_scalar::<i32>(&sql)
                         .bind(suwayomi_domain::source::LOCAL_SOURCE_ID)
                         .bind(&m.url)
                         .fetch_optional(state.db.pool())
@@ -1673,7 +1672,7 @@ impl MutationRoot {
         let mut mangas = Vec::with_capacity(ids.len());
         for id in ids {
             let sql = bind_placeholders("SELECT * FROM manga WHERE id = ?");
-            let row = sqlx::query_as::<_, MangaRow>(&sql)
+            let row = suwayomi_db::query_as::<MangaRow>(&sql)
                 .bind(id)
                 .fetch_optional(state.db.pool())
                 .await
@@ -1727,7 +1726,7 @@ async fn fetch_category_row(state: &GraphQLState, id: i32) -> async_graphql::Res
 
 async fn fetch_category_row_opt(state: &GraphQLState, id: i32) -> async_graphql::Result<Option<CategoryRow>> {
     let sql = bind_placeholders("SELECT * FROM category WHERE id = ?");
-    sqlx::query_as::<_, CategoryRow>(&sql)
+    suwayomi_db::query_as::<CategoryRow>(&sql)
         .bind(id)
         .fetch_optional(state.db.pool())
         .await
@@ -1736,12 +1735,12 @@ async fn fetch_category_row_opt(state: &GraphQLState, id: i32) -> async_graphql:
 
 async fn fetch_manga_row(state: &GraphQLState, id: i32) -> async_graphql::Result<MangaRow> {
     let sql = bind_placeholders("SELECT * FROM manga WHERE id = ?");
-    sqlx::query_as::<_, MangaRow>(&sql).bind(id).fetch_one(state.db.pool()).await.map_err(async_graphql::Error::from)
+    suwayomi_db::query_as::<MangaRow>(&sql).bind(id).fetch_one(state.db.pool()).await.map_err(async_graphql::Error::from)
 }
 
 async fn fetch_chapter_row(state: &GraphQLState, id: i32) -> async_graphql::Result<ChapterRow> {
     let sql = bind_placeholders("SELECT * FROM chapter WHERE id = ?");
-    sqlx::query_as::<_, ChapterRow>(&sql).bind(id).fetch_one(state.db.pool()).await.map_err(async_graphql::Error::from)
+    suwayomi_db::query_as::<ChapterRow>(&sql).bind(id).fetch_one(state.db.pool()).await.map_err(async_graphql::Error::from)
 }
 
 
@@ -1774,7 +1773,7 @@ async fn upsert_local_chapters(
         let scanlator = meta.as_ref().and_then(|m| m.scanlator.clone()).or_else(|| c.scanlator.clone());
         let chapter_number = meta.as_ref().and_then(|m| m.number).unwrap_or(c.chapter_number);
         let sql = bind_placeholders("SELECT id FROM chapter WHERE manga = ? AND url = ?");
-        let existing: Option<(i32,)> = sqlx::query_as(&sql)
+        let existing: Option<(i32,)> = suwayomi_db::query_as(&sql)
             .bind(manga_id)
             .bind(&c.url)
             .fetch_optional(state.db.pool())
@@ -1785,7 +1784,7 @@ async fn upsert_local_chapters(
                 let sql = bind_placeholders(
                     "UPDATE chapter SET name = ?, chapter_number = ?, source_order = ?, fetched_at = ?, last_modified_at = ?, date_upload = ?, scanlator = ? WHERE id = ?",
                 );
-                sqlx::query(&sql)
+                suwayomi_db::query(&sql)
                     .bind(&name)
                     .bind(chapter_number)
                     .bind(source_order)
@@ -1802,7 +1801,7 @@ async fn upsert_local_chapters(
                 let sql = bind_placeholders(
                     "INSERT INTO chapter (url, name, chapter_number, source_order, manga, fetched_at, last_modified_at, date_upload, scanlator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 );
-                sqlx::query(&sql)
+                suwayomi_db::query(&sql)
                     .bind(&c.url)
                     .bind(&name)
                     .bind(chapter_number)
@@ -1841,7 +1840,7 @@ async fn seed_local_pages(
     // page list depends on zip contents) and any legacy placeholder rows in
     // sync with the actual files.
     let sql = bind_placeholders("DELETE FROM page WHERE chapter = ?");
-    sqlx::query(&sql)
+    suwayomi_db::query(&sql)
         .bind(chapter.id)
         .execute(state.db.pool())
         .await
@@ -1857,8 +1856,8 @@ async fn seed_local_pages(
     }
     for p in &pages {
         let image_url = p.image_url.clone().unwrap_or_else(|| p.url.clone());
-        let sql = bind_placeholders("INSERT INTO page (index, url, image_url, chapter) VALUES (?, ?, ?, ?)");
-        sqlx::query(&sql)
+        let sql = bind_placeholders("INSERT INTO page (\"index\", url, image_url, chapter) VALUES (?, ?, ?, ?)");
+        suwayomi_db::query(&sql)
             .bind(p.index)
             .bind(&p.url)
             .bind(&image_url)
@@ -1869,7 +1868,7 @@ async fn seed_local_pages(
     }
     // Reflect the page count on the chapter row.
     let sql = bind_placeholders("UPDATE chapter SET page_count = ? WHERE id = ?");
-    sqlx::query(&sql)
+    suwayomi_db::query(&sql)
         .bind(pages.len() as i32)
         .bind(chapter.id)
         .execute(state.db.pool())
@@ -1886,7 +1885,7 @@ async fn fetch_source_type(state: &GraphQLState, id: i64) -> async_graphql::Resu
         return Ok(SourceType::local_source());
     }
     let sql = bind_placeholders("SELECT * FROM source WHERE id = ?");
-    let row = sqlx::query_as::<_, suwayomi_core::schema::SourceRow>(&sql)
+    let row = suwayomi_db::query_as::<suwayomi_core::schema::SourceRow>(&sql)
         .bind(id)
         .fetch_one(state.db.pool())
         .await
@@ -1955,7 +1954,7 @@ async fn fetch_category_meta(
     key: &str,
 ) -> async_graphql::Result<Option<CategoryMetaType>> {
     let sql = bind_placeholders("SELECT meta_key, value FROM category_meta WHERE category_ref = ? AND meta_key = ?");
-    let row = sqlx::query(&sql)
+    let row = suwayomi_db::query(&sql)
         .bind(category_id)
         .bind(key)
         .fetch_optional(state.db.pool())
@@ -1970,7 +1969,7 @@ async fn fetch_category_meta(
 
 async fn fetch_global_meta(state: &GraphQLState, key: &str) -> async_graphql::Result<Option<GlobalMetaType>> {
     let sql = bind_placeholders("SELECT meta_key, value FROM global_meta WHERE meta_key = ?");
-    let row = sqlx::query(&sql).bind(key).fetch_optional(state.db.pool()).await.map_err(async_graphql::Error::from)?;
+    let row = suwayomi_db::query(&sql).bind(key).fetch_optional(state.db.pool()).await.map_err(async_graphql::Error::from)?;
     Ok(row.map(|r| GlobalMetaType {
         key: r.try_get("meta_key").unwrap_or_default(),
         value: r.try_get("value").unwrap_or_default(),
@@ -1983,7 +1982,7 @@ async fn fetch_manga_meta(
     key: &str,
 ) -> async_graphql::Result<Option<MangaMetaType>> {
     let sql = bind_placeholders("SELECT meta_key, value FROM manga_meta WHERE manga_ref = ? AND meta_key = ?");
-    let row = sqlx::query(&sql)
+    let row = suwayomi_db::query(&sql)
         .bind(manga_id)
         .bind(key)
         .fetch_optional(state.db.pool())
@@ -2002,7 +2001,7 @@ async fn fetch_chapter_meta(
     key: &str,
 ) -> async_graphql::Result<Option<ChapterMetaType>> {
     let sql = bind_placeholders("SELECT meta_key, value FROM chapter_meta WHERE chapter_ref = ? AND meta_key = ?");
-    let row = sqlx::query(&sql)
+    let row = suwayomi_db::query(&sql)
         .bind(chapter_id)
         .bind(key)
         .fetch_optional(state.db.pool())
@@ -2021,7 +2020,7 @@ async fn fetch_source_meta(
     key: &str,
 ) -> async_graphql::Result<Option<SourceMetaType>> {
     let sql = bind_placeholders("SELECT meta_key, value FROM source_meta WHERE source_ref = ? AND meta_key = ?");
-    let row = sqlx::query(&sql)
+    let row = suwayomi_db::query(&sql)
         .bind(source_id)
         .bind(key)
         .fetch_optional(state.db.pool())
@@ -2049,7 +2048,7 @@ async fn delete_meta_by_key_or_prefix(
     if let Some(keys) = keys {
         for key in keys {
             let sql = format!("SELECT meta_key, value FROM {table_name} WHERE {ref_column} = ? AND meta_key = ?");
-            let row = sqlx::query(bind_placeholders(&sql).as_str())
+            let row = suwayomi_db::query(bind_placeholders(&sql).as_str())
                 .bind(ref_id)
                 .bind(key)
                 .fetch_optional(pool)
@@ -2061,7 +2060,7 @@ async fn delete_meta_by_key_or_prefix(
                     r.try_get::<String, _>("value").unwrap_or_default(),
                 ));
             }
-            sqlx::query(
+            suwayomi_db::query(
                 bind_placeholders(&format!("DELETE FROM {table_name} WHERE {ref_column} = ? AND meta_key = ?"))
                     .as_str(),
             )
@@ -2076,7 +2075,7 @@ async fn delete_meta_by_key_or_prefix(
         for prefix in prefixes {
             let pattern = format!("{prefix}%");
             let sql = format!("SELECT meta_key, value FROM {table_name} WHERE {ref_column} = ? AND meta_key LIKE ?");
-            let rows = sqlx::query(bind_placeholders(&sql).as_str())
+            let rows = suwayomi_db::query(bind_placeholders(&sql).as_str())
                 .bind(ref_id)
                 .bind(&pattern)
                 .fetch_all(pool)
@@ -2088,7 +2087,7 @@ async fn delete_meta_by_key_or_prefix(
                     r.try_get::<String, _>("value").unwrap_or_default(),
                 ));
             }
-            sqlx::query(
+            suwayomi_db::query(
                 bind_placeholders(&format!("DELETE FROM {table_name} WHERE {ref_column} = ? AND meta_key LIKE ?"))
                     .as_str(),
             )

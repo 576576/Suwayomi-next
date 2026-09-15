@@ -1,9 +1,9 @@
 //! Row structs mirroring the 15 Suwayomi tables (PostgreSQL + SQLite shared).
 //!
-//! `memo` columns are stored as JSON text; use `sqlx::types::Json` for
+//! `memo` columns are stored as JSON text; use `suwayomi_db::types::Json` for
 //! transparent encode/decode. All timestamps are epoch-seconds (i64).
 
-use sqlx::FromRow;
+use suwayomi_db::FromRow;
 
 /// `extension` — mirrors `ExtensionTable`
 #[derive(Debug, Clone, FromRow)]

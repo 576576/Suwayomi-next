@@ -2,7 +2,6 @@
 //! Core queries implemented; remaining queries land in later increments.
 
 use async_graphql::{Context, Enum, InputObject, Object, SimpleObject};
-use sqlx::Row;
 use suwayomi_core::schema::{CategoryRow, ChapterRow, MangaRow};
 use suwayomi_domain::sql::bind_placeholders;
 
@@ -570,7 +569,7 @@ impl QueryRoot {
     async fn manga(&self, ctx: &Context<'_>, id: i32) -> async_graphql::Result<MangaType> {
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT * FROM manga WHERE id = ?");
-        let row = sqlx::query_as::<_, MangaRow>(&sql)
+        let row = suwayomi_db::query_as::<MangaRow>(&sql)
             .bind(id)
             .fetch_optional(state.db.pool())
             .await
@@ -602,7 +601,7 @@ impl QueryRoot {
     async fn category(&self, ctx: &Context<'_>, id: i32) -> async_graphql::Result<CategoryType> {
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT * FROM category WHERE id = ?");
-        let row = sqlx::query_as::<_, CategoryRow>(&sql)
+        let row = suwayomi_db::query_as::<CategoryRow>(&sql)
             .bind(id)
             .fetch_optional(state.db.pool())
             .await
@@ -656,7 +655,7 @@ impl QueryRoot {
     async fn chapter(&self, ctx: &Context<'_>, id: i32) -> async_graphql::Result<ChapterType> {
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT * FROM chapter WHERE id = ?");
-        let row = sqlx::query_as::<_, ChapterRow>(&sql)
+        let row = suwayomi_db::query_as::<ChapterRow>(&sql)
             .bind(id)
             .fetch_optional(state.db.pool())
             .await
@@ -689,7 +688,7 @@ impl QueryRoot {
     async fn meta(&self, ctx: &Context<'_>, key: String) -> async_graphql::Result<GlobalMetaType> {
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT meta_key, value FROM global_meta WHERE meta_key = ?");
-        let row = sqlx::query(&sql)
+        let row = suwayomi_db::query(&sql)
             .bind(&key)
             .fetch_optional(state.db.pool())
             .await
@@ -757,7 +756,7 @@ impl QueryRoot {
             sql.push_str(&format!(" LIMIT {}", limit.clamp(1, 500)));
         }
         let sql = bind_placeholders(&sql);
-        let mut q = sqlx::query(&sql);
+        let mut q = suwayomi_db::query(&sql);
         for b in &binds {
             q = match b {
                 BindVal::I32(x) => q.bind(*x),
@@ -786,7 +785,7 @@ impl QueryRoot {
             return Ok(SourceType::local_source());
         }
         let sql = bind_placeholders("SELECT * FROM source WHERE id = ?");
-        let row = sqlx::query_as::<_, suwayomi_core::schema::SourceRow>(&sql)
+        let row = suwayomi_db::query_as::<suwayomi_core::schema::SourceRow>(&sql)
             .bind(id.0)
             .fetch_optional(state.db.pool())
             .await
@@ -856,7 +855,7 @@ impl QueryRoot {
             sql.push_str(&format!(" LIMIT {}", limit.clamp(1, 500)));
         }
         let sql = bind_placeholders(&sql);
-        let mut q = sqlx::query_as::<_, suwayomi_core::schema::SourceRow>(&sql);
+        let mut q = suwayomi_db::query_as::<suwayomi_core::schema::SourceRow>(&sql);
         for b in &binds {
             q = match b {
                 BindVal::I32(x) => q.bind(*x),
@@ -870,7 +869,7 @@ impl QueryRoot {
         // 批量预取扩展 pkg_name 与 source meta，注入 SourceType 缓存字段——
         // 避免 iconUrl/meta 每个源一次 DB 查询（N+1 并发把连接池打满导致
         // "pool timed out"，DebugInformation 的 sources 查询会触发）。
-        let pkg_by_ext: std::collections::HashMap<i64, String> = sqlx::query_as::<_, (i32, String)>(
+        let pkg_by_ext: std::collections::HashMap<i64, String> = suwayomi_db::query_as::<(i32, String)>(
             bind_placeholders("SELECT id, pkg_name FROM extension").as_str(),
         )
         .fetch_all(state.db.pool())
@@ -886,7 +885,7 @@ impl QueryRoot {
         // sources and async_graphql's concurrent resolver execution that
         // exhausted the connection pool and hung the sources page.
         let ext_rows: Vec<suwayomi_core::schema::ExtensionRow> =
-            sqlx::query_as::<_, suwayomi_core::schema::ExtensionRow>(
+            suwayomi_db::query_as::<suwayomi_core::schema::ExtensionRow>(
                 bind_placeholders("SELECT * FROM extension").as_str(),
             )
             .fetch_all(state.db.pool())
@@ -896,7 +895,7 @@ impl QueryRoot {
             .into_iter()
             .map(|r| (i64::from(r.id), r))
             .collect();
-        let meta_rows = sqlx::query_as::<_, (i64, String, String)>(
+        let meta_rows = suwayomi_db::query_as::<(i64, String, String)>(
             bind_placeholders("SELECT source_ref, meta_key, value FROM source_meta").as_str(),
         )
         .fetch_all(state.db.pool())
@@ -941,7 +940,7 @@ impl QueryRoot {
     async fn extension(&self, ctx: &Context<'_>, pkg_name: String) -> async_graphql::Result<ExtensionType> {
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT * FROM extension WHERE pkg_name = ?");
-        let row = sqlx::query_as::<_, suwayomi_core::schema::ExtensionRow>(&sql)
+        let row = suwayomi_db::query_as::<suwayomi_core::schema::ExtensionRow>(&sql)
             .bind(&pkg_name)
             .fetch_optional(state.db.pool())
             .await
@@ -1019,7 +1018,7 @@ impl QueryRoot {
             sql.push_str(&format!(" LIMIT {}", limit.clamp(1, 500)));
         }
         let sql = bind_placeholders(&sql);
-        let mut q = sqlx::query_as::<_, suwayomi_core::schema::ExtensionRow>(&sql);
+        let mut q = suwayomi_db::query_as::<suwayomi_core::schema::ExtensionRow>(&sql);
         for b in &binds {
             q = match b {
                 BindVal::I32(x) => q.bind(*x),
@@ -1038,7 +1037,7 @@ impl QueryRoot {
     async fn extension_store(&self, ctx: &Context<'_>, index_url: String) -> async_graphql::Result<ExtensionStoreType> {
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT * FROM extension_store WHERE index_url = ?");
-        let row = sqlx::query_as::<_, suwayomi_core::schema::ExtensionStoreRow>(&sql)
+        let row = suwayomi_db::query_as::<suwayomi_core::schema::ExtensionStoreRow>(&sql)
             .bind(&index_url)
             .fetch_optional(state.db.pool())
             .await
@@ -1084,7 +1083,7 @@ impl QueryRoot {
             sql.push_str(&format!(" LIMIT {}", limit.clamp(1, 500)));
         }
         let sql = bind_placeholders(&sql);
-        let mut q = sqlx::query_as::<_, suwayomi_core::schema::ExtensionStoreRow>(&sql);
+        let mut q = suwayomi_db::query_as::<suwayomi_core::schema::ExtensionStoreRow>(&sql);
         for b in &binds {
             q = match b {
                 BindVal::Str(x) => q.bind(x),
@@ -1133,7 +1132,7 @@ impl QueryRoot {
     async fn track_record(&self, ctx: &Context<'_>, id: i32) -> async_graphql::Result<TrackRecordType> {
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT * FROM track_record WHERE id = ?");
-        let row = sqlx::query_as::<_, suwayomi_core::schema::TrackRecordRow>(&sql)
+        let row = suwayomi_db::query_as::<suwayomi_core::schema::TrackRecordRow>(&sql)
             .bind(id)
             .fetch_optional(state.db.pool())
             .await
@@ -1219,7 +1218,7 @@ impl QueryRoot {
             sql.push_str(&format!(" LIMIT {}", limit.clamp(1, 500)));
         }
         let sql = bind_placeholders(&sql);
-        let mut q = sqlx::query_as::<_, suwayomi_core::schema::TrackRecordRow>(&sql);
+        let mut q = suwayomi_db::query_as::<suwayomi_core::schema::TrackRecordRow>(&sql);
         for b in &binds {
             q = match b {
                 BindVal::I32(x) => q.bind(*x),
@@ -1397,7 +1396,7 @@ impl QueryRoot {
         // Apply persisted overrides (the `settings` global_meta JSON blob
         // written by setSettings) so saved values survive restarts.
         let sql = bind_placeholders("SELECT value FROM global_meta WHERE meta_key = ?");
-        if let Ok(row) = sqlx::query(&sql).bind("settings").fetch_optional(state.db.pool()).await
+        if let Ok(row) = suwayomi_db::query(&sql).bind("settings").fetch_optional(state.db.pool()).await
             && let Some(row) = row
             && let Ok(value) = row.try_get::<String, _>("value")
             && let Ok(blob) = serde_json::from_str::<serde_json::Value>(&value)
@@ -1555,7 +1554,7 @@ async fn query_mangas(
     }
     let sql = bind_placeholders(&sql);
 
-    let mut q = sqlx::query_as::<_, MangaRow>(&sql);
+    let mut q = suwayomi_db::query_as::<MangaRow>(&sql);
     for b in &binds {
         q = match b {
             BindVal::I32(x) => q.bind(*x),
@@ -1570,7 +1569,7 @@ async fn query_mangas(
 }
 
 async fn fetch_chapters(state: &GraphQLState, sql: &str, binds: &[BindVal]) -> async_graphql::Result<Vec<ChapterRow>> {
-    let mut q = sqlx::query_as::<_, ChapterRow>(sql);
+    let mut q = suwayomi_db::query_as::<ChapterRow>(sql);
     for b in binds {
         q = match b {
             BindVal::I32(x) => q.bind(*x),

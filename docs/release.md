@@ -35,7 +35,6 @@
 - 命名统一 `Suwayomi-` 前缀，两套约定见上表 `pack_mode`。手动通道（`channel`）：`Suwayomi-{VER}-{CH}-{TGT}` 是基础包，勾选 JRE 时 Windows 再额外出一个 `+jre` 包（独立文件，基础包不变）；自动构建（`alpha`）：`Suwayomi-{VER}-{TGT}+jre`，Windows/Linux 都自带 `jre/`。
 - **不再捆绑 Electron**：WebUI 桌面窗口由托盘经系统 WebView 打开（Win WebView2 / Linux WebKitGTK），无 WebView 的环境托盘回退系统浏览器。
 - 扩展沙盒（`bin/jvm-sandbox.jar`）：带桌面壳的产物都产（Windows 全支持；Linux 仅 x64，arm64 只发 server）。jar 是跨平台字节码，一次 gradle 构建共用。
-- `oliphaunt-runtime/resources`：全平台捆绑（编译期 OUT_DIR 在 runner 上，运行时回退 exe 上级 bundled 目录，见 `suwayomi-core/src/db/manager.rs`），缺目录 server 秒退。
 - Linux 跑扩展需要 JRE：linux-x64 alpha 包自带 `jre/`；手动通道 Linux 基础包不捆 JRE（自行装系统 OpenJDK 或选 alpha 产物）。
 
 ## 捆绑 WebUI

@@ -14,7 +14,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use suwayomi_core::config::ServerConfig;
-use suwayomi_core::db::Db;
+use suwayomi_core::db::{Db, DbSettings};
 use suwayomi_domain::source::{SourceFetcher, StubFetcher};
 use suwayomi_rest::AppState;
 
@@ -268,8 +268,6 @@ async fn index(State(_s): State<AppState>) -> Result<String, StatusCode> {
 
 /// Phase 7: 定位 Kotlin H2 库，用 tools/h2-dump 导出并导入到当前后端
 async fn import_h2_data(db: &Db, data_dir: &std::path::Path) -> anyhow::Result<()> {
-    use sqlx::Executor;
-
     // 1) 定位 H2 文件
     let h2_file = if data_dir.join("tachidesk.mv.db").exists() {
         data_dir.join("tachidesk.mv.db")
@@ -319,7 +317,7 @@ async fn import_h2_data(db: &Db, data_dir: &std::path::Path) -> anyhow::Result<(
         if stmt.is_empty() {
             continue;
         }
-        db.pool().execute(stmt).await?;
+        db.batch_execute(stmt).await?;
         applied += 1;
     }
     tracing::info!("h2-dump import: {applied} statements applied");
@@ -329,7 +327,7 @@ async fn import_h2_data(db: &Db, data_dir: &std::path::Path) -> anyhow::Result<(
 /// 把持久化的 localSourcePath（setSettings 存的 global_meta）还原到进程内
 /// 本地图源根目录 override，自定义目录重启后仍生效
 async fn load_local_source_path(db: &Db) {
-    let Ok(Some((value,))) = sqlx::query_as::<_, (String,)>(
+    let Ok(Some((value,))) = suwayomi_db::query_as::<(String,)>(
         "SELECT value FROM global_meta WHERE meta_key = 'settings'",
     )
     .fetch_optional(db.pool())
@@ -416,26 +414,14 @@ async fn main() -> anyhow::Result<()> {
         dir
     };
 
-    // 后端：默认嵌入式 Oliphaunt（原生 PostgreSQL）；显式 SUWAYOMI_DATABASE_URL → 外部 PG。
-    // SUWAYOMI_PGLITE_DATA_DIR 指定嵌入式数据目录（默认 ./pglite-data；"" = 临时库）
-    let db = if config.database_url.is_empty() {
-        let data_dir = match std::env::var("SUWAYOMI_PGLITE_DATA_DIR") {
-            Ok(v) if !v.is_empty() => Some(std::path::PathBuf::from(v)),
-            Ok(_) => None, // 显式空 → 临时库（测试/开发）
-            Err(_) => Some(std::path::PathBuf::from("pglite-data")),
-        };
-        tracing::info!("database backend: embedded Oliphaunt PostgreSQL (set SUWAYOMI_DATABASE_URL to use external PostgreSQL)");
-        // 预建目录让 oliphaunt 的 stable_root_lock 落在 pglite-data 内而非发布根
-        if let Some(dir) = &data_dir {
-            std::fs::create_dir_all(dir).map_err(anyhow::Error::from)?;
-        }
-        Db::connect_embedded(data_dir.as_deref()).await?
-    } else {
-        tracing::info!("database backend: external PostgreSQL at {}", config.database_url);
-        Db::connect(&config.database_url).await?
-    };
+    // 后端：默认嵌入式 SQLite 文件（rheos-tokio-rusqlite）；显式
+    // SUWAYOMI_DB_BACKEND=postgres 或设置 SUWAYOMI_DATABASE_URL → 外部 PostgreSQL。
+    // SUWAYOMI_SQLITE_PATH 覆盖 SQLite 文件位置（默认 <data dir>/suwayomi.db）。
+    let settings = DbSettings::from_env();
+    tracing::info!("database backend: {}", settings.describe());
+    let db = Db::connect(&settings).await?;
     db.migrate().await?;
-    tracing::info!(mode = ?db.mode(), "database ready (migrations applied)");
+    tracing::info!(backend = db.kind().as_str(), "database ready (migrations applied)");
 
     // 确保默认分类 (id=0) 存在——书架页首个 tab 依赖；ON CONFLICT 幂等（覆盖
     // 备份恢复后 category 表为空的情况）。
@@ -443,7 +429,7 @@ async fn main() -> anyhow::Result<()> {
     // 上游 WebUI 的「编辑分类」页正是按 `nodes[0].name === 'Default'` 这个字面量
     // 把默认分类从列表里剔除的（CategorySettings.tsx）。若写成中文「默认」，该判据
     // 失效，默认分类会混进可排序列表。DO UPDATE 用于纠正历史库里已有的中文名。
-    sqlx::query(
+    suwayomi_db::query(
         "INSERT INTO category (id, name, sort_order, is_default, include_in_update, include_in_download) \
          VALUES (0, 'Default', 0, TRUE, -1, -1) \
          ON CONFLICT (id) DO UPDATE SET name = 'Default' WHERE category.name <> 'Default'",
@@ -497,9 +483,9 @@ async fn main() -> anyhow::Result<()> {
     suwayomi_graphql::autobackup::spawn(graphql_state.clone());
     let schema = suwayomi_graphql::schema::build_schema(graphql_state);
     tracing::info!("graphql schema ready ({} type definitions)", suwayomi_graphql::schema::schema_type_count());
-    let state = AppState::new(db, config.clone(), fetcher, sandbox_base, resolve_webui_dir(), data_dir_path.clone());
+    let state = AppState::new(db.clone(), config.clone(), fetcher, sandbox_base, resolve_webui_dir(), data_dir_path.clone());
     // shutdown 通知通道：POST /api/v1/shutdown（或 Ctrl+C）触发优雅关闭，
-    // 干净停掉嵌入式 postgres 与沙盒子进程而非遗留孤儿
+    // 干净停掉数据库连接与沙盒子进程而非遗留孤儿
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let app = build_router(state, schema, shutdown_tx);
 
@@ -538,43 +524,21 @@ async fn main() -> anyhow::Result<()> {
     )
     .with_graceful_shutdown(shutdown_signal(shutdown_rx))
     .await?;
-    tracing::info!("server stopped; shutting down embedded database");
-    // 释放 router 持有的 Db/AppState/GraphQLState 引用，让 Oliphaunt 会话 Drop
-    // 执行 pg_ctl stop；再清掉 oliphaunt 遗留的 root lock 文件
+    tracing::info!("server stopped; shutting down database");
+    // 先释放 router 持有的 Db/AppState/GraphQLState 引用，再关掉剩下的连接：
+    // SQLite 停掉专属线程并释放文件锁，PostgreSQL 归还连接池。
     drop(app);
-    cleanup_oliphaunt_lock_files();
+    if let Err(e) = db.close().await {
+        tracing::warn!("closing database failed: {e}");
+    }
     Ok(())
 }
 
-/// 等待关闭信号（Ctrl+C / shutdown 端点 watch 通道）。优雅关闭让 Db Drop 停
-/// postgres（否则残留 postmaster 锁阻塞下次启动）、沙盒 Drop 杀 JVM。
+/// 等待关闭信号（Ctrl+C / shutdown 端点 watch 通道）。优雅关闭让 Db 释放连接
+/// （否则残留连接会阻塞下次启动）、沙盒 Drop 杀 JVM。
 async fn shutdown_signal(mut rx: tokio::sync::watch::Receiver<bool>) {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => tracing::info!("ctrl-c received; graceful shutdown"),
         _ = rx.changed() => tracing::info!("shutdown requested via /api/v1/shutdown; graceful shutdown"),
     }
-}
-
-/// 清理优雅停机后 oliphaunt 遗留的 root lock：NativeRootLock Drop 只解锁不删
-/// 文件；数据目录内/父级（含旧版位置的兼容清扫）的 `.oliphaunt-root-*.lock`
-/// 与 `.oliphaunt.lock` 下次 open 会重建
-fn cleanup_oliphaunt_lock_files() {
-    let data_dir = std::env::var("SUWAYOMI_PGLITE_DATA_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("pglite-data"));
-    for dir in [data_dir.parent().map(std::path::PathBuf::from), Some(data_dir.clone())]
-        .into_iter()
-        .flatten()
-    {
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                if name.starts_with(".oliphaunt-root-") && name.ends_with(".lock") {
-                    let _ = std::fs::remove_file(entry.path());
-                }
-            }
-        }
-    }
-    let _ = std::fs::remove_file(data_dir.join(".oliphaunt.lock"));
 }

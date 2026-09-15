@@ -8,7 +8,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use sqlx::postgres::PgPool;
 use suwayomi_core::db::Db;
 use suwayomi_core::models::{IncludeOrExclude, MangaStatus, PaginatedList, UpdateStrategy};
 use suwayomi_core::source::SManga;
@@ -40,13 +39,19 @@ const BUSINESS_TABLES: &[&str] = &[
 
 type Services = (Db, MangaService, ChapterService, CategoryService, CategoryMangaService, LibraryService);
 
+/// Serialises the tests in this binary: they all talk to the same database and
+/// every `setup()` truncates the tables the others are working on.
+async fn lock() -> suwayomi_db::test_support::DbLock {
+    suwayomi_db::test_support::db_lock().await
+}
+
 async fn setup() -> Option<Services> {
     let url = std::env::var("DATABASE_URL").or_else(|_| std::env::var("SUWAYOMI_TEST_DB")).ok()?;
-    let db = Db::connect(&url).await.expect("connect postgres");
+    let db = Db::postgres(&url).await.expect("connect postgres");
     db.migrate().await.expect("migrate");
     let pool = db.pool();
     for t in BUSINESS_TABLES {
-        let _ = sqlx::query(&format!("TRUNCATE TABLE suwayomi.{t} RESTART IDENTITY CASCADE")).execute(pool).await;
+        let _ = suwayomi_db::query(&format!("TRUNCATE TABLE suwayomi.{t} RESTART IDENTITY CASCADE")).execute(pool).await;
     }
 
     let fetcher: Arc<dyn suwayomi_domain::source::SourceFetcher> = Arc::new(StubFetcher);
@@ -58,13 +63,13 @@ async fn setup() -> Option<Services> {
     Some((db, manga, chapter, category, cm, library))
 }
 
-fn pool(db: &Db) -> &PgPool {
+fn pool(db: &Db) -> &Db {
     db.pool()
 }
 
 /// createLibraryManga equivalent
 async fn create_library_manga(db: &Db, title: &str, source_id: i64) -> i32 {
-    let (id,): (i32,) = sqlx::query_as(
+    let (id,): (i32,) = suwayomi_db::query_as(
         "INSERT INTO suwayomi.manga (url, title, source, initialized, in_library, in_library_at) VALUES ($1, $2, $3, TRUE, TRUE, 1) RETURNING id",
     )
     .bind(format!("/manga/{title}"))
@@ -79,7 +84,7 @@ async fn create_library_manga(db: &Db, title: &str, source_id: i64) -> i32 {
 /// createChapters equivalent: n chapters with `read` flag; optional start index.
 async fn create_chapters(db: &Db, manga_id: i32, count: i32, read: bool, start: i32) {
     for i in start..start + count {
-        sqlx::query(
+        suwayomi_db::query(
             "INSERT INTO suwayomi.chapter (url, name, date_upload, chapter_number, read, bookmark, last_page_read, last_read_at, fetched_at, source_order, is_downloaded, page_count, manga) VALUES ($1, $2, 0, $3, $4, FALSE, 0, 0, 0, $5, FALSE, -1, $6)",
         )
         .bind(format!("/chapter/{i}"))
@@ -96,6 +101,7 @@ async fn create_chapters(db: &Db, manga_id: i32, count: i32, read: bool, start: 
 
 #[tokio::test]
 async fn manga_meta_upsert_matches_kotlin() {
+    let _guard = lock().await;
     let Some((db, manga, _, _, _, _)) = setup().await else {
         eprintln!("skipped: DATABASE_URL not set");
         return;
@@ -124,6 +130,7 @@ async fn manga_meta_upsert_matches_kotlin() {
 
 #[tokio::test]
 async fn manga_full_counts_and_library_flow() {
+    let _guard = lock().await;
     let Some((db, manga, _, category, cm, library)) = setup().await else {
         eprintln!("skipped: DATABASE_URL not set");
         return;
@@ -162,6 +169,7 @@ async fn manga_full_counts_and_library_flow() {
 
 #[tokio::test]
 async fn duplicate_category_manga_pairing_rejected_by_constraint() {
+    let _guard = lock().await;
     let Some((db, _, _, category, cm, _)) = setup().await else {
         eprintln!("skipped: DATABASE_URL not set");
         return;
@@ -171,7 +179,7 @@ async fn duplicate_category_manga_pairing_rejected_by_constraint() {
 
     cm.add_mangas_to_categories(&[manga_id], &[cat_id]).await.unwrap();
     // app layer dedupes; direct insert must fail on the unique constraint
-    let res = sqlx::query("INSERT INTO suwayomi.category_manga (category, manga) VALUES ($1, $2)")
+    let res = suwayomi_db::query("INSERT INTO suwayomi.category_manga (category, manga) VALUES ($1, $2)")
         .bind(cat_id)
         .bind(manga_id)
         .execute(pool(&db))
@@ -179,7 +187,7 @@ async fn duplicate_category_manga_pairing_rejected_by_constraint() {
     assert!(res.is_err(), "unique constraint must reject duplicate pairing");
 
     let row_count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM suwayomi.category_manga WHERE manga = $1 AND category = $2")
+        suwayomi_db::query_scalar("SELECT count(*) FROM suwayomi.category_manga WHERE manga = $1 AND category = $2")
             .bind(manga_id)
             .bind(cat_id)
             .fetch_one(pool(&db))
@@ -190,6 +198,7 @@ async fn duplicate_category_manga_pairing_rejected_by_constraint() {
 
 #[tokio::test]
 async fn adding_manga_twice_does_not_create_duplicates() {
+    let _guard = lock().await;
     let Some((db, _, _, category, cm, _)) = setup().await else {
         eprintln!("skipped: DATABASE_URL not set");
         return;
@@ -201,7 +210,7 @@ async fn adding_manga_twice_does_not_create_duplicates() {
     cm.add_mangas_to_categories(&[manga_id], &[cat_id]).await.unwrap();
 
     let row_count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM suwayomi.category_manga WHERE manga = $1 AND category = $2")
+        suwayomi_db::query_scalar("SELECT count(*) FROM suwayomi.category_manga WHERE manga = $1 AND category = $2")
             .bind(manga_id)
             .bind(cat_id)
             .fetch_one(pool(&db))
@@ -213,6 +222,7 @@ async fn adding_manga_twice_does_not_create_duplicates() {
 
 #[tokio::test]
 async fn category_create_filters_default_name_and_dedupes() {
+    let _guard = lock().await;
     let Some((db, _, _, category, _, _)) = setup().await else {
         eprintln!("skipped: DATABASE_URL not set");
         return;
@@ -232,6 +242,7 @@ async fn category_create_filters_default_name_and_dedupes() {
 
 #[tokio::test]
 async fn chapter_list_sorting_and_modify() {
+    let _guard = lock().await;
     let Some((db, _, chapter, _, _, _)) = setup().await else {
         eprintln!("skipped: DATABASE_URL not set");
         return;
@@ -260,7 +271,7 @@ async fn chapter_list_sorting_and_modify() {
     }
 
     // delete a chapter download → is_downloaded cleared, row stays (Kotlin semantics)
-    sqlx::query("UPDATE suwayomi.chapter SET is_downloaded = TRUE WHERE manga = $1 AND source_order = $2")
+    suwayomi_db::query("UPDATE suwayomi.chapter SET is_downloaded = TRUE WHERE manga = $1 AND source_order = $2")
         .bind(manga_id)
         .bind(1)
         .execute(pool(&db))
@@ -275,12 +286,13 @@ async fn chapter_list_sorting_and_modify() {
 
 #[tokio::test]
 async fn update_chapter_progress_marks_read_at_last_page() {
+    let _guard = lock().await;
     let Some((db, _, chapter, _, _, _)) = setup().await else {
         eprintln!("skipped: DATABASE_URL not set");
         return;
     };
     let manga_id = create_library_manga(&db, "Progress", 1).await;
-    sqlx::query("INSERT INTO suwayomi.chapter (url, name, source_order, page_count, manga) VALUES ($1, $2, $3, 3, $4)")
+    suwayomi_db::query("INSERT INTO suwayomi.chapter (url, name, source_order, page_count, manga) VALUES ($1, $2, $3, 3, $4)")
         .bind("/c/1")
         .bind("C1")
         .bind(1)
@@ -296,11 +308,12 @@ async fn update_chapter_progress_marks_read_at_last_page() {
 
 #[tokio::test]
 async fn recent_chapters_requires_library_membership() {
+    let _guard = lock().await;
     let Some((db, _, chapter, _, _, _)) = setup().await else {
         eprintln!("skipped: DATABASE_URL not set");
         return;
     };
-    sqlx::query(
+    suwayomi_db::query(
         "INSERT INTO suwayomi.manga (url, title, source, in_library, in_library_at) VALUES ($1, $2, 1, FALSE, 0)",
     )
     .bind("/m/notlib")
@@ -308,7 +321,7 @@ async fn recent_chapters_requires_library_membership() {
     .execute(pool(&db))
     .await
     .unwrap();
-    sqlx::query("INSERT INTO suwayomi.chapter (url, name, source_order, fetched_at, manga) VALUES ($1, $2, 1, 999, 1)")
+    suwayomi_db::query("INSERT INTO suwayomi.chapter (url, name, source_order, fetched_at, manga) VALUES ($1, $2, 1, 999, 1)")
         .bind("/c/1")
         .bind("C1")
         .execute(pool(&db))
@@ -321,6 +334,7 @@ async fn recent_chapters_requires_library_membership() {
 
 #[tokio::test]
 async fn manga_list_insert_or_update_dedupes_and_updates() {
+    let _guard = lock().await;
     let Some((db, _, _, _, _, _)) = setup().await else {
         eprintln!("skipped: DATABASE_URL not set");
         return;
@@ -343,16 +357,17 @@ async fn manga_list_insert_or_update_dedupes_and_updates() {
     assert_eq!(ids2.len(), 2);
     assert_eq!(ids2[0], ids1[0]);
 
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM suwayomi.manga").fetch_one(pool(&db)).await.unwrap();
+    let count: i64 = suwayomi_db::query_scalar("SELECT count(*) FROM suwayomi.manga").fetch_one(pool(&db)).await.unwrap();
     assert_eq!(count, 3, "no duplicate manga rows for repeated source urls");
 
     let title: String =
-        sqlx::query_scalar("SELECT title FROM suwayomi.manga WHERE url = '/m/1'").fetch_one(pool(&db)).await.unwrap();
+        suwayomi_db::query_scalar("SELECT title FROM suwayomi.manga WHERE url = '/m/1'").fetch_one(pool(&db)).await.unwrap();
     assert_eq!(title, "One v2", "existing non-library manga title should be updated");
 }
 
 #[tokio::test]
 async fn category_reorder_and_update() {
+    let _guard = lock().await;
     let Some((db, _, _, category, _, _)) = setup().await else {
         eprintln!("skipped: DATABASE_URL not set");
         return;

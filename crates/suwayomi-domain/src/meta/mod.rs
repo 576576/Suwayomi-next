@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 
-use sqlx::Row;
 use suwayomi_core::db::Db;
 
 use crate::error::Result;
@@ -68,9 +67,9 @@ impl MetaService {
         let mut out = HashMap::new();
         {
             let rows = if table == MetaTable::Global {
-                sqlx::query(&sql).fetch_all(self.db.pool()).await?
+                suwayomi_db::query(&sql).fetch_all(self.db.pool()).await?
             } else {
-                sqlx::query(&sql).bind(ref_id).fetch_all(self.db.pool()).await?
+                suwayomi_db::query(&sql).bind(ref_id).fetch_all(self.db.pool()).await?
             };
             for row in rows {
                 out.insert(row.try_get("meta_key")?, row.try_get("value")?);
@@ -118,9 +117,9 @@ impl MetaService {
         let mut out = HashMap::new();
         {
             let rows = if table == MetaTable::Global {
-                sqlx::query(&sql).fetch_all(self.db.pool()).await?
+                suwayomi_db::query(&sql).fetch_all(self.db.pool()).await?
             } else {
-                sqlx::query(&sql).bind(ref_id).fetch_all(self.db.pool()).await?
+                suwayomi_db::query(&sql).bind(ref_id).fetch_all(self.db.pool()).await?
             };
             for row in rows {
                 out.insert(row.try_get("meta_key")?, row.try_get("id")?);
@@ -133,7 +132,7 @@ impl MetaService {
         let table_name = table.table_name();
         let sql = bind_placeholders(&format!("UPDATE {table_name} SET value = ? WHERE id = ?"));
         {
-            sqlx::query(&sql).bind(value).bind(row_id).execute(self.db.pool()).await?;
+            suwayomi_db::query(&sql).bind(value).bind(row_id).execute(self.db.pool()).await?;
         }
         Ok(())
     }
@@ -145,14 +144,14 @@ impl MetaService {
             // with id 0 exists (e.g. the pre-seeded webUI_migration row).
             let sql = bind_placeholders("INSERT INTO global_meta (meta_key, value) VALUES (?, ?)");
             {
-                sqlx::query(&sql).bind(key).bind(value).execute(self.db.pool()).await?;
+                suwayomi_db::query(&sql).bind(key).bind(value).execute(self.db.pool()).await?;
             }
         } else {
             let ref_col = table.ref_column();
             let table_name = table.table_name();
             let sql = bind_placeholders(&format!("INSERT INTO {table_name} (meta_key, value, {ref_col}) VALUES (?, ?, ?)"));
             {
-                sqlx::query(&sql).bind(key).bind(value).bind(ref_id).execute(self.db.pool()).await?;
+                suwayomi_db::query(&sql).bind(key).bind(value).bind(ref_id).execute(self.db.pool()).await?;
             }
         }
         Ok(())

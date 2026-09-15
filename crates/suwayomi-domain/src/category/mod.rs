@@ -77,7 +77,7 @@ impl CategoryService {
         let sql = bind_placeholders("INSERT INTO category (name, sort_order) VALUES (?, ?)");
         {
             let sql = format!("{sql} RETURNING id");
-            let (id,): (i32,) = sqlx::query_as(&sql).bind(name).bind(i32::MAX).fetch_one(self.db.pool()).await?;
+            let (id,): (i32,) = suwayomi_db::query_as(&sql).bind(name).bind(i32::MAX).fetch_one(self.db.pool()).await?;
             Ok(id)
         }
     }
@@ -119,7 +119,7 @@ impl CategoryService {
         }
         let sql = bind_placeholders(&format!("UPDATE category SET {} WHERE id = ?", sets.join(", ")));
         {
-            let mut q = sqlx::query(&sql);
+            let mut q = suwayomi_db::query(&sql);
             if let Some(n) = &name {
                 q = q.bind(n);
             }
@@ -152,7 +152,7 @@ impl CategoryService {
         for (i, row) in rows.iter().enumerate() {
             let sql = bind_placeholders("UPDATE category SET sort_order = ? WHERE id = ?");
             {
-                sqlx::query(&sql).bind((i + 1) as i32).bind(row.id).execute(self.db.pool()).await?;
+                suwayomi_db::query(&sql).bind((i + 1) as i32).bind(row.id).execute(self.db.pool()).await?;
             }
         }
         self.normalize_categories().await
@@ -165,7 +165,7 @@ impl CategoryService {
         }
         let sql = bind_placeholders("DELETE FROM category WHERE id = ?");
         {
-            sqlx::query(&sql).bind(category_id).execute(self.db.pool()).await?;
+            suwayomi_db::query(&sql).bind(category_id).execute(self.db.pool()).await?;
         }
         self.normalize_categories().await
     }
@@ -178,7 +178,7 @@ impl CategoryService {
         for (i, row) in rows.iter().enumerate() {
             let sql = bind_placeholders("UPDATE category SET sort_order = ? WHERE id = ?");
             {
-                sqlx::query(&sql).bind(i as i32).bind(row.id).execute(self.db.pool()).await?;
+                suwayomi_db::query(&sql).bind(i as i32).bind(row.id).execute(self.db.pool()).await?;
             }
         }
         Ok(())
@@ -212,14 +212,14 @@ impl CategoryService {
 
     pub async fn get_category_by_id(&self, category_id: i32) -> Result<Option<CategoryDataClass>> {
         let sql = bind_placeholders("SELECT * FROM category WHERE id = ?");
-        let row = sqlx::query_as::<_, CategoryRow>(&sql).bind(category_id).fetch_optional(self.db.pool()).await?;
+        let row = suwayomi_db::query_as::<CategoryRow>(&sql).bind(category_id).fetch_optional(self.db.pool()).await?;
         Ok(row.map(|r| Self::row_to_dc(&r)))
     }
 
     pub async fn get_category_size(&self, category_id: i32) -> Result<i64> {
         let sql = bind_placeholders(
             "SELECT count(*) FROM category_manga cm WHERE cm.category = ? AND EXISTS (SELECT 1 FROM manga m WHERE m.id = cm.manga AND m.in_library = TRUE)");
-        let n = sqlx::query_scalar::<_, i64>(&sql).bind(category_id).fetch_one(self.db.pool()).await?;
+        let n = suwayomi_db::query_scalar::<i64>(&sql).bind(category_id).fetch_one(self.db.pool()).await?;
         Ok(n)
     }
 
@@ -234,20 +234,20 @@ impl CategoryService {
 
     async fn needs_default_category(&self) -> Result<bool> {
         let sql = "SELECT count(*) FROM manga m LEFT JOIN category_manga cm ON cm.manga = m.id WHERE m.in_library = TRUE AND cm.manga IS NULL";
-        let n: i64 = sqlx::query_scalar(sql).fetch_one(self.db.pool()).await?;
+        let n: i64 = suwayomi_db::query_scalar(sql).fetch_one(self.db.pool()).await?;
         Ok(n > 0)
     }
 
     async fn list_rows_all(&self) -> Result<Vec<CategoryRow>> {
         let sql = "SELECT * FROM category ORDER BY sort_order ASC";
-        let rows = sqlx::query_as::<_, CategoryRow>(sql).fetch_all(self.db.pool()).await?;
+        let rows = suwayomi_db::query_as::<CategoryRow>(sql).fetch_all(self.db.pool()).await?;
         Ok(rows)
     }
 
     async fn list_rows_excluding_default(&self) -> Result<Vec<CategoryRow>> {
         let sql = bind_placeholders("SELECT * FROM category WHERE id != ? ORDER BY sort_order ASC");
         let rows =
-            { sqlx::query_as::<_, CategoryRow>(&sql).bind(Self::DEFAULT_CATEGORY_ID).fetch_all(self.db.pool()).await? };
+            { suwayomi_db::query_as::<CategoryRow>(&sql).bind(Self::DEFAULT_CATEGORY_ID).fetch_all(self.db.pool()).await? };
         Ok(rows)
     }
 }

@@ -92,10 +92,9 @@ async fn create_backup_file(state: &GraphQLState, folder: &PathBuf) -> Result<()
 /// Mirrors the settings query: config defaults overlaid with the persisted
 /// `settings` global_meta JSON blob.
 async fn load_settings(state: &GraphQLState) -> Option<(i32, PathBuf)> {
-    use sqlx::Row;
     let mut settings = SettingsType::from_config(&state.config);
     let sql = "SELECT value FROM global_meta WHERE meta_key = 'settings'";
-    if let Ok(Some(row)) = sqlx::query(sql).fetch_optional(state.db.pool()).await
+    if let Ok(Some(row)) = suwayomi_db::query(sql).fetch_optional(state.db.pool()).await
         && let Ok(value) = row.try_get::<String, _>("value")
         && let Ok(blob) = serde_json::from_str::<serde_json::Value>(&value)
     {

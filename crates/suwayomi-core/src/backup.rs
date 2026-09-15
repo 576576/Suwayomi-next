@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use prost::Message;
-use sqlx::PgPool;
+use suwayomi_db::Db;
 
 use crate::schema::{CategoryRow, ChapterRow, MangaRow};
 
@@ -277,13 +277,13 @@ fn validate_backup_inner(backup: &Backup) -> RestoreSummary {
 /// Semantics mirror `ProtoBackupImport.performRestore` + `BackupMangaHandler`:
 /// categories are matched/created by name, manga by (url, source) — existing
 /// rows are merged, new rows inserted; chapters upsert on (url, manga).
-pub async fn restore_backup(pool: &PgPool, gz: &[u8]) -> Result<RestoreSummary, BackupError> {
+pub async fn restore_backup(pool: &Db, gz: &[u8]) -> Result<RestoreSummary, BackupError> {
     let backup = decode_gz_backup(gz)?;
     restore_backup_proto(pool, &backup).await
 }
 
 /// Restores from an already-decoded `Backup` message (idempotent upserts).
-pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<RestoreSummary, BackupError> {
+pub async fn restore_backup_proto(pool: &Db, backup: &Backup) -> Result<RestoreSummary, BackupError> {
     let mut summary = validate_backup_inner(backup);
     let source_names: HashMap<i64, String> = backup.backup_sources.iter().map(|s| (s.source_id, s.name.clone())).collect();
 
@@ -291,7 +291,7 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
     //    `BackupCategory.order`-keyed mapping used by BackupManga.categories)
     let mut category_mapping: HashMap<i32, i32> = HashMap::new(); // category order -> db id
     for (idx, c) in backup.backup_categories.iter().enumerate() {
-        let existing: Option<i32> = sqlx::query_scalar("SELECT id FROM category WHERE name = $1").bind(&c.name).fetch_optional(pool).await?;
+        let existing: Option<i32> = suwayomi_db::query_scalar("SELECT id FROM category WHERE name = $1").bind(&c.name).fetch_optional(pool).await?;
         let id = match existing {
             Some(id) => id,
             None => {
@@ -301,8 +301,8 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
                 // order 0) would make a later restore of our own export map
                 // memberships onto the wrong category.
                 let next_order: i32 =
-                    sqlx::query_scalar("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM category").fetch_one(pool).await?;
-                let id: i32 = sqlx::query_scalar("INSERT INTO category (name, sort_order) VALUES ($1, $2) RETURNING id")
+                    suwayomi_db::query_scalar("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM category").fetch_one(pool).await?;
+                let id: i32 = suwayomi_db::query_scalar("INSERT INTO category (name, sort_order) VALUES ($1, $2) RETURNING id")
                     .bind(&c.name)
                     .bind(next_order)
                     .fetch_one(pool)
@@ -317,9 +317,9 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
 
     // 2) ensure an extension row exists (source.extension FK — a violation
     //    would terminate the embedded session)
-    let ext_id: i32 = match sqlx::query_scalar::<_, i32>("SELECT id FROM extension ORDER BY id LIMIT 1").fetch_optional(pool).await? {
+    let ext_id: i32 = match suwayomi_db::query_scalar::<i32>("SELECT id FROM extension ORDER BY id LIMIT 1").fetch_optional(pool).await? {
         Some(id) => id,
-        None => sqlx::query_scalar(
+        None => suwayomi_db::query_scalar(
             "INSERT INTO extension (name, pkg_name, version_name, version_code, lang, content_warning) \
              VALUES ('restored', 'org.suwayomi.restored', '0.0.0', 0, 'en', 0) RETURNING id",
         )
@@ -331,13 +331,13 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
     let now_secs = chrono::Utc::now().timestamp();
     for m in &backup.backup_manga {
         // ensure source exists
-        let source_exists: bool = sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM source WHERE id = $1)")
+        let source_exists: bool = suwayomi_db::query_scalar::<bool>("SELECT EXISTS(SELECT 1 FROM source WHERE id = $1)")
             .bind(m.source)
             .fetch_one(pool)
             .await?;
         if !source_exists {
             let name = source_names.get(&m.source).cloned().unwrap_or_else(|| format!("source-{}", m.source));
-            sqlx::query("INSERT INTO source (id, name, lang, extension) VALUES ($1, $2, 'en', $3)")
+            suwayomi_db::query("INSERT INTO source (id, name, lang, extension) VALUES ($1, $2, 'en', $3)")
                 .bind(m.source)
                 .bind(name)
                 .bind(ext_id)
@@ -360,7 +360,7 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
         // have BEFORE UPDATE triggers that stamp last_modified_at and bump
         // version, so re-importing an identical backup must skip them or the
         // exported file would change on every restore→export cycle.
-        let existing: Option<ExistingMangaRow> = sqlx::query_as(
+        let existing: Option<ExistingMangaRow> = suwayomi_db::query_as(
             "SELECT id, artist, author, description, genre, status, thumbnail_url, update_strategy, in_library_at, initialized, in_library \
              FROM manga WHERE url = $1 AND source = $2",
         )
@@ -381,7 +381,7 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
                     || cur_added != Some(added_secs)
                     || (m.description.is_some() && !cur_init);
                 if dirty {
-                    sqlx::query(
+                    suwayomi_db::query(
                         "UPDATE manga SET artist = COALESCE($1, artist), author = COALESCE($2, author), \
                          description = COALESCE($3, description), genre = COALESCE(NULLIF($4, ''), genre), \
                          status = $5, thumbnail_url = COALESCE($6, thumbnail_url), update_strategy = $7, \
@@ -404,7 +404,7 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
                 id
             }
             None => {
-                let id: i32 = sqlx::query_scalar(
+                let id: i32 = suwayomi_db::query_scalar(
                     "INSERT INTO manga (url, title, artist, author, description, genre, status, thumbnail_url, \
                      update_strategy, source, initialized, in_library, in_library_at, last_modified_at, version) \
                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE, $12, $13, $14) RETURNING id",
@@ -433,7 +433,7 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
         // chapters (upsert on (url, manga))
         let mut chapter_ids: Vec<i32> = Vec::new();
         for ch in &m.chapters {
-            let existing_ch: Option<ExistingChapterRow> = sqlx::query_as(
+            let existing_ch: Option<ExistingChapterRow> = suwayomi_db::query_as(
                 "SELECT id, name, scanlator, read, bookmark, last_page_read, date_upload, chapter_number::float4, source_order \
                  FROM chapter WHERE url = $1 AND manga = $2",
             )
@@ -457,7 +457,7 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
                         || cur_number != ch.chapter_number
                         || cur_order != new_order;
                     if dirty {
-                        sqlx::query(
+                        suwayomi_db::query(
                             "UPDATE chapter SET name = $1, scanlator = $2, read = $3, bookmark = $4, last_page_read = $5, \
                              date_upload = $6, chapter_number = $7, source_order = $8 WHERE id = $9",
                         )
@@ -476,7 +476,7 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
                     chapter_ids.push(cid);
                 }
                 None => {
-                    let cid: i32 = sqlx::query_scalar(
+                    let cid: i32 = suwayomi_db::query_scalar(
                         "INSERT INTO chapter (url, name, scanlator, read, bookmark, last_page_read, date_upload, \
                          chapter_number, source_order, manga) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
                     )
@@ -501,7 +501,7 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
         // category membership (backup index -> db id via mapping)
         for cidx in &m.categories {
             if let Some(db_cat) = category_mapping.get(cidx) {
-                let _ = sqlx::query("INSERT INTO category_manga (category, manga) VALUES ($1, $2) ON CONFLICT (manga, category) DO NOTHING")
+                let _ = suwayomi_db::query("INSERT INTO category_manga (category, manga) VALUES ($1, $2) ON CONFLICT (manga, category) DO NOTHING")
                     .bind(db_cat)
                     .bind(manga_id)
                     .execute(pool)
@@ -511,7 +511,7 @@ pub async fn restore_backup_proto(pool: &PgPool, backup: &Backup) -> Result<Rest
 
         // history: match chapter by url, apply last_page_read / last_read_at
         for h in &m.history {
-            let _ = sqlx::query("UPDATE chapter SET last_page_read = $1, last_read_at = $2 WHERE url = $3 AND manga = $4")
+            let _ = suwayomi_db::query("UPDATE chapter SET last_page_read = $1, last_read_at = $2 WHERE url = $3 AND manga = $4")
                 .bind(h.last_read as i32)
                 .bind(h.read_at / 1000)
                 .bind(&h.url)
@@ -535,12 +535,12 @@ fn update_strategy_name(ordinal: i32) -> &'static str {
 }
 
 /// Builds the `Backup` protobuf message from the current database (no encoding).
-pub async fn create_backup_proto(pool: &PgPool) -> Result<Backup, BackupError> {
+pub async fn create_backup_proto(pool: &Db) -> Result<Backup, BackupError> {
     build_backup(pool).await
 }
 
-async fn build_backup(pool: &PgPool) -> Result<Backup, BackupError> {
-    let category_rows: Vec<CategoryRow> = sqlx::query_as("SELECT * FROM category ORDER BY sort_order, id")
+async fn build_backup(pool: &Db) -> Result<Backup, BackupError> {
+    let category_rows: Vec<CategoryRow> = suwayomi_db::query_as("SELECT * FROM category ORDER BY sort_order, id")
         .fetch_all(pool)
         .await?;
     let backup_categories: Vec<BackupCategory> = category_rows
@@ -556,14 +556,14 @@ async fn build_backup(pool: &PgPool) -> Result<Backup, BackupError> {
         })
         .collect();
 
-    let manga_rows: Vec<MangaRow> = sqlx::query_as("SELECT * FROM manga WHERE in_library = TRUE ORDER BY id")
+    let manga_rows: Vec<MangaRow> = suwayomi_db::query_as("SELECT * FROM manga WHERE in_library = TRUE ORDER BY id")
         .fetch_all(pool)
         .await?;
     let mut backup_mangas: Vec<BackupManga> = Vec::with_capacity(manga_rows.len());
     let mut source_ids: Vec<i64> = Vec::new();
     for m in &manga_rows {
         let chapters: Vec<ChapterRow> =
-            sqlx::query_as("SELECT * FROM chapter WHERE manga = $1 ORDER BY source_order").bind(m.id).fetch_all(pool).await?;
+            suwayomi_db::query_as("SELECT * FROM chapter WHERE manga = $1 ORDER BY source_order").bind(m.id).fetch_all(pool).await?;
         let backup_chapters = chapters
             .iter()
             .map(|c| BackupChapter {
@@ -591,7 +591,7 @@ async fn build_backup(pool: &PgPool) -> Result<Backup, BackupError> {
             .collect();
         // BackupManga.categories stores the category ORDER (not id) —
         // mirrors Kotlin: `categoryMapping[it]` keys on `BackupCategory.order`.
-        let category_orders: Vec<i32> = sqlx::query_scalar(
+        let category_orders: Vec<i32> = suwayomi_db::query_scalar(
             "SELECT c.sort_order FROM category_manga cm JOIN category c ON c.id = cm.category WHERE cm.manga = $1",
         )
         .bind(m.id)
@@ -638,7 +638,7 @@ async fn build_backup(pool: &PgPool) -> Result<Backup, BackupError> {
 
     let mut backup_sources: Vec<BackupSource> = Vec::with_capacity(source_ids.len());
     for sid in &source_ids {
-        let name: Option<String> = sqlx::query_scalar("SELECT name FROM source WHERE id = $1").bind(sid).fetch_optional(pool).await?;
+        let name: Option<String> = suwayomi_db::query_scalar("SELECT name FROM source WHERE id = $1").bind(sid).fetch_optional(pool).await?;
         if let Some(name) = name {
             backup_sources.push(BackupSource { name, source_id: *sid, meta: HashMap::new() });
         }
@@ -665,7 +665,7 @@ fn update_strategy_ordinal(s: &str) -> i32 {
 #[derive(Debug, thiserror::Error)]
 pub enum BackupError {
     #[error("sqlx error: {0}")]
-    Sqlx(#[from] sqlx::Error),
+    Sqlx(#[from] suwayomi_db::Error),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("protobuf decode error: {0}")]
@@ -673,7 +673,7 @@ pub enum BackupError {
 }
 
 /// Serializes the current database into a gzipped `Backup` protobuf payload.
-pub async fn create_backup(pool: &PgPool) -> Result<Vec<u8>, BackupError> {
+pub async fn create_backup(pool: &Db) -> Result<Vec<u8>, BackupError> {
     let backup = create_backup_proto(pool).await?;
     let bytes = backup.encode_to_vec();
     use std::io::Write;
@@ -689,30 +689,30 @@ mod tests {
     use crate::db::Db;
 
     async fn seed() -> Db {
-        let db = Db::connect_embedded(None).await.expect("connect");
+        let db = Db::sqlite_in_memory().await.expect("connect");
         db.migrate().await.expect("migrate");
         let pool = db.pool();
-        sqlx::query("INSERT INTO extension (name, pkg_name, version_name, version_code, lang, content_warning) VALUES ('E','p','1',1,'en',0)")
+        suwayomi_db::query("INSERT INTO extension (name, pkg_name, version_name, version_code, lang, content_warning) VALUES ('E','p','1',1,'en',0)")
             .execute(pool)
             .await
             .expect("ext");
-        sqlx::query("INSERT INTO source (name, lang, extension) VALUES ('MangaDex','en',1)").execute(pool).await.expect("src");
-        sqlx::query(
+        suwayomi_db::query("INSERT INTO source (name, lang, extension) VALUES ('MangaDex','en',1)").execute(pool).await.expect("src");
+        suwayomi_db::query(
             "INSERT INTO manga (url, title, author, genre, status, thumbnail_url, in_library, source, initialized) \
              VALUES ('/m/1','Backup Manga','Author','Action, Drama',1,'https://t.jpg',TRUE,1,TRUE)",
         )
         .execute(pool)
         .await
         .expect("manga");
-        sqlx::query(
+        suwayomi_db::query(
             "INSERT INTO chapter (url, name, chapter_number, source_order, read, last_page_read, manga) \
              VALUES ('/m/1/c/1','Ch 1',1.0,0,TRUE,3,1)",
         )
         .execute(pool)
         .await
         .expect("chapter");
-        sqlx::query("INSERT INTO category (name, sort_order) VALUES ('Cat',1)").execute(pool).await.expect("category");
-        sqlx::query("INSERT INTO category_manga (category, manga) VALUES (1,1)").execute(pool).await.expect("cm");
+        suwayomi_db::query("INSERT INTO category (name, sort_order) VALUES ('Cat',1)").execute(pool).await.expect("category");
+        suwayomi_db::query("INSERT INTO category_manga (category, manga) VALUES (1,1)").execute(pool).await.expect("cm");
         db
     }
 
@@ -746,7 +746,7 @@ mod tests {
 
     #[tokio::test]
     async fn backup_empty_library_is_valid() {
-        let db = Db::connect_embedded(None).await.expect("connect");
+        let db = Db::sqlite_in_memory().await.expect("connect");
         db.migrate().await.expect("migrate");
         let gz = create_backup(db.pool()).await.expect("create backup");
         use std::io::Read;
@@ -764,7 +764,7 @@ mod tests {
         let gz = create_backup(db.pool()).await.expect("create backup");
 
         // restore into a fresh embedded database
-        let fresh = Db::connect_embedded(None).await.expect("connect fresh");
+        let fresh = Db::sqlite_in_memory().await.expect("connect fresh");
         fresh.migrate().await.expect("migrate fresh");
         let summary = restore_backup(fresh.pool(), &gz).await.expect("restore");
 
@@ -773,19 +773,19 @@ mod tests {
         assert!(summary.missing_sources.is_empty(), "sources included in backup");
 
         // verify content
-        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM manga").fetch_one(fresh.pool()).await.expect("count manga");
+        let n: i64 = suwayomi_db::query_scalar("SELECT COUNT(*) FROM manga").fetch_one(fresh.pool()).await.expect("count manga");
         assert_eq!(n, 1);
-        let title: String = sqlx::query_scalar("SELECT title FROM manga WHERE id = 1").fetch_one(fresh.pool()).await.expect("title");
+        let title: String = suwayomi_db::query_scalar("SELECT title FROM manga WHERE id = 1").fetch_one(fresh.pool()).await.expect("title");
         assert_eq!(title, "Backup Manga");
-        let in_lib: bool = sqlx::query_scalar("SELECT in_library FROM manga WHERE id = 1").fetch_one(fresh.pool()).await.expect("in_library");
+        let in_lib: bool = suwayomi_db::query_scalar("SELECT in_library FROM manga WHERE id = 1").fetch_one(fresh.pool()).await.expect("in_library");
         assert!(in_lib, "favorite manga restored as in-library");
-        let ch: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chapter WHERE manga = 1").fetch_one(fresh.pool()).await.expect("count chapters");
+        let ch: i64 = suwayomi_db::query_scalar("SELECT COUNT(*) FROM chapter WHERE manga = 1").fetch_one(fresh.pool()).await.expect("count chapters");
         assert_eq!(ch, 1);
-        let cm: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM category_manga WHERE manga = 1").fetch_one(fresh.pool()).await.expect("count cm");
+        let cm: i64 = suwayomi_db::query_scalar("SELECT COUNT(*) FROM category_manga WHERE manga = 1").fetch_one(fresh.pool()).await.expect("count cm");
         assert_eq!(cm, 1, "category membership restored");
-        let cat: String = sqlx::query_scalar("SELECT name FROM category WHERE id = 1").fetch_one(fresh.pool()).await.expect("category");
+        let cat: String = suwayomi_db::query_scalar("SELECT name FROM category WHERE id = 1").fetch_one(fresh.pool()).await.expect("category");
         assert_eq!(cat, "Cat");
-        let src: String = sqlx::query_scalar("SELECT name FROM source WHERE id = 1").fetch_one(fresh.pool()).await.expect("source");
+        let src: String = suwayomi_db::query_scalar("SELECT name FROM source WHERE id = 1").fetch_one(fresh.pool()).await.expect("source");
         assert_eq!(src, "MangaDex");
     }
 
@@ -815,11 +815,11 @@ mod tests {
         assert_eq!(summary.mangas_missing_sources.len(), 1);
 
         // restore still works: source gets auto-created as a placeholder
-        let db = Db::connect_embedded(None).await.expect("connect");
+        let db = Db::sqlite_in_memory().await.expect("connect");
         db.migrate().await.expect("migrate");
         let s = restore_backup(db.pool(), &gz).await.expect("restore");
         assert_eq!(s.restored_manga, 1);
-        let src_name: Option<String> = sqlx::query_scalar("SELECT name FROM source WHERE id = 999").fetch_one(db.pool()).await.expect("src");
+        let src_name: Option<String> = suwayomi_db::query_scalar("SELECT name FROM source WHERE id = 999").fetch_one(db.pool()).await.expect("src");
         assert_eq!(src_name.as_deref(), Some("source-999"));
     }
 }

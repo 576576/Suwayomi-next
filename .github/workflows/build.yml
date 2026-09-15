@@ -137,16 +137,6 @@ jobs:
             cd jvm-sandbox && ./gradlew -q jar --no-daemon && cd ..
             cp jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar "$STAGE/bin/jvm-sandbox.jar"
           fi
-          # oliphaunt 原生 runtime（全平台捆绑；编译期 OUT_DIR 仅 runner 存在，运行时回退 exe 上级 bundled 目录）
-          RES=$(find target -path "*/release/build/suwayomi-core-*/out/oliphaunt/resources" -type d 2>/dev/null | head -1)
-          if [ -n "$RES" ] && [ -d "$RES" ]; then
-            mkdir -p "$STAGE/oliphaunt-runtime"
-            cp -r "$RES" "$STAGE/oliphaunt-runtime/resources"
-            echo "bundled oliphaunt runtime from $RES"
-          else
-            echo "WARN: no oliphaunt resources found to bundle"
-          fi
-
           # WebUI：调用方已按通道解析好，所有 target 用同一份
           curl -sL -o webui.zip "${{ inputs.webui_url }}"
           mkdir -p "$STAGE/webui"

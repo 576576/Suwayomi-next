@@ -80,7 +80,7 @@ impl MangaService {
 
     async fn fetch_row(&self, manga_id: i32) -> Result<MangaRow> {
         let sql = bind_placeholders("SELECT * FROM manga WHERE id = ?");
-        sqlx::query_as::<_, MangaRow>(&sql)
+        suwayomi_db::query_as::<MangaRow>(&sql)
             .bind(manga_id)
             .fetch_optional(self.db.pool())
             .await?
@@ -115,7 +115,7 @@ impl MangaService {
         let sql = bind_placeholders(
             "UPDATE manga SET title = ?, thumbnail_url = ?, author = ?, artist = ?, description = ?, genre = ?, status = ?, alt_titles = ?, initialized = TRUE, last_fetched_at = ? WHERE id = ?",
         );
-        sqlx::query(&sql)
+        suwayomi_db::query(&sql)
             .bind(if updated.title.is_empty() { row.title.clone() } else { updated.title.clone() })
             .bind(updated.thumbnail_url.clone().or_else(|| row.thumbnail_url.clone()))
             .bind(updated.author.clone().or_else(|| row.author.clone()))
@@ -139,7 +139,7 @@ impl MangaService {
     pub async fn get_manga_full(&self, manga_id: i32, online_fetch: bool) -> Result<MangaDataClass> {
         let mut dc = self.get_manga(manga_id, online_fetch).await?;
         let sql = bind_placeholders("SELECT * FROM chapter WHERE manga = ?");
-        let rows = sqlx::query_as::<_, ChapterRow>(&sql).bind(manga_id).fetch_all(self.db.pool()).await?;
+        let rows = suwayomi_db::query_as::<ChapterRow>(&sql).bind(manga_id).fetch_all(self.db.pool()).await?;
         let unread_count = rows.iter().filter(|c| !c.read).count() as i64;
         let download_count = rows.iter().filter(|c| c.is_downloaded).count() as i64;
         let chapter_count = rows.len() as i64;
@@ -165,7 +165,7 @@ impl MangaService {
     /// getLatestChapter
     pub async fn get_latest_chapter(&self, manga_id: i32) -> Result<Option<ChapterDataClass>> {
         let sql = bind_placeholders("SELECT * FROM chapter WHERE manga = ? ORDER BY source_order DESC LIMIT 1");
-        let row = sqlx::query_as::<_, ChapterRow>(&sql).bind(manga_id).fetch_optional(self.db.pool()).await?;
+        let row = suwayomi_db::query_as::<ChapterRow>(&sql).bind(manga_id).fetch_optional(self.db.pool()).await?;
         Ok(row.map(|r| chapter_row_to_data_class(&r)))
     }
 
@@ -173,7 +173,7 @@ impl MangaService {
     pub async fn get_unread_chapters(&self, manga_id: i32) -> Result<Vec<ChapterDataClass>> {
         let sql =
             bind_placeholders("SELECT * FROM chapter WHERE manga = ? AND read = FALSE ORDER BY source_order DESC");
-        let rows = sqlx::query_as::<_, ChapterRow>(&sql).bind(manga_id).fetch_all(self.db.pool()).await?;
+        let rows = suwayomi_db::query_as::<ChapterRow>(&sql).bind(manga_id).fetch_all(self.db.pool()).await?;
         Ok(rows.iter().map(chapter_row_to_data_class).collect())
     }
 

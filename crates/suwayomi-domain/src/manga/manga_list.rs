@@ -36,7 +36,7 @@ impl MangaListService {
         for s in mangas {
             let q = bind_placeholders("SELECT * FROM manga WHERE source = ? AND url = ?");
             let row = {
-                sqlx::query_as::<_, MangaRow>(&q).bind(source_id).bind(&s.url).fetch_optional(self.db.pool()).await?
+                suwayomi_db::query_as::<MangaRow>(&q).bind(source_id).bind(&s.url).fetch_optional(self.db.pool()).await?
             };
             if let Some(r) = row {
                 existing_by_url.insert(r.url.clone(), r);
@@ -75,7 +75,7 @@ impl MangaListService {
         let alt_titles = serde_json::to_string(&s.alt_titles).unwrap_or_else(|_| "[]".to_string());
         let last_id = {
             let sql = format!("{sql} RETURNING id");
-            let row: (i32,) = sqlx::query_as(&sql)
+            let row: (i32,) = suwayomi_db::query_as(&sql)
                 .bind(&s.url)
                 .bind(&s.title)
                 .bind(&s.artist)
@@ -105,7 +105,7 @@ impl MangaListService {
         let last_fetched =
             if thumbnail_changed { crate::manga::now_epoch_secs() } else { existing.thumbnail_url_last_fetched };
         {
-            sqlx::query(&sql)
+            suwayomi_db::query(&sql)
                 .bind(&s.title)
                 .bind(&s.artist)
                 .bind(&s.author)
@@ -130,7 +130,7 @@ impl MangaListService {
         let mut manga_list = Vec::with_capacity(ids.len());
         for id in ids {
             let sql = bind_placeholders("SELECT * FROM manga WHERE id = ?");
-            let row = sqlx::query_as::<_, MangaRow>(&sql)
+            let row = suwayomi_db::query_as::<MangaRow>(&sql)
                 .bind(id)
                 .fetch_optional(self.db.pool())
                 .await?

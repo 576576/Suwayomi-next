@@ -14,9 +14,15 @@ use suwayomi_rest::routes::api_v1_router;
 use suwayomi_rest::AppState;
 use tower::ServiceExt;
 
-async fn setup() -> Option<(Router, sqlx::postgres::PgPool)> {
+/// Serialises the tests in this binary: they all talk to the same database and
+/// every `setup()` truncates the tables the others are working on.
+async fn lock() -> suwayomi_db::test_support::DbLock {
+    suwayomi_db::test_support::db_lock().await
+}
+
+async fn setup() -> Option<(Router, suwayomi_db::Db)> {
     let url = std::env::var("DATABASE_URL").or_else(|_| std::env::var("SUWAYOMI_TEST_DB")).ok()?;
-    let db = Db::connect(&url).await.expect("connect postgres");
+    let db = Db::postgres(&url).await.expect("connect postgres");
     db.migrate().await.expect("migrate");
     for t in [
         "track_search",
@@ -35,7 +41,7 @@ async fn setup() -> Option<(Router, sqlx::postgres::PgPool)> {
         "source",
         "extension",
     ] {
-        let _ = sqlx::query(&format!("TRUNCATE TABLE suwayomi.{t} RESTART IDENTITY CASCADE")).execute(db.pool()).await;
+        let _ = suwayomi_db::query(&format!("TRUNCATE TABLE suwayomi.{t} RESTART IDENTITY CASCADE")).execute(db.pool()).await;
     }
     let pool = db.pool().clone();
     let fetcher: Arc<dyn suwayomi_domain::source::SourceFetcher> = Arc::new(StubFetcher);
@@ -61,6 +67,7 @@ fn req(method: &str, uri: &str, body: Option<&str>) -> Request<Body> {
 
 #[tokio::test]
 async fn category_crud_via_http() {
+    let _guard = lock().await;
     let Some((app, _pool)) = setup().await else {
         eprintln!("skipped: DATABASE_URL not set");
         return;
@@ -98,13 +105,14 @@ async fn category_crud_via_http() {
 
 #[tokio::test]
 async fn manga_meta_and_library_via_http() {
+    let _guard = lock().await;
     let Some((app, pool)) = setup().await else {
         eprintln!("skipped: DATABASE_URL not set");
         return;
     };
 
     // seed a manga directly
-    let manga_id: i32 = sqlx::query_scalar(
+    let manga_id: i32 = suwayomi_db::query_scalar(
         "INSERT INTO suwayomi.manga (url, title, source, initialized) VALUES ('/m/1', 'Seed', 1, TRUE) RETURNING id",
     )
     .fetch_one(&pool)

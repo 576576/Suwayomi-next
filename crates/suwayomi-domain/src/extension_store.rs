@@ -256,7 +256,7 @@ impl ExtensionStoreService {
     /// Fetches `index.json` from every configured store and upserts the
     /// extension table. Returns the number of extensions now known.
     pub async fn refresh_stores(&self) -> Result<usize> {
-        let stores: Vec<(String, String)> = sqlx::query_as(
+        let stores: Vec<(String, String)> = suwayomi_db::query_as(
             "SELECT index_url, name FROM suwayomi.extension_store ORDER BY id",
         )
         .fetch_all(self.db.pool())
@@ -333,7 +333,7 @@ impl ExtensionStoreService {
         let mut n = 0usize;
         for e in entries {
             let content_warning = if e.nsfw { 1 } else { 0 };
-            sqlx::query(
+            suwayomi_db::query(
                 "INSERT INTO suwayomi.extension \
                  (apk_name, store_index_url, name, pkg_name, apk_url, icon_url, jar_url, version_name, version_code, lang, content_warning, is_installed, has_update, is_obsolete, class_name) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, FALSE, $13, '') \
@@ -389,7 +389,7 @@ impl ExtensionStoreService {
     /// Downloads and installs (or updates) the extension identified by pkg.
     pub async fn install(&self, pkg: &str) -> Result<()> {
         let fetcher = self.require_sandbox()?;
-        let row: Option<InstallRow> = sqlx::query_as(
+        let row: Option<InstallRow> = suwayomi_db::query_as(
             "SELECT apk_url, pkg_name, version_name, version_code::BIGINT, lang::VARCHAR, apk_name FROM suwayomi.extension WHERE pkg_name = $1",
         )
         .bind(pkg)
@@ -431,7 +431,7 @@ impl ExtensionStoreService {
         self.sync_sources().await?;
 
         // mark installed + clear has_update
-        sqlx::query(
+        suwayomi_db::query(
             "UPDATE suwayomi.extension SET is_installed = TRUE, has_update = FALSE, apk_name = $1 WHERE pkg_name = $2",
         )
         .bind(&file_name)
@@ -446,7 +446,7 @@ impl ExtensionStoreService {
     pub async fn uninstall(&self, pkg: &str) -> Result<()> {
         let fetcher = self.require_sandbox()?;
         // sources are registered against the extension row; delete them first
-        sqlx::query(
+        suwayomi_db::query(
             "DELETE FROM suwayomi.source WHERE extension = (SELECT id FROM suwayomi.extension WHERE pkg_name = $1)",
         )
         .bind(pkg)
@@ -455,7 +455,7 @@ impl ExtensionStoreService {
         remove_matching_apks(&self.extensions_dir, pkg)?;
         remove_matching_jars(&self.jar_dir, pkg)?;
         fetcher.reload().await?;
-        sqlx::query("UPDATE suwayomi.extension SET is_installed = FALSE, has_update = FALSE WHERE pkg_name = $1")
+        suwayomi_db::query("UPDATE suwayomi.extension SET is_installed = FALSE, has_update = FALSE WHERE pkg_name = $1")
             .bind(pkg)
             .execute(self.db.pool())
             .await?;
@@ -476,7 +476,7 @@ impl ExtensionStoreService {
         std::fs::write(&target, apk).map_err(|e| DomainError::Source(format!("write {file_name}: {e}")))?;
         fetcher.reload().await?;
         self.sync_sources().await?;
-        sqlx::query(
+        suwayomi_db::query(
             "INSERT INTO suwayomi.extension \
              (apk_name, name, pkg_name, version_name, version_code, lang, content_warning, is_installed, class_name) \
              VALUES ($1, $2, $3, $4, 0, $5, 0, TRUE, $6) \
@@ -493,7 +493,7 @@ impl ExtensionStoreService {
         .await?;
         // 新行 content_warning 恒 0；若该包已有源行（此前 sync_sources 注册过），
         // 让它们继承扩展行标记
-        sqlx::query(
+        suwayomi_db::query(
             "UPDATE suwayomi.source AS s SET content_warning = e.content_warning \
              FROM suwayomi.extension AS e WHERE s.extension = e.id",
         )
@@ -519,10 +519,10 @@ impl ExtensionStoreService {
         // Registered pkg -> extension id. A jar sitting in the extensions dir
         // that is NOT in the index (repo missing / hand-dropped / refresh
         // failed) has no row here — the nested SELECT below would return NULL
-        // and violate the NOT NULL constraint. pglite-oxide kills the whole
-        // session on ANY SQL error, so skip unregistered packages instead.
+        // and violate the NOT NULL constraint, aborting the whole import
+        // transaction, so skip unregistered packages instead.
         let registered: std::collections::HashMap<String, i32> =
-            sqlx::query_as::<_, (String, i32)>("SELECT pkg_name, id FROM suwayomi.extension")
+            suwayomi_db::query_as::<(String, i32)>("SELECT pkg_name, id FROM suwayomi.extension")
                 .fetch_all(pool)
                 .await?
                 .into_iter()
@@ -533,7 +533,7 @@ impl ExtensionStoreService {
         for e in &exts {
             let Some(&ext_id) = registered.get(&e.pkg_name) else { continue };
             for s in &e.sources {
-                sqlx::query(
+                suwayomi_db::query(
                     "INSERT INTO suwayomi.source (id, name, lang, extension) VALUES ($1, $2, $3, $4) \
                      ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, lang = EXCLUDED.lang, \
                        extension = EXCLUDED.extension",
@@ -550,7 +550,7 @@ impl ExtensionStoreService {
 
         // refresh class_name/version for loaded extensions
         for e in &exts {
-            sqlx::query(
+            suwayomi_db::query(
                 "UPDATE suwayomi.extension SET class_name = $1, version_name = $2 WHERE pkg_name = $3 AND is_installed",
             )
             .bind(&e.class_name)
@@ -562,7 +562,7 @@ impl ExtensionStoreService {
 
         // 源行继承所属扩展的 content_warning（来源：仓库索引）。sync_sources 此前
         // 从不写该列，源行恒为 0(Safe)，导致"图源列表隐藏 NSFW"过滤永远放行
-        sqlx::query(
+        suwayomi_db::query(
             "UPDATE suwayomi.source AS s SET content_warning = e.content_warning \
              FROM suwayomi.extension AS e WHERE s.extension = e.id",
         )
@@ -693,16 +693,15 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    /// These tests write to `extension_store` / `extension`, which the
-    /// embedded pglite build cannot handle (INSERT causes the proxy to drop
-    /// the session). They run against external PostgreSQL via DATABASE_URL;
-    /// skipped otherwise (same convention as the version-bump trigger test).
+    /// These tests exercise the extension index/install path against external
+    /// PostgreSQL via DATABASE_URL; skipped otherwise (same convention as the
+    /// version-bump trigger test).
     async fn setup_db() -> Option<Db> {
         let url = std::env::var("DATABASE_URL").ok().filter(|u| !u.is_empty())?;
-        let db = suwayomi_core::db::Db::connect(&url).await.expect("db");
+        let db = suwayomi_core::db::Db::postgres(&url).await.expect("db");
         db.migrate().await.expect("migrate");
         // clear extension-related tables so tests are repeatable
-        let _ = sqlx::query("TRUNCATE suwayomi.source, suwayomi.extension, suwayomi.extension_store CASCADE")
+        let _ = suwayomi_db::query("TRUNCATE suwayomi.source, suwayomi.extension, suwayomi.extension_store CASCADE")
             .execute(db.pool()).await;
         Some(db)
     }
@@ -745,12 +744,12 @@ mod tests {
     #[tokio::test]
     async fn repo_index_refresh_upserts_extensions() {
         let Some(db) = setup_db().await else { eprintln!("SKIP: requires DATABASE_URL"); return };
-        sqlx::query("INSERT INTO suwayomi.extension_store (index_url, name, badge_label, signing_key, contact_website) VALUES ('http://127.0.0.1:1/repo-1', 't', '', '', '')")
+        suwayomi_db::query("INSERT INTO suwayomi.extension_store (index_url, name, badge_label, signing_key, contact_website) VALUES ('http://127.0.0.1:1/repo-1', 't', '', '', '')")
             .execute(db.pool()).await.unwrap();
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let index = br#"[{"name":"nhentai.com","pkg":"tachiyomi-all.nhentaicom","apk":"http://127.0.0.1:1/dl.apk","lang":"all","versionName":"1.4.10","versionCode":14,"nsfw":true,"sources":[{"name":"nhentai.com","lang":"en","id":"5591830863732393712"}]},{"name":"MangaDex","pkg":"tachiyomi-all.mangadex","apk":"http://127.0.0.1:1/md.apk","lang":"all","versionName":"1.2.3","versionCode":9,"nsfw":false}]"#;
+        let index = br#"[{"name":"nhentai.com","pkg":"tachiyomi-all.nhentaicom","apk":"http://127.0.0.1:1/dl.apk","icon":"http://127.0.0.1:1/icon.png","lang":"all","versionName":"1.4.10","versionCode":14,"nsfw":true,"sources":[{"name":"nhentai.com","lang":"en","id":"5591830863732393712"}]},{"name":"MangaDex","pkg":"tachiyomi-all.mangadex","apk":"http://127.0.0.1:1/md.apk","icon":"http://127.0.0.1:1/icon.png","lang":"all","versionName":"1.2.3","versionCode":9,"nsfw":false}]"#;
         let _srv = serve_once(listener, index, "HTTP/1.1 200 OK");
 
         let tmp = tmp_root();
@@ -758,7 +757,7 @@ mod tests {
         let n = svc.refresh_one(&format!("http://{addr}/index.json"), "t").await.expect("refresh");
         assert_eq!(n, 2, "two extensions upserted");
 
-        let (name, apk_url, vc, cw, inst): (String, Option<String>, i64, i32, bool) = sqlx::query_as(
+        let (name, apk_url, vc, cw, inst): (String, Option<String>, i64, i32, bool) = suwayomi_db::query_as(
             "SELECT name, apk_url, version_code, content_warning, is_installed FROM suwayomi.extension WHERE pkg_name = 'tachiyomi-all.nhentaicom'",
         )
         .fetch_one(db.pool()).await.unwrap();
@@ -805,7 +804,7 @@ mod tests {
         let apk_bytes: &[u8] = b"PK\x03\x04 fake apk";
         let _dlsrv = serve_once(dl, apk_bytes, "HTTP/1.1 200 OK");
 
-        sqlx::query(
+        suwayomi_db::query(
             "INSERT INTO suwayomi.extension (name, pkg_name, apk_url, version_name, version_code, lang, content_warning) \
              VALUES ('nhentai.com', 'tachiyomi-all.nhentaicom', $1, '1.4.10', 14, 'all', 1)",
         )
@@ -823,14 +822,14 @@ mod tests {
             files.iter().any(|f| f.contains("tachiyomi-all.nhentaicom") && f.ends_with(".apk")),
             "apk persisted: {files:?}"
         );
-        let (sid, sname, slang): (i64, String, String) = sqlx::query_as(
+        let (sid, sname, slang): (i64, String, String) = suwayomi_db::query_as(
             "SELECT id, name, lang FROM suwayomi.source WHERE id = 5591830863732393712",
         )
         .fetch_one(db.pool()).await.unwrap();
         assert_eq!(sid, 5591830863732393712);
         assert_eq!(sname, "nhentai.com");
         assert_eq!(slang, "en");
-        let inst: bool = sqlx::query_scalar("SELECT is_installed FROM suwayomi.extension WHERE pkg_name = 'tachiyomi-all.nhentaicom'")
+        let inst: bool = suwayomi_db::query_scalar("SELECT is_installed FROM suwayomi.extension WHERE pkg_name = 'tachiyomi-all.nhentaicom'")
             .fetch_one(db.pool()).await.unwrap();
         assert!(inst, "extension marked installed");
 
@@ -846,12 +845,12 @@ mod tests {
         std::fs::create_dir_all(&extensions_dir).unwrap();
         std::fs::write(extensions_dir.join("tachiyomi-all.mangadex-v1.2.3.apk"), b"PK fake").unwrap();
 
-        sqlx::query("INSERT INTO suwayomi.extension (name, pkg_name, version_name, version_code, lang, content_warning, is_installed) \
+        suwayomi_db::query("INSERT INTO suwayomi.extension (name, pkg_name, version_name, version_code, lang, content_warning, is_installed) \
                      VALUES ('mangadex.org', 'tachiyomi-all.mangadex', '1.2.3', 9, 'all', 0, TRUE)")
             .execute(db.pool()).await.unwrap();
-        let eid: i32 = sqlx::query_scalar("SELECT id FROM suwayomi.extension WHERE pkg_name = 'tachiyomi-all.mangadex'")
+        let eid: i32 = suwayomi_db::query_scalar("SELECT id FROM suwayomi.extension WHERE pkg_name = 'tachiyomi-all.mangadex'")
             .fetch_one(db.pool()).await.unwrap();
-        sqlx::query("INSERT INTO suwayomi.source (id, name, lang, extension) VALUES (4422762036021677666, 'mangadex.org', 'en', $1)")
+        suwayomi_db::query("INSERT INTO suwayomi.source (id, name, lang, extension) VALUES (4422762036021677666, 'mangadex.org', 'en', $1)")
             .bind(eid).execute(db.pool()).await.unwrap();
 
         let sb = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -876,10 +875,10 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert!(remaining.is_empty(), "apk removed: {remaining:?}");
-        let src_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM suwayomi.source WHERE id = 4422762036021677666")
+        let src_count: i64 = suwayomi_db::query_scalar("SELECT COUNT(*) FROM suwayomi.source WHERE id = 4422762036021677666")
             .fetch_one(db.pool()).await.unwrap();
         assert_eq!(src_count, 0);
-        let inst: bool = sqlx::query_scalar("SELECT is_installed FROM suwayomi.extension WHERE pkg_name = 'tachiyomi-all.mangadex'")
+        let inst: bool = suwayomi_db::query_scalar("SELECT is_installed FROM suwayomi.extension WHERE pkg_name = 'tachiyomi-all.mangadex'")
             .fetch_one(db.pool()).await.unwrap();
         assert!(!inst, "marked uninstalled");
 
@@ -892,7 +891,7 @@ mod tests {
         let Some(db) = setup_db().await else { eprintln!("SKIP: requires DATABASE_URL"); return };
         let tmp = tmp_root();
 
-        let index = br#"[{"name":"nhentai.com","pkg":"tachiyomi-all.nhentaicom","apk":"http://127.0.0.1:1/dl.apk","lang":"all","versionName":"1.4.10","versionCode":14,"nsfw":true}]"#;
+        let index = br#"[{"name":"nhentai.com","pkg":"tachiyomi-all.nhentaicom","apk":"http://127.0.0.1:1/dl.apk","icon":"http://127.0.0.1:1/icon.png","lang":"all","versionName":"1.4.10","versionCode":14,"nsfw":true}]"#;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let _srv = serve_once(listener, index, "HTTP/1.1 200 OK");
@@ -916,7 +915,7 @@ mod tests {
             .expect("cached refresh");
         assert_eq!(n, 1, "offline refresh served from cache");
 
-        let count: i64 = sqlx::query_scalar(
+        let count: i64 = suwayomi_db::query_scalar(
             "SELECT COUNT(*) FROM suwayomi.extension WHERE pkg_name = 'tachiyomi-all.nhentaicom'",
         )
         .fetch_one(db.pool())

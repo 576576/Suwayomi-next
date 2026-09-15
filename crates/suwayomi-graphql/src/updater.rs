@@ -9,7 +9,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use sqlx::PgPool;
 use tokio::sync::broadcast;
 
 use suwayomi_core::db::Db;
@@ -198,8 +197,8 @@ impl UpdateManager {
 
     /// Fetches one manga's chapters from its source and inserts new ones.
     /// Returns the number of newly inserted chapters.
-    async fn update_one(&self, pool: &PgPool, manga_id: i32) -> Result<usize, String> {
-        let manga: MangaRow = sqlx::query_as("SELECT * FROM manga WHERE id = $1")
+    async fn update_one(&self, pool: &Db, manga_id: i32) -> Result<usize, String> {
+        let manga: MangaRow = suwayomi_db::query_as("SELECT * FROM manga WHERE id = $1")
             .bind(manga_id)
             .fetch_one(pool)
             .await
@@ -217,7 +216,7 @@ impl UpdateManager {
             ..Default::default()
         };
 
-        let existing: Vec<SChapter> = sqlx::query_as::<_, ChapterRow>("SELECT * FROM chapter WHERE manga = $1")
+        let existing: Vec<SChapter> = suwayomi_db::query_as::<ChapterRow>("SELECT * FROM chapter WHERE manga = $1")
             .bind(manga_id)
             .fetch_all(pool)
             .await
@@ -244,7 +243,7 @@ impl UpdateManager {
         // show up in the "updates" feed (fetched_at > in_library_at, both epoch seconds).
         let now = chrono::Utc::now().timestamp();
         for (idx, ch) in chapters.iter().enumerate() {
-            let res = sqlx::query(
+            let res = suwayomi_db::query(
                 "INSERT INTO chapter (url, name, date_upload, chapter_number, scanlator, source_order, real_url, fetched_at, manga) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (url, manga) DO NOTHING",
             )
@@ -267,7 +266,7 @@ impl UpdateManager {
 
         // All fetch-time fields on `manga` are epoch seconds (age is derived as
         // now_epoch_secs() - last_fetched_at); timestamp_millis() would corrupt them.
-        let _ = sqlx::query(
+        let _ = suwayomi_db::query(
             "UPDATE manga SET last_fetched_at = $1, chapters_last_fetched_at = $1, last_modified_at = $1, version = version + 1 WHERE id = $2",
         )
         .bind(now)
@@ -280,10 +279,10 @@ impl UpdateManager {
 }
 
 /// Library manga ids, optionally restricted to the given categories.
-async fn library_manga_ids(pool: &PgPool, categories: Option<&[i32]>) -> Result<Vec<i32>, sqlx::Error> {
+async fn library_manga_ids(pool: &Db, categories: Option<&[i32]>) -> Result<Vec<i32>, suwayomi_db::Error> {
     match categories {
         Some(cats) if !cats.is_empty() => {
-            sqlx::query_as::<_, (i32,)>(
+            suwayomi_db::query_as::<(i32,)>(
                 "SELECT DISTINCT m.id FROM manga m JOIN category_manga cm ON cm.manga = m.id \
                  WHERE m.in_library = TRUE AND cm.category = ANY($1) ORDER BY m.id",
             )
@@ -293,7 +292,7 @@ async fn library_manga_ids(pool: &PgPool, categories: Option<&[i32]>) -> Result<
             .map(|rows| rows.into_iter().map(|r| r.0).collect())
         }
         _ => {
-            sqlx::query_as::<_, (i32,)>("SELECT id FROM manga WHERE in_library = TRUE ORDER BY id")
+            suwayomi_db::query_as::<(i32,)>("SELECT id FROM manga WHERE in_library = TRUE ORDER BY id")
                 .fetch_all(pool)
                 .await
                 .map(|rows| rows.into_iter().map(|r| r.0).collect())
@@ -301,8 +300,8 @@ async fn library_manga_ids(pool: &PgPool, categories: Option<&[i32]>) -> Result<
     }
 }
 
-async fn fetch_manga_type(pool: &PgPool, manga_id: i32) -> Result<Option<MangaType>, sqlx::Error> {
-    let row: Option<MangaRow> = sqlx::query_as("SELECT * FROM manga WHERE id = $1").bind(manga_id).fetch_optional(pool).await?;
+async fn fetch_manga_type(pool: &Db, manga_id: i32) -> Result<Option<MangaType>, suwayomi_db::Error> {
+    let row: Option<MangaRow> = suwayomi_db::query_as("SELECT * FROM manga WHERE id = $1").bind(manga_id).fetch_optional(pool).await?;
     Ok(row.map(|r| MangaType::from_row(&r)))
 }
 
@@ -365,15 +364,15 @@ mod tests {
     }
 
     async fn setup() -> (Db, FakeFetcher) {
-        let db = Db::connect_embedded(None).await.expect("connect embedded");
+        let db = Db::sqlite_in_memory().await.expect("connect embedded");
         db.migrate().await.expect("migrate");
         let pool = db.pool();
-        sqlx::query("INSERT INTO extension (name, pkg_name, version_name, version_code, lang, content_warning) VALUES ('E','p','1',1,'en',0)")
+        suwayomi_db::query("INSERT INTO extension (name, pkg_name, version_name, version_code, lang, content_warning) VALUES ('E','p','1',1,'en',0)")
             .execute(pool)
             .await
             .expect("ext");
-        sqlx::query("INSERT INTO source (name, lang, extension) VALUES ('S','en',1)").execute(pool).await.expect("src");
-        sqlx::query("INSERT INTO manga (url, title, in_library, source) VALUES ('/m','Manga One',TRUE,1)")
+        suwayomi_db::query("INSERT INTO source (name, lang, extension) VALUES ('S','en',1)").execute(pool).await.expect("src");
+        suwayomi_db::query("INSERT INTO manga (url, title, in_library, source) VALUES ('/m','Manga One',TRUE,1)")
             .execute(pool)
             .await
             .expect("manga");
@@ -422,9 +421,9 @@ mod tests {
         assert!(saw_running, "must see a running=true event");
         assert!(saw_complete, "must see a finished event with finished_jobs >= 1");
 
-        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chapter").fetch_one(db.pool()).await.expect("count chapters");
+        let n: i64 = suwayomi_db::query_scalar("SELECT COUNT(*) FROM chapter").fetch_one(db.pool()).await.expect("count chapters");
         assert_eq!(n, 2, "two chapters inserted by the updater");
-        let names: Vec<String> = sqlx::query_scalar("SELECT name FROM chapter ORDER BY source_order").fetch_all(db.pool()).await.expect("names");
+        let names: Vec<String> = suwayomi_db::query_scalar("SELECT name FROM chapter ORDER BY source_order").fetch_all(db.pool()).await.expect("names");
         assert_eq!(names, vec!["Ch 1".to_string(), "Ch 2".to_string()]);
     }
 

@@ -1,10 +1,13 @@
-//! Database layer — mirrors `suwayomi.server.database.*`.
+//! Database layer.
 //!
-//! Backends (Phase 6): embedded PGlite by default (`Db::connect_embedded`,
-//! in-process, no external server), external PostgreSQL as fallback
-//! (`Db::connect` with a `postgres://` URL).
+//! The implementation lives in the `suwayomi-db` crate (SQLite by default via
+//! `rheos-tokio-rusqlite`, external PostgreSQL via `tokio-postgres`); this
+//! module keeps the historical `suwayomi_core::db::*` import paths working.
+//!
+//! `Db::pool()` returns the handle itself, so the many call sites that pass
+//! `db.pool()` to a query builder keep compiling unchanged.
 
-pub mod manager;
-pub mod migrator;
-
-pub use manager::{Db, DbError, DbMode};
+pub use suwayomi_db::{
+    BackendKind, Db, DbSettings, Error as DbError, Executor, FromRow, Query, QueryAs, QueryResult, QueryScalar,
+    Result as DbResult, Row, Value, query, query_as, query_scalar,
+};

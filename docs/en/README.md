@@ -19,8 +19,8 @@ the release CI. REST v1 and GraphQL schema baselines live in `docs/api/` and
 ## Quick start (from source)
 
 ```bash
-# Build & run (default port 8090, embedded Oliphaunt PostgreSQL 18, zero
-# external dependencies; falls back to a higher port if 8090 is taken)
+# Build & run (default port 8090, local SQLite database, zero external
+# dependencies; falls back to a higher port if 8090 is taken)
 cargo run --release -p suwayomi-server
 ```
 
@@ -47,7 +47,7 @@ bin/
   └─ extensions/       converted jars of installed extensions (auto)
 data/                 default data dir (Tachiyomi compatible)
 webui/                Suwayomi-WebUI bundle (attached per release)
-jre/   oliphaunt-runtime/   runtime dependencies (optional)
+jre/                  runtime dependencies (optional)
 ```
 
 > The bundled WebUI comes from [576576/Suwayomi-WebUI](https://github.com/576576/Suwayomi-WebUI)
@@ -106,9 +106,10 @@ docs/                docs (api/, graphql/, migration/, en/, release.md,
 
 ## Database backends
 
-- **Default**: embedded Oliphaunt (native PostgreSQL 18, data in `./pglite-data`)
-- **External**: set `SUWAYOMI_DATABASE_URL`, e.g.
-  `postgres://user:pass@host:5432/db`
+- **Default**: a local SQLite file (`data/suwayomi.db`); override the path with
+  `SUWAYOMI_SQLITE_PATH`
+- **External**: set `SUWAYOMI_DB_BACKEND=postgres` plus `SUWAYOMI_DATABASE_URL`,
+  e.g. `postgres://user:pass@host:5432/db`
 
 ## Real extensions (JVM sandbox)
 

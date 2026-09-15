@@ -1,5 +1,5 @@
-//! OPDS feed integration tests — run against an embedded PGlite (no
-//! external PostgreSQL needed). Inserts seed rows, builds each feed, and
+//! OPDS feed integration tests — run against an in-memory SQLite database
+//! (no external server needed). Inserts seed rows, builds each feed, and
 //! asserts the resulting Atom/OPDS XML.
 
 use suwayomi_core::db::Db;
@@ -8,13 +8,12 @@ use suwayomi_opds::feeds::{self, FeedCtx};
 use std::sync::Arc;
 
 async fn seed() -> Db {
-    let db = Db::connect_embedded(None).await.expect("connect embedded");
+    let db = Db::sqlite_in_memory().await.expect("connect sqlite");
     db.migrate().await.expect("migrate");
     let pool = db.pool();
 
-    // extension (FK target of source.extension — a violation would kill the
-    // embedded session, since the PGlite proxy terminates on any SQL error)
-    sqlx::query("INSERT INTO extension (name, pkg_name, version_name, version_code, lang, content_warning) VALUES ($1, $2, $3, $4, $5, $6)")
+    // extension (FK target of source.extension)
+    suwayomi_db::query("INSERT INTO extension (name, pkg_name, version_name, version_code, lang, content_warning) VALUES ($1, $2, $3, $4, $5, $6)")
         .bind("Test Extension")
         .bind("eu.test.pkg")
         .bind("1.0")
@@ -26,7 +25,7 @@ async fn seed() -> Db {
         .expect("insert extension");
 
     // source
-    sqlx::query("INSERT INTO source (name, lang, extension) VALUES ($1, $2, $3)")
+    suwayomi_db::query("INSERT INTO source (name, lang, extension) VALUES ($1, $2, $3)")
         .bind("MangaDex")
         .bind("en")
         .bind(1_i32)
@@ -35,7 +34,7 @@ async fn seed() -> Db {
         .expect("insert source");
 
     // manga (in library)
-    sqlx::query(
+    suwayomi_db::query(
         "INSERT INTO manga (url, title, initialized, artist, author, description, genre, status, thumbnail_url, in_library, source, last_fetched_at, last_modified_at) \
          VALUES ($1, $2, TRUE, $3, $4, $5, $6, $7, $8, TRUE, $9, $10, $11)",
     )
@@ -55,7 +54,7 @@ async fn seed() -> Db {
     .expect("insert manga");
 
     // chapters
-    sqlx::query(
+    suwayomi_db::query(
         "INSERT INTO chapter (url, name, date_upload, chapter_number, read, last_page_read, last_read_at, source_order, is_downloaded, page_count, manga) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
@@ -74,7 +73,7 @@ async fn seed() -> Db {
     .await
     .expect("insert chapter 1");
 
-    sqlx::query(
+    suwayomi_db::query(
         "INSERT INTO chapter (url, name, date_upload, chapter_number, read, last_page_read, last_read_at, source_order, is_downloaded, page_count, manga) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
@@ -94,13 +93,13 @@ async fn seed() -> Db {
     .expect("insert chapter 2");
 
     // category + membership
-    sqlx::query("INSERT INTO category (name, sort_order) VALUES ($1, $2)")
+    suwayomi_db::query("INSERT INTO category (name, sort_order) VALUES ($1, $2)")
         .bind("My Category")
         .bind(0_i32)
         .execute(pool)
         .await
         .expect("insert category");
-    sqlx::query("INSERT INTO category_manga (category, manga) VALUES ($1, $2)")
+    suwayomi_db::query("INSERT INTO category_manga (category, manga) VALUES ($1, $2)")
         .bind(1_i32)
         .bind(1_i32)
         .execute(pool)
@@ -153,7 +152,7 @@ async fn library_series_feed_includes_local_manga_without_source() {
     // 匹配不到 source 行的本地漫画过滤掉。
     let db = seed().await;
     let pool = db.pool();
-    sqlx::query(
+    suwayomi_db::query(
         "INSERT INTO manga (url, title, initialized, status, in_library, source, last_fetched_at, last_modified_at) \
          VALUES ($1, $2, TRUE, $3, TRUE, $4, $5, $5)",
     )
@@ -194,16 +193,16 @@ async fn history_feed_contains_read_chapters_only() {
 #[tokio::test]
 async fn navigation_feeds_render() {
     let db = seed().await;
-    for xml in [
-        feeds::categories_feed(&ctx(&db)).await,
-        feeds::genres_feed(&ctx(&db)).await,
-        feeds::statuses_feed(&ctx(&db)).await,
-        feeds::languages_feed(&ctx(&db)).await,
-        feeds::library_sources_feed(&ctx(&db)).await,
-        feeds::explore_sources_feed(&ctx(&db)).await,
+    for (name, xml) in [
+        ("categories", feeds::categories_feed(&ctx(&db)).await),
+        ("genres", feeds::genres_feed(&ctx(&db)).await),
+        ("statuses", feeds::statuses_feed(&ctx(&db)).await),
+        ("languages", feeds::languages_feed(&ctx(&db)).await),
+        ("library_sources", feeds::library_sources_feed(&ctx(&db)).await),
+        ("explore_sources", feeds::explore_sources_feed(&ctx(&db)).await),
     ] {
-        assert!(xml.contains("<feed"), "feed root");
-        assert!(xml.contains("urn:suwayomi:navigation:"), "nav entry");
+        assert!(xml.contains("<feed"), "feed root in {name}");
+        assert!(xml.contains("urn:suwayomi:navigation:"), "nav entry in {name}");
     }
     // library-updates is an ACQUISITION feed (chapter entries, not nav)
     let updates = feeds::library_updates_feed(&ctx(&db), 1).await;

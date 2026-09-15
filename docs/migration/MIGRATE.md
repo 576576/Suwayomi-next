@@ -12,7 +12,7 @@ Kotlin 原版（Suwayomi/Tachidesk）使用 H2 数据库文件（JVM 专有格�
 # 1) 构建迁移工具（JDK 17+，首次需要）
 gradle -p tools/h2-dump build
 
-# 2) 执行迁移（数据写到嵌入式 Oliphaunt 数据库，即 ./pglite-data）
+# 2) 执行迁移（数据写到默认的 SQLite 数据库，即 <数据目录>/suwayomi.db）
 suwayomi-server --migrate <kotlin-data-dir>
 # 或指定 h2-dump jar 路径：
 suwayomi-server --migrate <kotlin-data-dir> --h2-dump-jar <path>
@@ -21,8 +21,9 @@ suwayomi-server --migrate <kotlin-data-dir> --h2-dump-jar <path>
 suwayomi-server
 ```
 
-- 迁移目标后端由 `SUWAYOMI_DATABASE_URL` 决定：不设 → 嵌入式 Oliphaunt；设置 →
-  外部 PostgreSQL（`postgres://user:pass@host:5432/db`）。
+- 迁移目标后端由 `SUWAYOMI_DB_BACKEND` / `SUWAYOMI_DATABASE_URL` 决定：
+  不设 → 本地 SQLite；`SUWAYOMI_DB_BACKEND=postgres` 或设置
+  `SUWAYOMI_DATABASE_URL` → 外部 PostgreSQL（`postgres://user:pass@host:5432/db`）。
 - 流程：定位 `<dir>/*.mv.db` → h2-dump 导出（按外键依赖序）→ 逐条导入 → 退出。
 - h2-dump 导入脚本幂等（先 DELETE 再 INSERT），重复执行安全。
 
@@ -45,7 +46,9 @@ curl -X POST http://localhost:8090/api/v1/backup/import --data-binary @backup.ta
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `SUWAYOMI_H2_DUMP_JAR` | `tools/h2-dump/build/libs/h2-dump.jar` | `--migrate` 用的导出工具 jar |
-| `SUWAYOMI_DATABASE_URL` | 嵌入式 Oliphaunt | 迁移目标数据库连接串 |
+| `SUWAYOMI_SQLITE_PATH` | `<数据目录>/suwayomi.db` | SQLite 迁移目标文件 |
+| `SUWAYOMI_DB_BACKEND` | `sqlite` | 迁移目标后端（`sqlite` / `postgres`） |
+| `SUWAYOMI_DATABASE_URL` | （空） | PostgreSQL 迁移目标连接串 |
 
 ## 更多迁移背景
 

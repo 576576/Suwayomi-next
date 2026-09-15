@@ -17,8 +17,8 @@ pub enum ApiError {
     Internal(String),
 }
 
-impl From<sqlx::Error> for ApiError {
-    fn from(e: sqlx::Error) -> Self {
+impl From<suwayomi_db::Error> for ApiError {
+    fn from(e: suwayomi_db::Error) -> Self {
         ApiError::Internal(e.to_string())
     }
 }
@@ -30,7 +30,6 @@ impl From<suwayomi_domain::error::DomainError> for ApiError {
             suwayomi_domain::error::DomainError::Invalid(m) => ApiError::BadRequest(m),
             suwayomi_domain::error::DomainError::Source(m) => ApiError::Internal(m),
             suwayomi_domain::error::DomainError::Db(e) => ApiError::Internal(e.to_string()),
-            suwayomi_domain::error::DomainError::DbSetup(e) => ApiError::Internal(e.to_string()),
             suwayomi_domain::error::DomainError::Sandbox(e) => ApiError::Internal(e),
         }
     }

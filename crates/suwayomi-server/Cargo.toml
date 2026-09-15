@@ -19,7 +19,7 @@ suwayomi-opds = { path = "../suwayomi-opds" }
 axum.workspace = true
 tower-http.workspace = true
 tokio.workspace = true
-sqlx.workspace = true
+suwayomi-db.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true
@@ -31,6 +31,6 @@ clap = { version = "4", features = ["derive"] }
 winres = "0.1"
 
 [target.'cfg(windows)'.dependencies]
-# Win32_Security needed for CreateMutexW (single-instance guard); previously
-# transitively enabled by pglite-oxide, no longer after the oliphaunt switch.
+# Win32_Security needed for CreateMutexW (single-instance guard); no longer
+# enabled transitively since the embedded database dependency was dropped.
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Security"] }

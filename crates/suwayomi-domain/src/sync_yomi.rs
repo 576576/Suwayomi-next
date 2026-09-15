@@ -55,7 +55,7 @@ impl SyncYomiService {
     }
 
     async fn etag(&self) -> Result<String> {
-        let v: Option<String> = sqlx::query_scalar("SELECT value FROM suwayomi.global_meta WHERE meta_key = $1")
+        let v: Option<String> = suwayomi_db::query_scalar("SELECT value FROM suwayomi.global_meta WHERE meta_key = $1")
             .bind(KEY_ETAG)
             .fetch_optional(self.db.pool())
             .await?;
@@ -63,7 +63,7 @@ impl SyncYomiService {
     }
 
     async fn set_etag(&self, etag: &str) -> Result<()> {
-        sqlx::query(
+        suwayomi_db::query(
             "INSERT INTO suwayomi.global_meta (meta_key, value) VALUES ($1, $2) \
              ON CONFLICT (meta_key) DO UPDATE SET value = EXCLUDED.value",
         )
@@ -140,7 +140,7 @@ impl SyncYomiService {
     pub async fn last_sync_status(&self) -> Result<Option<crate::sync_yomi::SyncStatus>> {
         const KEY_LAST: &str = "sync_yomi_last_synced_at";
         let v: Option<String> =
-            sqlx::query_scalar("SELECT value FROM suwayomi.global_meta WHERE meta_key = $1")
+            suwayomi_db::query_scalar("SELECT value FROM suwayomi.global_meta WHERE meta_key = $1")
                 .bind(KEY_LAST)
                 .fetch_optional(self.db.pool())
                 .await?;
@@ -174,7 +174,7 @@ impl SyncYomiService {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or_default();
-        sqlx::query(
+        suwayomi_db::query(
             "INSERT INTO suwayomi.global_meta (meta_key, value) VALUES ($1, $2)              ON CONFLICT (meta_key) DO UPDATE SET value = EXCLUDED.value",
         )
         .bind("sync_yomi_last_synced_at")
@@ -199,7 +199,7 @@ mod tests {
     use tokio::net::TcpListener;
 
     async fn setup(enabled: bool) -> (SyncYomiService, ServerConfig) {
-        let db = suwayomi_core::db::Db::connect_embedded(None).await.expect("db");
+        let db = suwayomi_core::db::Db::sqlite_in_memory().await.expect("db");
         db.migrate().await.expect("migrate");
         let cfg = ServerConfig {
             sync_yomi_enabled: enabled,
@@ -292,53 +292,53 @@ mod tests {
     /// on manga changes and respect the `is_syncing` opt-out.
     #[tokio::test]
     async fn version_bump_trigger_semantics() {
-        // PL/pgSQL triggers are applied only on external PostgreSQL (see
-        // Db::migrate — embedded pglite cannot compile PL/pgSQL). Requires
+        // Asserts the PL/pgSQL flavour of the sync triggers (the SQLite port
+        // is covered by `suwayomi-db`'s own migration tests). Requires
         // DATABASE_URL pointing at a real PostgreSQL instance.
         let Some(url) = std::env::var("DATABASE_URL").ok().filter(|u| !u.is_empty()) else {
             eprintln!("SKIP: requires DATABASE_URL (external PostgreSQL)");
             return;
         };
-        let db = suwayomi_core::db::Db::connect(&url).await.expect("db");
+        let db = suwayomi_core::db::Db::postgres(&url).await.expect("db");
         db.migrate().await.expect("migrate");
         let pool = db.pool();
-        sqlx::query("INSERT INTO suwayomi.manga (url, title, source, initialized) VALUES ('/m/t', 'T', 1, FALSE)")
+        suwayomi_db::query("INSERT INTO suwayomi.manga (url, title, source, initialized) VALUES ('/m/t', 'T', 1, FALSE)")
             .execute(pool).await.expect("insert");
-        let mid: i32 = sqlx::query_scalar("SELECT id FROM suwayomi.manga WHERE url = '/m/t'")
+        let mid: i32 = suwayomi_db::query_scalar("SELECT id FROM suwayomi.manga WHERE url = '/m/t'")
             .fetch_one(pool).await.unwrap();
 
-        let v0: i64 = sqlx::query_scalar("SELECT version FROM suwayomi.manga WHERE id = $1")
+        let v0: i64 = suwayomi_db::query_scalar("SELECT version FROM suwayomi.manga WHERE id = $1")
             .bind(mid).fetch_one(pool).await.unwrap();
         assert_eq!(v0, 0, "fresh row version 0");
 
 
 
         // change url -> version bumps
-        sqlx::query("UPDATE suwayomi.manga SET url = '/m/t2' WHERE id = $1")
+        suwayomi_db::query("UPDATE suwayomi.manga SET url = '/m/t2' WHERE id = $1")
             .bind(mid).execute(pool).await.expect("update");
-        let v1: i64 = sqlx::query_scalar("SELECT version FROM suwayomi.manga WHERE id = $1")
+        let v1: i64 = suwayomi_db::query_scalar("SELECT version FROM suwayomi.manga WHERE id = $1")
             .bind(mid).fetch_one(pool).await.unwrap();
         assert_eq!(v1, 1, "url change bumps version");
 
         // is_syncing=true suppresses the bump
-        sqlx::query("UPDATE suwayomi.manga SET is_syncing = TRUE WHERE id = $1")
+        suwayomi_db::query("UPDATE suwayomi.manga SET is_syncing = TRUE WHERE id = $1")
             .bind(mid).execute(pool).await.expect("update");
-        sqlx::query("UPDATE suwayomi.manga SET url = '/m/t3' WHERE id = $1")
+        suwayomi_db::query("UPDATE suwayomi.manga SET url = '/m/t3' WHERE id = $1")
             .bind(mid).execute(pool).await.expect("update");
-        let v2: i64 = sqlx::query_scalar("SELECT version FROM suwayomi.manga WHERE id = $1")
+        let v2: i64 = suwayomi_db::query_scalar("SELECT version FROM suwayomi.manga WHERE id = $1")
             .bind(mid).fetch_one(pool).await.unwrap();
         assert_eq!(v2, 1, "is_syncing suppresses version bump");
 
         // category_manga insert bumps manga version (once syncing is cleared)
-        sqlx::query("UPDATE suwayomi.manga SET is_syncing = FALSE WHERE id = $1")
+        suwayomi_db::query("UPDATE suwayomi.manga SET is_syncing = FALSE WHERE id = $1")
             .bind(mid).execute(pool).await.expect("clear syncing");
-        sqlx::query("INSERT INTO suwayomi.category (name, is_default) VALUES ('Cat', FALSE)")
+        suwayomi_db::query("INSERT INTO suwayomi.category (name, is_default) VALUES ('Cat', FALSE)")
             .execute(pool).await.expect("cat");
-        let cid: i32 = sqlx::query_scalar("SELECT id FROM suwayomi.category WHERE name = 'Cat'")
+        let cid: i32 = suwayomi_db::query_scalar("SELECT id FROM suwayomi.category WHERE name = 'Cat'")
             .fetch_one(pool).await.unwrap();
-        sqlx::query("INSERT INTO suwayomi.category_manga (category, manga) VALUES ($1, $2)")
+        suwayomi_db::query("INSERT INTO suwayomi.category_manga (category, manga) VALUES ($1, $2)")
             .bind(cid).bind(mid).execute(pool).await.expect("catmanga");
-        let v3: i64 = sqlx::query_scalar("SELECT version FROM suwayomi.manga WHERE id = $1")
+        let v3: i64 = suwayomi_db::query_scalar("SELECT version FROM suwayomi.manga WHERE id = $1")
             .bind(mid).fetch_one(pool).await.unwrap();
         assert_eq!(v3, 2, "category_manga insert bumps manga version");
     }

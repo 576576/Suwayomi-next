@@ -2,12 +2,12 @@
 
 Suwayomi (next) 是 Suwayomi（Kotlin/JVM 版）的 Rust 重写：保持既有数据格式、
 GraphQL / REST / OPDS 接口与 Mihon 扩展体系兼容，默认**零外部依赖**启动
-（内置嵌入式 Oliphaunt 数据库，真实 PostgreSQL 18 引擎）。
+（内建 SQLite 数据库，可选切换到外部 PostgreSQL）。
 
 ## 快速开始
 
 ```bash
-# 直接运行（默认端口 8090，嵌入式数据库，数据存 ./pglite-data）
+# 直接运行（默认端口 8090，SQLite 数据库，数据存 ./data/suwayomi.db）
 cargo run --release -p suwayomi-server
 # 或使用已构建二进制
 ./target/release/suwayomi-server
@@ -24,8 +24,10 @@ cargo run --release -p suwayomi-server
 | --- | --- | --- |
 | `SUWAYOMI_PORT` | `8090` | HTTP 端口 |
 | `SUWAYOMI_IP` | `0.0.0.0` | 监听地址 |
-| `SUWAYOMI_PGLITE_DATA_DIR` | `./pglite-data` | 嵌入式数据库数据目录（空 = 临时） |
-| `SUWAYOMI_DATABASE_URL` | （空） | 设置后改用外部 PostgreSQL（如 `postgres://user:pass@host:5432/db`） |
+| `SUWAYOMI_DATA_DIR` | exe 上级 `data/` | 数据目录（SQLite 文件默认落在其下） |
+| `SUWAYOMI_SQLITE_PATH` | `<数据目录>/suwayomi.db` | SQLite 数据库文件路径 |
+| `SUWAYOMI_DB_BACKEND` | `sqlite` | 后端：`sqlite` / `postgres` |
+| `SUWAYOMI_DATABASE_URL` | （空） | PostgreSQL 连接串（设置后自动改用外部 PostgreSQL，如 `postgres://user:pass@host:5432/db`） |
 | `SUWAYOMI_AUTH_MODE` | `DISABLED` | 认证模式：`DISABLED` / `SIMPLE_LOGIN` / `BASIC_AUTH` |
 | `SUWAYOMI_AUTH_USERNAME` / `SUWAYOMI_AUTH_PASSWORD` | — | 认证凭据 |
 | `SUWAYOMI_SANDBOX_JAR` | — | JVM 扩展沙盒 jar 路径（未设置则扩展源不可用） |
@@ -60,16 +62,15 @@ docker build -t suwayomi-next .
 docker run -p 8090:8090 -v suwayomi-data:/data suwayomi-next
 ```
 
-数据持久化在 `/data/pglite-data`。要连外部 PostgreSQL：
+数据持久化在 `/data`（SQLite 文件 `/data/suwayomi.db`）。要连外部 PostgreSQL：
 
 ```bash
-docker run -p 8090:8090 -e SUWAYOMI_DATABASE_URL=postgres://user:pass@host:5432/db suwayomi-next
+docker run -p 8090:8090   -e SUWAYOMI_DB_BACKEND=postgres   -e SUWAYOMI_DATABASE_URL=postgres://user:pass@host:5432/db suwayomi-next
 ```
 
 ## 已知限制
 
-- 嵌入式 Oliphaunt（真实 PostgreSQL）在**任何 SQL 报错时不受影响**（旧
-  pglite-oxide 代理会终止会话，已随 2026-08-31 迁移消除）；运行时意外
-  SQL 错误由连接池自动重建。
+- 默认 SQLite 为单写者模型（WAL + busy_timeout），适合单实例部署；需要
+  多实例并发写请切到外部 PostgreSQL。
 - 真实扩展源（Mihon APK→JAR）依赖 JVM 沙盒（`SUWAYOMI_SANDBOX_JAR`）；
   未配置时来源相关端点返回"source unavailable"。

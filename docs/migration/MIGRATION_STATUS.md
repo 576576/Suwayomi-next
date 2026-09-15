@@ -170,3 +170,12 @@
   数据目录 %APPDATA%\com.suwayomi.tray + pglite-data + server.log）、WebView 加载 WebUI、
   托盘菜单（打开 WebUI/打开数据目录/退出，退出杀子进程）、关窗驻留托盘；独立工程
   （空 [workspace] 表隔离，不拖慢主构建）；冒烟实测 spawn+8090 200 通过
+
+- **数据库后端替换（dev 分支，2026-09-16）**：移除 oliphaunt 嵌入式 PostgreSQL 进程，
+  新增 `crates/suwayomi-db` 双后端抽象——默认 SQLite（`rheos-tokio-rusqlite`，rusqlite
+  绑定专属 OS 线程），备选外部 PostgreSQL（`tokio-postgres` + `deadpool-postgres`），
+  由 `SUWAYOMI_DB_BACKEND` / `SUWAYOMI_DATABASE_URL` 切换。SQL 统一写 `?` 占位符，
+  由 `suwayomi-db/src/dialect.rs` 按后端重编号、展开 `= ANY($1)` → `IN (…)`、剥离
+  `suwayomi.` schema 前缀与 `::type` 转换；`sqlx` 整体移除（与 rusqlite 争
+  `libsqlite3-sys` 的 `links`）。SQLite 侧 DDL/触发器在 `migrations/sqlite/`。
+  以上各段历史记录中的「嵌入式 Oliphaunt / pglite」描述自本次起失效。

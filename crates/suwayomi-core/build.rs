@@ -1,8 +1,4 @@
-//! Stages the Oliphaunt (embedded PostgreSQL) native runtime artifacts into
-//! `OUT_DIR` and emits `OLIPHAUNT_RESOURCES_DIR` for
-//! `register_build_resources!()`. See `crates/suwayomi-core/src/db/manager.rs`.
-//!
-//! Also derives build metadata shared by the whole workspace:
+//! Derives the build metadata shared by the whole workspace:
 //! - `SUWAYOMI_VERSION_NAME`  — `r{versionCode}` (or injected 3.y.z)
 //! - `SUWAYOMI_VERSION_CODE`  — commit count + 3000
 //! - `SUWAYOMI_VERSION_COUNT` — commit count
@@ -12,8 +8,6 @@
 use std::process::Command;
 
 fn main() {
-    oliphaunt_build::configure();
-
     let count = std::env::var("SUWAYOMI_VERSION_COUNT")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())

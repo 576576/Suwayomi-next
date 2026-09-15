@@ -82,7 +82,7 @@ impl KoreaderSyncService {
     // ---- credential storage (global_meta) --------------------------------
 
     async fn meta_get(&self, key: &str) -> Result<Option<String>> {
-        let v: Option<String> = sqlx::query_scalar(
+        let v: Option<String> = suwayomi_db::query_scalar(
             "SELECT value FROM suwayomi.global_meta WHERE meta_key = $1",
         )
         .bind(key)
@@ -92,7 +92,7 @@ impl KoreaderSyncService {
     }
 
     async fn meta_set(&self, key: &str, value: &str) -> Result<()> {
-        sqlx::query(
+        suwayomi_db::query(
             "INSERT INTO suwayomi.global_meta (meta_key, value) VALUES ($1, $2) \
              ON CONFLICT (meta_key) DO UPDATE SET value = EXCLUDED.value",
         )
@@ -104,7 +104,7 @@ impl KoreaderSyncService {
     }
 
     async fn meta_delete(&self, key: &str) -> Result<()> {
-        sqlx::query("DELETE FROM suwayomi.global_meta WHERE meta_key = $1")
+        suwayomi_db::query("DELETE FROM suwayomi.global_meta WHERE meta_key = $1")
             .bind(key)
             .execute(self.db.pool())
             .await?;
@@ -137,7 +137,7 @@ impl KoreaderSyncService {
             name: Option<String>,
             manga_title: Option<String>,
         }
-        let row: Option<Row> = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>)>(
+        let row: Option<Row> = suwayomi_db::query_as::<(Option<String>, Option<String>, Option<String>)>(
             "SELECT c.koreader_hash, c.name, m.title FROM suwayomi.chapter c \
              JOIN suwayomi.manga m ON m.id = c.manga WHERE c.id = $1",
         )
@@ -163,7 +163,7 @@ impl KoreaderSyncService {
             _ => return Ok(None),
         };
         let hash = Self::md5(&base_filename);
-        sqlx::query("UPDATE suwayomi.chapter SET koreader_hash = $1 WHERE id = $2")
+        suwayomi_db::query("UPDATE suwayomi.chapter SET koreader_hash = $1 WHERE id = $2")
             .bind(&hash)
             .bind(chapter_id)
             .execute(self.db.pool())
@@ -300,7 +300,7 @@ impl KoreaderSyncService {
         let Some((server, username, user_key)) = self.credentials().await? else { return Ok(()) };
         let Some(hash) = self.get_or_generate_chapter_hash(chapter_id).await? else { return Ok(()) };
 
-        let row: Option<(i32, i32)> = sqlx::query_as(
+        let row: Option<(i32, i32)> = suwayomi_db::query_as(
             "SELECT last_page_read, page_count FROM suwayomi.chapter WHERE id = $1",
         )
         .bind(chapter_id)
@@ -373,7 +373,7 @@ impl KoreaderSyncService {
         }
         let device = progress.device.unwrap_or_else(|| "KOReader".into());
 
-        let local: Option<(i64, i32, i32)> = sqlx::query_as(
+        let local: Option<(i64, i32, i32)> = suwayomi_db::query_as(
             "SELECT last_read_at, last_page_read, page_count FROM suwayomi.chapter WHERE id = $1",
         )
         .bind(chapter_id)
@@ -424,7 +424,7 @@ mod tests {
     use suwayomi_core::config::{KoreaderSyncConflictStrategy, ServerConfig};
 
     async fn setup() -> KoreaderSyncService {
-        let db = suwayomi_core::db::Db::connect_embedded(None).await.expect("db");
+        let db = suwayomi_core::db::Db::sqlite_in_memory().await.expect("db");
         db.migrate().await.expect("migrate");
         let cfg = ServerConfig {
             koreader_sync_strategy_forward: KoreaderSyncConflictStrategy::KeepRemote,
@@ -438,20 +438,20 @@ mod tests {
     async fn filename_hash_matches_kotlin_md5() {
         let svc = setup().await;
         // Insert manga + chapter to compute a hash.
-        sqlx::query("INSERT INTO suwayomi.manga (url, title, source, initialized) VALUES ('/m/1', 'Manga Title', 1, FALSE)")
+        suwayomi_db::query("INSERT INTO suwayomi.manga (url, title, source, initialized) VALUES ('/m/1', 'Manga Title', 1, FALSE)")
             .execute(svc.db.pool())
             .await
             .expect("manga");
-        let mid: i32 = sqlx::query_scalar("SELECT id FROM suwayomi.manga WHERE url = '/m/1'")
+        let mid: i32 = suwayomi_db::query_scalar("SELECT id FROM suwayomi.manga WHERE url = '/m/1'")
             .fetch_one(svc.db.pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO suwayomi.chapter (url, name, manga, source_order) VALUES ('/c/1', 'Chapter 01.cbz', $1, 1)")
+        suwayomi_db::query("INSERT INTO suwayomi.chapter (url, name, manga, source_order) VALUES ('/c/1', 'Chapter 01.cbz', $1, 1)")
             .bind(mid)
             .execute(svc.db.pool())
             .await
             .expect("chapter");
-        let cid: i32 = sqlx::query_scalar("SELECT id FROM suwayomi.chapter WHERE url = '/c/1'")
+        let cid: i32 = suwayomi_db::query_scalar("SELECT id FROM suwayomi.chapter WHERE url = '/c/1'")
             .fetch_one(svc.db.pool())
             .await
             .unwrap();
@@ -463,7 +463,7 @@ mod tests {
         let expected = format!("{:x}", h.finalize());
         assert_eq!(hash, expected, "FILENAME checksum");
         // persisted
-        let stored: String = sqlx::query_scalar("SELECT koreader_hash FROM suwayomi.chapter WHERE id = $1")
+        let stored: String = suwayomi_db::query_scalar("SELECT koreader_hash FROM suwayomi.chapter WHERE id = $1")
             .bind(cid)
             .fetch_one(svc.db.pool())
             .await

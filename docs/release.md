@@ -123,10 +123,17 @@
 改 workflow 不要靠推上去试错（一轮矩阵十几分钟还污染 release 列表）。用：
 
 ```bash
-python .workbuddy/verify/ci_pack_check.py    # 基线包/+jre/Android/托盘与沙盒的验证（208 项）
+python .workbuddy/verify/ci_pack_check.py    # 基线包/+jre/Android/托盘与沙盒的验证（210 项）
 python .workbuddy/verify/ci_equiv.py         # 上一轮"合并两个 workflow"的等价性对照
+bash   .workbuddy/verify/check_jre_arch.sh   # make-jre.sh 的宿主探测 + 产物自检（35 项，按标记抽真代码）
+bash   .workbuddy/verify/e2e_host_jmods.sh   # 「宿主自带 jmods 就跳过下载」分支的端到端（本地默认走不到）
 ```
 
 做法（详见 `gh-actions-verify` 技能）：把 `run:` 块抽出来、按场景替换 `${{ }}`、外部 CLI 打桩、在最小的假仓库骨架里真跑，断言 `$GITHUB_OUTPUT` / 产物名 / 归档内容 / gh 的 `--notes`。
 
-**但它验不到"脚本在真平台上会不会炸"**：打桩会把 `make-jre.sh` 之类跳过去，platform 专属代码路径（Windows 的 PE 分支、macOS 的 Mach-O 分支、Android 的 SDK 安装）在本地根本不会被执行。这类问题只能真跑 CI，或本地人为复现条件（例如 `PYTHONIOENCODING=cp1252` 复现 Windows 的 Python 编码）。打桩的行为也要跟真实工具对齐 —— zip 布局那条断言就曾按错误模型写（`Compress-Archive -Path <dir>` 其实把目录本身收进归档），核对真实产物才发现。
+**但它验不到"脚本在真平台上会不会炸"**：打桩会把 `make-jre.sh` 之类跳过去，platform 专属代码路径（Windows 的 PE 分支、macOS 的 Mach-O 分支、Android 的 SDK 安装）在本地根本不会被执行。这类问题只能真跑 CI，或本地人为复现条件。**后者有两种做法**：
+
+1. 复现**环境条件** —— 例如 `PYTHONIOENCODING=cp1252` 复现 Windows 的 Python 编码；`JAVA_HOME='C:\…'`（反斜杠形式）复现 CI 注入的路径形态。
+2. 复现**分支条件** —— 有些分支在本地是死代码（`e2e_host_jmods.sh` 针对的就是它：本机 Temurin 25 按 JEP 493 不带 jmods，那条"宿主自带"分支永远走不到）。做法是造夹具：假 `JAVA_HOME` 用目录联接指向真 JDK、塞进真 jmods，再用 CI 那种变量形态调真脚本。
+
+打桩的行为也要跟真实工具对齐 —— zip 布局那条断言就曾按错误模型写（`Compress-Archive -Path <dir>` 其实把目录本身收进归档），核对真实产物才发现。

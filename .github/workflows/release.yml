@@ -337,10 +337,21 @@ jobs:
             gh release delete "$TAG" --yes --cleanup-tag || true
           fi
 
-          # 附件列表：**不能**写成裸 `artifacts/*` —— 只勾 OCI 时目录是空的，glob 不展开
-          # 会把那个字面量当文件名传给 gh。
-          FILES=(artifacts/*)
-          [ -e "${FILES[0]}" ] || FILES=()
+          # 附件列表有两条注意：
+          #  1. **不能**写成裸 `artifacts/*` —— 只勾 OCI 时目录是空的，glob 不展开会把
+          #     那个字面量当文件名传给 gh；
+          #  2. run 里还有 CI 内部的 artifact —— 实测 buildx 的 `cache-to: type=gha`
+          #     会以 `~<owner>~<repo>~<hash>.dockerbuild` 形式上传缓存，`download-artifact`
+          #     会一并拉下来（r3226 的两个 .dockerbuild 就是这么混进 Release 的）。
+          #     所以只收发布产物：命名一律 `Suwayomi-*`。
+          FILES=()
+          for f in artifacts/*; do
+            [ -f "$f" ] || continue
+            case "$(basename "$f")" in
+              Suwayomi-*) FILES+=("$f") ;;
+              *) echo "跳过非发布产物：$f" ;;
+            esac
+          done
 
           # 推送触发的自动构建：标题/说明与手动通道不同（与旧 Auto build 逐字一致）
           if [ "$FLOW" = "auto" ]; then

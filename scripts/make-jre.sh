@@ -8,9 +8,13 @@
 #
 # 三件事决定了这个脚本长这样：
 #
-# 1. **jmods 必须单独下载。** Temurin JDK 24 起启用 JEP 493，JDK 归档里不再带
+# 1. **jmods 从哪来。** Temurin JDK 24 起启用 JEP 493，JDK 归档里不再带
 #    `jmods/` 目录（本机 jdk-25.0.4.7 就没有），而 jlink 的 `--module-path`
-#    正需要它。Adoptium 因此为每个平台单独提供 jmods 包（约 85MB）。
+#    正需要它。所以优先看宿主 `$JAVA_HOME/jmods/` 有没有（有就直接用），
+#    没有才去 Adoptium 下那个单独的 jmods 包（约 85MB）。
+#    需要"宿主自带"这条兜底是因为 **Adoptium 对 `windows/aarch64` 根本没发
+#    JDK 25 的任何制品**（jdk / jre / jmods 全 404，该平台只到 JDK 21），
+#    那个 target 只能换 Azul Zulu 装 JDK（归档自带 jmods/）。
 # 2. **jlink 不能跨平台生成镜像。** 实测：Windows 的 jlink + linux-aarch64 的
 #    jmods，产出的 `bin/java` 是 PE 头（`MZ`）加一堆 `.dll` —— jlink 的 launcher
 #    与原生库取自**宿主** JDK，不取自 `--module-path`。所以下面先校验宿主平台与
@@ -111,17 +115,44 @@ cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 
 JMODS_ARCHIVE="$WORK/jmods-archive"
-echo "--- 下载 $TARGET_OS/$TARGET_ARCH 的 jmods"
-curl -fSL --retry 3 -o "$JMODS_ARCHIVE" \
-  "https://api.adoptium.net/v3/binary/latest/25/ga/$TARGET_OS/$TARGET_ARCH/jmods/hotspot/normal/eclipse"
 
-# `PYTHONUTF8=1`（Python 3.7+ 的 UTF-8 模式）+ `PYTHONIOENCODING` 一起强制 Python
-# 按 UTF-8 编码 stdout/stderr：Windows 上这两个流被重定向时走 **locale 编码**
-# （英文 runner 是 cp1252、中文机器是 cp936），而下面这段内联脚本会打中文
-# （"jmod 数量：…"），实测在 windows-latest 上直接
-# `UnicodeEncodeError: 'charmap' codec can't encode characters in position 9-11`
-# 退出 1。bash 自己的中文输出本来就是 UTF-8，这样两边才一致。
-PYTHONUTF8=1 PYTHONIOENCODING=utf-8 "$PY" - "$JMODS_ARCHIVE" "$WORK/jmods" <<'PY'
+# jmods 有两个来路，优先用宿主 JDK 自带的：
+#
+# 1. **宿主 JAVA_HOME/jmods/ 里有 .jmod** → 直接用，一次下载都不做。
+# 2. 否则从 Adoptium 下（JEP 493 之后 Temurin 的归档不带 jmods/，所以默认走这条）。
+#
+# 为什么需要第 1 条：**Adoptium 对某些平台根本不发 JDK 25 的制品**。实测
+# `windows/aarch64` 的 jdk / jre / jmods 全是 404（该平台只到 JDK 21），
+# 那么 windows-arm64 的 +jre 就只能换一个带 jmods 的发行版 —— CI 上那个 target
+# 用 Azul Zulu 装 JDK（它的 win_aarch64 归档自带 jmods/，实测 70 个 .jmod），
+# 于是这里直接吃宿主自带的，不下载。
+#
+# 顺带的好处：jmods 与 jlink 来自同一个 JDK，同发行版同版本，不会有跨发行版
+# 拼装带来的边角问题。
+MODULE_PATH=""
+LOCAL_JMODS="${JAVA_HOME:-}/jmods"
+if [[ -n "${JAVA_HOME:-}" && -d "$LOCAL_JMODS" ]] && compgen -G "$LOCAL_JMODS/*.jmod" > /dev/null; then
+  MODULE_PATH="$(native "$LOCAL_JMODS")"
+  echo "--- 用宿主 JDK 自带的 jmods（跳过下载）：$MODULE_PATH"
+  echo "    jmod 数量：$(ls -1 "$LOCAL_JMODS"/*.jmod | wc -l)"
+else
+  echo "--- 下载 $TARGET_OS/$TARGET_ARCH 的 jmods"
+  curl -fSL --retry 3 -o "$JMODS_ARCHIVE" \
+    "https://api.adoptium.net/v3/binary/latest/25/ga/$TARGET_OS/$TARGET_ARCH/jmods/hotspot/normal/eclipse" \
+    || {
+      echo "错误：Adoptium 没有 $TARGET_OS/$TARGET_ARCH 的 jmods。" >&2
+      echo "      该平台需要换一个带 jmods/ 的 JDK 发行版，并让 JAVA_HOME 指向它" >&2
+      echo "      （见本脚本上面第 1 条；CI 里由 release.yml 的 jdk 列指定发行版）。" >&2
+      exit 1
+    }
+
+  # `PYTHONUTF8=1`（Python 3.7+ 的 UTF-8 模式）+ `PYTHONIOENCODING` 一起强制 Python
+  # 按 UTF-8 编码 stdout/stderr：Windows 上这两个流被重定向时走 **locale 编码**
+  # （英文 runner 是 cp1252、中文机器是 cp936），而下面这段内联脚本会打中文
+  # （"jmod 数量：…"），实测在 windows-latest 上直接
+  # `UnicodeEncodeError: 'charmap' codec can't encode characters in position 9-11`
+  # 退出 1。bash 自己的中文输出本来就是 UTF-8，这样两边才一致。
+  PYTHONUTF8=1 PYTHONIOENCODING=utf-8 "$PY" - "$JMODS_ARCHIVE" "$WORK/jmods" <<'PY'
 import sys, tarfile, zipfile, pathlib
 arc, dest = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
 dest.mkdir(parents=True, exist_ok=True)
@@ -141,7 +172,8 @@ print("    jmod 数量：%d（module-path: %s）" % (n, root))
 pathlib.Path(dest / "MODULE_PATH").write_text(str(root))
 PY
 
-MODULE_PATH="$(cat "$WORK/jmods/MODULE_PATH")"
+  MODULE_PATH="$(cat "$WORK/jmods/MODULE_PATH")"
+fi
 
 # ---- 白名单 ------------------------------------------------------------
 #

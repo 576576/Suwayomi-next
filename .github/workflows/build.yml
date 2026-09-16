@@ -104,9 +104,13 @@ jobs:
         # 两个用途：构建 bin/jvm-sandbox.jar（gradle toolchain 25），以及 +jre 时的
         # jlink（它只随 JDK 提供）。无条件安装 —— 按 target 细分条件只会让这里更难维护，
         # 而 setup-java 本身很快。
+        #
+        # 发行版按 matrix.jdk 走：默认 temurin；**windows-arm64 用 zulu** —— Adoptium
+        # 对 windows/aarch64 没发 JDK 25 的任何制品（jdk/jre/jmods 全 404），而 Zulu 的
+        # win_aarch64 归档自带 jmods/，make-jre.sh 会直接用它、跳过下载。
         uses: actions/setup-java@v5
         with:
-          distribution: temurin
+          distribution: ${{ matrix.jdk }}
           java-version: '25'
       - name: 构建
         shell: bash
@@ -121,10 +125,13 @@ jobs:
           TGT="${{ matrix.target }}"
           MODE="${{ inputs.pack_mode }}"
           BIN="target/${{ matrix.rust_target }}/release/suwayomi-server"
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then BIN="${BIN}.exe"; fi
+          # 判平台一律用 runner.os，不要拿 matrix.os 的 runner 标签去比字面量 ——
+          # Windows 的 runner 标签不止 windows-latest 一个（还有 windows-11-arm），
+          # 按标签比会让新架构悄悄走错分支（.exe 后缀、zip 打包都会错）。
+          if [ "${{ runner.os }}" = "Windows" ]; then BIN="${BIN}.exe"; fi
 
           IS_WIN="false"
-          [ "${{ matrix.os }}" = "windows-latest" ] && IS_WIN="true"
+          [ "${{ runner.os }}" = "Windows" ] && IS_WIN="true"
 
           # 产物基名（两套约定见文件头 pack_mode）；形态后缀在下面按选项追加
           if [ "$MODE" = "alpha" ]; then

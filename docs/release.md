@@ -37,18 +37,20 @@
 
 手动 dispatch 的平台开关与对应的 runner（`release.yml` 里的 mapping）：
 
-| 开关 | runner | rust target | jlink 目标 |
-|---|---|---|---|
-| `build_windows_x64` | `windows-latest` | `x86_64-pc-windows-msvc` | windows/x64 |
-| `build_linux_x64` | `ubuntu-latest` | `x86_64-unknown-linux-gnu` | linux/x64 |
-| `build_linux_arm64` | `ubuntu-24.04-arm` | `aarch64-unknown-linux-gnu` | linux/aarch64 |
-| `build_macos_x64` | `macos-15-intel` | `x86_64-apple-darwin` | mac/x64 |
-| `build_macos_arm64` | `macos-15` | `aarch64-apple-darwin` | mac/aarch64 |
-| `build_android_arm64` | `ubuntu-latest` | `aarch64-linux-android` | —（Android 不打包 JRE） |
+| 开关 | runner | rust target | jlink 目标 | JDK 发行版 |
+|---|---|---|---|---|
+| `build_windows_x64` | `windows-latest` | `x86_64-pc-windows-msvc` | windows/x64 | temurin |
+| `build_windows_arm64` | `windows-11-arm` | `aarch64-pc-windows-msvc` | windows/aarch64 | **zulu** |
+| `build_linux_x64` | `ubuntu-latest` | `x86_64-unknown-linux-gnu` | linux/x64 | temurin |
+| `build_linux_arm64` | `ubuntu-24.04-arm` | `aarch64-unknown-linux-gnu` | linux/aarch64 | temurin |
+| `build_macos_x64` | `macos-15-intel` | `x86_64-apple-darwin` | mac/x64 | temurin |
+| `build_macos_arm64` | `macos-15` | `aarch64-apple-darwin` | mac/aarch64 | temurin |
+| `build_android_arm64` | `ubuntu-latest` | `aarch64-linux-android` | —（Android 不打包 JRE） | temurin |
 
 - **每个 target 的 runner 必须与目标同架构**：`+jre` 用 jlink 生成，而 **jlink 不能跨平台生成运行时**（实测：Windows 的 jlink + linux-aarch64 的 jmods，产出的 `bin/java` 是 PE 头加一堆 `.dll` —— launcher 与原生库取自宿主 JDK）。所以 linux-arm64 用 arm64 runner（原生编译，顺带不再需要交叉工具链），x64 的 macOS 用 `macos-15-intel`。
-- `macos-13` 已被 GitHub 下线，x64 macOS 现为 `macos-15-intel`。
-- **矩阵里每个桌面 target 都出托盘壳与 `bin/jvm-sandbox.jar`**（Windows / Linux x64+arm64 / macOS x64+arm64）。Linux 侧因此无论架构都装同一套 webkit2gtk/appindicator 依赖；tray 有自己的 workspace 与 `target/`，各 runner 原生编译。Android 不在这个矩阵里。
+- `macos-13` 已被 GitHub 下线，x64 macOS 现为 `macos-15-intel`；Windows arm64 用 `windows-11-arm`（公开预览，公共仓库免费不限量），该镜像自带 VS 2022 + Windows SDK 26100（`build.rs` 嵌图标要的 `rc.exe`）与 Git for Windows，`shell: bash` 可直接用。
+- **`jdk` 那一列是为什么**：Adoptium（Temurin）对 `windows/aarch64` **没有发布 JDK 25 的任何制品**（`jdk`/`jre`/`jmods` 全 404，该平台只到 JDK 21），而 `+jre` 必须有 jmods。Azul Zulu 的 `win_aarch64` JDK 归档自带 `jmods/`，所以 windows-arm64 的 `setup-java` 用 `distribution: zulu`；`make-jre.sh` 见到宿主 `$JAVA_HOME/jmods/` 有 `.jmod` 就直接用、完全不下载。其余平台仍走 Temurin + 下载 Adoptium 的 jmods 包。
+- **矩阵里每个桌面 target 都出托盘壳与 `bin/jvm-sandbox.jar`**（Windows x64+arm64 / Linux x64+arm64 / macOS x64+arm64）。Linux 侧因此无论架构都装同一套 webkit2gtk/appindicator 依赖；tray 有自己的 workspace 与 `target/`，各 runner 原生编译。Android 不在这个矩阵里。
 - 平台开关默认只勾 Windows x64 + Linux x64。
 
 ## 产物形态（`-core` / `+jre`）

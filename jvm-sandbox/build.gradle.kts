@@ -55,6 +55,10 @@ application {
 kotlin {
     // 统一 Java 25：与 CI setup-java（Temurin 25）及发布捆绑的 JRE 25 一致
     jvmToolchain(25)
+    // 共享源码树：`eu.kanade.tachiyomi.**` 接口实现、SourceDriver、Router 等
+    // 与平台无关的部分由桌面沙盒和 Android extension-host 共同编译，
+    // 避免两份实现漂移（见 docs/migration/ANDROID_IMPL.md A4）。
+    sourceSets["main"].kotlin.srcDir("../extension-runtime/src/main/kotlin")
 }
 
 tasks.test {

@@ -9,6 +9,7 @@ members = [
     "crates/suwayomi-graphql",
     "crates/suwayomi-opds",
     "crates/suwayomi-server",
+    "crates/suwayomi-android",
 ]
 
 [workspace.package]
@@ -33,7 +34,9 @@ axum = "0.8"
 tower-http = { version = "0.6", features = ["fs"] }
 async-graphql = "7"
 async-graphql-axum = "7"
-reqwest = { version = "0.12", features = ["json", "multipart", "stream", "cookies"] }
+# 基础特性显式列出（等价于默认特性，去掉 default-tls）：TLS 后端按目标平台分开补
+# —— 见 crates/suwayomi-domain/Cargo.toml
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "stream", "cookies", "charset", "http2"] }
 chrono = { version = "0.4", features = ["serde"] }
 prost = "0.13"
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -47,3 +50,17 @@ quick-xml = "0.36"
 
 [profile.release]
 lto = "thin"
+
+# Android 交叉编译专用 profile，唯一目的是绕开工具链问题：
+#
+# `lto = false` —— rustc（stable，Windows 宿主）在 `--target aarch64-linux-android`
+# 下做 thin-LTO 会自己崩掉（exit 0xc0000005 STATUS_ACCESS_VIOLATION），
+# 崩点在编译 `suwayomi-db` 时的 rustc 进程内，与代码无关；关掉 LTO 即可稳定出包。
+#
+# 其余保持继承 release（含 `panic = "unwind"`：JNI 入口靠 `catch_unwind`
+# 把 panic 变成返回码而不是直接杀进程，改用 abort 会丢掉这个语义）。
+#
+# 用 `cargo build --profile android-release --target aarch64-linux-android`。
+[profile.android-release]
+inherits = "release"
+lto = false

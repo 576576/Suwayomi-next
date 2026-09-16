@@ -25,3 +25,11 @@ thiserror.workspace = true
 async-trait.workspace = true
 reqwest.workspace = true
 futures.workspace = true
+
+# TLS 后端按平台分流（reqwest 的 default-tls 在非 Windows 平台会拉 openssl-sys，
+# NDK 里没有 OpenSSL，交叉编译它得不偿失）：桌面保持原样，Android 用 rustls。
+[target.'cfg(not(target_os = "android"))'.dependencies]
+reqwest = { workspace = true, features = ["default-tls", "macos-system-configuration"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+reqwest = { workspace = true, features = ["rustls-tls"] }

@@ -44,8 +44,12 @@ fn main() {
     println!("cargo:rerun-if-env-changed=SUWAYOMI_VERSION_NAME");
 
     // Windows: embed the executable icon (generated from assets/images/icon.png).
-    #[cfg(windows)]
-    {
+    //
+    // 注意判据是**目标平台**而不是宿主机：`#[cfg(windows)]` 在这里指的是编译
+    // build script 的宿主机（交叉编译时宿主也是 Windows），会误在 Android 等
+    // 非 Windows 目标上调用 winres，报 "Can only compile resource file when
+    // target_env is gnu or msvc"。`CARGO_CFG_TARGET_OS` 由 cargo 按目标平台注入。
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let icon = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../assets/images/icon.ico");
         let mut res = winres::WindowsResource::new();

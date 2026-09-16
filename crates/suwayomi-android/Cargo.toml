@@ -1,0 +1,21 @@
+[package]
+name = "suwayomi-android"
+description = "JNI entry point for the Android host app (cdylib shipped in the APK's jniLibs)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Android 10+ 禁止 App 从私有目录 exec 可执行文件，所以 Android 上不能像桌面那样把
+# suwayomi-server 当子进程拉起：整份 server 以 cdylib 随 APK 分发，由宿主 App
+# `System.loadLibrary("suwayomi_android")` 后经 JNI 启动（见 docs/migration/ANDROID_IMPL.md）。
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+suwayomi-server = { path = "../suwayomi-server" }
+suwayomi-core = { path = "../suwayomi-core" }
+suwayomi-db = { path = "../suwayomi-db" }
+jni = "0.21"
+tokio.workspace = true
+tracing.workspace = true

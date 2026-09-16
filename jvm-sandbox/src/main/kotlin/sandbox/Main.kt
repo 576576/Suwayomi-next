@@ -19,10 +19,8 @@ import java.util.concurrent.Executors
  *   GET  /source/{id}/chapter/{chapterUrl}/pages -> [String urls]
  *   GET  /source/{id}/filters         -> [Filter json]
  *
- * Phase 5 skeleton: the HTTP contract, extension registry and process
- * lifecycle are wired; loading real extension JARs through the child-first
- * classloader (with the full eu.kanade.tachiyomi.source.* interface set and
- * AndroidCompat) is the next increment.
+ * 路由与 JSON 契约在 `extension-runtime` 共享；这里只负责**桌面侧**的两件事：
+ * 进程入口（读环境变量、扫 `extensions/` 目录）与 `com.sun.net.httpserver` 宿主。
  */
 fun main() {
     val port = System.getenv("SUWAYOMI_SANDBOX_PORT")?.toIntOrNull() ?: 4569
@@ -42,13 +40,10 @@ fun main() {
     val server = HttpServer.create(InetSocketAddress("127.0.0.1", port), 0)
     val router = Router(registry)
 
-    server.createContext("/health") { router.health(it) }
-    server.createContext("/jvm") { router.jvm(it) }
-    server.createContext("/extensions") { router.extensions(it) }
-    server.createContext("/sources") { router.sources(it) }
-    server.createContext("/reload") { router.reload(it) }
-    server.createContext("/inspect") { router.inspect(it) }
-    server.createContext("/source/") { router.sourceDispatch(it) }
+    // 所有路径都交给共享 Router 做整段匹配（/health、/jvm、/extensions、/sources、
+    // /reload、/inspect、/source/{id}/…）。用根 context 而不是逐个 createContext，
+    // 避免 `/sources` 与 `/source/` 的 longest-prefix 匹配歧义。
+    server.createContext("/") { exchange -> exchange.dispatch(router) }
     // 多线程 executor：默认单线程会把所有请求（含 /health）串行排队——某个
     // 扩展的网络调用阻塞（慢/超时最长 30s）时 health 也卡死，Rust 监视器
     // 误判 sandbox 挂掉而反复 kill/重启。线程池让慢请求独占线程，health 常驻可响应。
@@ -56,12 +51,3 @@ fun main() {
     server.start()
     println("suwayomi-jvm-sandbox listening on 127.0.0.1:$port (extensions dir: $extensionsDir, jar dir: $jarDir)")
 }
-
-fun jsonStr(s: String): String = "\"" + s
-    .replace("\\", "\\\\")
-    .replace("\"", "\\\"")
-    .replace("\n", "\\n")
-    .replace("\r", "\\r")
-    .replace("\t", "\\t") + "\""
-
-fun jsonOpt(s: String?): String = if (s == null) "null" else jsonStr(s)

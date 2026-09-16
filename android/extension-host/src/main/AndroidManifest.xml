@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- :extension-host 是库模块，没有自己的组件清单；查询扩展包的能力要声明在
+     最终宿主（:app）的清单里，因为 <queries> 是「谁查询谁声明」。 -->
+<manifest />

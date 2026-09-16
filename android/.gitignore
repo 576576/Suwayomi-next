@@ -1,0 +1,11 @@
+# Android 构建产物
+.gradle/
+.kotlin/
+build/
+local.properties
+
+# 由 scripts/build-rust.sh 生成，不进仓库
+app/src/main/jniLibs/
+
+# 由 WebUI 构建产物打出来的 zip，由 CI/打包脚本放入
+app/src/main/assets/webui.zip

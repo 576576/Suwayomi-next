@@ -255,7 +255,7 @@ class SourceDriver(private val src: LoadedSource) {
 
     /** Reads the source's filter list (`getFilterList` / `fetchFilterList`). */
     fun getFilters(): List<Map<String, Any?>> {
-        val obs = try {
+        val returned = try {
             callMethod(src.instance, "getFilterList")
         } catch (e: Exception) {
             System.err.println("sandbox: getFilterList failed: " + e.stackTraceToString())
@@ -266,8 +266,16 @@ class SourceDriver(private val src: LoadedSource) {
                 null
             }
         }
-        val list = awaitObservable(obs) ?: return emptyList()
-        val filters = readField(list, "list") as? List<Any> ?: emptyList()
+        // 老 lib 的 `fetchFilterList` 返回 rx.Observable<FilterList>，新 lib 的
+        // `getFilterList` 直接返回 FilterList —— 两者都可能出现，**不能无条件
+        // 当 Observable 解**：真机（ART）上 FilterList 走到 `as rx.Observable`
+        // 会抛 ClassCastException（`getList` 里已经有同样的判断，这里漏了）。
+        val list = (if (returned is rx.Observable<*>) awaitObservable(returned) else returned)
+            ?: return emptyList()
+        // FilterList 是 `{ list: List<Filter> }`；宽容一点，直接是 List 也接受。
+        val filters = readField(list, "list") as? List<Any>
+            ?: list as? List<Any>
+            ?: emptyList()
         return filters.map { filterToMap(it) }
     }
 }

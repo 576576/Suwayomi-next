@@ -330,6 +330,20 @@ impl ExtensionStoreService {
             index.entries()
         };
         let pool = self.db.pool();
+
+        // 沙盒实际加载了哪些包。`is_installed_for_local_dir` 只看 extensions/
+        // 目录里的文件，而 Android 上那个目录恒空（扩展装在系统里），刷新一次
+        // 仓库就会把所有已安装扩展冲成"未安装"—— 把沙盒的加载结果并进来。
+        // 沙盒不可用/查询失败时退化为纯文件判定（桌面原有语义）。
+        let loaded: std::collections::HashSet<String> = match &self.sandbox {
+            Some(f) => f
+                .list_extensions()
+                .await
+                .map(|v| v.into_iter().map(|e| e.pkg_name).collect())
+                .unwrap_or_default(),
+            None => std::collections::HashSet::new(),
+        };
+
         let mut n = 0usize;
         for e in entries {
             let content_warning = if e.nsfw { 1 } else { 0 };
@@ -357,7 +371,7 @@ impl ExtensionStoreService {
             .bind(e.version_code)
             .bind(&e.lang)
             .bind(content_warning)
-            .bind(e.is_installed_for_local_dir(&self.extensions_dir))
+            .bind(e.is_installed_for_local_dir(&self.extensions_dir) || loaded.contains(&e.pkg))
             .bind(e.obsolete)
             .execute(pool)
             .await
@@ -476,23 +490,30 @@ impl ExtensionStoreService {
         std::fs::write(&target, apk).map_err(|e| DomainError::Source(format!("write {file_name}: {e}")))?;
         fetcher.reload().await?;
         self.sync_sources().await?;
+        // 兜底（正常情况 sync_sources 已经建好行）：补上本地 APK 文件名，
+        // 后续 uninstall / upsert_index 都按它找文件。
         suwayomi_db::query(
             "INSERT INTO suwayomi.extension \
              (apk_name, name, pkg_name, version_name, version_code, lang, content_warning, is_installed, class_name) \
-             VALUES ($1, $2, $3, $4, 0, $5, 0, TRUE, $6) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, $8) \
              ON CONFLICT (pkg_name) DO UPDATE SET apk_name = EXCLUDED.apk_name, name = EXCLUDED.name, \
-               version_name = EXCLUDED.version_name, lang = EXCLUDED.lang, is_installed = TRUE, class_name = EXCLUDED.class_name",
+               version_name = EXCLUDED.version_name, version_code = EXCLUDED.version_code, lang = EXCLUDED.lang, \
+               is_installed = TRUE, class_name = EXCLUDED.class_name, \
+               content_warning = CASE WHEN suwayomi.extension.store_index_url IS NULL \
+                 THEN EXCLUDED.content_warning ELSE suwayomi.extension.content_warning END",
         )
         .bind(&file_name)
         .bind(&meta.name)
         .bind(&meta.pkg_name)
         .bind(&meta.version_name)
+        .bind(meta.version_code)
         .bind(&meta.lang)
+        .bind(meta.content_warning)
         .bind(&meta.class_name)
         .execute(self.db.pool())
         .await?;
-        // 新行 content_warning 恒 0；若该包已有源行（此前 sync_sources 注册过），
-        // 让它们继承扩展行标记
+        // 源行跟随扩展行的 content_warning（仓库索引优先，非仓库来源用 APK
+        // meta-data —— 见上面的 CASE）
         suwayomi_db::query(
             "UPDATE suwayomi.source AS s SET content_warning = e.content_warning \
              FROM suwayomi.extension AS e WHERE s.extension = e.id",
@@ -514,13 +535,74 @@ impl ExtensionStoreService {
         let _sources = fetcher.list_sources().await?;
         let exts = fetcher.list_extensions().await?;
         let pool = self.db.pool();
-        let mut n = 0usize;
 
-        // Registered pkg -> extension id. A jar sitting in the extensions dir
-        // that is NOT in the index (repo missing / hand-dropped / refresh
-        // failed) has no row here — the nested SELECT below would return NULL
-        // and violate the NOT NULL constraint, aborting the whole import
-        // transaction, so skip unregistered packages instead.
+        // ---- 1) 扩展表回写 -------------------------------------------------
+        //
+        // 这里必须能**建行**：桌面上 `extension` 表是仓库索引的镜像
+        // （refresh_stores 写入），手工丢进 extensions/ 的 APK 没有索引行；
+        // Android 更彻底 —— 扩展来自系统 PackageManager，压根没有仓库索引。
+        // 此前这里直接跳过没有索引行的包（怕 insert 撞 NOT NULL），表现为
+        // "沙盒里有源、server 侧扩展列表却是空的"。
+        //
+        // `store_index_url` 保持 NULL 即"非仓库来源"，用它区分权威来源：仓库
+        // 索引里的 nsfw 标记比 APK meta-data 可靠，所以只在非仓库行上用沙盒
+        // 报上来的 content_warning 覆盖。
+        for e in &exts {
+            suwayomi_db::query(
+                "INSERT INTO suwayomi.extension \
+                 (name, pkg_name, version_name, version_code, lang, content_warning, is_installed, class_name) \
+                 VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7) \
+                 ON CONFLICT (pkg_name) DO UPDATE SET \
+                   name = EXCLUDED.name, version_name = EXCLUDED.version_name, \
+                   version_code = EXCLUDED.version_code, lang = EXCLUDED.lang, \
+                   is_installed = TRUE, class_name = EXCLUDED.class_name, \
+                   content_warning = CASE WHEN suwayomi.extension.store_index_url IS NULL \
+                     THEN EXCLUDED.content_warning ELSE suwayomi.extension.content_warning END",
+            )
+            .bind(&e.name)
+            .bind(&e.pkg_name)
+            .bind(&e.version_name)
+            .bind(e.version_code)
+            .bind(&e.lang)
+            .bind(e.content_warning)
+            .bind(&e.class_name)
+            .execute(pool)
+            .await?;
+        }
+
+        // ---- 2) 已卸载的扩展回写未安装 -------------------------------------
+        //
+        // 只清"沙盒不再报告 **且** 本地也没有对应 APK 文件"的行：
+        //  - Android：扩展装在系统里，extensions/ 恒空，所以系统卸载后这里
+        //    是唯一的回写时机（走系统安装器的卸载我们收不到回调）。
+        //  - 桌面：文件还在就保持原样 —— upsert_index 按文件判定 is_installed，
+        //    在这里用"沙盒没加载"去清会和它来回打架（加载失败但文件仍在）。
+        //
+        // `list_extensions()` 失败会在这里之前 `?` 返回，所以能走到这一步就说明
+        // 列表是沙盒的真话（"空"= 确实一个都没有，不是查询失败）。
+        let loaded: std::collections::HashSet<&str> = exts.iter().map(|e| e.pkg_name.as_str()).collect();
+        let rows: Vec<(i32, String, Option<String>)> =
+            suwayomi_db::query_as("SELECT id, pkg_name, apk_name FROM suwayomi.extension")
+                .fetch_all(pool)
+                .await?;
+        let stale: Vec<i32> = rows
+            .into_iter()
+            .filter(|(_, pkg, apk)| {
+                !loaded.contains(pkg.as_str())
+                    && !apk.as_deref().is_some_and(|n| self.extensions_dir.join(n).exists())
+            })
+            .map(|(id, _, _)| id)
+            .collect();
+        for id in stale {
+            suwayomi_db::query("UPDATE suwayomi.extension SET is_installed = FALSE WHERE id = $1")
+                .bind(id)
+                .execute(pool)
+                .await?;
+        }
+
+        // ---- 3) 源行注册 ---------------------------------------------------
+        //
+        // 第 1 步之后每个沙盒扩展都有 extension 行，pkg -> id 必定命中。
         let registered: std::collections::HashMap<String, i32> =
             suwayomi_db::query_as::<(String, i32)>("SELECT pkg_name, id FROM suwayomi.extension")
                 .fetch_all(pool)
@@ -530,6 +612,7 @@ impl ExtensionStoreService {
 
         // The sandbox reports each extension together with the sources it
         // provides, so the pkg link is unambiguous here.
+        let mut n = 0usize;
         for e in &exts {
             let Some(&ext_id) = registered.get(&e.pkg_name) else { continue };
             for s in &e.sources {
@@ -548,20 +631,9 @@ impl ExtensionStoreService {
             }
         }
 
-        // refresh class_name/version for loaded extensions
-        for e in &exts {
-            suwayomi_db::query(
-                "UPDATE suwayomi.extension SET class_name = $1, version_name = $2 WHERE pkg_name = $3 AND is_installed",
-            )
-            .bind(&e.class_name)
-            .bind(&e.version_name)
-            .bind(&e.pkg_name)
-            .execute(pool)
-            .await?;
-        }
-
-        // 源行继承所属扩展的 content_warning（来源：仓库索引）。sync_sources 此前
-        // 从不写该列，源行恒为 0(Safe)，导致"图源列表隐藏 NSFW"过滤永远放行
+        // 源行继承所属扩展的 content_warning（来源：仓库索引，非仓库来源则是
+        // APK meta-data）。sync_sources 此前从不写该列，源行恒为 0(Safe)，
+        // 导致"图源列表隐藏 NSFW"过滤永远放行。
         suwayomi_db::query(
             "UPDATE suwayomi.source AS s SET content_warning = e.content_warning \
              FROM suwayomi.extension AS e WHERE s.extension = e.id",

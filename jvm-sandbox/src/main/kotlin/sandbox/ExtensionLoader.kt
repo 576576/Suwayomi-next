@@ -6,33 +6,21 @@
 //! version baked into each extension. Android stubs come from AndroidCompat
 //! (on the system classpath); third-party libs (okhttp/jsoup/gson/...) are
 //! provided by this process.
+//!
+//! **桌面专有**：APK→dex2jar→ASM 修复→自建 ClassLoader 这套管线只在桌面 JVM
+//! 上成立。Android 宿主直接在 ART 里加载扩展 APK 的 dex（见 `android/extension-host`），
+//! 不引用本文件。反射工具与 `LoadedSource` 已抽到 `extension-runtime` 共享。
 
 package sandbox
 
 import com.googlecode.dex2jar.tools.BaksmaliBaseDexExceptionHandler
 import com.googlecode.d2j.reader.MultiDexFileReader
 import com.googlecode.d2j.dex.Dex2jar
-import java.lang.reflect.InvocationTargetException
 import java.net.URL
 import java.net.URLClassLoader
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.Paths
 import java.util.concurrent.ConcurrentHashMap
-
-/** A loaded extension source, driven through reflection. */
-class LoadedSource(
-    val id: Long,
-    val name: String,
-    val lang: String,
-    val extensionId: Long,
-    val instance: Any,
-    val sourceCls: Class<*>,
-    val smangaCls: Class<*>,
-    val schapterCls: Class<*>,
-    val pageCls: Class<*>,
-    val mangasPageCls: Class<*>,
-)
 
 class ExtensionLoader(private val rootDir: Path, private val jarDir: Path) {
     private val loaders = ConcurrentHashMap<String, ClassLoader>()
@@ -119,191 +107,6 @@ class ExtensionLoader(private val rootDir: Path, private val jarDir: Path) {
         cache.remove(apk.toString())
         loaders.remove(apk.toString())
     }
-}
-
-// ---------------------------------------------------------------------------
-// reflective helpers
-// ---------------------------------------------------------------------------
-
-fun findMethod(cls: Class<*>, name: String, vararg paramTypes: Class<*>): java.lang.reflect.Method? =
-    try {
-        cls.getMethod(name, *paramTypes)
-    } catch (e: NoSuchMethodException) {
-        // `getMethod` requires exact parameter types. Extension methods often
-        // declare interfaces (SManga) while we hold the impl class (SMangaImpl),
-        // so fall back to name+arity and validate assignability.
-        cls.methods.firstOrNull { m ->
-            m.name == name &&
-                m.parameterCount == paramTypes.size &&
-                m.parameterTypes.indices.all { i -> m.parameterTypes[i].isAssignableFrom(paramTypes[i]) }
-        }
-    }
-
-fun callGetter(obj: Any, getterName: String): Any? {
-    val m = findMethod(obj.javaClass, getterName) ?: return null
-    return m.invoke(obj)
-}
-
-fun callMethod(obj: Any, name: String, vararg args: Any?): Any? {
-    val types = args.map { primitiveOf(it?.javaClass ?: Any::class.java) }.toTypedArray()
-    // try exact match first, then walk up to superclass methods
-    var cls: Class<*>? = obj.javaClass
-    while (cls != null) {
-        val m = findMethod(cls, name, *types)
-        if (m != null) {
-            return try {
-                m.invoke(obj, *args)
-            } catch (e: InvocationTargetException) {
-                // unwrap nested InvocationTargetException chains and log the
-                // full cause stack so the underlying failure is visible in
-                // sandbox.log instead of a bare "InvocationTargetException".
-                var cause: Throwable? = e
-                while (cause is InvocationTargetException && cause.cause != null && cause.cause !== cause) {
-                    cause = cause.cause
-                }
-                cause?.printStackTrace()
-                throw RuntimeException("$name failed: ${cause?.message ?: e}", cause)
-            }
-        }
-        cls = cls.superclass
-    }
-    // interface methods may be declared on a parent interface — try by name only
-    val any = obj.javaClass.methods.firstOrNull { it.name == name && it.parameterCount == args.size }
-        ?: throw RuntimeException("no method $name(${args.size} args) on ${obj.javaClass.name}")
-    return any.invoke(obj, *args)
-}
-
-/** Bridge continuation that turns a Kotlin suspend call into a blocking one. */
-class BridgeContinuation<T>(
-    private val ctx: kotlin.coroutines.CoroutineContext = kotlin.coroutines.EmptyCoroutineContext,
-) : kotlin.coroutines.Continuation<T> {
-    private val deferred = kotlinx.coroutines.CompletableDeferred<T>()
-    override val context: kotlin.coroutines.CoroutineContext get() = ctx
-    override fun resumeWith(result: Result<T>) {
-        result.fold(
-            onSuccess = { deferred.complete(it) },
-            onFailure = { deferred.completeExceptionally(it) },
-        )
-    }
-    fun awaitBlocking(): T = kotlinx.coroutines.runBlocking { deferred.await() }
-}
-
-/**
- * Calls a Kotlin suspend function `name(args..., Continuation)` reflectively and
- * blocks until it completes. Used for new keiyoushi extensions (lib 2.x) whose
- * sources implement the suspend `getPopularManga`/`getSearchManga`/… instead of
- * the legacy rx.Observable `fetch*` methods.
- */
-fun callSuspendMethod(obj: Any, name: String, vararg args: Any?): Any? {
-    val types = args.map { primitiveOf(it?.javaClass ?: Any::class.java) }.toTypedArray() +
-        arrayOf(kotlin.coroutines.Continuation::class.java)
-    val m = findMethod(obj.javaClass, name, *types)
-        ?: throw RuntimeException("no suspend method $name(${args.size}+1 args) on ${obj.javaClass.name}")
-    val cont = BridgeContinuation<Any?>()
-    val result = try {
-        val allArgs: Array<Any?> = arrayOf(*args, cont)
-        m.invoke(obj, *allArgs)
-    } catch (e: java.lang.reflect.InvocationTargetException) {
-        var cause: Throwable? = e
-        while (cause is java.lang.reflect.InvocationTargetException && cause.cause != null && cause.cause !== cause) {
-            cause = cause.cause
-        }
-        cause?.printStackTrace()
-        throw RuntimeException("$name failed: ${cause?.message ?: e}", cause)
-    }
-    return if (result === kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED) {
-        cont.awaitBlocking()
-    } else {
-        result
-    }
-}
-
-/** Maps a wrapper type to its primitive, if any (JVM methods use `int` etc.). */
-private fun primitiveOf(c: Class<*>): Class<*> = when (c) {
-    java.lang.Integer::class.java -> java.lang.Integer.TYPE
-    java.lang.Long::class.java -> java.lang.Long.TYPE
-    java.lang.Float::class.java -> java.lang.Float.TYPE
-    java.lang.Double::class.java -> java.lang.Double.TYPE
-    java.lang.Boolean::class.java -> java.lang.Boolean.TYPE
-    else -> c
-}
-
-/** Reflectively builds a tachiyomi SManga/SChapter/Page instance from a JSON-ish map. */
-fun buildModel(cls: Class<*>, fields: Map<String, Any?>): Any {
-    val ctor = try {
-        cls.getDeclaredConstructor()
-    } catch (e: NoSuchMethodException) {
-        // data class with all-default params still exposes a no-arg ctor in Kotlin 1.9+
-        val c = cls.declaredConstructors.firstOrNull { it.parameterCount == 0 }
-            ?: cls.declaredConstructors.minByOrNull { it.parameterCount }!!
-        c.isAccessible = true
-        return c.newInstance()
-    }
-    ctor.isAccessible = true
-    val obj = ctor.newInstance()
-    for ((k, v) in fields) {
-        setField(obj, k, v)
-    }
-    return obj
-}
-
-fun setField(obj: Any, name: String, value: Any?) {
-    val cls = obj.javaClass
-    // walk up the class hierarchy
-    var c: Class<*>? = cls
-    while (c != null) {
-        val f = try {
-            c.getDeclaredField(name)
-        } catch (e: NoSuchFieldException) {
-            null
-        }
-        if (f != null) {
-            f.isAccessible = true
-            val converted = convert(f.type, value)
-            f.set(obj, converted)
-            return
-        }
-        c = c.superclass
-    }
-    // Kotlin data classes compile fields as private + getter/setter — try the setter
-    val setterName = "set" + name.replaceFirstChar { it.uppercase() }
-    val setter = findMethod(cls, setterName) ?: return
-    setter.invoke(obj, convert(setter.parameterTypes[0], value))
-}
-
-fun convert(target: Class<*>, value: Any?): Any? {
-    if (value == null) return null
-    return when {
-        target.isInstance(value) -> value
-        target == java.lang.Long::class.java || target == java.lang.Long.TYPE -> (value as? Number)?.toLong() ?: 0L
-        target == java.lang.Integer::class.java || target == java.lang.Integer.TYPE -> (value as? Number)?.toInt() ?: 0
-        target == java.lang.Float::class.java || target == java.lang.Float.TYPE -> (value as? Number)?.toFloat() ?: 0f
-        target == java.lang.Double::class.java || target == java.lang.Double.TYPE -> (value as? Number)?.toDouble() ?: 0.0
-        target == java.lang.Boolean::class.java || target == java.lang.Boolean.TYPE -> (value as? Boolean) ?: false
-        else -> value.toString()
-    }
-}
-
-/** Kotlin data-class getter field read (e.g. `getUrl()`), walking the hierarchy. */
-fun readField(obj: Any?, name: String): Any? {
-    if (obj == null) return null
-    val getter = findMethod(obj.javaClass, "get" + name.replaceFirstChar { it.uppercase() })
-        ?: findMethod(obj.javaClass, "is" + name.replaceFirstChar { it.uppercase() })
-    if (getter != null) return try { getter.invoke(obj) } catch (e: Exception) { null }
-    var c: Class<*>? = obj.javaClass
-    while (c != null) {
-        val f = try {
-            c.getDeclaredField(name)
-        } catch (e: NoSuchFieldException) {
-            null
-        }
-        if (f != null) {
-            f.isAccessible = true
-            return try { f.get(obj) } catch (e: Exception) { null }
-        }
-        c = c.superclass
-    }
-    return null
 }
 
 /**

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider 暴露给系统安装器的路径。
+
+  只开 `cacheDir/apk-import/`（ExtensionInstaller 存放待安装副本的地方），
+  不开整个 cacheDir —— FileProvider 虽然只授权被请求的那一个 URI，但把范围
+  收窄到实际用到的目录没有任何代价。
+
+  URI 形状：content://<applicationId>.fileprovider/extensions/<文件名>
+-->
+<paths>
+    <cache-path name="extensions" path="apk-import/" />
+</paths>

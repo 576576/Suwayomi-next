@@ -103,6 +103,13 @@ pub struct SandboxExtension {
     pub version_name: String,
     #[serde(default)]
     pub class_name: String,
+    /// 沙盒侧解析出的 versionCode（Android 来自 `PackageInfo.longVersionCode`，
+    /// 桌面来自 APK manifest）；老沙盒不报该字段时为 0。
+    #[serde(default)]
+    pub version_code: i64,
+    /// 0 = Safe，1 = NSFW。来源是 APK manifest 的 `tachiyomi.extension.nsfw`。
+    #[serde(default)]
+    pub content_warning: i32,
     /// Sources this extension provides (id/name/lang) — links a sandbox
     /// source back to the extension package for registration.
     #[serde(default)]

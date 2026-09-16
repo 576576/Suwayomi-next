@@ -10,7 +10,7 @@
 | `release.yml` | **唯一入口**：推送 main → 自动 alpha；手动 dispatch → alpha/beta/release。负责算版本号、解析 WebUI 制品，然后 `uses: ./.github/workflows/build.yml` 构建，再用 `download-artifact` 收产物发布 Release。 |
 
 - 产物约定分两套，由 `build.yml` 的 `pack_mode` 表达（调用方按触发方式传入）：
-  `channel` = 手动发布（产物名带通道段，形态由 `pack_core` / `pack_jre` 决定）；
+  `channel` = 手动发布（产物名带通道段，`pack_jre` 决定是否另出一份 `+jre`）；
   `alpha` = 自动构建（产物名固定 `+jre`，两平台都捆 JRE）。
 - 因此 `build.yml` 里那些"看着多余"的分支（例如 `pack_mode` 的两条命名路径）**不要随手合并**——两条路径各自对应一个历史产物约定，产物名是用户可见的。
 - 手动触发的 run 标题本应由 prep 里那段 `curl PATCH` 改成 `Release {VER}`，但该请求没有注入 `GITHUB_TOKEN`（恒 401 被 `|| true` 吞掉），实际一直是默认标题。合并 CI 时原样保留以求行为一致；要修就补 `env: GH_TOKEN: <github.token>`（会让 run 标题开始变化，属于行为变更）。
@@ -54,29 +54,27 @@
 - **`+jre` 有两道闸**：入口比「宿主平台 vs 目标平台」，末尾核「产物 magic **+ 架构**」。只判 magic 拦不住同格式但错架构的产物（x64 的 jlink + aarch64 的 jmods 就会产出那种），装上就是 `UnsatisfiedLinkError`。自检代码在 `make-jre.sh` 的 `binary-probe` 标记块里，被 `.workbuddy/verify/check_jre_arch.sh` 整块抽出来单测（合成夹具 + CI 真产物夹具，共 28 项）。
 - **`jdk` 那一列是为什么**：Adoptium（Temurin）对 `windows/aarch64` **没有发布 JDK 25 的任何制品**（`jdk`/`jre`/`jmods` 全 404，该平台只到 JDK 21），而 `+jre` 必须有 jmods。Azul Zulu 的 `win_aarch64` JDK 归档自带 `jmods/`，所以 windows-arm64 的 `setup-java` 用 `distribution: zulu`；`make-jre.sh` 见到宿主 `$JAVA_HOME/jmods/` 有 `.jmod` 就直接用、完全不下载。其余平台仍走 Temurin + 下载 Adoptium 的 jmods 包。
 - **矩阵里每个桌面 target 都出托盘壳与 `bin/jvm-sandbox.jar`**（Windows x64+arm64 / Linux x64+arm64 / macOS x64+arm64）。Linux 侧因此无论架构都装同一套 webkit2gtk/appindicator 依赖；tray 有自己的 workspace 与 `target/`，各 runner 原生编译。Android 不在这个矩阵里。
-- 平台开关默认只勾 Windows x64 + Linux x64。
+- 平台开关默认只勾 Windows x64 + Linux x64，发布通道默认 `alpha`。
 
-## 产物形态（`-core` / `+jre`）
+## 产物形态（默认包 / `+jre`）
 
-手动 dispatch 还有两个**互相独立、可同时勾选**的形态开关（不是二选一）：
+手动 dispatch 只有一个形态开关：
 
 | 开关 | 默认 | 含义 |
 |---|---|---|
-| `pack_core` | ✅ 勾选 | `-core`：最小包，不打包 JRE。 |
-| `pack_jre` | ⬜ | `+jre`：在 `-core` 的内容之上追加对应架构的 JRE（jlink 裁剪）。 |
+| `pack_jre` | ⬜ | 额外的 `+jre` 包：在默认包内容之上追加对应架构的 JRE（jlink 裁剪）。 |
 
-命名：
+命名（**默认包不带形态后缀** —— 不打包 JRE 的那份就是基线产物）：
 
-| 模式 | `-core` | `+jre` |
+| 模式 | 默认包 | `+jre` |
 |---|---|---|
-| 手动（`channel`） | `Suwayomi-{VER}-{CH}-{TGT}-core.zip/.tar.gz` | `Suwayomi-{VER}-{CH}-{TGT}+jre.zip/.tar.gz` |
-| 自动（`alpha`） | —（自动构建不出 core 包） | `Suwayomi-{VER}-{TGT}+jre` |
+| 手动（`channel`） | `Suwayomi-{VER}-{CH}-{TGT}.zip/.tar.gz` | `Suwayomi-{VER}-{CH}-{TGT}+jre.zip/.tar.gz` |
+| 自动（`alpha`） | —（自动构建只出 `+jre`） | `Suwayomi-{VER}-{TGT}+jre` |
 | Android | `Suwayomi-{VER}[-{CH}]-android-arm64.apk` | —（跑系统 ART，不用 JRE） |
 
-- 只勾 `+jre` 也可以：`+jre` 包本身就是完整包（`-core` 的全部内容 + `jre/`）。
-- 两个都不勾会被 prep 拦下并报错（桌面/服务端目标会没有任何产物）。
+- 默认包**必然产出**、没有开关。早先那个 `-core` 后缀已废弃：它本来就只是"不带 JRE 的基线包"的代号，而基线包永远存在，给必然发生的事加后缀没有信息量。
 - 只勾 Android 时桌面矩阵为空数组，`build` job 直接跳过。
-- 归档格式：Windows 出 `.zip`，其余出 `.tar.gz`。**两者的归档布局一致**，都带顶层目录名（`Suwayomi-…/bin/…`）—— 用真实产物核对过：Windows 是 `Compress-Archive -Path <目录>`（会把目录本身收进归档），Linux/macOS 是 `tar -C dist`。`.workbuddy/verify/ci_pack_check.py` 里对这个差异有显式断言，将来想统一时先看那条用例。
+- 归档格式：Windows 出 `.zip`，其余出 `.tar.gz`。**两者的归档布局一致**，都带顶层目录名（`Suwayomi-…/bin/…`）—— 用真实产物核对过：Windows 是 `Compress-Archive -Path <目录>`（会把目录本身收进归档），Linux/macOS 是 `tar -C dist`。`.workbuddy/verify/ci_pack_check.py` 里有对应断言，将来想统一时先看那条用例。
 
 ## JRE 裁剪（`+jre` 用）
 
@@ -91,14 +89,14 @@
 - 模块白名单是**实测**出来的（14 个模块，含 `jdk.httpserver` —— 桌面沙盒自己的 HTTP 宿主，和 `jdk.crypto.ec` —— TLS 必需）。验证方式：用产出的运行时真跑 `jvm-sandbox.jar` 并加载真实扩展。刻意排除 `java.desktop`（AWT/ImageIO，约 11 MB 压缩后）：扩展跑的是 Android API。白名单与理由都写在脚本注释里。
 - `--include-locales=en,ja,zh` + `jdk.localedata`：只留这三种语言的 locale 数据。
 - 脚本会**强制校验宿主平台 = 目标平台**，不一致直接报错退出（宁可让 CI 明确失败，也不产出一个"装上去就 UnsatisfiedLinkError"的运行时）。
-- 不打包 JRE 的场合：`-core`、Android。桌面端 Linux 基础包历来也不捆（可自行装系统 OpenJDK 或取 `+jre` 包）。
+- 不打包 JRE 的场合：默认包、Android。桌面端 Linux 基础包历来也不捆（可自行装系统 OpenJDK 或取 `+jre` 包）。
 
 ## 产物与捆绑
 
 - **不再捆绑 Electron**：WebUI 桌面窗口由托盘经系统 WebView 打开（Win WebView2 / Linux WebKitGTK / macOS WKWebView），无 WebView 的环境托盘回退系统浏览器。
 - 桌面壳（Tauri 托盘）：**所有桌面 target 都出**（Windows / Linux x64+arm64 / macOS x64+arm64），Android 由独立的 `android` job 出 APK、不带桌面壳。各平台都是原生 runner 编译（tray 有自己的 workspace 与 `target/`）。
 - 扩展沙盒（`bin/jvm-sandbox.jar`）：**所有桌面 target 都带**（jar 是跨平台字节码，各 target 各自 gradle 构建）。server 跑扩展靠它，任何 target 都不能少。
-- 不打包 JRE 的场合：`-core`、Android。桌面端 Linux 基础包历来也不捆（可自行装系统 OpenJDK 或取 `+jre` 包），勾 `+jre` 即自带 `jre/`。
+- 不打包 JRE 的场合：默认包、Android。桌面端 Linux 基础包历来也不捆（可自行装系统 OpenJDK 或取 `+jre` 包），勾 `+jre` 即自带 `jre/`。
 
 ## Android 产物
 
@@ -124,7 +122,7 @@
 改 workflow 不要靠推上去试错（一轮矩阵十几分钟还污染 release 列表）。用：
 
 ```bash
-python .workbuddy/verify/ci_pack_check.py    # -core/+jre/Android/托盘与沙盒的验证（177 项）
+python .workbuddy/verify/ci_pack_check.py    # 基线包/+jre/Android/托盘与沙盒的验证（208 项）
 python .workbuddy/verify/ci_equiv.py         # 上一轮"合并两个 workflow"的等价性对照
 ```
 

@@ -78,7 +78,6 @@ crates/
   suwayomi-server/   服务端入口
 jvm-sandbox/         扩展沙盒（Kotlin：AndroidCompat + dex2jar + ChildFirstClassLoader）
 suwayomi-tray/       桌面壳（Tauri 2，独立 workspace，不进主 workspace；Windows/Linux）
-tools/h2-dump/       H2 → PostgreSQL 迁移工具（Kotlin）
 migrations/          SQL 迁移（含 pg-only/：SyncYomi 触发器）
 scripts/             CI/辅助脚本（resolve-webui.sh / unzip_any.py 等）
 assets/              图标与截图（images/、screenshots/）
@@ -142,7 +141,7 @@ Windows 手动构建 release 产物（`suwayomi-server.exe` + 托盘 `suwayomi.e
 
 - `docs/user-guide.md` — 用户指南（配置/备份/OPDS/Docker）
 - `docs/release.md` — 发布流程与 CI 约定
-- `docs/migration/MIGRATE.md` — 从 Kotlin 版迁移操作指南（h2-dump / 备份导入）
+- `docs/migration/MIGRATE.md` — 从 Kotlin 版迁移操作指南（Mihon 备份导入）
 - `docs/api/rest-endpoints-baseline.md` — REST v1 端点兼容基线
 - `docs/graphql/README.md` — GraphQL schema 基线说明
 

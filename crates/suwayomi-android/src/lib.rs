@@ -157,7 +157,6 @@ fn start_inner(
         } else {
             SandboxMode::External { base_url: sandbox_url }
         },
-        migrate_dir: None,
         shutdown: Some(shutdown_rx),
     };
 

@@ -1,36 +1,12 @@
 # 从 Kotlin 版迁移到 Suwayomi-next
 
 Kotlin 原版（Suwayomi/Tachidesk）使用 H2 数据库文件（JVM 专有格式，Rust 无法直接读取），
-数据目录内通常有 `tachidesk.mv.db`（或自定义文件名）。Rust 版提供两种迁移路径，按需选择。
+数据目录内通常有 `tachidesk.mv.db`（或自定义文件名）。Rust 版**不读取 H2 文件**，
+迁移走 Mihon 备份导入。
 
-## 路径 A：`--migrate`（推荐，完整保留）
+## 备份导入（Mihon .proto 备份）
 
-自动定位 H2 文件 → `tools/h2-dump` 导出为 PostgreSQL 脚本 → 导入当前后端 → 退出。
-库 / 章节 / 阅读进度 / 分类 / meta 全量保留。
-
-```bash
-# 1) 构建迁移工具（JDK 17+，首次需要）
-gradle -p tools/h2-dump build
-
-# 2) 执行迁移（数据写到默认的 SQLite 数据库，即 <数据目录>/suwayomi.db）
-suwayomi-server --migrate <kotlin-data-dir>
-# 或指定 h2-dump jar 路径：
-suwayomi-server --migrate <kotlin-data-dir> --h2-dump-jar <path>
-
-# 3) 正常启动即可
-suwayomi-server
-```
-
-- 迁移目标后端由 `SUWAYOMI_DB_BACKEND` / `SUWAYOMI_DATABASE_URL` 决定：
-  不设 → 本地 SQLite；`SUWAYOMI_DB_BACKEND=postgres` 或设置
-  `SUWAYOMI_DATABASE_URL` → 外部 PostgreSQL（`postgres://user:pass@host:5432/db`）。
-- 流程：定位 `<dir>/*.mv.db` → h2-dump 导出（按外键依赖序）→ 逐条导入 → 退出。
-- h2-dump 导入脚本幂等（先 DELETE 再 INSERT），重复执行安全。
-
-## 路径 B：备份导入（Mihon .proto 备份）
-
-Kotlin 版导出的 Mihon `.proto` 备份（gzip 体）可直接导入，适合只需要内容
-（库 + 进度）而不需要全部元数据的场景：
+在 Kotlin 版（或 Mihon App）里导出 `.tachibk` 备份，然后导入 Rust 版：
 
 ```bash
 # 校验（不落库）：
@@ -41,14 +17,17 @@ curl -X POST http://localhost:8090/api/v1/backup/import --data-binary @backup.ta
 
 导出（用于反向迁移或日常备份）：`GET /api/v1/backup/export`。
 
+导入目标后端由 `SUWAYOMI_DB_BACKEND` / `SUWAYOMI_DATABASE_URL` 决定：不设 → 本地
+SQLite（`<数据目录>/suwayomi.db`）；`SUWAYOMI_DB_BACKEND=postgres` 或设置
+`SUWAYOMI_DATABASE_URL` → 外部 PostgreSQL（`postgres://user:pass@host:5432/db`）。
+
 ## 相关环境变量
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `SUWAYOMI_H2_DUMP_JAR` | `tools/h2-dump/build/libs/h2-dump.jar` | `--migrate` 用的导出工具 jar |
-| `SUWAYOMI_SQLITE_PATH` | `<数据目录>/suwayomi.db` | SQLite 迁移目标文件 |
-| `SUWAYOMI_DB_BACKEND` | `sqlite` | 迁移目标后端（`sqlite` / `postgres`） |
-| `SUWAYOMI_DATABASE_URL` | （空） | PostgreSQL 迁移目标连接串 |
+| `SUWAYOMI_SQLITE_PATH` | `<数据目录>/suwayomi.db` | SQLite 数据库文件 |
+| `SUWAYOMI_DB_BACKEND` | `sqlite` | 后端（`sqlite` / `postgres`） |
+| `SUWAYOMI_DATABASE_URL` | （空） | PostgreSQL 连接串 |
 
 ## 更多迁移背景
 

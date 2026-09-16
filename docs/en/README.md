@@ -96,7 +96,6 @@ jvm-sandbox/         extension sandbox (Kotlin: AndroidCompat + dex2jar +
                      ChildFirstClassLoader)
 suwayomi-tray/       desktop shell (Tauri 2; separate workspace, not part of
                      the main workspace; Windows/Linux)
-tools/h2-dump/       H2 → PostgreSQL migration tool (Kotlin)
 migrations/          SQL migrations (incl. pg-only/: SyncYomi triggers)
 scripts/             CI/helper scripts (resolve-webui.sh / unzip_any.py, …)
 assets/              icons & screenshots (images/, screenshots/)

@@ -50,26 +50,6 @@ async fn main() -> anyhow::Result<()> {
 
     init_logging("info");
 
-    // `--migrate <kotlin-data-dir> [--h2-dump-jar <path>]`：H2 数据导入后退出（不起 HTTP）
-    let migrate_dir: Option<std::path::PathBuf> = {
-        let mut args = std::env::args().skip(1);
-        let mut dir = None;
-        while let Some(a) = args.next() {
-            match a.as_str() {
-                "--migrate" => dir = args.next().map(std::path::PathBuf::from),
-                "--h2-dump-jar" => {
-                    if let Some(p) = args.next() {
-                        // SAFETY: single-threaded arg parsing before any
-                        // other env access; this only sets one flag var.
-                        unsafe { std::env::set_var("SUWAYOMI_H2_DUMP_JAR", p) };
-                    }
-                }
-                _ => {}
-            }
-        }
-        dir
-    };
-
     // 扩展来源：`SUWAYOMI_SANDBOX_URL`（已运行的扩展宿主，如 Android 宿主 App）优先，
     // 其次本地 jvm-sandbox.jar（见 resolve_sandbox_jar 的发布布局），都没有则不接扩展。
     let sandbox = match std::env::var("SUWAYOMI_SANDBOX_URL") {
@@ -92,7 +72,6 @@ async fn main() -> anyhow::Result<()> {
         // SUWAYOMI_SQLITE_PATH）；Android 宿主显式传 SQLite 路径（App 里没有 env）
         db: None,
         sandbox,
-        migrate_dir,
         // 桌面没有「宿主」：靠 Ctrl+C 与 POST /api/v1/shutdown 关闭
         shutdown: None,
     };

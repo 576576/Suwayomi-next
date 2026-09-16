@@ -80,8 +80,6 @@ Suwayomi-next/
 │   ├── src/                          # Rust 侧：窗口管理、系统托盘、进程编排
 │   └── tauri.conf.json               # Tauri 配置（托盘菜单、单实例、开机自启）
 ├── migrations/                       # SQL 迁移（复刻 M0001–M0062 的净效果）
-├── tools/
-│   └── h2-dump/                      # Kotlin 小工具：H2 → PostgreSQL 数据导出（R1 决策）
 ├── tests/                            # 集成测试（HTTP/GraphQL 兼容性测试）
 ├── docs/                             # 用户文档（迁移自源仓库 docs/）
 └── MIGRATION_STATUS.md               # 逐文件迁移追踪表
@@ -158,7 +156,7 @@ suwayomi-server（入口，组合所有 crate）
 **数据库兼容策略**（详见 §3）：
 - **仅支持 PostgreSQL**（决策变更 2026-08-30）：全部表在 `suwayomi` schema，连接级 `search_path` 与 Kotlin `defaultSchema` 一致；SQL 统一 `?` 占位符 + 运行时转 `$1..`
 - 迁移执行器：兼容既有库的迁移状态表，可从旧版本库原地升级
-- **H2 文件无法被 Rust 直接读取** → 数据迁移走 Phase 7 的 `tools/h2-dump`（Kotlin 导出）或备份导入（风险点 R1）
+- **H2 文件无法被 Rust 直接读取** → 数据迁移走 Mihon 备份导入（风险点 R1）
 
 **交付物**：`suwayomi-core` 完整实现 + 单元测试（模型序列化 golden 测试、表结构 DDL 测试）
 
@@ -326,9 +324,7 @@ Rust 主进程 ── HTTP/JSON IPC ──► JVM 沙盒进程（Kotlin，保留
 **目标**：用户可从 Kotlin 版平滑迁移，Rust 版可发布。
 
 **任务**：
-- [ ] `tools/h2-dump`：Kotlin 小工具，读取既有 H2 文件数据库 → **导出为 PostgreSQL 导入脚本（R1 决策）**（保留原库只读，不破坏）
-- [ ] 备份导入路径：Rust 版支持导入 Kotlin 版导出的 Mihon `.proto` 备份（R1 补充路径）
-- [ ] `--migrate` CLI：指定 Kotlin 数据目录 → 自动迁移（经 h2-dump）并启动
+- [ ] 备份导入路径：Rust 版支持导入 Kotlin 版导出的 Mihon `.proto` 备份（R1 决策）
 - [ ] **Tauri 打包**：`suwayomi-tray` 构建 Windows/macOS/Linux 安装包；无头服务模式 Docker 镜像（参考 `scripts/bundler.sh`）
 - [ ] 用户文档（迁移自 `docs/*.md` 并补充 Rust 版说明）
 
@@ -376,9 +372,8 @@ Rust 主进程 ── HTTP/JSON IPC ──► JVM 沙盒进程（Kotlin，保留
 ### 3.3 H2 兼容（关键风险）
 
 H2 使用 JVM 专有 MVStore 文件格式，**Rust 侧无法直接读取**。兼容路径（三选一/组合）：
-1. `tools/h2-dump`（Kotlin 导出工具）→ SQLite/PG 文件（推荐，最平滑）
-2. 备份导入（Mihon `.proto`）→ 丢失阅读进度之外的部分次要数据（章节已下载状态等保留在备份内，可接受）
-3. 仅支持 PostgreSQL 原地切换（用户原用 PG 的场景）
+1. 备份导入（Mihon `.proto`）→ 丢失阅读进度之外的部分次要数据（章节已下载状态等保留在备份内，可接受）
+2. 仅支持 PostgreSQL 原地切换（用户原用 PG 的场景）
 
 → 详见风险 R1。
 
@@ -432,7 +427,7 @@ H2 使用 JVM 专有 MVStore 文件格式，**Rust 侧无法直接读取**。兼
 
 | 编号 | 风险/决策 | 等级 | 说明 | **决策结果（已确认）** |
 | --- | --- | --- | --- | --- |
-| **R1** | **H2 数据迁移路径** | 🔴 高 | H2 为 JVM 专有格式，Rust 无法直读，迁移必须经过工具/备份 | ✅ **提供导入工具，迁移到 PostgreSQL**：`tools/h2-dump`（Kotlin）导出 → PostgreSQL 导入脚本；Mihon 备份导入作为补充路径；SQLite 仍为全新部署默认后端 |
+| **R1** | **H2 数据迁移路径** | 🔴 高 | H2 为 JVM 专有格式，Rust 无法直读，迁移必须经过工具/备份 | ✅ **走 Mihon 备份导入**：Kotlin 版导出 `.tachibk` → `POST /api/v1/backup/import`；SQLite 为全新部署默认后端 |
 | **R2** | **扩展运行方案** | 🔴 高 | Mihon 扩展是 JVM 字节码，必须由 JVM 执行 | ✅ **保留 Mihon 扩展的 JVM 执行 + APK 转换**：jvm-sandbox 完整保留 AndroidCompat + dex2jar（APK→JAR）+ ChildFirstURLClassLoader 链路 |
 | **R3** | **桌面端功能裁剪** | 🟡 中 | CEF WebView、系统托盘、浏览器自动打开、App 自更新（`global/impl/*`、`server/util/CEFManager.kt` 等） | ✅ **移除 CEF，改用 Tauri 桌面壳**：`suwayomi-tray` 提供窗口 + 托盘；**补全系统托盘选项**（打开 WebUI / 打开数据目录 / 启动最小化到托盘 / 退出）；App 自更新走 Tauri updater 替代 |
 | **R4** | **GraphQL schema 生成差异** | 🟡 中 | Kotlin 反射生成 vs Rust 手写 | 以 introspection 基线 + `graphql-inspector` 自动化比对，杜绝漂移 |

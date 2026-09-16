@@ -34,15 +34,11 @@ cargo run --release -p suwayomi-server
 | `SUWAYOMI_SANDBOX_PORT` | `8091` | 沙盒 HTTP 端口 |
 | `SUWAYOMI_EXTENSIONS_DIR` | `./extensions` | 扩展 APK 目录（只放 APK） |
 | `SUWAYOMI_JAR_DIR` | `<extensions>/../bin/extensions` | dex2jar 转换产物 jar 目录 |
-| `SUWAYOMI_H2_DUMP_JAR` | `tools/h2-dump/build/libs/h2-dump.jar` | `--migrate` 用的导出工具 jar |
 
-## 从 Kotlin 版迁移（Phase 7）
+## 从 Kotlin 版迁移
 
-Kotlin 版使用 H2 数据库文件（JVM 专有格式，Rust 无法直读）。完整迁移操作指南见
-**`docs/migration/MIGRATE.md`**，支持两种路径：
-
-- 路径 A：`suwayomi-server --migrate <kotlin-data-dir>`（h2-dump 全量导出导入，推荐）
-- 路径 B：Mihon `.proto` 备份导入（`POST /api/v1/backup/import`）
+Kotlin 版使用 H2 数据库文件（JVM 专有格式，Rust 无法直读），迁移走 Mihon `.proto`
+备份导入（`POST /api/v1/backup/import`）。完整操作指南见 **`docs/migration/MIGRATE.md`**。
 
 ## 备份
 

@@ -267,64 +267,6 @@ async fn index(State(_s): State<AppState>) -> Result<String, StatusCode> {
     Ok(format!("Suwayomi (next) v{VERSION} — GraphQL at /api/graphql, REST at /api/v1, OPDS at /api/opds/v1.2"))
 }
 
-/// Phase 7: 定位 Kotlin H2 库，用 tools/h2-dump 导出并导入到当前后端
-async fn import_h2_data(db: &Db, data_dir: &std::path::Path) -> anyhow::Result<()> {
-    // 1) 定位 H2 文件
-    let h2_file = if data_dir.join("tachidesk.mv.db").exists() {
-        data_dir.join("tachidesk.mv.db")
-    } else {
-        let mut found = None;
-        for entry in std::fs::read_dir(data_dir)? {
-            let e = entry?;
-            let name = e.file_name().to_string_lossy().to_string();
-            if name.ends_with(".mv.db") {
-                found = Some(e.path());
-                break;
-            }
-        }
-        found.ok_or_else(|| anyhow::anyhow!("no *.mv.db found in {}", data_dir.display()))?
-    };
-    let h2_base = h2_file.to_string_lossy().trim_end_matches(".mv.db").to_string();
-    tracing::info!("h2 database found: {}", h2_file.display());
-
-    // 2) 定位 h2-dump jar
-    let jar = std::env::var("SUWAYOMI_H2_DUMP_JAR").ok().map(std::path::PathBuf::from).unwrap_or_else(|| {
-        std::path::PathBuf::from("tools/h2-dump/build/libs/h2-dump.jar")
-    });
-    if !jar.exists() {
-        anyhow::bail!(
-            "h2-dump jar not found at {} — build it with `gradle -p tools/h2-dump build` or set SUWAYOMI_H2_DUMP_JAR",
-            jar.display()
-        );
-    }
-
-    // 3) dump H2 -> SQL
-    let out_sql = std::env::temp_dir().join(format!("suwayomi-h2dump-{}.sql", std::process::id()));
-    let status = std::process::Command::new("java")
-        .arg("-jar")
-        .arg(&jar)
-        .arg(&h2_base)
-        .arg(&out_sql)
-        .status()?;
-    if !status.success() {
-        anyhow::bail!("h2-dump exited with {status}");
-    }
-    let sql = std::fs::read_to_string(&out_sql)?;
-    let _ = std::fs::remove_file(&out_sql);
-
-    // 4) 逐条执行（h2-dump 已按 FK 安全序导出）
-    let mut applied = 0usize;
-    for stmt in sql.split(';').map(str::trim).filter(|s| !s.is_empty() && !s.starts_with("--")) {
-        if stmt.is_empty() {
-            continue;
-        }
-        db.batch_execute(stmt).await?;
-        applied += 1;
-    }
-    tracing::info!("h2-dump import: {applied} statements applied");
-    Ok(())
-}
-
 /// 把持久化的 localSourcePath（setSettings 存的 global_meta）还原到进程内
 /// 本地图源根目录 override，自定义目录重启后仍生效
 async fn load_local_source_path(db: &Db) {
@@ -374,8 +316,6 @@ pub struct ServerOptions {
     /// 显式数据库设置；`None` → 按 `SUWAYOMI_*` 环境变量解析（桌面路径）。
     pub db: Option<DbSettings>,
     pub sandbox: SandboxMode,
-    /// `--migrate <dir>`：导入 Kotlin H2 数据后退出。
-    pub migrate_dir: Option<std::path::PathBuf>,
     /// 外部关闭信号（Android 宿主 `stop()` 用）。`None` → 只认 Ctrl+C 与
     /// `POST /api/v1/shutdown`。
     pub shutdown: Option<tokio::sync::watch::Receiver<bool>>,
@@ -395,7 +335,7 @@ pub fn init_logging(default_filter: &str) {
 
 /// 启动服务直到收到关闭信号（Ctrl+C、`POST /api/v1/shutdown`，或 Android 宿主的停止调用）。
 pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
-    let ServerOptions { config, data_dir, webui_dir, db: db_settings, sandbox, migrate_dir, shutdown } = opts;
+    let ServerOptions { config, data_dir, webui_dir, db: db_settings, sandbox, shutdown } = opts;
     tracing::info!(name = "Suwayomi (next)", version = VERSION, "starting");
     let settings = db_settings.unwrap_or_else(DbSettings::from_env);
     tracing::info!("database backend: {}", settings.describe());
@@ -420,13 +360,6 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
 
     // 还原持久化的 localSourcePath，重启后自定义本地图源目录仍生效
     load_local_source_path(&db).await;
-
-    // Phase 7: import the Kotlin H2 data and stop.
-    if let Some(dir) = migrate_dir {
-        import_h2_data(&db, &dir).await?;
-        tracing::info!("--migrate finished; run `suwayomi` normally to serve");
-        return Ok(());
-    }
 
     // 扩展来源（见 docs/migration/ANDROID_IMPL.md）：
     // * Spawn    —— 桌面默认：拉起 JVM 沙盒子进程（jar 由调用方解析好）

@@ -15,6 +15,9 @@
 #    需要"宿主自带"这条兜底是因为 **Adoptium 对 `windows/aarch64` 根本没发
 #    JDK 25 的任何制品**（jdk / jre / jmods 全 404，该平台只到 JDK 21），
 #    那个 target 只能换 Azul Zulu 装 JDK（归档自带 jmods/）。
+#    ⚠ 判断「有没有」时**不能拿 `$JAVA_HOME` 直接做路径名展开**：CI 注入的是
+#    Windows 形式（`C:\hostedtoolcache\…`），反斜杠会被 glob 当转义符吃掉，
+#    于是 Zulu 自带的 70 个 .jmod 被判成"没有"（run 35078586922）。见 `jmods_dir`。
 # 2. **jlink 不能跨平台生成镜像。** 实测：Windows 的 jlink + linux-aarch64 的
 #    jmods，产出的 `bin/java` 是 PE 头（`MZ`）加一堆 `.dll` —— jlink 的 launcher
 #    与原生库取自**宿主** JDK，不取自 `--module-path`。所以下面先校验宿主平台与
@@ -56,7 +59,7 @@ esac
 # 所以标记内必须是能独立 source 的纯函数（不读 TARGET_*、不赋全局变量），
 # 标记外也别往里塞调用。
 #
-# 这一组只做一件事：**读可执行文件的头，回答「它是什么格式、什么架构」**。
+# 这一组只做一件事：**问宿主 JDK「你是什么、能给 jlink 什么」**。
 # 两个用途共用同一张偏移表：
 #
 #   1. `host_arch` —— 判断宿主 JDK 的架构，用来在入口处挡「jlink 跨平台」。
@@ -70,6 +73,9 @@ esac
 #      所以直接读 `$JAVA_HOME/bin/java` 的头 —— 与 shell 的仿真状态、发行版的字段
 #      拼写都无关。读不到才退到 `release` 的 OS_ARCH，再退到 `uname -m`。
 #   2. `assert_native_artifact` —— 校验 jlink 产物确实是目标平台（见该函数注释）。
+#   3. `jmods_dir` —— 宿主 JDK 自带的 jmods 目录在哪（有就省掉一次 85MB 下载）。
+#      与上面共享的其实是同一条经验：**Windows 形式路径不能直接喂给 bash 的
+#      路径名展开**（详见该函数注释）。
 #
 # 各格式「架构」字段的偏移（都是小端）：
 #
@@ -209,6 +215,31 @@ host_os_resolved() {
   host_os
 }
 
+# 宿主 JDK 自带的 jmods 目录（**MSYS 形式**）；没有就返回 1。
+#
+# 为什么不直接 `compgen -G "$JAVA_HOME/jmods/*.jmod"`：CI 上 `setup-java` 注入的
+# `JAVA_HOME` 是 **Windows 形式**（`C:\hostedtoolcache\windows\Java_Zulu_jdk\
+# 25.0.4-7\arm64`），而反斜杠在 bash 的**路径名展开**里是转义符 ——
+#
+#   [[ -d "C:\hostedtoolcache\...\arm64/jmods" ]]            → 真（MSYS 会归一化）
+#   compgen -G "C:\hostedtoolcache\...\arm64/jmods/*.jmod"   → **假**（\U \J 被吃掉）
+#
+# 路径于是变成 `C:hostedtoolcachewindowsJava_Zulu_jdk25.0.4-7arm64/...`，永远匹配不到。
+# 症状极隐蔽：**本地永远复现不了**（本机 Temurin 25 按 JEP 493 不带 jmods，无论如何都
+# 走下载分支），只在 windows-arm64 上炸 —— Zulu 明明自带 70 个 .jmod，却被判成「没有」
+# → 去 Adoptium 下 → 该平台 404 → 退出 1（run 35078586922）。
+# 所以：先把 JAVA_HOME 归一化成 MSYS 路径再判，且用 `find` 而不是 glob
+# （find 的参数不经路径名展开，不受反斜杠影响）。
+jmods_dir() {
+  local home="${JAVA_HOME:-}" d
+  [[ -n "$home" ]] || return 1
+  command -v cygpath >/dev/null 2>&1 && home="$(cygpath -u "$home")"
+  d="$home/jmods"
+  [[ -d "$d" ]] || return 1
+  [[ -n "$(find "$d" -maxdepth 1 -name '*.jmod' -print -quit 2>/dev/null)" ]] || return 1
+  printf '%s' "$d"
+}
+
 # <<< binary-probe <<<
 
 HOST_OS="$(host_os_resolved)"
@@ -276,11 +307,10 @@ JMODS_ARCHIVE="$WORK/jmods-archive"
 # 顺带的好处：jmods 与 jlink 来自同一个 JDK，同发行版同版本，不会有跨发行版
 # 拼装带来的边角问题。
 MODULE_PATH=""
-LOCAL_JMODS="${JAVA_HOME:-}/jmods"
-if [[ -n "${JAVA_HOME:-}" && -d "$LOCAL_JMODS" ]] && compgen -G "$LOCAL_JMODS/*.jmod" > /dev/null; then
+if LOCAL_JMODS="$(jmods_dir)"; then
   MODULE_PATH="$(native "$LOCAL_JMODS")"
   echo "--- 用宿主 JDK 自带的 jmods（跳过下载）：$MODULE_PATH"
-  echo "    jmod 数量：$(ls -1 "$LOCAL_JMODS"/*.jmod | wc -l)"
+  echo "    jmod 数量：$(find "$LOCAL_JMODS" -maxdepth 1 -name '*.jmod' | wc -l | tr -d ' ')"
 else
   echo "--- 下载 $TARGET_OS/$TARGET_ARCH 的 jmods"
   curl -fSL --retry 3 -o "$JMODS_ARCHIVE" \

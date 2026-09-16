@@ -143,10 +143,13 @@ A9 的落地证据（模拟器 API 37 / x86_64）：
 **未覆盖**：图源联网抓取（`/source/{id}/manga`）在本机网络下不可达 —— 宿主与宿主机都连不上
 `nhentai.com`（`curl` 超时 / `ConnectException`），属环境限制而非代码问题，换一个可达图源即可补测。
 
-A8 的落地：`build.yml` 里新增独立的 `android` job（装 `platforms;android-37` 与钉死版本的
+A8 的落地：`build.yml` 里新增独立的 `android` job（装 `platforms;android-37.0` 与钉死版本的
 NDK 28.2 → `android/scripts/build-rust.sh` → WebUI 打进 assets → `:app:assembleRelease`），
 由 `release.yml` 的 `build_android_arm64` 开关控制，APK 命名并入 `pack_mode` 约定。
 release 签名支持从 secret 注入 keystore，没配则回退 debug key。详见 `docs/release.md`。
+
+> 平台包名是 `platforms;android-37.0` 而非 `platforms;android-37`：API 36.1 起 Google 改为
+> 「次版本号」命名，`36.1` / `37.0` / `37.1` / `37.2` 各自是独立包，裸 `android-37` 不存在。
 
 `ACTION_INSTALL_PACKAGE` 在 API 29 起废弃，且不带 `REQUEST_INSTALL_PACKAGES` 时直接被
 `FileUriExposedException` / 系统拒绝；实际用的是 `ACTION_VIEW` +

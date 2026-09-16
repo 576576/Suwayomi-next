@@ -208,14 +208,26 @@ if [[ ! -x "$JAVA_BIN" ]]; then
   exit 1
 fi
 
-# 交叉生成若混进来，这里能立刻发现（我们已在上游拦掉，这是兜底）
-if [[ "$TARGET_OS" = "windows" ]]; then
-  head -c 2 "$JAVA_BIN" | od -An -tx1 | grep -q "4d 5a" \
-    || { echo "错误：$JAVA_BIN 不是 Windows PE（平台判定错了？）" >&2; exit 1; }
-else
-  head -c 4 "$JAVA_BIN" | od -An -tx1 | grep -q "7f 45 4c 46" \
-    || { echo "错误：$JAVA_BIN 不是 ELF（平台判定错了？）" >&2; exit 1; }
-fi
+# 按 magic 判**目标平台**的可执行格式（只看"文件存在"不够）：
+#
+#    Windows  PE      4d 5a
+#    Linux    ELF     7f 45 4c 46
+#    macOS    Mach-O  cf fa ed fe（64 位小端）/ ca fe ba be（通用二进制）
+#
+# 三种都要认。早期版本只区分 PE 与 ELF，macOS 被并进 else 分支按 ELF 判 ——
+# 结果 macos-arm64 明明 jlink 成功产出了正确的 Mach-O，却在这里报
+# "不是 ELF（平台判定错了？）" 退出 1（run 35064160508）。
+MAGIC="$(head -c 4 "$JAVA_BIN" | od -An -tx1 | tr -d ' \n')"
+case "$TARGET_OS:$MAGIC" in
+  windows:4d5a*) ;;
+  linux:7f454c46) ;;
+  mac:cffaedfe|mac:cefaedfe|mac:cafebabe) ;;
+  *)
+    echo "错误：$JAVA_BIN 的 magic 是 ${MAGIC}，与目标平台 $TARGET_OS 不符（平台判定错了？）" >&2
+    echo "      Windows=4d5a(PE) / Linux=7f454c46(ELF) / macOS=cffaedfe(Mach-O)" >&2
+    exit 1
+    ;;
+esac
 
 SIZE="$(du -sh "$OUT" | cut -f1)"
 echo "    完成：$OUT（$SIZE）"

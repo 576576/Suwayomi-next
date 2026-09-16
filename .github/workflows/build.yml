@@ -246,6 +246,12 @@ jobs:
         # ubuntu runner 预装了 Android SDK（含 cmdline-tools），但 compileSdk 37 与
         # NDK 28.2 都不在预装列表里，按需补装。NDK 版本显式钉住并导出 ANDROID_NDK_HOME：
         # android/scripts/build-rust.sh 会优先用它，避免悄悄选中 runner 上的新版本。
+        #
+        # 平台包名是 **android-37.0**，不是 android-37 —— API 36.1 起 Google 改用
+        # "次版本号"命名（36.1 / 37.0 / 37.1 / 37.2 各自是独立包，而裸 android-37
+        # 不存在）。写成 android-37 会在这一步直接
+        # `Warning: Failed to find package 'platforms;android-37'` 退出 1。
+        # 三者都在稳定通道（channel-0），不需要 --channel。
         run: |
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
           {
@@ -255,7 +261,7 @@ jobs:
           } >> "$GITHUB_ENV"
           SDKMGR="$SDK/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKMGR" --licenses > /dev/null 2>&1 || true
-          "$SDKMGR" --install "platforms;android-37" "ndk;28.2.13676358"
+          "$SDKMGR" --install "platforms;android-37.0" "ndk;28.2.13676358"
       - name: 交叉编译 Rust server（cdylib）
         # 产出 android/app/src/main/jniLibs/arm64-v8a/libsuwayomi_android.so
         run: bash android/scripts/build-rust.sh

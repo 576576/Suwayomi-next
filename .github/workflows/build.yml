@@ -4,12 +4,11 @@ name: Build
 # 调用方 release.yml 负责算版本号、解析 WebUI 制品、创建 Release；本文件只负责把包做出来。
 #
 # pack_mode 对应合并前两个 workflow 各自的产物约定：
-#   channel —— 手动发布：产物名带通道段 Suwayomi-{VER}-{CH}-{TGT}，再按选项追加形态
-#              后缀：pack_core → `-core`（不打包 JRE），pack_jre → `+jre`（在 -core
-#              的内容之上追加裁剪后的 JRE）。两者互相独立、可同时选中。
-#   alpha   —— 推送自动构建：产物名 Suwayomi-{VER}-{TGT}+jre，Windows/Linux 都捆 JRE
-#              （自动构建没有交互选项，固定 core=false / jre=true）。
-# Android 由独立的 android job 构建，产出 APK，**不参与** -core/+jre 这组选项。
+#   channel —— 手动发布：产物名带通道段 Suwayomi-{VER}-{CH}-{TGT}。默认包（不打包 JRE）
+#              必然产出；pack_jre 勾上时另出 `+jre`（在默认包内容之上追加裁剪后的 JRE）。
+#   alpha   —— 推送自动构建：只出 +jre 一份（名 Suwayomi-{VER}-{TGT}+jre，Windows/Linux
+#              都捆 JRE），不出基线包 —— 与旧 Auto build 的产物集逐字一致。
+# Android 由独立的 android job 构建，产出 APK，**不参与** +jre 这组选项。
 # 通道语义 / 版本规则 / 捆绑细节见 docs/release.md。
 
 on:
@@ -39,13 +38,8 @@ on:
         description: 桌面/服务端构建矩阵 include 数组（JSON 字符串，不含 Android；可为空数组）
         required: true
         type: string
-      pack_core:
-        description: 产出 -core 包（最小形态，不打包 JRE）
-        required: false
-        type: boolean
-        default: true
       pack_jre:
-        description: 产出 +jre 包（在 -core 内容之上追加 jlink 裁剪出的 JRE，见 scripts/make-jre.sh）
+        description: 是否额外产出 +jre 包（在默认包内容之上追加 jlink 裁剪出的对应架构 JRE，见 scripts/make-jre.sh）
         required: false
         type: boolean
         default: false
@@ -133,17 +127,17 @@ jobs:
           IS_WIN="false"
           [ "${{ runner.os }}" = "Windows" ] && IS_WIN="true"
 
-          # 产物基名（两套约定见文件头 pack_mode）；形态后缀在下面按选项追加
+          # 产物基名（两套约定见文件头 pack_mode）
           if [ "$MODE" = "alpha" ]; then
             BASE="Suwayomi-${VER}-${TGT}"
           else
             BASE="Suwayomi-${VER}-${CH}-${TGT}"
           fi
 
-          # 先把与形态无关的载荷铺到暂存目录（这就是 `-core` 的全部内容），
-          # 之后按需复制成 -core / +jre 两份，避免重复下载 WebUI、重复 gradle。
+          # 暂存目录本身就是「默认包」（不打包 JRE 的那份，必然产出）；
+          # +jre 包在它基础上复制一份再追加 JRE，避免重复下载 WebUI、重复 gradle。
           STAGE="dist/${BASE}"
-          rm -rf "$STAGE" "dist/${BASE}-core" "dist/${BASE}+jre"
+          rm -rf "$STAGE" "dist/${BASE}+jre"
           mkdir -p "$STAGE/bin"
           cp "$BIN" "$STAGE/bin/"
 
@@ -184,10 +178,12 @@ jobs:
           }
 
           ARTIFACTS=""
-          if [ "${{ inputs.pack_core }}" = "true" ]; then
-            CORE="dist/${BASE}-core"
-            cp -r "$STAGE" "$CORE"
-            pack_dir "$CORE"
+          # alpha（推送自动构建）与旧 Auto build 的产物集一致：只出 +jre 一份。
+          # channel（手动发布）出基线包 —— 它就是「必然产出」的那份，没有开关。
+          BASE_PACK="true"
+          [ "$MODE" = "alpha" ] && BASE_PACK="false"
+          if [ "$BASE_PACK" = "true" ]; then
+            pack_dir "$STAGE"
             ARTIFACTS="$ARCHIVE"
           fi
           if [ "${{ inputs.pack_jre }}" = "true" ]; then
@@ -201,8 +197,9 @@ jobs:
           fi
           rm -rf "$STAGE"
 
+          # 兜底：alpha 模式又没勾 +jre（正常不会发生，release.yml 硬编码 jre=true）
           if [ -z "$ARTIFACTS" ]; then
-            echo "::error::-core 与 +jre 都没勾选，没有任何产物可出"
+            echo "::error::没有任何产物可出（pack_mode=$MODE jre=${{ inputs.pack_jre }}）"
             exit 1
           fi
 
@@ -308,7 +305,7 @@ jobs:
           TGT="android-arm64"
 
           # 与桌面产物同一套命名约定（见文件头）：alpha 无通道段，手动带通道段。
-          # Android 不打包 JRE，所以没有 -core/+jre 形态后缀。
+          # Android 不打包 JRE，所以没有 +jre 形态后缀。
           if [ "$MODE" = "alpha" ]; then
             NAME="Suwayomi-${VER}-${TGT}"
           else

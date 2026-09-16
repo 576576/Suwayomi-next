@@ -2,7 +2,7 @@ name: Release
 
 # 发布 CI（唯一入口，合并了旧的 release.yml 与 release-alpha.yml）：
 #   - 推送 main   → 自动构建 alpha（windows-x64 + linux-x64，均捆绑 JRE），行为同旧 Auto build
-#   - 手动 dispatch → alpha / beta / release（通道 + 目标复选 + 形态复选）
+#   - 手动 dispatch → alpha / beta / release（通道 + 目标复选 + 可选 +jre）
 # 所有编译与打包委托给可复用工作流 .github/workflows/build.yml；本文件只负责
 # 算版本号、解析 WebUI 制品、把构建结果发布成 Release。
 # 通道语义 / 版本规则 / 产物命名 / WebUI 分流等背景见 docs/release.md。
@@ -13,16 +13,16 @@ on:
   workflow_dispatch:
     inputs:
       channel:
-        description: 发布通道（alpha/beta/release）
+        description: 发布通道
         type: choice
         options: [alpha, beta, release]
-        default: release
+        default: alpha
       build_windows_x64:
         description: Windows x64
         type: boolean
         default: true
       build_windows_arm64:
-        description: Windows arm64（windows-11-arm runner）
+        description: Windows arm64
         type: boolean
         default: false
       build_linux_x64:
@@ -42,19 +42,15 @@ on:
         type: boolean
         default: false
       build_android_arm64:
-        description: Android arm64（APK；扩展跑系统 ART，不打包 JRE）
+        description: Android arm64
         type: boolean
         default: false
-      pack_core:
-        description: 产物形态 -core（最小包，不打包 JRE）
-        type: boolean
-        default: true
       pack_jre:
-        description: 产物形态 +jre（在 -core 内容之上追加对应架构的裁剪 JRE）
+        description: 额外产出 +jre 包
         type: boolean
         default: false
       version_count:
-        description: 版本计数（留空用提交数；预发布验证用）
+        description: 版本计数
         type: string
         default: ''
 
@@ -81,7 +77,6 @@ jobs:
       count: ${{ steps.out.outputs.count }}
       tag: ${{ steps.out.outputs.tag }}
       prerelease: ${{ steps.out.outputs.prerelease }}
-      pack_core: ${{ steps.out.outputs.pack_core }}
       pack_jre: ${{ steps.out.outputs.pack_jre }}
       android_arm64: ${{ steps.out.outputs.android_arm64 }}
       # WebUI 制品在 prep 解析一次、所有 target 复用（避免各架构拉到不同构建）
@@ -101,7 +96,6 @@ jobs:
             PACK_MODE="channel"
             CHANNEL="${{ github.event.inputs.channel }}"
             COUNT="${{ github.event.inputs.version_count }}"
-            PACK_CORE="${{ github.event.inputs.pack_core }}"
             PACK_JRE="${{ github.event.inputs.pack_jre }}"
             ANDROID="${{ github.event.inputs.build_android_arm64 }}"
 
@@ -116,18 +110,16 @@ jobs:
             # 防御：input 缺失时 github.event.inputs.X 渲染成**空串**（不是 "false"），
             # 统一兜成 false —— 下游都只跟字符串 'true' 比较，但输出里留个明确的
             # false 比留空串好排查。
-            PACK_CORE="${PACK_CORE:-false}"
             PACK_JRE="${PACK_JRE:-false}"
             ANDROID="${ANDROID:-false}"
           else
             # 推送 main：自动 alpha，固定 windows-x64 + linux-x64（均捆绑 JRE）。
-            # 自动构建没有交互界面，所以形态是固定的 core=false / jre=true —— 与
-            # 旧 Auto build 的产物名 Suwayomi-{VER}-{TGT}+jre 逐字一致。
+            # 自动构建没有交互界面，所以形态固定为 jre=true —— 与旧 Auto build 的
+            # 产物名 Suwayomi-{VER}-{TGT}+jre 逐字一致。
             FLOW="auto"
             PACK_MODE="alpha"
             CHANNEL="alpha"
             COUNT=""
-            PACK_CORE="false"
             PACK_JRE="true"
             ANDROID="false"
             SEL="windows-x64 linux-x64"
@@ -183,11 +175,6 @@ jobs:
             exit 1
           fi
           # 只勾了 Android 时 SEL 为空 —— build.yml 的矩阵 job 会跳过，这是合法的
-          if [ -n "$SEL" ] && [ "$PACK_CORE" != "true" ] && [ "$PACK_JRE" != "true" ]; then
-            echo "::error::-core 与 +jre 都没勾选，桌面/服务端目标没有任何产物可出"
-            exit 1
-          fi
-
           {
             echo "flow=$FLOW"
             echo "channel=$CHANNEL"
@@ -198,12 +185,11 @@ jobs:
             echo "count=$COUNT"
             echo "tag=$TAG"
             echo "prerelease=$PRE"
-            echo "pack_core=$PACK_CORE"
             echo "pack_jre=$PACK_JRE"
             echo "android_arm64=$ANDROID"
           } >> "$GITHUB_OUTPUT"
           echo "$FLOW 发布: $CHANNEL $VER_NAME (code $VER_CODE, commits $COUNT) -> $TAG"
-          echo "   targets=[$SEL] android=$ANDROID core=$PACK_CORE jre=$PACK_JRE pack_mode=$PACK_MODE"
+          echo "   targets=[$SEL] android=$ANDROID jre=$PACK_JRE pack_mode=$PACK_MODE"
 
           # 动态更新 workflow run 标题（版本号在 shell 内算出，run-name 拿不到）。
           # 注：这里没有把 GITHUB_TOKEN 注入 env，${GITHUB_TOKEN} 恒为空 → 请求 401 被 || true 吞掉，
@@ -245,7 +231,6 @@ jobs:
       count: ${{ needs.prep.outputs.count }}
       webui_url: ${{ needs.prep.outputs.webui_url }}
       targets: ${{ needs.prep.outputs.targets }}
-      pack_core: ${{ needs.prep.outputs.pack_core == 'true' }}
       pack_jre: ${{ needs.prep.outputs.pack_jre == 'true' }}
       android_arm64: ${{ needs.prep.outputs.android_arm64 == 'true' }}
     # **必须显式继承**：`workflow_call` 的被调工作流默认**拿不到**调用方的 secret，
@@ -277,12 +262,7 @@ jobs:
           TAG: ${{ needs.prep.outputs.tag }}
           VER: ${{ needs.prep.outputs.version_name }}
           CH: ${{ needs.prep.outputs.channel }}
-          CODE: ${{ needs.prep.outputs.version_code }}
-          COUNT: ${{ needs.prep.outputs.count }}
           PRE: ${{ needs.prep.outputs.prerelease }}
-          CORE: ${{ needs.prep.outputs.pack_core }}
-          JRE: ${{ needs.prep.outputs.pack_jre }}
-          ANDROID: ${{ needs.prep.outputs.android_arm64 }}
           WEBUI_TAG: ${{ needs.prep.outputs.webui_tag }}
           WEBUI_KIND: ${{ needs.prep.outputs.webui_kind }}
         run: |
@@ -297,11 +277,7 @@ jobs:
               artifacts/* \
               --title "Suwayomi $VER (alpha)" \
               --notes "## Suwayomi $VER · alpha
-          - versionName: $VER
-          - versionCode: $CODE
-          - commits: $COUNT
-          - bundled WebUI: \`$WEBUI_TAG\`（最新构建）
-          - 产物: windows-x64 + linux-x64，均含 server + 桌面壳 + 裁剪后的 Temurin JRE 25（+jre）" \
+          - bundled WebUI: \`$WEBUI_TAG\`（最新构建）" \
               --prerelease \
               --generate-notes
             exit 0
@@ -311,17 +287,14 @@ jobs:
             stable) WEBUI_DESC="最新正式 release" ;;
             *)      WEBUI_DESC="最新构建（预发布）" ;;
           esac
+          # 发布说明只留下载者需要的信息：捆绑的 WebUI 版本（别处看不到），以及各形态
+          # 产物的差别。版本号/提交数在 tag 与 changelog 里，通道在标题里，均不再重复。
           gh release create "$TAG" \
             artifacts/* \
             --title "Suwayomi $VER ($CH)" \
             --notes "## Suwayomi $VER · $CH
-          - versionName: $VER
-          - versionCode: $CODE
-          - commits: $COUNT
-          - channel: $CH（手动触发）
-          - bundled WebUI: \`$WEBUI_TAG\`（$WEBUI_DESC）
-          - prerelease: $PRE（beta 计作正式发布）
-          - 产物形态：\`-core\` = 最小包（不打包 JRE）；\`+jre\` = 在 -core 内容之上追加对应架构的 JRE（jlink 裁剪，体积约为完整 JRE 的 1/5）。本次 core=$CORE jre=$JRE
-          - Android：勾选时另出 \`-android-arm64\` 的 APK（扩展跑系统 ART，不打包 JRE）。本次 android=$ANDROID" \
+          - bundled WebUI: \`$WEBUI_TAG\` — $WEBUI_DESC
+          - 产物形态：默认包不打包 JRE，\`+jre\` 包额外含对应架构的裁剪 JRE（jlink）
+          - Android：\`-android-arm64\` APK（扩展跑系统 ART，不打包 JRE）" \
             --prerelease="$PRE" \
             --generate-notes

@@ -115,7 +115,13 @@ echo "--- 下载 $TARGET_OS/$TARGET_ARCH 的 jmods"
 curl -fSL --retry 3 -o "$JMODS_ARCHIVE" \
   "https://api.adoptium.net/v3/binary/latest/25/ga/$TARGET_OS/$TARGET_ARCH/jmods/hotspot/normal/eclipse"
 
-"$PY" - "$JMODS_ARCHIVE" "$WORK/jmods" <<'PY'
+# `PYTHONUTF8=1`（Python 3.7+ 的 UTF-8 模式）+ `PYTHONIOENCODING` 一起强制 Python
+# 按 UTF-8 编码 stdout/stderr：Windows 上这两个流被重定向时走 **locale 编码**
+# （英文 runner 是 cp1252、中文机器是 cp936），而下面这段内联脚本会打中文
+# （"jmod 数量：…"），实测在 windows-latest 上直接
+# `UnicodeEncodeError: 'charmap' codec can't encode characters in position 9-11`
+# 退出 1。bash 自己的中文输出本来就是 UTF-8，这样两边才一致。
+PYTHONUTF8=1 PYTHONIOENCODING=utf-8 "$PY" - "$JMODS_ARCHIVE" "$WORK/jmods" <<'PY'
 import sys, tarfile, zipfile, pathlib
 arc, dest = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
 dest.mkdir(parents=True, exist_ok=True)

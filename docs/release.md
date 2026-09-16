@@ -49,6 +49,9 @@
 
 - **每个 target 的 runner 必须与目标同架构**：`+jre` 用 jlink 生成，而 **jlink 不能跨平台生成运行时**（实测：Windows 的 jlink + linux-aarch64 的 jmods，产出的 `bin/java` 是 PE 头加一堆 `.dll` —— launcher 与原生库取自宿主 JDK）。所以 linux-arm64 用 arm64 runner（原生编译，顺带不再需要交叉工具链），x64 的 macOS 用 `macos-15-intel`。
 - `macos-13` 已被 GitHub 下线，x64 macOS 现为 `macos-15-intel`；Windows arm64 用 `windows-11-arm`（公开预览，公共仓库免费不限量），该镜像自带 VS 2022 + Windows SDK 26100（`build.rs` 嵌图标要的 `rc.exe`）与 Git for Windows，`shell: bash` 可直接用。
+- **判定平台一律用 `runner.os`，不要拿矩阵 runner 标签比字面量**：Windows 的标签不止 `windows-latest`（现在还有 `windows-11-arm`），`matrix.os == "windows-latest"` 这类写法在加第二个 Windows target 时必然踩空。
+- **`uname -m` 在 `windows-11-arm` 上会撒谎**：镜像确实是原生 arm64、装的也是货真价实的 `win_aarch64` JDK，但 runner 上的 **Git for Windows 是 x64 版**，MSYS 的 `uname -m` 因此报 `x86_64`。`make-jre.sh` 的「宿主架构必须等于目标架构」这道闸因此误判过一次（run 35074440661，jlink 都没来得及启动）。现在宿主架构**优先读 `$JAVA_HOME/bin/java` 的可执行文件头**（与产物自检同一套偏移表），再退到 `release` 的 `OS_ARCH`，最后才是 `uname -m`。
+- **`+jre` 有两道闸**：入口比「宿主平台 vs 目标平台」，末尾核「产物 magic **+ 架构**」。只判 magic 拦不住同格式但错架构的产物（x64 的 jlink + aarch64 的 jmods 就会产出那种），装上就是 `UnsatisfiedLinkError`。自检代码在 `make-jre.sh` 的 `binary-probe` 标记块里，被 `.workbuddy/verify/check_jre_arch.sh` 整块抽出来单测（合成夹具 + CI 真产物夹具，共 28 项）。
 - **`jdk` 那一列是为什么**：Adoptium（Temurin）对 `windows/aarch64` **没有发布 JDK 25 的任何制品**（`jdk`/`jre`/`jmods` 全 404，该平台只到 JDK 21），而 `+jre` 必须有 jmods。Azul Zulu 的 `win_aarch64` JDK 归档自带 `jmods/`，所以 windows-arm64 的 `setup-java` 用 `distribution: zulu`；`make-jre.sh` 见到宿主 `$JAVA_HOME/jmods/` 有 `.jmod` 就直接用、完全不下载。其余平台仍走 Temurin + 下载 Adoptium 的 jmods 包。
 - **矩阵里每个桌面 target 都出托盘壳与 `bin/jvm-sandbox.jar`**（Windows x64+arm64 / Linux x64+arm64 / macOS x64+arm64）。Linux 侧因此无论架构都装同一套 webkit2gtk/appindicator 依赖；tray 有自己的 workspace 与 `target/`，各 runner 原生编译。Android 不在这个矩阵里。
 - 平台开关默认只勾 Windows x64 + Linux x64。
@@ -73,8 +76,7 @@
 - 只勾 `+jre` 也可以：`+jre` 包本身就是完整包（`-core` 的全部内容 + `jre/`）。
 - 两个都不勾会被 prep 拦下并报错（桌面/服务端目标会没有任何产物）。
 - 只勾 Android 时桌面矩阵为空数组，`build` job 直接跳过。
-- 归档格式：Windows 出 `.zip`，其余出 `.tar.gz`。
-- **归档布局的既有差异**：Linux/macOS 用 `tar -C dist`，包内有顶层目录名（`Suwayomi-…/bin/…`）；Windows 用 `Compress-Archive`，目录**内容**直接进 zip 根（`bin/…`）。合并 CI 之前就是这样，本轮没动；`.workbuddy/verify/ci_pack_check.py` 里对这个差异有显式断言，将来想统一时先看那条用例。
+- 归档格式：Windows 出 `.zip`，其余出 `.tar.gz`。**两者的归档布局一致**，都带顶层目录名（`Suwayomi-…/bin/…`）—— 用真实产物核对过：Windows 是 `Compress-Archive -Path <目录>`（会把目录本身收进归档），Linux/macOS 是 `tar -C dist`。`.workbuddy/verify/ci_pack_check.py` 里对这个差异有显式断言，将来想统一时先看那条用例。
 
 ## JRE 裁剪（`+jre` 用）
 

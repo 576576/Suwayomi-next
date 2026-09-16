@@ -21,6 +21,10 @@
 #    目标平台一致，不一致直接报错退出：宁可让 CI 明确失败，也不要产出一个
 #    "看着打包成功、装上就 UnsatisfiedLinkError" 的运行时。
 #    （CI 因此给每个平台分配**原生** runner，见 build.yml 的 target mapping。）
+#    两道闸：入口处比「宿主 vs 目标」，末尾处核「产物 magic + 架构」
+#    （`assert_native_artifact`，被 .workbuddy/verify/check_jre_arch.sh 单测）。
+#    **宿主架构必须问 JDK 二进制，不能问 `uname -m`** —— Windows ARM64 runner 上的
+#    Git Bash 是 x64 版，`uname -m` 报 x86_64。详见下面 `binary-probe` 区块的头注释。
 # 3. **模块白名单是实测出来的**，不是抄的，见 MODULES 处的注释。
 #
 # 裁剪效果（Windows x64 实测）：完整 Temurin JRE 25 解压 180MB / 压缩 58MB；
@@ -47,8 +51,107 @@ case "$TARGET_ARCH" in
   *) echo "错误：arch 应为 x64|aarch64，收到 '$TARGET_ARCH'" >&2; exit 2 ;;
 esac
 
-# ---- 宿主平台（用来做上面第 2 条的校验） --------------------------------
+# >>> binary-probe >>>
+# 下面这组函数被 .workbuddy/verify/check_jre_arch.sh 按标记**整块抽出去**单测，
+# 所以标记内必须是能独立 source 的纯函数（不读 TARGET_*、不赋全局变量），
+# 标记外也别往里塞调用。
+#
+# 这一组只做一件事：**读可执行文件的头，回答「它是什么格式、什么架构」**。
+# 两个用途共用同一张偏移表：
+#
+#   1. `host_arch` —— 判断宿主 JDK 的架构，用来在入口处挡「jlink 跨平台」。
+#      不能问 shell：`uname -m` 只有在「shell 自己跑在原生架构上」时才等于宿主 CPU
+#      架构，而这个前提在 Windows ARM64 runner 上不成立 —— 镜像是原生 arm64、装的
+#      也是货真价实的 `win_aarch64` JDK（zulu25.36.15-ca-jdk25.0.4-win_aarch64），
+#      但 runner 上的 **Git for Windows 是 x64 版**，MSYS 的 `uname -m` 于是一路报
+#      `x86_64`。**windows-arm64 首次真跑就死在这条自检上**（run 35074440661），
+#      jlink 根本没来得及启动。真正决定 jlink 产出平台的是它拿来链接的那个 JDK
+#      （launcher 与原生库取自 `$JAVA_HOME` 自身的 jmods，不取自 `--module-path`），
+#      所以直接读 `$JAVA_HOME/bin/java` 的头 —— 与 shell 的仿真状态、发行版的字段
+#      拼写都无关。读不到才退到 `release` 的 OS_ARCH，再退到 `uname -m`。
+#   2. `assert_native_artifact` —— 校验 jlink 产物确实是目标平台（见该函数注释）。
+#
+# 各格式「架构」字段的偏移（都是小端）：
+#
+#    Windows  PE      magic 4d 5a → e_lfanew@0x3c(u32) → machine@e_lfanew+4(u16)
+#                                   0x8664 = 34404  = x64
+#                                   0xaa64 = 43620  = arm64
+#    Linux    ELF     magic 7f 45 4c 46 → e_machine@0x12(u16)
+#                                   62  = EM_X86_64 / 183 = EM_AARCH64
+#    macOS    Mach-O  magic cf fa ed fe（64 位小端）→ cputype@4(u32)
+#                                   0x01000007 = 16777223 = x86_64
+#                                   0x0100000c = 16777228 = arm64
+#             Mach-O  magic ca fe ba be（通用二进制）→ 无单一 cputype
 
+# 读 little-endian 整数（od 只按字节吐十进制，自己按位拼回去）。
+read_le() { # <文件> <偏移> <字节数>
+  od -An -tu1 -j "$2" -N "$3" "$1" | tr -s ' \n' '\n' | grep -v '^$' \
+    | awk -v n="$3" '{a[NR]=$1} END{v=0; for(i=n;i>=1;i--) v=v*256+a[i]; print v}'
+}
+
+binary_magic() { # <文件> -> 8 位十六进制
+  head -c 4 "$1" | od -An -tx1 | tr -d ' \n'
+}
+
+# 格式分类。**三种都要认**：早期版本只区分 PE 与 ELF，macOS 被并进 else 分支按 ELF
+# 判 —— 结果 macos-arm64 明明 jlink 成功产出了正确的 Mach-O，却在这里报
+# "不是 ELF（平台判定错了？）" 退出 1（run 35064160508）。
+binary_format() { # <文件> -> pe|elf|macho|macho-fat|unknown
+  case "$(binary_magic "$1")" in
+    4d5a*)            echo pe ;;
+    7f454c46)         echo elf ;;
+    cffaedfe|cefaedfe) echo macho ;;
+    cafebabe)         echo macho-fat ;;
+    *)                echo unknown ;;
+  esac
+}
+
+# 架构（**格式已知**才有意义；fat 二进制返回 unknown）。
+# 与 `binary_format` 拆开、共用偏移表，是为了让「宿主探测」和「产物校验」读到
+# 完全相同的判据 —— 两处各写一份 0x8664 迟早会漂移。
+binary_arch() { # <文件> -> x64|aarch64|unknown
+  local bin="$1" m
+  case "$(binary_format "$bin")" in
+    pe)    m="$(read_le "$bin" "$(( $(read_le "$bin" 60 4) + 4 ))" 2)"
+           case "$m" in 34404) echo x64 ;; 43620) echo aarch64 ;; *) echo unknown ;; esac ;;
+    elf)   m="$(read_le "$bin" 18 2)"
+           case "$m" in 62) echo x64 ;; 183) echo aarch64 ;; *) echo unknown ;; esac ;;
+    macho) m="$(read_le "$bin" 4 4)"
+           case "$m" in 16777223) echo x64 ;; 16777228) echo aarch64 ;; *) echo unknown ;; esac ;;
+    *)     echo unknown ;;
+  esac
+}
+
+# 校验 jlink 产物 <1> 是不是给 <2:os> / <3:arch> 用的。
+# 只看 magic 会被**同格式但错架构**的产物骗过去（x64 的 jlink + aarch64 的 jmods 就
+# 会产出这种 PE/ELF/Mach-O），装上就是 UnsatisfiedLinkError —— 所以格式与架构都要核。
+assert_native_artifact() {
+  local bin="$1" want_os="$2" want_arch="$3"
+  local fmt arch
+  fmt="$(binary_format "$bin")"
+  case "$want_os:$fmt" in
+    windows:pe|linux:elf|mac:macho) ;;
+    mac:macho-fat)
+      echo "    注意：$bin 是通用二进制（fat），跳过架构自检" >&2
+      return 0 ;;
+    windows:*)
+      echo "错误：$bin 不是 PE（magic=$(binary_magic "$bin")），但目标是 windows。" >&2
+      return 1 ;;
+    linux:*)
+      echo "错误：$bin 不是 ELF（magic=$(binary_magic "$bin")），但目标是 linux。" >&2
+      return 1 ;;
+    mac:*)
+      echo "错误：$bin 不是 Mach-O（magic=$(binary_magic "$bin")），但目标是 mac。" >&2
+      echo "      Windows=4d5a(PE) / Linux=7f454c46(ELF) / macOS=cffaedfe(Mach-O)" >&2
+      return 1 ;;
+  esac
+  arch="$(binary_arch "$bin")"
+  if [[ "$arch" != "$want_arch" ]]; then
+    echo "错误：$bin 是 $fmt 但架构是 $arch，与目标 $want_arch 不符（jlink 交叉生成了？）。" >&2
+    return 1
+  fi
+  return 0
+}
 host_os() {
   case "$(uname -s)" in
     Linux)                     echo linux ;;
@@ -57,7 +160,35 @@ host_os() {
     *)                         echo unknown ;;
   esac
 }
+
+# `$JAVA_HOME/release` 里 OS_ARCH 的写法各发行版不同：
+# Temurin win-x64 是 `x86_64`、Linux 上是 `amd64`、Zulu win-arm64 是 `aarch64`。
+# 两种写法都要认，别只匹配一种（那会让自检在某个发行版上悄悄退化成 uname）。
+jdk_release_field() { # <字段名>
+  local rel="${JAVA_HOME:-}/release"
+  [[ -f "$rel" ]] || return 1
+  sed -n "s/^$1=\"\{0,1\}\([^\"]*\)\"\{0,1\}$/\1/p" "$rel" | head -1
+}
+
 host_arch() {
+  local a
+  # 1) 宿主 JDK 的 java 二进制头（最准：那正是 jlink 会产出/依赖的架构）
+  if [[ -n "${JAVA_HOME:-}" ]]; then
+    local jb
+    for jb in "$JAVA_HOME/bin/java" "$JAVA_HOME/bin/java.exe"; do
+      [[ -f "$jb" ]] || continue
+      a="$(binary_arch "$jb")"
+      [[ "$a" != unknown ]] && { echo "$a"; return; }
+    done
+  fi
+  # 2) JDK 的 release 元数据
+  if a="$(jdk_release_field OS_ARCH)" && [[ -n "$a" ]]; then
+    case "$a" in
+      x86_64|amd64)  echo x64;     return ;;
+      aarch64|arm64) echo aarch64; return ;;
+    esac
+  fi
+  # 3) 最后才问 shell
   case "$(uname -m)" in
     x86_64|amd64)  echo x64 ;;
     aarch64|arm64) echo aarch64 ;;
@@ -65,7 +196,22 @@ host_arch() {
   esac
 }
 
-HOST_OS="$(host_os)"
+host_os_resolved() {
+  # OS_NAME 比 `uname -s` 更贴近 jlink 的产出平台（同为 JDK 自带元数据）。
+  local n
+  if n="$(jdk_release_field OS_NAME)" && [[ -n "$n" ]]; then
+    case "$n" in
+      Windows) echo windows; return ;;
+      Linux)   echo linux;   return ;;
+      Darwin|Mac*) echo mac; return ;;
+    esac
+  fi
+  host_os
+}
+
+# <<< binary-probe <<<
+
+HOST_OS="$(host_os_resolved)"
 HOST_ARCH="$(host_arch)"
 
 if [[ "$HOST_OS" != "$TARGET_OS" || "$HOST_ARCH" != "$TARGET_ARCH" ]]; then
@@ -240,26 +386,7 @@ if [[ ! -x "$JAVA_BIN" ]]; then
   exit 1
 fi
 
-# 按 magic 判**目标平台**的可执行格式（只看"文件存在"不够）：
-#
-#    Windows  PE      4d 5a
-#    Linux    ELF     7f 45 4c 46
-#    macOS    Mach-O  cf fa ed fe（64 位小端）/ ca fe ba be（通用二进制）
-#
-# 三种都要认。早期版本只区分 PE 与 ELF，macOS 被并进 else 分支按 ELF 判 ——
-# 结果 macos-arm64 明明 jlink 成功产出了正确的 Mach-O，却在这里报
-# "不是 ELF（平台判定错了？）" 退出 1（run 35064160508）。
-MAGIC="$(head -c 4 "$JAVA_BIN" | od -An -tx1 | tr -d ' \n')"
-case "$TARGET_OS:$MAGIC" in
-  windows:4d5a*) ;;
-  linux:7f454c46) ;;
-  mac:cffaedfe|mac:cefaedfe|mac:cafebabe) ;;
-  *)
-    echo "错误：$JAVA_BIN 的 magic 是 ${MAGIC}，与目标平台 $TARGET_OS 不符（平台判定错了？）" >&2
-    echo "      Windows=4d5a(PE) / Linux=7f454c46(ELF) / macOS=cffaedfe(Mach-O)" >&2
-    exit 1
-    ;;
-esac
+assert_native_artifact "$JAVA_BIN" "$TARGET_OS" "$TARGET_ARCH" || exit 1
 
 SIZE="$(du -sh "$OUT" | cut -f1)"
 echo "    完成：$OUT（$SIZE）"

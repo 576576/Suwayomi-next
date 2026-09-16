@@ -144,6 +144,10 @@ pub struct SettingsType {
     pub basic_auth_password: String,
     #[graphql(deprecation = "Removed - prefer authUsername")]
     pub basic_auth_username: String,
+    /// 数据（存储位置）目录；留空 = 用默认目录。改动重启后生效。
+    /// **数据库文件不在这里** —— 它在 `<安装根>/db`（见
+    /// `suwayomi_db::config::default_db_dir`），所以这个目录可以随便换而不会把设置本身弄丢。
+    pub data_dir: String,
     pub database_password: String,
     pub database_type: GraphqlDatabaseType,
     pub database_url: String,
@@ -261,6 +265,7 @@ impl SettingsType {
             basic_auth_enabled: basic_auth,
             basic_auth_password: c.auth_password.clone(),
             basic_auth_username: c.auth_username.clone(),
+            data_dir: String::new(),
             database_password: c.database_password.clone(),
             database_type: c.database_type.into(),
             database_url: c.database_url.clone(),
@@ -369,6 +374,7 @@ impl SettingsType {
         self.backup_path = ov_str(o, "backupPath", self.backup_path.clone());
         self.backup_ttl = ov_i32(o, "backupTTL", self.backup_ttl);
         self.backup_time = ov_str(o, "backupTime", self.backup_time.clone());
+        self.data_dir = ov_str(o, "dataDir", self.data_dir.clone());
         self.database_password = ov_str(o, "databasePassword", self.database_password.clone());
         self.database_type = match o.get("databaseType").and_then(Value::as_str) {
             Some("H2") => GraphqlDatabaseType::H2,

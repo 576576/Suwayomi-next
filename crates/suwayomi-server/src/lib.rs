@@ -267,29 +267,58 @@ async fn index(State(_s): State<AppState>) -> Result<String, StatusCode> {
     Ok(format!("Suwayomi (next) v{VERSION} — GraphQL at /api/graphql, REST at /api/v1, OPDS at /api/opds/v1.2"))
 }
 
+/// 读 `global_meta['settings']` 里那个 JSON blob（WebUI 的 setSettings 写的）。
+/// 不存在或不是对象 → `None`。
+async fn load_settings_blob(db: &Db) -> Option<serde_json::Value> {
+    let Ok(Some((value,))) =
+        suwayomi_db::query_as::<(String,)>("SELECT value FROM global_meta WHERE meta_key = 'settings'")
+            .fetch_optional(db.pool())
+            .await
+    else {
+        return None;
+    };
+    serde_json::from_str::<serde_json::Value>(&value).ok()
+}
+
+/// blob 里的非空字符串设置项。
+fn blob_str(json: &serde_json::Value, key: &str) -> Option<String> {
+    json.get(key).and_then(|v| v.as_str()).map(str::trim).filter(|p| !p.is_empty()).map(str::to_owned)
+}
+
 /// 把持久化的 localSourcePath（setSettings 存的 global_meta）还原到进程内
 /// 本地图源根目录 override，自定义目录重启后仍生效
 async fn load_local_source_path(db: &Db) {
-    let Ok(Some((value,))) = suwayomi_db::query_as::<(String,)>(
-        "SELECT value FROM global_meta WHERE meta_key = 'settings'",
-    )
-    .fetch_optional(db.pool())
-    .await
-    else {
+    let Some(json) = load_settings_blob(db).await else {
         return;
     };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&value) else {
+    let Some(p) = blob_str(&json, "localSourcePath") else {
         return;
     };
-    let Some(p) = json
-        .get("localSourcePath")
-        .and_then(|v| v.as_str())
-        .filter(|p| !p.is_empty())
-    else {
-        return;
-    };
-    suwayomi_domain::source::local::set_local_source_root(Some(std::path::PathBuf::from(p)));
+    suwayomi_domain::source::local::set_local_source_root(Some(std::path::PathBuf::from(&p)));
     tracing::info!("local source path from settings: {p}");
+}
+
+/// 持久化的数据目录（WebUI「数据与存储」页的「存储位置」）。
+///
+/// 设置里显式填了就**以它为准**（`SUWAYOMI_DATA_DIR` / `ServerOptions::data_dir`
+/// 退居默认值）——否则 WebUI 里改完重启就白改了：桌面壳总会塞一个
+/// `SUWAYOMI_DATA_DIR` 进来，env 优先的话这个设置项就永远是死的。
+///
+/// 这一项之所以能存进库里，是因为**数据库文件不在数据目录下**
+/// （见 `suwayomi_db::config::default_db_dir`）。
+async fn load_data_dir_setting(db: &Db, fallback: std::path::PathBuf) -> std::path::PathBuf {
+    let Some(dir) = load_settings_blob(db).await.and_then(|json| blob_str(&json, "dataDir")) else {
+        return fallback;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    if dir != fallback {
+        tracing::info!(
+            "data dir from settings: {} (overrides {})",
+            dir.display(),
+            fallback.display()
+        );
+    }
+    dir
 }
 
 /// 扩展（源）来源。
@@ -360,6 +389,11 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
 
     // 还原持久化的 localSourcePath，重启后自定义本地图源目录仍生效
     load_local_source_path(&db).await;
+
+    // 存储位置（dataDir）同样从设置里读 —— 数据库文件不在这个目录下，所以它
+    // 可以被随便改而不影响设置本身（见 suwayomi_db::config::default_db_dir）
+    let data_dir = load_data_dir_setting(&db, data_dir).await;
+    tracing::info!("data dir: {}", data_dir.display());
 
     // 扩展来源（见 docs/migration/ANDROID_IMPL.md）：
     // * Spawn    —— 桌面默认：拉起 JVM 沙盒子进程（jar 由调用方解析好）

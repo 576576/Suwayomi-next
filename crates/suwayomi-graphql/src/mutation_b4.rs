@@ -710,6 +710,23 @@ pub struct ClearCookiesAndCachePayload {
     pub client_mutation_id: Option<String>,
 }
 
+/// 「重建下载索引」：强制用磁盘上的 `<数据目录>/downloads/**` 重新对账数据库。
+///
+/// 与 `reconcile_downloads` 同一套逻辑（启动时也会跑一次），差别只是这里由用户
+/// 手动触发 —— 手工往下载目录里丢了 CBZ、或换了存储位置之后，不用重启就能重新
+/// 扫出来。没有开关参数：它只读磁盘、只补/修下载标记，不删用户文件。
+#[derive(InputObject)]
+pub struct RebuildDownloadIndexInput {
+    pub client_mutation_id: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct RebuildDownloadIndexPayload {
+    pub client_mutation_id: Option<String>,
+    /// 本次扫描到的章节归档数（含此前已经索引过的）。
+    pub chapters: i32,
+}
+
 #[derive(InputObject)]
 pub struct ResetSettingsInput {
     pub client_mutation_id: Option<String>,
@@ -809,6 +826,7 @@ pub struct PartialSettingsTypeInput {
     #[graphql(name = "backupTTL")]
     pub backup_ttl: Option<i32>,
     pub backup_time: Option<String>,
+    pub data_dir: Option<String>,
     pub database_password: Option<String>,
     pub database_type: Option<GraphqlDatabaseType>,
     pub database_url: Option<String>,
@@ -1730,6 +1748,23 @@ impl MutationRootB4 {
         })
     }
 
+    /// 「存储管理 → 重建下载索引」：用磁盘重新对账下载，返回扫到的章节数。
+    async fn rebuild_download_index(
+        &self,
+        ctx: &Context<'_>,
+        input: RebuildDownloadIndexInput,
+    ) -> async_graphql::Result<RebuildDownloadIndexPayload> {
+        let state = ctx.data::<GraphQLState>()?;
+        let chapters = suwayomi_domain::download::reconcile_downloads(&state.db, &state.data_dir)
+            .await
+            .map_err(async_graphql::Error::from)?;
+        tracing::info!("download index rebuilt: {chapters} chapter(s)");
+        Ok(RebuildDownloadIndexPayload {
+            client_mutation_id: input.client_mutation_id,
+            chapters: chapters as i32,
+        })
+    }
+
     async fn clear_cookies_and_cache(
         &self,
         _ctx: &Context<'_>,
@@ -1957,6 +1992,7 @@ fn partial_settings_to_json(s: &PartialSettingsTypeInput) -> serde_json::Value {
     put!("backupPath", s.backup_path.clone());
     put!("backupTTL", s.backup_ttl);
     put!("backupTime", s.backup_time.clone());
+    put!("dataDir", s.data_dir.clone());
     put!("databasePassword", s.database_password.clone());
     put!("databaseType", s.database_type.map(|v| match v {
         GraphqlDatabaseType::H2 => "H2",

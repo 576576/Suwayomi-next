@@ -149,7 +149,9 @@ fn start_inner(
         },
         data_dir: data_dir.clone(),
         webui_dir,
-        // Android 上没有环境变量可用，数据库设置显式给出：固定为数据目录下的 SQLite 文件
+        // Android 上没有环境变量可用，数据库设置显式给出：固定在**启动时传入的**应用私有
+        // 目录下（不走 suwayomi-db 的目录解析，因此不会随 WebUI「存储位置」设置漂移）。
+        // 设置里的 dataDir 只改运行期数据目录（下载/本地图源/自动备份），库的位置不变。
         db: Some(DbSettings::sqlite(data_dir.join("suwayomi.db"))),
         // Android 不用 jvm-sandbox：由宿主 App 同进程提供扩展宿主（回环 HTTP）
         sandbox: if sandbox_url.trim().is_empty() {

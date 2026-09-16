@@ -45,10 +45,14 @@ fn main() {
 
     // Windows: embed the executable icon (generated from assets/images/icon.png).
     //
-    // 注意判据是**目标平台**而不是宿主机：`#[cfg(windows)]` 在这里指的是编译
-    // build script 的宿主机（交叉编译时宿主也是 Windows），会误在 Android 等
-    // 非 Windows 目标上调用 winres，报 "Can only compile resource file when
-    // target_env is gnu or msvc"。`CARGO_CFG_TARGET_OS` 由 cargo 按目标平台注入。
+    // 两道判据缺一不可，各管一件事：
+    // - `#[cfg(windows)]` 管**编译**：build script 的 cfg 是**宿主**平台，而 winres 就
+    //   挂在 `[target.'cfg(windows)'.build-dependencies]` 下（同样按宿主求值）。少了
+    //   它，Linux 宿主上这段代码会被照常编译，直接报 `cannot find crate winres`。
+    // - `CARGO_CFG_TARGET_OS` 管**运行**：它是**目标**平台。Windows 宿主交叉编译到
+    //   Android 时前者为真而这里必须跳过 —— 否则 winres 会报 "Can only compile
+    //   resource file when target_env is gnu or msvc"。
+    #[cfg(windows)]
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let icon = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../assets/images/icon.ico");

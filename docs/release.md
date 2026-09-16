@@ -51,7 +51,7 @@
 - `macos-13` 已被 GitHub 下线，x64 macOS 现为 `macos-15-intel`；Windows arm64 用 `windows-11-arm`（公开预览，公共仓库免费不限量），该镜像自带 VS 2022 + Windows SDK 26100（`build.rs` 嵌图标要的 `rc.exe`）与 Git for Windows，`shell: bash` 可直接用。
 - **判定平台一律用 `runner.os`，不要拿矩阵 runner 标签比字面量**：Windows 的标签不止 `windows-latest`（现在还有 `windows-11-arm`），`matrix.os == "windows-latest"` 这类写法在加第二个 Windows target 时必然踩空。
 - **`uname -m` 在 `windows-11-arm` 上会撒谎**：镜像确实是原生 arm64、装的也是货真价实的 `win_aarch64` JDK，但 runner 上的 **Git for Windows 是 x64 版**，MSYS 的 `uname -m` 因此报 `x86_64`。`make-jre.sh` 的「宿主架构必须等于目标架构」这道闸因此误判过一次（run 35074440661，jlink 都没来得及启动）。现在宿主架构**优先读 `$JAVA_HOME/bin/java` 的可执行文件头**（与产物自检同一套偏移表），再退到 `release` 的 `OS_ARCH`，最后才是 `uname -m`。
-- **`+jre` 有两道闸**：入口比「宿主平台 vs 目标平台」，末尾核「产物 magic **+ 架构**」。只判 magic 拦不住同格式但错架构的产物（x64 的 jlink + aarch64 的 jmods 就会产出那种），装上就是 `UnsatisfiedLinkError`。自检代码在 `make-jre.sh` 的 `binary-probe` 标记块里，被 `.workbuddy/verify/check_jre_arch.sh` 整块抽出来单测（合成夹具 + CI 真产物夹具，共 35 项）。
+- **`+jre` 有两道闸**：入口比「宿主平台 vs 目标平台」，末尾核「产物 magic **+ 架构**」。只判 magic 拦不住同格式但错架构的产物（x64 的 jlink + aarch64 的 jmods 就会产出那种），装上就是 `UnsatisfiedLinkError`。自检代码在 `make-jre.sh` 的 `binary-probe` 标记块里，被 `.workbuddy/verify/check_jre_arch.sh` 整块抽出来单测（合成夹具 + CI 真产物夹具，共 37 项）。
 - **`jdk` 那一列是为什么**：Adoptium（Temurin）对 `windows/aarch64` **没有发布 JDK 25 的任何制品**（`jdk`/`jre`/`jmods` 三端点全 404；该平台在 Adoptium 上最高只到 JDK 21），而 `+jre` 必须有 jmods。**只有这一个 target 例外用 Azul Zulu**（其 `win_aarch64` 归档自带 `jmods/`），其余平台一律 Temurin —— 这是明确取舍，不是临时权宜；`ci_pack_check.py` 里有断言守着（「只有 windows-arm64 是 zulu」）。
 - **`JAVA_HOME` 是 Windows 形式时不能直接做路径名展开**：CI 的 `setup-java` 注入的是 `C:\hostedtoolcache\…`，反斜杠在 bash 的 glob 里是转义符 —— `[[ -d "$JAVA_HOME/jmods" ]]` 认得，`compgen -G "$JAVA_HOME/jmods/*.jmod"` 却永远匹配不到。`make-jre.sh` 的 `jmods_dir()` 因此先把 `JAVA_HOME` 过 `cygpath -u` 归一化、并用 `find` 代替 glob。这个坑**本地复现不了**（本机 Temurin 25 按 JEP 493 不带 jmods，两条分支都走下载），只在 windows-arm64 上炸（run 35078586922）。
 - **矩阵里每个桌面 target 都出托盘壳与 `bin/jvm-sandbox.jar`**（Windows x64+arm64 / Linux x64+arm64 / macOS x64+arm64）。Linux 侧因此无论架构都装同一套 webkit2gtk/appindicator 依赖；tray 有自己的 workspace 与 `target/`，各 runner 原生编译。Android 不在这个矩阵里。
@@ -125,7 +125,7 @@
 ```bash
 python .workbuddy/verify/ci_pack_check.py    # 基线包/+jre/Android/托盘与沙盒的验证（210 项）
 python .workbuddy/verify/ci_equiv.py         # 上一轮"合并两个 workflow"的等价性对照
-bash   .workbuddy/verify/check_jre_arch.sh   # make-jre.sh 的宿主探测 + 产物自检（35 项，按标记抽真代码）
+bash   .workbuddy/verify/check_jre_arch.sh   # make-jre.sh 的宿主探测 + 产物自检（37 项，按标记抽真代码）
 bash   .workbuddy/verify/e2e_host_jmods.sh   # 「宿主自带 jmods 就跳过下载」分支的端到端（本地默认走不到）
 ```
 

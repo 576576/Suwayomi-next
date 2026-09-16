@@ -7,7 +7,7 @@ GraphQL / REST / OPDS 接口与 Mihon 扩展体系兼容，默认**零外部依�
 ## 快速开始
 
 ```bash
-# 直接运行（默认端口 8090，SQLite 数据库，数据存 ./data/suwayomi.db）
+# 直接运行（默认端口 8090；工作数据存 ./data/，SQLite 库存 ./db/suwayomi.db）
 cargo run --release -p suwayomi-server
 # 或使用已构建二进制
 ./target/release/suwayomi-server
@@ -24,8 +24,9 @@ cargo run --release -p suwayomi-server
 | --- | --- | --- |
 | `SUWAYOMI_PORT` | `8090` | HTTP 端口 |
 | `SUWAYOMI_IP` | `0.0.0.0` | 监听地址 |
-| `SUWAYOMI_DATA_DIR` | exe 上级 `data/` | 数据目录（SQLite 文件默认落在其下） |
-| `SUWAYOMI_SQLITE_PATH` | `<数据目录>/suwayomi.db` | SQLite 数据库文件路径 |
+| `SUWAYOMI_DATA_DIR` | exe 上级 `data/` | 数据目录（下载/本地图源/自动备份之下；也可在 WebUI 的「数据与存储 → 存储位置」里改） |
+| `SUWAYOMI_DB_DIR` | exe 上级 `db/` | 数据库目录（**与数据目录分开**，见下） |
+| `SUWAYOMI_SQLITE_PATH` | `<数据库目录>/suwayomi.db` | SQLite 数据库文件路径（显式指定时不做旧库迁移） |
 | `SUWAYOMI_DB_BACKEND` | `sqlite` | 后端：`sqlite` / `postgres` |
 | `SUWAYOMI_DATABASE_URL` | （空） | PostgreSQL 连接串（设置后自动改用外部 PostgreSQL，如 `postgres://user:pass@host:5432/db`） |
 | `SUWAYOMI_AUTH_MODE` | `DISABLED` | 认证模式：`DISABLED` / `SIMPLE_LOGIN` / `BASIC_AUTH` |
@@ -66,7 +67,7 @@ docker build -t suwayomi-next --build-arg WEBUI_URL=<zip 地址> .
 docker run -p 8090:8090 -v suwayomi-data:/data suwayomi-next
 ```
 
-数据持久化在 `/data`（SQLite 文件 `/data/suwayomi.db`）。要连外部 PostgreSQL：
+数据与 SQLite 库都持久化在 `/data`（工作数据在 `/data`，库在 `/data/db/suwayomi.db`）。要连外部 PostgreSQL：
 
 ```bash
 docker run -p 8090:8090   -e SUWAYOMI_DB_BACKEND=postgres   -e SUWAYOMI_DATABASE_URL=postgres://user:pass@host:5432/db suwayomi-next

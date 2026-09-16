@@ -41,7 +41,8 @@ bin/
   ├─ suwayomi-server   无头服务器（单实例）
   ├─ jvm-sandbox.jar   扩展沙盒
   └─ extensions/       已装扩展的转换 jar（自动生成）
-data/                默认数据目录（Tachiyomi 兼容）
+data/                默认数据目录（Tachiyomi 兼容：downloads/ local/ autobackup/）
+db/                  数据库文件（与 data/ 分开，见「数据库后端」）
 webui/               Suwayomi-WebUI 构建产物（随发布捆绑）
 jre/                        运行时依赖（可选）
 ```
@@ -86,8 +87,12 @@ docs/                文档（api/、graphql/、migration/、en/、release.md、
 
 ## 数据库后端
 
-- **默认**：本地 SQLite 文件（`data/suwayomi.db`，可用 `SUWAYOMI_SQLITE_PATH` 指定路径）
+- **默认**：本地 SQLite 文件（`db/suwayomi.db`，可用 `SUWAYOMI_DB_DIR` 换目录、`SUWAYOMI_SQLITE_PATH` 换整个路径）
 - **备选**：外部 PostgreSQL（设 `SUWAYOMI_DB_BACKEND=postgres` + `SUWAYOMI_DATABASE_URL`，如 `postgres://user:pass@host:5432/db`）
+
+数据库文件**刻意不放在数据目录里**：数据目录（`SUWAYOMI_DATA_DIR`，也可在 WebUI 的
+「设置 → 数据与存储 → 存储位置」里改）是用户随时可以换的一项，而设置本身就存在这个库
+里 —— 库跟着数据目录走的话，一改目录就把设置弄丢了。
 
 ## 真实扩展（JVM sandbox）
 

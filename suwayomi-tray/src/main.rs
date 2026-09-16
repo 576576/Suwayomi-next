@@ -2,7 +2,7 @@
 //! （Win WebView2 / Linux WebKitGTK / macOS WKWebView）打开 WebUI/设置窗口；
 //! WebView 不可用时回退系统浏览器。无图形会话（Linux）降级为前台跑 server。
 //! 发布布局（exe 同级）：bin/suwayomi-server(.exe) + bin/jvm-sandbox.jar +
-//! webui/ + data/(工作数据，含 SQLite 库) + extensions/。
+//! webui/ + data/(工作数据) + db/(SQLite 库，与 data/ 分开) + extensions/。
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 use std::io::Write;

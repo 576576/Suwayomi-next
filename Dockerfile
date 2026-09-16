@@ -14,7 +14,8 @@
 #   /opt/suwayomi/bin/jvm-sandbox.jar
 #   /opt/suwayomi/jre/                 （扩展跑在 JVM 里，缺了就没有任何来源）
 #   /opt/suwayomi/webui/
-# 数据目录单独在 /data（VOLUME）。
+# 数据目录单独在 /data（VOLUME）；SQLite 库也在卷内（/data/db），不跟着数据目录走
+# —— 数据目录是 WebUI 里可以随时改的设置项，库跟着它走就会把设置本身弄丢。
 #
 # 本地构建：
 #   docker build -t suwayomi-next --build-arg WEBUI_URL=<WebUI zip 地址> .
@@ -109,11 +110,14 @@ COPY --from=webui   /webui                                        /opt/suwayomi/
 
 # 三个路径都显式钉住：默认解析规则能猜对（exe 在 bin/ 下），但容器里写死更省事，
 # 也避免将来有人改了 exe 的位置就把 webui 与数据目录一起带偏。
+# SUWAYOMI_DB_DIR 必须钉在卷内：不钉的话库会落到 WORKDIR（/opt/suwayomi/db），
+# 那是**镜像层**，容器一重建书架就没了。
 ENV SUWAYOMI_WEBUI_DIR=/opt/suwayomi/webui \
     SUWAYOMI_DATA_DIR=/data \
+    SUWAYOMI_DB_DIR=/data/db \
     SUWAYOMI_PORT=8090 \
     SUWAYOMI_IP=0.0.0.0
-RUN mkdir -p /data/autobackup /data/downloads /data/local
+RUN mkdir -p /data/db /data/autobackup /data/downloads /data/local
 VOLUME ["/data"]
 EXPOSE 8090
 ENTRYPOINT ["/opt/suwayomi/bin/suwayomi-server"]

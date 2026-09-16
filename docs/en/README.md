@@ -105,10 +105,15 @@ docs/                docs (api/, graphql/, migration/, en/, release.md,
 
 ## Database backends
 
-- **Default**: a local SQLite file (`data/suwayomi.db`); override the path with
-  `SUWAYOMI_SQLITE_PATH`
+- **Default**: a local SQLite file (`db/suwayomi.db`); point it elsewhere with
+  `SUWAYOMI_DB_DIR` (directory) or `SUWAYOMI_SQLITE_PATH` (full path)
 - **External**: set `SUWAYOMI_DB_BACKEND=postgres` plus `SUWAYOMI_DATABASE_URL`,
   e.g. `postgres://user:pass@host:5432/db`
+
+The database file deliberately lives **outside** the data directory: the data
+directory (`SUWAYOMI_DATA_DIR`, also editable in the WebUI under
+Settings → Data & Storage → Storage location) is meant to be changed at will,
+while the settings themselves are stored in that database.
 
 ## Real extensions (JVM sandbox)
 

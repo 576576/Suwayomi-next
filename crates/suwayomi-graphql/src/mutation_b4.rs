@@ -394,6 +394,11 @@ pub struct ValidateBackupResult {
 
 /// Mirrors `KoSyncStatusPayload`.
 #[derive(SimpleObject)]
+// 上游类型名就是 `KoSyncStatusPayload`（同文件里的 KoSyncConnectPayload /
+// LogoutKoSyncAccountPayload / ConnectKoSyncAccountInput 都照抄了上游名），
+// 这里多出来的 `Type` 后缀会让 WebUI 的 `fragment … on KoSyncStatusPayload`
+// 直接校验失败（Unknown type）—— 用显式重命名对齐，不动 Rust 标识符。
+#[graphql(name = "KoSyncStatusPayload")]
 pub struct KoSyncStatusPayloadType {
     pub is_logged_in: bool,
     pub server_address: Option<String>,

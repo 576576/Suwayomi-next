@@ -2,6 +2,7 @@ name: Release
 
 # 发布 CI（唯一入口，合并了旧的 release.yml 与 release-alpha.yml）：
 #   - 推送 main   → 自动构建 alpha（windows-x64 + linux-x64，均捆绑 JRE），行为同旧 Auto build
+#                   （纯文档改动除外，见下方 push 的 paths-ignore）
 #   - 手动 dispatch → alpha / beta / release（通道 + 目标复选 + 可选 +jre）
 # 所有编译与打包委托给可复用工作流 .github/workflows/build.yml；本文件只负责
 # 算版本号、解析 WebUI 制品、把构建结果发布成 Release。
@@ -10,6 +11,22 @@ name: Release
 on:
   push:
     branches: [main]
+    # 纯文档改动不出包：一次桌面构建约 12 分钟，还会多出一个 alpha Release，
+    # 而文档改动对产物没有任何影响。**只要改动里还有一个非文档文件就照跑** ——
+    # paths-ignore 只在"全部改动都命中"时才跳过。
+    # 前提已核对：`docs/` 下 10 个文件里 9 个是 .md、另一个是兼容对照物
+    # `graphql/schema-baseline.graphql`（只被源码注释 / 迁移文档 / 一次性导出脚本引用，
+    # 没有 CI 步骤消费）；仓库里也没有任何构建脚本或 Rust 源码把 `.md` 当输入读，
+    # 打包步骤也不收 md。校验脚本对这两条前提都做了断言，失效会红。
+    # 本文件自身不在忽略范围，所以改 CI 一定会触发。
+    paths-ignore:
+      - 'docs/**'
+      # `*.md` 与 `**/*.md` 两条都给：`**/` 能否匹配"零级目录"（即命中根目录的
+      # README.md）在 glob 实现之间有歧义，GitHub 官方 cheat sheet 给的是
+      # `'**.js'` 而不是 `'**/*.js'`。两条并置后无论哪种语义都覆盖到根目录与嵌套，
+      # 校验脚本会**同时按两种语义判定并要求结论一致**（不一致就报错，不许含糊）。
+      - '*.md'
+      - '**/*.md'
   workflow_dispatch:
     inputs:
       channel:

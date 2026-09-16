@@ -53,10 +53,10 @@ Kotlin 版使用 H2 数据库文件（JVM 专有格式，Rust 无法直读），
 
 ## Docker
 
-官方镜像在 GHCR（`linux/amd64` 与 `linux/arm64` 多架构），标签与发布版本一致：
+官方镜像在 GHCR（`linux/amd64` 与 `linux/arm64` 多架构），标签与发布版本一致：alpha 为 `r<提交数>`、release/beta 为 `3.y.z`。**没有 `latest` 标签**，请显式指定：
 
 ```bash
-docker run -p 8090:8090 -v suwayomi-data:/data ghcr.io/576576/suwayomi-next:<tag>
+docker run -p 8090:8090 -v suwayomi-data:/data ghcr.io/576576/suwayomi-next:r3226
 ```
 
 本地构建（`WEBUI_URL` 指向 Suwayomi-WebUI 的 release zip，不传则镜像不含 WebUI）：

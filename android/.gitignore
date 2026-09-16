@@ -9,3 +9,6 @@ app/src/main/jniLibs/
 
 # 由 WebUI 构建产物打出来的 zip，由 CI/打包脚本放入
 app/src/main/assets/webui.zip
+
+# CI 从 secret 解出来的 release 签名材料（见 app/build.gradle.kts）
+keystore.jks

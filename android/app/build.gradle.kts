@@ -27,9 +27,30 @@ android {
         versionName = "1.0"
     }
 
+    // release 签名：CI 通过环境变量注入 keystore（见 .github/workflows/build.yml 的
+    // "准备 release 签名（可选）" 步）。
+    //
+    // 没注入时回退 AGP 自带的 debug key —— 自用分发里"能装上"比"签名好看"重要。
+    // 代价要说清楚：CI runner 每次都是全新的，AGP 现场生成的 debug key 每次都不同，
+    // 所以**跨次覆盖安装前要先卸载**。要稳定签名就配 ANDROID_KEYSTORE_BASE64 那组 secret。
+    val ksPath = System.getenv("SUWAYOMI_KEYSTORE").orEmpty()
+    val hasReleaseKey = ksPath.isNotEmpty()
+    if (hasReleaseKey) {
+        signingConfigs {
+            create("release") {
+                storeFile = rootProject.file(ksPath)
+                storePassword = System.getenv("SUWAYOMI_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("SUWAYOMI_KEY_ALIAS") ?: "suwayomi"
+                keyPassword = System.getenv("SUWAYOMI_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig =
+                if (hasReleaseKey) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
         }
     }
 

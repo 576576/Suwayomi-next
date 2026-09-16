@@ -3,11 +3,13 @@ name: Build
 # 可复用构建工作流（workflow_call）：所有 target 的编译 + 打包都在这里完成。
 # 调用方 release.yml 负责算版本号、解析 WebUI 制品、创建 Release；本文件只负责把包做出来。
 #
-# pack_mode 对应合并前两个 workflow 各自的产物约定（注意：两种模式都能构建全部 target）：
-#   channel —— 旧 release.yml（手动发布）：产物名带通道段 Suwayomi-{VER}-{CH}-{TGT}；
-#              JRE 仅在 bundle_jre=true 且平台为 Windows 时，另外多出一个 +jre 包。
-#   alpha   —— 旧 release-alpha.yml（推送自动构建）：产物名 Suwayomi-{VER}-{TGT}+jre；
-#              Windows / Linux 都捆绑 Temurin JRE 25。
+# pack_mode 对应合并前两个 workflow 各自的产物约定：
+#   channel —— 手动发布：产物名带通道段 Suwayomi-{VER}-{CH}-{TGT}，再按选项追加形态
+#              后缀：pack_core → `-core`（不打包 JRE），pack_jre → `+jre`（在 -core
+#              的内容之上追加裁剪后的 JRE）。两者互相独立、可同时选中。
+#   alpha   —— 推送自动构建：产物名 Suwayomi-{VER}-{TGT}+jre，Windows/Linux 都捆 JRE
+#              （自动构建没有交互选项，固定 core=false / jre=true）。
+# Android 由独立的 android job 构建，产出 APK，**不参与** -core/+jre 这组选项。
 # 通道语义 / 版本规则 / 捆绑细节见 docs/release.md。
 
 on:
@@ -34,11 +36,21 @@ on:
         required: true
         type: string
       targets:
-        description: 构建矩阵 include 数组（JSON 字符串）
+        description: 桌面/服务端构建矩阵 include 数组（JSON 字符串，不含 Android；可为空数组）
         required: true
         type: string
-      bundle_jre:
-        description: pack_mode=channel 时是否额外产出 Windows +jre 包
+      pack_core:
+        description: 产出 -core 包（最小形态，不打包 JRE）
+        required: false
+        type: boolean
+        default: true
+      pack_jre:
+        description: 产出 +jre 包（在 -core 内容之上追加 jlink 裁剪出的 JRE，见 scripts/make-jre.sh）
+        required: false
+        type: boolean
+        default: false
+      android_arm64:
+        description: 是否构建 Android arm64 APK（扩展跑系统 ART，不打包 JRE）
         required: false
         type: boolean
         default: false
@@ -46,6 +58,9 @@ on:
 jobs:
   build:
     name: 构建 ${{ matrix.target }}
+    # targets 可以是空数组（只勾了 Android 时）——矩阵为空会让 Actions 直接报错，
+    # 所以显式跳过。
+    if: inputs.targets != '[]'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -70,7 +85,10 @@ jobs:
         with:
           key: ${{ matrix.target }}
       - name: 安装交叉编译工具链
-        if: matrix.rust_target == 'aarch64-unknown-linux-gnu'
+        # 只有"在 x86_64 runner 上出 aarch64 包"才需要交叉工具链。linux-arm64 现在
+        # 跑在原生 arm64 runner 上（见 release.yml 的 target mapping）——jlink 不能
+        # 跨平台生成运行时，+jre 要求 runner 与目标同架构。
+        if: matrix.rust_target == 'aarch64-unknown-linux-gnu' && runner.arch == 'X64'
         run: |
           sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
@@ -82,9 +100,9 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
             librsvg2-dev libxdo-dev libssl-dev
       - name: 安装 JDK
-        # 构建 bin/jvm-sandbox.jar（gradle toolchain 25 与捆绑 JRE 一致）。
-        # 自动构建的矩阵只有 windows-x64 / linux-x64（两者都命中本条件），故与旧的"无条件安装"等价。
-        if: matrix.os == 'windows-latest' || matrix.rust_target == 'x86_64-unknown-linux-gnu'
+        # 两个用途：构建 bin/jvm-sandbox.jar（gradle toolchain 25），以及 +jre 时的
+        # jlink（它只随 JDK 提供）。无条件安装 —— 按 target 细分条件只会让这里更难维护，
+        # 而 setup-java 本身很快。
         uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -115,15 +133,17 @@ jobs:
             echo "WARN: ${{ matrix.rust_target }} 不提供桌面壳（仅 Windows 与 linux-x64），只发 server"
           fi
 
-          # 产物名两套约定（见文件头 pack_mode 说明）
+          # 产物基名（两套约定见文件头 pack_mode）；形态后缀在下面按选项追加
           if [ "$MODE" = "alpha" ]; then
-            STAGE="dist/Suwayomi-${VER}-${TGT}+jre"
-            ART_NAME="Suwayomi-${VER}-${TGT}"
+            BASE="Suwayomi-${VER}-${TGT}"
           else
-            STAGE="dist/Suwayomi-${VER}-${CH}-${TGT}"
-            ART_NAME="Suwayomi-${VER}-${CH}-${TGT}"
+            BASE="Suwayomi-${VER}-${CH}-${TGT}"
           fi
 
+          # 先把与形态无关的载荷铺到暂存目录（这就是 `-core` 的全部内容），
+          # 之后按需复制成 -core / +jre 两份，避免重复下载 WebUI、重复 gradle。
+          STAGE="dist/${BASE}"
+          rm -rf "$STAGE" "dist/${BASE}-core" "dist/${BASE}+jre"
           mkdir -p "$STAGE/bin"
           cp "$BIN" "$STAGE/bin/"
           if [ "$DESKTOP_SHELL" = "true" ]; then
@@ -131,9 +151,7 @@ jobs:
             cp suwayomi-tray/target/release/suwayomi "$STAGE/" 2>/dev/null \
               || cp suwayomi-tray/target/release/suwayomi.exe "$STAGE/" 2>/dev/null \
               || echo "WARN: desktop shell binary not found"
-          fi
-          if [ "$DESKTOP_SHELL" = "true" ]; then
-            # 扩展沙盒 jar 进 bin/（server 自动查找）；跨平台字节码，win/linux-x64 共用
+            # 扩展沙盒 jar 进 bin/（server 自动查找）；跨平台字节码，各 target 各自构建
             cd jvm-sandbox && ./gradlew -q jar --no-daemon && cd ..
             cp jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar "$STAGE/bin/jvm-sandbox.jar"
           fi
@@ -148,60 +166,155 @@ jobs:
             powershell -Command "Compress-Archive -Path '$1' -DestinationPath '$2' -Force"
           }
 
+          # 压包：Windows 出 zip，其余出 tar.gz。结果放 $ARCHIVE。
+          ARCHIVE=""
+          pack_dir() {
+            local dir="$1"
+            if [ "$IS_WIN" = "true" ]; then
+              zip_dir "$dir" "${dir}.zip"
+              ARCHIVE="${dir}.zip"
+            else
+              tar -C dist -czf "${dir}.tar.gz" "$(basename "$dir")"
+              ARCHIVE="${dir}.tar.gz"
+            fi
+          }
+
           ARTIFACTS=""
-          if [ "$MODE" = "alpha" ]; then
-            # 自动构建：两平台都捆绑 Temurin JRE 25 到 jre/（产物名固定带 +jre）
-            if [ "$IS_WIN" = "true" ]; then
-              curl -sL -o temurin-jre.zip "https://api.adoptium.net/v3/binary/latest/25/ga/windows/x64/jre/hotspot/normal/eclipse"
-              python3 -c "import os,zipfile; z=zipfile.ZipFile('temurin-jre.zip'); t=z.namelist()[0].split('/')[0]; z.extractall('jre-x'); os.rename('jre-x/'+t,'jre'); z.close()"
-              rm -rf jre-x temurin-jre.zip
-            else
-              curl -sL -o temurin-jre.tar.gz "https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jre/hotspot/normal/eclipse"
-              mkdir -p jre-x && tar -xzf temurin-jre.tar.gz -C jre-x
-              mv jre-x/jdk-* jre
-              rm -rf jre-x temurin-jre.tar.gz
-            fi
-            cp -r jre "$STAGE/jre"
-            rm -rf jre
+          if [ "${{ inputs.pack_core }}" = "true" ]; then
+            CORE="dist/${BASE}-core"
+            cp -r "$STAGE" "$CORE"
+            pack_dir "$CORE"
+            ARTIFACTS="$ARCHIVE"
+          fi
+          if [ "${{ inputs.pack_jre }}" = "true" ]; then
+            JRE_DIR="dist/${BASE}+jre"
+            cp -r "$STAGE" "$JRE_DIR"
+            # jlink 只为本平台生成镜像，所以这里 target 必须与 runner 同架构；
+            # release.yml 的 mapping 保证了这一点，make-jre.sh 里再兜底校验一次。
+            bash scripts/make-jre.sh "${{ matrix.jre_os }}" "${{ matrix.jre_arch }}" "$JRE_DIR/jre"
+            pack_dir "$JRE_DIR"
+            ARTIFACTS="${ARTIFACTS:+$ARTIFACTS$'\n'}$ARCHIVE"
+          fi
+          rm -rf "$STAGE"
 
-            if [ "$IS_WIN" = "true" ]; then
-              zip_dir "$STAGE" "${STAGE}.zip"
-              ARTIFACTS="${STAGE}.zip"
-            else
-              tar -C dist -czf "${STAGE}.tar.gz" "Suwayomi-${VER}-${TGT}+jre"
-              ARTIFACTS="${STAGE}.tar.gz"
-            fi
-          else
-            # 手动通道：基础包；Windows 勾选 JRE 时另出一个独立的 +jre 包
-            if [ "$IS_WIN" = "false" ]; then
-              tar -C dist -czf "dist/Suwayomi-${VER}-${CH}-${TGT}.tar.gz" "Suwayomi-${VER}-${CH}-${TGT}"
-              ARTIFACTS="dist/Suwayomi-${VER}-${CH}-${TGT}.tar.gz"
-            else
-              zip_dir "dist/Suwayomi-${VER}-${CH}-${TGT}" "dist/Suwayomi-${VER}-${CH}-${TGT}.zip"
-              ARTIFACTS="dist/Suwayomi-${VER}-${CH}-${TGT}.zip"
-
-              if [ "${{ inputs.bundle_jre }}" = "true" ]; then
-                curl -sL -o temurin-jre.zip "https://api.adoptium.net/v3/binary/latest/25/ga/windows/x64/jre/hotspot/normal/eclipse"
-                python3 -c "import os,zipfile; z=zipfile.ZipFile('temurin-jre.zip'); t=z.namelist()[0].split('/')[0]; z.extractall('jre-x'); os.rename('jre-x/'+t,'jre'); z.close()"
-                rm -rf jre-x temurin-jre.zip
-                ST="dist/Suwayomi-${VER}-${CH}-${TGT}+jre"
-                cp -r "$STAGE" "$ST"
-                cp -r jre "$ST/jre"
-                zip_dir "$ST" "${ST}.zip"
-                ARTIFACTS+=$'\n'"${ST}.zip"
-                rm -rf jre
-              fi
-            fi
+          if [ -z "$ARTIFACTS" ]; then
+            echo "::error::-core 与 +jre 都没勾选，没有任何产物可出"
+            exit 1
           fi
 
           {
             echo "artifacts<<ARTIFACTS_EOF"
             printf '%s\n' "$ARTIFACTS"
             echo "ARTIFACTS_EOF"
-            echo "artifact_name=$ART_NAME"
+            echo "artifact_name=$BASE"
           } >> "$GITHUB_OUTPUT"
           echo "packed artifacts:"
           echo "$ARTIFACTS" | sed 's/^/  /'
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.pack.outputs.artifact_name }}
+          path: ${{ steps.pack.outputs.artifacts }}
+
+  android:
+    name: 构建 android-arm64
+    if: inputs.android_arm64
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      SUWAYOMI_VERSION_COUNT: ${{ inputs.count }}
+      SUWAYOMI_VERSION_NAME: ${{ inputs.version_name }}
+      SUWAYOMI_BUILD_TYPE: ${{ inputs.channel }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android-arm64
+      - name: 安装 JDK
+        # Gradle 9 需要 ≥ 17；与另外几处保持同一个 25，避免"本地能跑、CI 不能"。
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: 安装 Android SDK 组件
+        # ubuntu runner 预装了 Android SDK（含 cmdline-tools），但 compileSdk 37 与
+        # NDK 28.2 都不在预装列表里，按需补装。NDK 版本显式钉住并导出 ANDROID_NDK_HOME：
+        # android/scripts/build-rust.sh 会优先用它，避免悄悄选中 runner 上的新版本。
+        run: |
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          {
+            echo "ANDROID_HOME=$SDK"
+            echo "ANDROID_SDK_ROOT=$SDK"
+            echo "ANDROID_NDK_HOME=$SDK/ndk/28.2.13676358"
+          } >> "$GITHUB_ENV"
+          SDKMGR="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMGR" --licenses > /dev/null 2>&1 || true
+          "$SDKMGR" --install "platforms;android-37" "ndk;28.2.13676358"
+      - name: 交叉编译 Rust server（cdylib）
+        # 产出 android/app/src/main/jniLibs/arm64-v8a/libsuwayomi_android.so
+        run: bash android/scripts/build-rust.sh
+      - name: 打包 WebUI 进 assets
+        run: |
+          curl -sL -o webui.zip "${{ inputs.webui_url }}"
+          bash android/scripts/package-webui.sh webui.zip
+      - name: 准备 release 签名（可选）
+        # 没配 secret 就用 AGP 的 debug key 签名并给出警告 —— 自用分发里"能装上"
+        # 比"签名好看"重要。注意临时 debug key 每次 CI 都不同：跨次覆盖安装前
+        # 要先卸载。要稳定签名就配这组 secret。
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            printf '%s' "$KS_B64" | base64 -d > android/keystore.jks
+            {
+              echo "SUWAYOMI_KEYSTORE=keystore.jks"
+              echo "SUWAYOMI_KEYSTORE_PASSWORD=$KS_PASS"
+              echo "SUWAYOMI_KEY_ALIAS=${KEY_ALIAS:-suwayomi}"
+              echo "SUWAYOMI_KEY_PASSWORD=${KEY_PASS:-$KS_PASS}"
+            } >> "$GITHUB_ENV"
+            echo "已注入 release keystore"
+          else
+            echo "::warning::未配置 ANDROID_KEYSTORE_BASE64，APK 将用临时 debug key 签名（跨次安装需先卸载）"
+          fi
+      - name: Gradle 构建 APK
+        working-directory: android
+        run: ./gradlew :app:assembleRelease --no-daemon
+      - name: 打包产物
+        id: pack
+        shell: bash
+        run: |
+          VER="${{ inputs.version_name }}"
+          CH="${{ inputs.channel }}"
+          MODE="${{ inputs.pack_mode }}"
+          TGT="android-arm64"
+
+          # 与桌面产物同一套命名约定（见文件头）：alpha 无通道段，手动带通道段。
+          # Android 不打包 JRE，所以没有 -core/+jre 形态后缀。
+          if [ "$MODE" = "alpha" ]; then
+            NAME="Suwayomi-${VER}-${TGT}"
+          else
+            NAME="Suwayomi-${VER}-${CH}-${TGT}"
+          fi
+
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          [ -f "$APK" ] || { echo "::error::找不到 $APK"; ls -R android/app/build/outputs/apk 2>/dev/null; exit 1; }
+          mkdir -p dist
+          cp "$APK" "dist/${NAME}.apk"
+
+          {
+            echo "artifacts=dist/${NAME}.apk"
+            echo "artifact_name=$NAME"
+          } >> "$GITHUB_OUTPUT"
+          echo "packed: dist/${NAME}.apk ($(du -h "dist/${NAME}.apk" | cut -f1))"
       - name: 上传构建产物
         uses: actions/upload-artifact@v7
         with:

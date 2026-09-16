@@ -127,7 +127,7 @@ crates/suwayomi-server/      lib.rs 抽出启动逻辑；android 模块提供 JN
 | A5 | Android 宿主：PackageManager 发现扩展 + ART 加载 + 回环 HTTP 契约 | ✅ |
 | A6 | Android App：WebView 打开本地 WebUI，Application 启服/停服 | ✅ |
 | A7 | Android 安装/卸载：唤起系统安装器（`ACTION_VIEW` + FileProvider）、`ACTION_DELETE` 卸载，完成后重新发现扩展 | ✅ |
-| A8 | CI：android-arm64 目标（cargo cross + Gradle assemble），产物命名并入 `pack_mode` | ⬜ |
+| A8 | CI：android-arm64 目标（cargo cross + Gradle assemble），产物命名并入 `pack_mode` | ✅ |
 | A9 | 端到端验证：模拟器/真机上启动、WebUI 可访问、已装扩展可搜索/看章节 | ✅（图源联网抓取受环境网络限制，见下） |
 
 A9 的落地证据（模拟器 API 37 / x86_64）：
@@ -142,6 +142,11 @@ A9 的落地证据（模拟器 API 37 / x86_64）：
 
 **未覆盖**：图源联网抓取（`/source/{id}/manga`）在本机网络下不可达 —— 宿主与宿主机都连不上
 `nhentai.com`（`curl` 超时 / `ConnectException`），属环境限制而非代码问题，换一个可达图源即可补测。
+
+A8 的落地：`build.yml` 里新增独立的 `android` job（装 `platforms;android-37` 与钉死版本的
+NDK 28.2 → `android/scripts/build-rust.sh` → WebUI 打进 assets → `:app:assembleRelease`），
+由 `release.yml` 的 `build_android_arm64` 开关控制，APK 命名并入 `pack_mode` 约定。
+release 签名支持从 secret 注入 keystore，没配则回退 debug key。详见 `docs/release.md`。
 
 `ACTION_INSTALL_PACKAGE` 在 API 29 起废弃，且不带 `REQUEST_INSTALL_PACKAGES` 时直接被
 `FileUriExposedException` / 系统拒绝；实际用的是 `ACTION_VIEW` +
@@ -190,14 +195,24 @@ A9 的落地证据（模拟器 API 37 / x86_64）：
 另有 NDK 目录的一个细节：Windows 上 `aarch64-linux-android26-clang` **无后缀那个文件也存在**
 （sh 脚本），但它不能被 `CreateProcess` 执行（os error 193），必须优先选 `.cmd` / `.exe`。
 
-## 5. 下一里程碑（不在本分支）
+## 5. 产物形态选项（`-core` / `+jre`）
 
-手动触发的构建除架构外再加一组**多选项**（可同时选中，非二选一）：
+手动触发的构建除架构外还有一组**多选项**（可同时选中，非二选一）：
 
 - `-core`：不打包 JRE，最小构建 —— **默认选中**。
 - `+jre`：在 `-core` 产物基础上追加对应架构的 JRE。**该选项需要裁剪 JRE 体积、
-  删除未被使用的部分**（jlink/jdeps 按实际用到的模块裁，或直接换精简运行时）。
+  删除未被使用的部分**：用 `scripts/make-jre.sh` 走 jlink，按实测白名单只保留 14 个模块，
+  180 MB → 39 MB（解压）、58 MB → 25 MB（压缩）。
 - **Android 构建不参与这组选项**：Android 天然不打包 JRE，扩展跑在系统 ART 上。
+
+需要裁剪产物的只有**非 Android 的 `+jre` 构建**；Android 的 APK 里没有 JRE 可裁。
+
+实现与数据见 `docs/release.md` 的「产物形态」与「JRE 裁剪」两节；本地验证脚本
+`.workbuddy/verify/ci_pack_check.py`（171 项断言，覆盖各 target × 各形态组合）。
+
+`+jre` 带来的一个约束值得记下来：**jlink 不能跨平台生成运行时**，所以每个 target 的
+runner 必须与目标同架构 —— linux-arm64 因此改用 `ubuntu-24.04-arm`（顺带变成原生编译，
+不再需要交叉工具链），x64 的 macOS 用 `macos-15-intel`（`macos-13` 已被 GitHub 下线）。
 
 ## 6. 明确的非目标
 

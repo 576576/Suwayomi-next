@@ -45,12 +45,24 @@ on:
         description: Android arm64
         type: boolean
         default: false
+      build_android_x64:
+        description: Android x64
+        type: boolean
+        default: false
       pack_jre:
         description: 额外产出 +jre 包
         type: boolean
         default: false
+      pack_oci:
+        description: 额外产出 OCI 包
+        type: boolean
+        default: false
       version_count:
         description: 版本计数
+        type: string
+        default: ''
+      release_notes:
+        description: 发行说明
         type: string
         default: ''
 
@@ -70,15 +82,19 @@ jobs:
     outputs:
       flow: ${{ steps.out.outputs.flow }}
       channel: ${{ steps.out.outputs.channel }}
+      channel_suffix: ${{ steps.out.outputs.channel_suffix }}
       pack_mode: ${{ steps.out.outputs.pack_mode }}
       targets: ${{ steps.out.outputs.targets }}
+      android_targets: ${{ steps.out.outputs.android_targets }}
       version_name: ${{ steps.out.outputs.version_name }}
       version_code: ${{ steps.out.outputs.version_code }}
       count: ${{ steps.out.outputs.count }}
       tag: ${{ steps.out.outputs.tag }}
       prerelease: ${{ steps.out.outputs.prerelease }}
       pack_jre: ${{ steps.out.outputs.pack_jre }}
+      pack_oci: ${{ steps.out.outputs.pack_oci }}
       android_arm64: ${{ steps.out.outputs.android_arm64 }}
+      android_x64: ${{ steps.out.outputs.android_x64 }}
       # WebUI 制品在 prep 解析一次、所有 target 复用（避免各架构拉到不同构建）
       webui_url: ${{ steps.webui.outputs.url }}
       webui_tag: ${{ steps.webui.outputs.tag }}
@@ -97,7 +113,9 @@ jobs:
             CHANNEL="${{ github.event.inputs.channel }}"
             COUNT="${{ github.event.inputs.version_count }}"
             PACK_JRE="${{ github.event.inputs.pack_jre }}"
-            ANDROID="${{ github.event.inputs.build_android_arm64 }}"
+            PACK_OCI="${{ github.event.inputs.pack_oci }}"
+            ANDROID_ARM64="${{ github.event.inputs.build_android_arm64 }}"
+            ANDROID_X64="${{ github.event.inputs.build_android_x64 }}"
 
             SEL=""
             [ "${{ github.event.inputs.build_windows_x64 }}" = "true" ] && SEL="$SEL windows-x64"
@@ -111,7 +129,9 @@ jobs:
             # 统一兜成 false —— 下游都只跟字符串 'true' 比较，但输出里留个明确的
             # false 比留空串好排查。
             PACK_JRE="${PACK_JRE:-false}"
-            ANDROID="${ANDROID:-false}"
+            PACK_OCI="${PACK_OCI:-false}"
+            ANDROID_ARM64="${ANDROID_ARM64:-false}"
+            ANDROID_X64="${ANDROID_X64:-false}"
           else
             # 推送 main：自动 alpha，固定 windows-x64 + linux-x64（均捆绑 JRE）。
             # 自动构建没有交互界面，所以形态固定为 jre=true —— 与旧 Auto build 的
@@ -121,9 +141,15 @@ jobs:
             CHANNEL="alpha"
             COUNT=""
             PACK_JRE="true"
-            ANDROID="false"
+            PACK_OCI="false"
+            ANDROID_ARM64="false"
+            ANDROID_X64="false"
             SEL="windows-x64 linux-x64"
           fi
+
+          # 产物名 / 镜像标签里的通道段：只有 beta 非空。beta 与 release 共用 3.y.z
+          # 版本名，不区分就会重名；alpha 的 r{code} 本身就带通道含义。
+          if [ "$CHANNEL" = "beta" ]; then CH_SUFFIX="-beta"; else CH_SUFFIX=""; fi
 
           if [ -z "$COUNT" ]; then COUNT="$(git rev-list --count HEAD)"; fi
 
@@ -170,26 +196,47 @@ jobs:
           print(json.dumps(inc))
           PY
           )"
-          if [ -z "$SEL" ] && [ "$ANDROID" != "true" ]; then
+
+          # Android 矩阵（同 build.yml 的桌面矩阵写法）：被勾上的架构各是一个 job。
+          # ABI 用 build-rust.sh 的取值（arm64 / x86_64），目录名与 APK 名由它自己映射。
+          ANDROID_INCLUDE="$(python3 - "$ANDROID_ARM64" "$ANDROID_X64" <<'PY'
+          import json, sys
+          # 与开关一一对应（顺序即 sys.argv 顺序）：target 名决定产物名与 job 名，
+          # abi 是 build-rust.sh 的取值，rust_target 是 cargo 的三元组
+          mapping = [
+              ("android-arm64", "arm64",  "aarch64-linux-android"),
+              ("android-x64",   "x86_64", "x86_64-linux-android"),
+          ]
+          inc = [{"target": name, "abi": abi, "rust_target": rt}
+                 for flag, (name, abi, rt) in zip(sys.argv[1:], mapping) if flag == "true"]
+          print(json.dumps(inc))
+          PY
+          )"
+          if [ -z "$SEL" ] && [ "$ANDROID_INCLUDE" = "[]" ] && [ "$PACK_OCI" != "true" ]; then
             echo "::error::未选择任何构建目标"
             exit 1
           fi
-          # 只勾了 Android 时 SEL 为空 —— build.yml 的矩阵 job 会跳过，这是合法的
+          # 只勾 Android 时 SEL 为空、只勾 OCI 时两者都空 —— build.yml 里对应的矩阵
+          # job 会跳过，这是合法的
           {
             echo "flow=$FLOW"
             echo "channel=$CHANNEL"
+            echo "channel_suffix=$CH_SUFFIX"
             echo "pack_mode=$PACK_MODE"
             echo "targets=$INCLUDE"
+            echo "android_targets=$ANDROID_INCLUDE"
             echo "version_name=$VER_NAME"
             echo "version_code=$VER_CODE"
             echo "count=$COUNT"
             echo "tag=$TAG"
             echo "prerelease=$PRE"
             echo "pack_jre=$PACK_JRE"
-            echo "android_arm64=$ANDROID"
+            echo "pack_oci=$PACK_OCI"
+            echo "android_arm64=$ANDROID_ARM64"
+            echo "android_x64=$ANDROID_X64"
           } >> "$GITHUB_OUTPUT"
           echo "$FLOW 发布: $CHANNEL $VER_NAME (code $VER_CODE, commits $COUNT) -> $TAG"
-          echo "   targets=[$SEL] android=$ANDROID jre=$PACK_JRE pack_mode=$PACK_MODE"
+          echo "   targets=[$SEL] android=[$ANDROID_ARM64 $ANDROID_X64] oci=$PACK_OCI jre=$PACK_JRE pack_mode=$PACK_MODE"
 
           # 动态更新 workflow run 标题（版本号在 shell 内算出，run-name 拿不到）。
           # 注：这里没有把 GITHUB_TOKEN 注入 env，${GITHUB_TOKEN} 恒为空 → 请求 401 被 || true 吞掉，
@@ -223,16 +270,23 @@ jobs:
   build:
     name: 构建（复用 build.yml）
     needs: prep
+    # 被调工作流的权限**不能超过调用方**：OCI 那步要推 GHCR，所以这里必须显式
+    # 授予 packages: write（不给就是 build 时 push 403，且只在勾了 OCI 时才暴露）。
+    permissions:
+      contents: read
+      packages: write
     uses: ./.github/workflows/build.yml
     with:
       channel: ${{ needs.prep.outputs.channel }}
+      channel_suffix: ${{ needs.prep.outputs.channel_suffix }}
       pack_mode: ${{ needs.prep.outputs.pack_mode }}
       version_name: ${{ needs.prep.outputs.version_name }}
       count: ${{ needs.prep.outputs.count }}
       webui_url: ${{ needs.prep.outputs.webui_url }}
       targets: ${{ needs.prep.outputs.targets }}
+      android_targets: ${{ needs.prep.outputs.android_targets }}
       pack_jre: ${{ needs.prep.outputs.pack_jre == 'true' }}
-      android_arm64: ${{ needs.prep.outputs.android_arm64 == 'true' }}
+      pack_oci: ${{ needs.prep.outputs.pack_oci == 'true' }}
     # **必须显式继承**：`workflow_call` 的被调工作流默认**拿不到**调用方的 secret，
     # 不写这行时 build.yml 里的 `secrets.ANDROID_KEYSTORE_BASE64` 恒为空 ——
     # 表现为「仓库里 secret 明明配了，APK 却仍用 debug key 签名」并只留一条
@@ -253,8 +307,13 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+        # 只勾 OCI 时没有任何包产物（镜像直接进 GHCR，不进附件），下载步骤会报
+        # "no artifacts found" —— 允许为空；真正的失败会被下面的 gh release create 暴露。
+        continue-on-error: true
       - name: 收到的构建产物
-        run: ls -la artifacts
+        run: |
+          mkdir -p artifacts
+          ls -la artifacts
       - name: 创建 Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -262,19 +321,30 @@ jobs:
           TAG: ${{ needs.prep.outputs.tag }}
           VER: ${{ needs.prep.outputs.version_name }}
           CH: ${{ needs.prep.outputs.channel }}
+          CH_SUFFIX: ${{ needs.prep.outputs.channel_suffix }}
           PRE: ${{ needs.prep.outputs.prerelease }}
           WEBUI_TAG: ${{ needs.prep.outputs.webui_tag }}
           WEBUI_KIND: ${{ needs.prep.outputs.webui_kind }}
+          PACK_JRE: ${{ needs.prep.outputs.pack_jre }}
+          PACK_OCI: ${{ needs.prep.outputs.pack_oci }}
+          ANDROID_ARM64: ${{ needs.prep.outputs.android_arm64 }}
+          ANDROID_X64: ${{ needs.prep.outputs.android_x64 }}
+          # 手动触发时维护者填的发行说明（推送自动构建没有这个输入，恒为空）
+          NOTES: ${{ github.event.inputs.release_notes }}
         run: |
           # release 通道同版本重复发布：先删旧 tag/release（alpha/beta 的 tag 天然唯一，不删）
           if [ "$CH" = "release" ] && gh release view "$TAG" >/dev/null 2>&1; then
             gh release delete "$TAG" --yes --cleanup-tag || true
           fi
 
+          # 附件列表：**不能**写成裸 `artifacts/*` —— 只勾 OCI 时目录是空的，glob 不展开
+          # 会把那个字面量当文件名传给 gh。
+          FILES=(artifacts/*)
+          [ -e "${FILES[0]}" ] || FILES=()
+
           # 推送触发的自动构建：标题/说明与手动通道不同（与旧 Auto build 逐字一致）
           if [ "$FLOW" = "auto" ]; then
-            gh release create "$TAG" \
-              artifacts/* \
+            gh release create "$TAG" "${FILES[@]}" \
               --title "Suwayomi $VER (alpha)" \
               --notes "## Suwayomi $VER · alpha
           - bundled WebUI: \`$WEBUI_TAG\`（最新构建）" \
@@ -287,14 +357,39 @@ jobs:
             stable) WEBUI_DESC="最新正式 release" ;;
             *)      WEBUI_DESC="最新构建（预发布）" ;;
           esac
-          # 发布说明只留下载者需要的信息：捆绑的 WebUI 版本（别处看不到），以及各形态
-          # 产物的差别。版本号/提交数在 tag 与 changelog 里，通道在标题里，均不再重复。
-          gh release create "$TAG" \
-            artifacts/* \
+
+          # 发布说明只留下载者需要的信息：捆绑的 WebUI 版本（别处看不到）、**实际产出**的
+          # 形态与 Android 目标、以及镜像地址（OCI 不进附件，只能从这里找到）。
+          # 版本号/提交数在 tag 与 changelog 里，通道在标题里，均不再重复。
+          BODY="- bundled WebUI: \`$WEBUI_TAG\` — $WEBUI_DESC"
+          if [ "$PACK_JRE" = "true" ]; then
+            BODY="$BODY
+          - 产物形态：默认包不打包 JRE，\`+jre\` 包额外含对应架构的裁剪 JRE（jlink）"
+          fi
+          ANDROIDS=""
+          [ "$ANDROID_ARM64" = "true" ] && ANDROIDS="\`-android-arm64\`"
+          [ "$ANDROID_X64" = "true" ] && ANDROIDS="${ANDROIDS:+$ANDROIDS / }\`-android-x64\`"
+          if [ -n "$ANDROIDS" ]; then
+            BODY="$BODY
+          - Android：$ANDROIDS APK（扩展跑系统 ART，不打包 JRE）"
+          fi
+          if [ "$PACK_OCI" = "true" ]; then
+            BODY="$BODY
+          - OCI 镜像：\`ghcr.io/${GITHUB_REPOSITORY,,}:${VER}${CH_SUFFIX}\`（linux/amd64 与 linux/arm64）"
+          fi
+
+          # 维护者手填的发行说明附在标准信息之后、changelog 之前。UI 上是**单行**输入框，
+          # 要分段就写字面量 \n（这里还原成真换行）；粘贴进来的 \r 一并去掉。
+          NOTES="${NOTES//$'\r'/}"
+          if [ -n "$NOTES" ]; then
+            BODY="$BODY
+
+          $(printf '%b' "$NOTES")"
+          fi
+
+          gh release create "$TAG" "${FILES[@]}" \
             --title "Suwayomi $VER ($CH)" \
             --notes "## Suwayomi $VER · $CH
-          - bundled WebUI: \`$WEBUI_TAG\` — $WEBUI_DESC
-          - 产物形态：默认包不打包 JRE，\`+jre\` 包额外含对应架构的裁剪 JRE（jlink）
-          - Android：\`-android-arm64\` APK（扩展跑系统 ART，不打包 JRE）" \
+          $BODY" \
             --prerelease="$PRE" \
             --generate-notes

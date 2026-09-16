@@ -1,9 +1,23 @@
-target/
+# 构建上下文只留「编 server + 打沙盒 jar」需要的东西。
+#
+# 注意两个目录**必须留着**：`jvm-sandbox/`（要 gradle 打 jar）与 `extension-runtime/`
+# —— jvm-sandbox 的 gradle 工程直接引用 `../extension-runtime/src/main/kotlin` 的共享源码。
+
+# 本地产物与缓存。必须写 `**/`：裸 `target/` 只匹配上下文根下的那一层，
+# `suwayomi-tray/target/` 有 2 GB，会被整个传给 docker daemon。
+**/target/
+**/build/
+**/.gradle/
+bin/
+
+# 不参与镜像构建的东西
 .git
 .github
-*.md
-docs/
-tools/
-jvm-sandbox/
-extensions/
+.idea
 .workbuddy
+docs/
+*.md
+
+# 运行期数据（安装的扩展、本地图源），不该进镜像
+extensions/
+data/

@@ -8,5 +8,9 @@
 gradlew text eol=lf
 *.yml text eol=lf
 *.py text eol=lf
+# Docker：.dockerignore 的模式行如果带上 \r 就永远匹配不到（文件会被整份传来）；
+# Dockerfile 的续行同理。两者都必须 LF。
+.dockerignore text eol=lf
+Dockerfile text eol=lf
 # Windows batch scripts: CRLF required for reliable cmd label/goto handling
 *.bat text eol=crlf

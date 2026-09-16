@@ -147,9 +147,17 @@ Windows 手动构建 release 产物（`suwayomi-server.exe` + 托盘 `suwayomi.e
 
 ## Docker
 
+发布流程会把镜像推到 GHCR（`linux/amd64` 与 `linux/arm64` 多架构），标签与发布版本一致：
+
 ```bash
-docker build -t suwayomi-next .
-docker run -p 8090:8090 -v suwayomi-data:/data suwayomi-next   # 容器内与宿主均 8090
+docker run -p 8090:8090 -v suwayomi-data:/data ghcr.io/576576/suwayomi-next:<tag>   # 容器内与宿主均 8090
+```
+
+本地构建（`WEBUI_URL` 指向 Suwayomi-WebUI 的 release zip，不传则镜像不含 WebUI）：
+
+```bash
+docker build -t suwayomi-next --build-arg WEBUI_URL=<zip 地址> .
+docker run -p 8090:8090 -v suwayomi-data:/data suwayomi-next
 ```
 
 ## 许可证

@@ -4,18 +4,26 @@ name: Build
 # 调用方 release.yml 负责算版本号、解析 WebUI 制品、创建 Release；本文件只负责把包做出来。
 #
 # pack_mode 对应合并前两个 workflow 各自的产物约定：
-#   channel —— 手动发布：产物名带通道段 Suwayomi-{VER}-{CH}-{TGT}。默认包（不打包 JRE）
-#              必然产出；pack_jre 勾上时另出 `+jre`（在默认包内容之上追加裁剪后的 JRE）。
-#   alpha   —— 推送自动构建：只出 +jre 一份（名 Suwayomi-{VER}-{TGT}+jre，Windows/Linux
-#              都捆 JRE），不出基线包 —— 与旧 Auto build 的产物集逐字一致。
-# Android 由独立的 android job 构建，产出 APK，**不参与** +jre 这组选项。
+#   channel —— 手动发布：默认包（不打包 JRE）必然产出；pack_jre 勾上时另出 `+jre`
+#              （在默认包内容之上追加裁剪后的 JRE）。
+#   alpha   —— 推送自动构建：只出 +jre 一份（Windows/Linux 都捆 JRE），不出基线包
+#              —— 与旧 Auto build 的产物集逐字一致。
+# 产物名统一是 Suwayomi-{VER}{通道段}-{TGT}[+jre]；通道段只有 beta 非空（beta 与
+# release 共用 3.y.z 版本名，不区分就会重名），取值由调用方算好从 channel_suffix 传入。
+# Android 由独立的 android job 构建（arm64 / x64 各一份 APK），**不参与** +jre 这组选项。
+# OCI 镜像由独立的 oci job 构建（linux/amd64 + linux/arm64 各在原生 runner 上），
+# 推送到 GHCR 后用 imagetools 合成多架构 manifest —— 不进 Release 附件。
 # 通道语义 / 版本规则 / 捆绑细节见 docs/release.md。
 
 on:
   workflow_call:
     inputs:
       channel:
-        description: alpha / beta / release —— 写入编译期 SUWAYOMI_BUILD_TYPE，并作为产物名的通道段
+        description: alpha / beta / release —— 写入编译期 SUWAYOMI_BUILD_TYPE
+        required: true
+        type: string
+      channel_suffix:
+        description: 产物名与镜像标签里的通道段（仅 beta 为 -beta，其余通道为空串）
         required: true
         type: string
       pack_mode:
@@ -43,8 +51,12 @@ on:
         required: false
         type: boolean
         default: false
-      android_arm64:
-        description: 是否构建 Android arm64 APK（扩展跑系统 ART，不打包 JRE）
+      android_targets:
+        description: Android 构建矩阵 include 数组（JSON 字符串，元素含 target/abi/rust_target；可为空数组）
+        required: true
+        type: string
+      pack_oci:
+        description: 是否额外构建 OCI 镜像并推送到 GHCR（linux/amd64 与 linux/arm64 多架构）
         required: false
         type: boolean
         default: false
@@ -115,7 +127,6 @@ jobs:
         shell: bash
         run: |
           VER="${{ inputs.version_name }}"
-          CH="${{ inputs.channel }}"
           TGT="${{ matrix.target }}"
           MODE="${{ inputs.pack_mode }}"
           BIN="target/${{ matrix.rust_target }}/release/suwayomi-server"
@@ -127,12 +138,9 @@ jobs:
           IS_WIN="false"
           [ "${{ runner.os }}" = "Windows" ] && IS_WIN="true"
 
-          # 产物基名（两套约定见文件头 pack_mode）
-          if [ "$MODE" = "alpha" ]; then
-            BASE="Suwayomi-${VER}-${TGT}"
-          else
-            BASE="Suwayomi-${VER}-${CH}-${TGT}"
-          fi
+          # 产物基名（两套 pack_mode 约定见文件头）：通道段由调用方给出，通常为空 ——
+          # 只有 beta 带（与 release 同名 3.y.z，不区分就会重名）。
+          BASE="Suwayomi-${VER}${{ inputs.channel_suffix }}-${TGT}"
 
           # 暂存目录本身就是「默认包」（不打包 JRE 的那份，必然产出）；
           # +jre 包在它基础上复制一份再追加 JRE，避免重复下载 WebUI、重复 gradle。
@@ -218,9 +226,14 @@ jobs:
           path: ${{ steps.pack.outputs.artifacts }}
 
   android:
-    name: 构建 android-arm64
-    if: inputs.android_arm64
+    name: 构建 ${{ matrix.target }}
+    # 与桌面矩阵同一套写法：include 由调用方按勾选拼好，空数组时整个 job 跳过。
+    if: inputs.android_targets != '[]'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(inputs.android_targets) }}
     env:
       CARGO_TERM_COLOR: always
       SUWAYOMI_VERSION_COUNT: ${{ inputs.count }}
@@ -233,10 +246,10 @@ jobs:
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
+          targets: ${{ matrix.rust_target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: android-arm64
+          key: ${{ matrix.target }}
       - name: 安装 JDK
         # Gradle 9 需要 ≥ 17；与另外几处保持同一个 25，避免"本地能跑、CI 不能"。
         uses: actions/setup-java@v5
@@ -264,8 +277,9 @@ jobs:
           yes | "$SDKMGR" --licenses > /dev/null 2>&1 || true
           "$SDKMGR" --install "platforms;android-37.0" "ndk;28.2.13676358"
       - name: 交叉编译 Rust server（cdylib）
-        # 产出 android/app/src/main/jniLibs/arm64-v8a/libsuwayomi_android.so
-        run: bash android/scripts/build-rust.sh
+        # 产出 android/app/src/main/jniLibs/<abi>/libsuwayomi_android.so；
+        # ABI 由矩阵给出（arm64 → arm64-v8a，x86_64 → x86_64，见 build-rust.sh 的映射）
+        run: ABI=${{ matrix.abi }} bash android/scripts/build-rust.sh
       - name: 打包 WebUI 进 assets
         run: |
           curl -sL -o webui.zip "${{ inputs.webui_url }}"
@@ -300,17 +314,11 @@ jobs:
         shell: bash
         run: |
           VER="${{ inputs.version_name }}"
-          CH="${{ inputs.channel }}"
-          MODE="${{ inputs.pack_mode }}"
-          TGT="android-arm64"
+          TGT="${{ matrix.target }}"
 
-          # 与桌面产物同一套命名约定（见文件头）：alpha 无通道段，手动带通道段。
+          # 与桌面产物同一套命名约定（见文件头）：通道段只有 beta 非空。
           # Android 不打包 JRE，所以没有 +jre 形态后缀。
-          if [ "$MODE" = "alpha" ]; then
-            NAME="Suwayomi-${VER}-${TGT}"
-          else
-            NAME="Suwayomi-${VER}-${CH}-${TGT}"
-          fi
+          NAME="Suwayomi-${VER}${{ inputs.channel_suffix }}-${TGT}"
 
           APK="android/app/build/outputs/apk/release/app-release.apk"
           [ -f "$APK" ] || { echo "::error::找不到 $APK"; ls -R android/app/build/outputs/apk 2>/dev/null; exit 1; }
@@ -327,3 +335,135 @@ jobs:
         with:
           name: ${{ steps.pack.outputs.artifact_name }}
           path: ${{ steps.pack.outputs.artifacts }}
+
+  # ---------------------------------------------------------------------------
+  # OCI 镜像（docker）。与桌面矩阵完全独立：自己从源码编 server、自己 gradle 打沙盒
+  # jar、自己 jlink 一个 JRE。内容与桌面包基本一致，但**不含托盘壳** —— 容器里没有 GUI，
+  # 也没有 webkit2gtk/appindicator，装进去只会是个跑不起来的死文件。
+  # 产物只推 GHCR，不进 Release 附件（镜像的版本由 tag 表达，塞一个 docker-save
+  # 出来的大归档没有意义）。
+  #
+  # 两个架构各跑**同架构**的 runner：jlink 不能跨平台生成运行时（见 docs/release.md），
+  # 所以 arm64 用 ubuntu-24.04-arm 原生构建。各推一个 -amd64 / -arm64 标签，再由
+  # oci_manifest 合成多架构 manifest —— 否则得用 QEMU 模拟编译 arm64，慢一个数量级。
+  oci:
+    name: 构建 OCI ${{ matrix.arch }}
+    if: inputs.pack_oci
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, os: ubuntu-latest,    platform: linux/amd64 }
+          - { arch: arm64, os: ubuntu-24.04-arm, platform: linux/arm64 }
+    steps:
+      - uses: actions/checkout@v7
+      - name: 解析镜像标签
+        id: meta
+        # 标签与产物名同一套规则：只有 beta 带通道段（beta 与 release 共用 3.y.z）。
+        # GHCR 只接受小写仓库名，所以这里显式转小写。
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          TAG="${{ inputs.version_name }}${{ inputs.channel_suffix }}"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "镜像：${IMAGE}:${TAG}-${{ matrix.arch }}"
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: 构建镜像
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          # 先只 load 到本地 daemon（不 push）：冒烟通过后才在下一步推上去
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}-${{ matrix.arch }}
+          build-args: |
+            WEBUI_URL=${{ inputs.webui_url }}
+            VERSION_NAME=${{ inputs.version_name }}
+            VERSION_COUNT=${{ inputs.count }}
+            BUILD_TYPE=${{ inputs.channel }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ inputs.version_name }}
+          cache-from: type=gha,scope=oci-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=oci-${{ matrix.arch }}
+          # 关掉 provenance：多架构 manifest 由 imagetools 合成，混进 attestation 会让
+          # index 里多出平台未知的条目（docker pull 时反而更难读）
+          provenance: false
+      - name: 冒烟测试镜像
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          IMG="${IMAGE}:${TAG}-${ARCH}"
+          # 1) 静态：二进制能跑（Linux server 走 openssl，缺 libssl 会直接起不来）、
+          #    jlink 出来的 JRE 与基础镜像的 glibc 兼容、捆绑的三件套都在
+          docker run --rm --entrypoint sh "$IMG" -c '
+            set -e
+            /opt/suwayomi/bin/suwayomi-server --version
+            /opt/suwayomi/jre/bin/java -version
+            test -f /opt/suwayomi/webui/index.html
+            test -f /opt/suwayomi/bin/jvm-sandbox.jar
+            if ldd /opt/suwayomi/bin/suwayomi-server | grep -q "not found"; then
+              echo "缺少动态库："
+              ldd /opt/suwayomi/bin/suwayomi-server | grep "not found"
+              exit 1
+            fi
+          '
+          # 2) 动态：真起一个容器，等到 HTTP 有响应为止（顺带验证端口绑定与 webui 目录解析）
+          docker run -d --name oci-smoke -p 18090:8090 "$IMG"
+          code="000"
+          for _ in $(seq 1 30); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18090/ || true)"
+            [ "$code" != "000" ] && break
+            sleep 2
+          done
+          docker logs oci-smoke 2>&1 | tail -30 || true
+          docker rm -f oci-smoke >/dev/null 2>&1 || true
+          [ "$code" != "000" ] || { echo "::error::容器 60 秒内没有任何 HTTP 响应"; exit 1; }
+          echo "容器响应 HTTP $code"
+      - name: 推送镜像
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          ARCH: ${{ matrix.arch }}
+        run: docker push "${IMAGE}:${TAG}-${ARCH}"
+
+  oci_manifest:
+    name: 合成 OCI 多架构 manifest
+    if: inputs.pack_oci
+    needs: oci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: imagetools create
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          TAG: ${{ inputs.version_name }}${{ inputs.channel_suffix }}
+        run: |
+          IMAGE="${IMAGE,,}"
+          # 两个单架构标签都在（上面的 push 步骤成功过）才合成，缺一个就明确失败
+          docker buildx imagetools inspect "${IMAGE}:${TAG}-amd64" >/dev/null
+          docker buildx imagetools inspect "${IMAGE}:${TAG}-arm64" >/dev/null
+          docker buildx imagetools create \
+            -t "${IMAGE}:${TAG}" \
+            "${IMAGE}:${TAG}-amd64" "${IMAGE}:${TAG}-arm64"
+          docker buildx imagetools inspect "${IMAGE}:${TAG}"

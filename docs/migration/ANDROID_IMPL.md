@@ -145,7 +145,8 @@ A9 的落地证据（模拟器 API 37 / x86_64）：
 
 A8 的落地：`build.yml` 里新增独立的 `android` job（装 `platforms;android-37.0` 与钉死版本的
 NDK 28.2 → `android/scripts/build-rust.sh` → WebUI 打进 assets → `:app:assembleRelease`），
-由 `release.yml` 的 `build_android_arm64` 开关控制，APK 命名并入 `pack_mode` 约定。
+由 `release.yml` 的 Android 开关控制（**后续演进**：单一 `build_android_arm64` 已换成
+`build_android_arm64` + `build_android_x64` 两个开关，再收成 `android_targets` 矩阵）。
 release 签名支持从 secret 注入 keystore，没配则回退 debug key。详见 `docs/release.md`。
 
 > 平台包名是 `platforms;android-37.0` 而非 `platforms;android-37`：API 36.1 起 Google 改为
@@ -200,6 +201,11 @@ release 签名支持从 secret 注入 keystore，没配则回退 debug key。详
 
 ## 5. 产物形态选项（`-core` / `+jre`）
 
+> **本节描述的选项组合已被取代**（在此留作施工记录）：`-core` 这个后缀后来被废除 ——
+> 它就是"不带 JRE 的基线包"的代号，而基线包永远存在，必然发生的事不该加后缀；于是
+> 「形态」不再是开关，`pack_jre` 只决定**要不要额外再出一份带 JRE 的**。当前规则以
+> `docs/release.md` 的「产物形态」一节为准。
+
 手动触发的构建除架构外还有一组**多选项**（可同时选中，非二选一）：
 
 - `-core`：不打包 JRE，最小构建 —— **默认选中**。
@@ -211,7 +217,8 @@ release 签名支持从 secret 注入 keystore，没配则回退 debug key。详
 需要裁剪产物的只有**非 Android 的 `+jre` 构建**；Android 的 APK 里没有 JRE 可裁。
 
 实现与数据见 `docs/release.md` 的「产物形态」与「JRE 裁剪」两节；本地验证脚本
-`.workbuddy/verify/ci_pack_check.py`（171 项断言，覆盖各 target × 各形态组合）。
+`.workbuddy/verify/ci_pack_check.py`（项数随改动增长，当前见 `docs/release.md`，
+覆盖各 target × 各形态组合）。
 
 `+jre` 带来的一个约束值得记下来：**jlink 不能跨平台生成运行时**，所以每个 target 的
 runner 必须与目标同架构 —— linux-arm64 因此改用 `ubuntu-24.04-arm`（顺带变成原生编译，

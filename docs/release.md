@@ -80,7 +80,7 @@
 - 默认包**必然产出**、没有开关。早先那个 `-core` 后缀已废弃：它本来就只是"不带 JRE 的基线包"的代号，而基线包永远存在，给必然发生的事加后缀没有信息量。
 - 只勾 Android 时桌面矩阵为空数组、`build` job 直接跳过；**只勾 OCI 时两个矩阵都空**，Release 会没有任何附件 —— 这是允许的，`publish` 里的附件列表用数组拼（裸 `artifacts/*` 在空目录下不展开，会把那个字面量当文件名传给 `gh`）。
 - 归档格式：Windows 出 `.zip`，其余出 `.tar.gz`。**两者的归档布局一致**，都带顶层目录名（`Suwayomi-…/bin/…`）—— 用真实产物核对过：Windows 是 `Compress-Archive -Path <目录>`（会把目录本身收进归档），Linux/macOS 是 `tar -C dist`。`.workbuddy/verify/ci_pack_check.py` 里有对应断言，将来想统一时先看那条用例。
-- 附件列表**只收 `Suwayomi-*`**，不是收 `artifacts/` 下所有文件：`download-artifact` 不区分来源，CI 内部的 artifact 也会一并拉下来 —— 实测 `docker/build-push-action` 的 `cache-to: type=gha` 就以上传缓存的形式产出 `~<owner>~<repo>~<hash>.dockerbuild`，被下载后名字里的 `~` 变 `.`、且**不含 `-` 分隔符**（早先按"名字里有没有 `-`"过滤根本挡不住），r3226 的两个 `.dockerbuild` 就这么混进了 Release。加过滤时按**正向白名单**写，别按黑名单。
+- 附件列表**只收 `Suwayomi-*`**，不是收 `artifacts/` 下所有文件：`download-artifact` 不区分来源，CI 内部的 artifact 也会一并拉下来 —— 实测 `docker/build-push-action` 的 `cache-to: type=gha` 就以上传缓存的形式产出 `~<owner>~<repo>~<hash>.dockerbuild`，被下载后名字里的 `~` 变 `.`、且**不含 `-` 分隔符**（早先按"名字里有没有 `-`"过滤根本挡不住），r3226 的两个 `.dockerbuild` 就这么混进了 Release。加过滤时按**正向白名单**写，别按黑名单。这条与 `download-artifact` 的 `merge-multiple: true` 是**成对约束**：`merge-multiple` 去掉后每个 artifact 会进各自子目录，扁平循环里的 `[ -f "$f" ]` 会把产物全判成目录跳过 → Release 零附件（打桩 harness 直接造文件，测不到这条路，所以脚本里做了结构断言）。
 
 ## OCI 镜像（`pack_oci`）
 
@@ -144,7 +144,7 @@
 改 workflow 不要靠推上去试错（一轮矩阵十几分钟还污染 release 列表）。用：
 
 ```bash
-python .workbuddy/verify/ci_pack_check.py    # 命名/基线包/+jre/Android 双 ABI/OCI 标签/notes 渲染/附件过滤（321 项）
+python .workbuddy/verify/ci_pack_check.py    # 命名/基线包/+jre/Android 双 ABI/OCI 标签/notes 渲染/附件过滤（326 项）
 python .workbuddy/verify/ci_equiv.py         # 上一轮"合并两个 workflow"的等价性对照
 bash   .workbuddy/verify/check_jre_arch.sh   # make-jre.sh 的宿主探测 + 产物自检（37 项，按标记抽真代码）
 bash   .workbuddy/verify/e2e_host_jmods.sh   # 「宿主自带 jmods 就跳过下载」分支的端到端（本地默认走不到）

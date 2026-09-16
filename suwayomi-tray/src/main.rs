@@ -530,6 +530,13 @@ fn main() {
                 .expect("build settings page response")
         })
         .setup(|app| {
+            // macOS：托盘应用按「菜单栏附件」对待（NSApplicationActivationPolicyAccessory），
+            // 否则非 bundle 的裸可执行文件会在 Dock 里占一个图标、并且抢激活。窗口仍能正常
+            // 显示/聚焦，只是不进 Dock、不出现在 Cmd-Tab 列表。Windows/Linux 没有这个概念，
+            // 该 API 本身也是 macOS 专属（`#[cfg(target_os = "macos")]`）。
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             let settings = load_settings();
             let port = settings.port;
             let data = data_dir_of(&settings);

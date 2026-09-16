@@ -48,6 +48,7 @@
 
 - **每个 target 的 runner 必须与目标同架构**：`+jre` 用 jlink 生成，而 **jlink 不能跨平台生成运行时**（实测：Windows 的 jlink + linux-aarch64 的 jmods，产出的 `bin/java` 是 PE 头加一堆 `.dll` —— launcher 与原生库取自宿主 JDK）。所以 linux-arm64 用 arm64 runner（原生编译，顺带不再需要交叉工具链），x64 的 macOS 用 `macos-15-intel`。
 - `macos-13` 已被 GitHub 下线，x64 macOS 现为 `macos-15-intel`。
+- **矩阵里每个桌面 target 都出托盘壳与 `bin/jvm-sandbox.jar`**（Windows / Linux x64+arm64 / macOS x64+arm64）。Linux 侧因此无论架构都装同一套 webkit2gtk/appindicator 依赖；tray 有自己的 workspace 与 `target/`，各 runner 原生编译。Android 不在这个矩阵里。
 - 平台开关默认只勾 Windows x64 + Linux x64。
 
 ## 产物形态（`-core` / `+jre`）
@@ -90,9 +91,10 @@
 
 ## 产物与捆绑
 
-- **不再捆绑 Electron**：WebUI 桌面窗口由托盘经系统 WebView 打开（Win WebView2 / Linux WebKitGTK），无 WebView 的环境托盘回退系统浏览器。
-- 扩展沙盒（`bin/jvm-sandbox.jar`）：带桌面壳的产物都产（Windows 全支持；Linux 仅 x64，arm64 只发 server）。jar 是跨平台字节码，各 target 各自 gradle 构建。
-- Linux 跑扩展需要 JRE：勾 `+jre` 即自带 `jre/`。
+- **不再捆绑 Electron**：WebUI 桌面窗口由托盘经系统 WebView 打开（Win WebView2 / Linux WebKitGTK / macOS WKWebView），无 WebView 的环境托盘回退系统浏览器。
+- 桌面壳（Tauri 托盘）：**所有桌面 target 都出**（Windows / Linux x64+arm64 / macOS x64+arm64），Android 由独立的 `android` job 出 APK、不带桌面壳。各平台都是原生 runner 编译（tray 有自己的 workspace 与 `target/`）。
+- 扩展沙盒（`bin/jvm-sandbox.jar`）：**所有桌面 target 都带**（jar 是跨平台字节码，各 target 各自 gradle 构建）。server 跑扩展靠它，任何 target 都不能少。
+- 不打包 JRE 的场合：`-core`、Android。桌面端 Linux 基础包历来也不捆（可自行装系统 OpenJDK 或取 `+jre` 包），勾 `+jre` 即自带 `jre/`。
 
 ## Android 产物
 
@@ -109,15 +111,19 @@
 ## 桌面壳 / 扩展沙盒构建注意
 
 - Linux runner 直接执行的脚本必须 git mode `100755`（Windows 提交默认 100644 且 `core.filemode=false`，需 `git update-index --chmod=+x`）——`./gradlew` 曾因此 Permission denied。
-- 桌面壳二进制经 `bash suwayomi-tray/build-tray.sh` 构建；Windows 出 `suwayomi.exe`，Linux/macOS 无后缀。
+- 桌面壳二进制经 `bash suwayomi-tray/build-tray.sh` 构建（普通 `cargo build --release`，不走 `tauri build`）；Windows 出 `suwayomi.exe`，Linux/macOS 无后缀。因此产物里是**裸可执行文件**，没有 macOS `.app` bundle / `.dmg`、也没有 Linux AppImage —— 需要这些得改成 `tauri build` 并补 iOS/打包依赖。
+- Linux 上跑桌面壳要先装 webkit2gtk/appindicator 等系统依赖（CI 里那条 `apt-get install` 就是）；无图形会话时托盘自动降级为前台 server。
+- macOS 上托盘进程设为 `ActivationPolicy::Accessory`（不占 Dock、不进 Cmd-Tab），与 Windows 托盘行为对齐。
 
 ## CI 改动的本地验证
 
 改 workflow 不要靠推上去试错（一轮矩阵十几分钟还污染 release 列表）。用：
 
 ```bash
-python .workbuddy/verify/ci_pack_check.py    # 本轮 -core/+jre/Android 的验证（171 项）
+python .workbuddy/verify/ci_pack_check.py    # -core/+jre/Android/托盘与沙盒的验证（177 项）
 python .workbuddy/verify/ci_equiv.py         # 上一轮"合并两个 workflow"的等价性对照
 ```
 
 做法（详见 `gh-actions-verify` 技能）：把 `run:` 块抽出来、按场景替换 `${{ }}`、外部 CLI 打桩、在最小的假仓库骨架里真跑，断言 `$GITHUB_OUTPUT` / 产物名 / 归档内容 / gh 的 `--notes`。
+
+**但它验不到"脚本在真平台上会不会炸"**：打桩会把 `make-jre.sh` 之类跳过去，platform 专属代码路径（Windows 的 PE 分支、macOS 的 Mach-O 分支、Android 的 SDK 安装）在本地根本不会被执行。这类问题只能真跑 CI，或本地人为复现条件（例如 `PYTHONIOENCODING=cp1252` 复现 Windows 的 Python 编码）。打桩的行为也要跟真实工具对齐 —— zip 布局那条断言就曾按错误模型写（`Compress-Archive -Path <dir>` 其实把目录本身收进归档），核对真实产物才发现。

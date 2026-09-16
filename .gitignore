@@ -16,10 +16,8 @@ target/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# Local databases / data dirs (Phase 7 tooling outputs)
+# Local data dir（从仓库根跑 server 时会生成 data/）
 data/
-# Legacy embedded-PostgreSQL data directory (backend removed on the dev branch)
-pglite-data/
 *.db
 *.db.mv.db
 

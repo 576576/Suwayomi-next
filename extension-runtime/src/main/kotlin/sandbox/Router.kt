@@ -117,16 +117,23 @@ class Router(private val registry: SourceRegistry) : HttpHandler {
 
     private fun notFound(): HttpResponse = HttpResponse(404, """{"error":"not found"}""")
 
+    /**
+     * 手写 JSON 序列化（`sandbox.Json` 的 `jsonStr` 只负责转义字符串）。
+     *
+     * [jsonValue] 对任意 `Any?` 分派 —— 不能假设列表元素都是 Map：图源 filter 的
+     * `values` 就是 `List<String>`，旧写法在 `is List<*>` 分支里无条件强转 Map，
+     * 于是 `/source/{id}/filters` 直接 500（`String cannot be cast to Map`）。
+     */
     private fun mapToJson(m: Map<String, Any?>): String =
-        m.entries.joinToString(",") { (k, v) ->
-            when (v) {
-                null -> """${jsonStr(k)}:null"""
-                is Number, is Boolean -> """${jsonStr(k)}:$v"""
-                is Map<*, *> -> """${jsonStr(k)}:${mapToJson(@Suppress("UNCHECKED_CAST") (v as Map<String, Any?>))}"""
-                is List<*> -> """${jsonStr(k)}:[${v.joinToString(",") { mapToJson(@Suppress("UNCHECKED_CAST") (it as Map<String, Any?>)) }}]"""
-                else -> """${jsonStr(k)}:${jsonStr(v.toString())}"""
-            }
-        }.let { "{${it}}" }
+        m.entries.joinToString(",") { (k, v) -> """${jsonStr(k)}:${jsonValue(v)}""" }.let { "{${it}}" }
+
+    private fun jsonValue(v: Any?): String = when (v) {
+        null -> "null"
+        is Number, is Boolean -> v.toString()
+        is Map<*, *> -> mapToJson(@Suppress("UNCHECKED_CAST") (v as Map<String, Any?>))
+        is List<*> -> "[${v.joinToString(",") { jsonValue(it) }}]"
+        else -> jsonStr(v.toString())
+    }
 
     private fun decodeSeg(s: String): String =
         URLDecoder.decode(s, StandardCharsets.UTF_8)

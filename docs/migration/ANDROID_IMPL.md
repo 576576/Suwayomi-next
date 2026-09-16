@@ -128,7 +128,20 @@ crates/suwayomi-server/      lib.rs 抽出启动逻辑；android 模块提供 JN
 | A6 | Android App：WebView 打开本地 WebUI，Application 启服/停服 | ✅ |
 | A7 | Android 安装/卸载：唤起系统安装器（`ACTION_VIEW` + FileProvider）、`ACTION_DELETE` 卸载，完成后重新发现扩展 | ✅ |
 | A8 | CI：android-arm64 目标（cargo cross + Gradle assemble），产物命名并入 `pack_mode` | ⬜ |
-| A9 | 端到端验证：模拟器/真机上启动、WebUI 可访问、已装扩展可搜索/看章节 | 进行中 |
+| A9 | 端到端验证：模拟器/真机上启动、WebUI 可访问、已装扩展可搜索/看章节 | ✅（图源联网抓取受环境网络限制，见下） |
+
+A9 的落地证据（模拟器 API 37 / x86_64）：
+
+| 项 | 结果 |
+|---|---|
+| server 启动 + WebUI | `server listening on http://127.0.0.1:4567`，`/version.txt` 与 WebUI 首页均 200 |
+| 扩展入表 | `extension sync at startup: 22 source(s) registered`；GraphQL `extensions` → 1 条、`sources` → 23 条 |
+| 扩展**真实执行** | `GET /source/{id}/filters` → 200，13 个 filter（`select`/`text`/`title`/`group`，含 `List<String>` 类型的 `values`）—— 这是扩展自己的 `getFilterList()` 在 ART 里跑出来的 |
+| 安装链路 | APK intent → 系统安装器「Update this app?」→ App updated → 回前台自动重扫 22 源 |
+| 卸载链路 | 卸载 → 回前台重扫 0 extension → `fetchExtensions` 后 `isInstalled=false` |
+
+**未覆盖**：图源联网抓取（`/source/{id}/manga`）在本机网络下不可达 —— 宿主与宿主机都连不上
+`nhentai.com`（`curl` 超时 / `ConnectException`），属环境限制而非代码问题，换一个可达图源即可补测。
 
 `ACTION_INSTALL_PACKAGE` 在 API 29 起废弃，且不带 `REQUEST_INSTALL_PACKAGES` 时直接被
 `FileUriExposedException` / 系统拒绝；实际用的是 `ACTION_VIEW` +

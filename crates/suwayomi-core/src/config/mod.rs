@@ -74,6 +74,12 @@ pub struct ServerConfig {
     pub auth_mode: String,
     pub auth_username: String,
     pub auth_password: String,
+    /// JWT `aud` 声明（UI_LOGIN 用）。空表示不校验。
+    pub jwt_audience: String,
+    /// access token 有效期（`5m` / `PT5M`）。
+    pub jwt_token_expiry: String,
+    /// refresh token 有效期（`60d` / `P60D`）。
+    pub jwt_refresh_expiry: String,
     /// KOReader sync: checksum source (default Filename).
     pub koreader_sync_checksum_method: KoreaderSyncChecksumMethod,
     /// KOReader sync: conflict strategy when remote progress is newer.
@@ -118,6 +124,9 @@ impl Default for ServerConfig {
             auth_mode: "DISABLED".into(),
             auth_username: String::new(),
             auth_password: String::new(),
+            jwt_audience: "suwayomi-server-api".into(),
+            jwt_token_expiry: "5m".into(),
+            jwt_refresh_expiry: "60d".into(),
             koreader_sync_checksum_method: KoreaderSyncChecksumMethod::Filename,
             koreader_sync_strategy_forward: KoreaderSyncConflictStrategy::KeepRemote,
             koreader_sync_strategy_backward: KoreaderSyncConflictStrategy::KeepRemote,

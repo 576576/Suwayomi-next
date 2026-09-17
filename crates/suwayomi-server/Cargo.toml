@@ -25,6 +25,7 @@ tracing-subscriber.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
+getrandom.workspace = true
 clap = { version = "4", features = ["derive"] }
 
 [target.'cfg(windows)'.build-dependencies]

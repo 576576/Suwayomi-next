@@ -18,6 +18,20 @@ pub fn router() -> Router<AppState> {
         .route("/refresh", post(refresh))
 }
 
+/// `{pkg_name}` 会直接参与路径拼接（`<cache>/extensions/icons/{pkg}.{ext}`）并转交
+/// 给沙盒，必须挡住路径穿越：`..%2F..%2Fsecret` 这类值经 axum 解码后就是两个分段。
+/// 扩展包名本身的字符集是 Android 包名加仓库里用到的 `-`/`_`，按这个白名单收窄。
+fn checked_pkg_name(pkg: &str) -> ApiResult<&str> {
+    let is_valid = !pkg.is_empty()
+        && pkg.len() <= 200
+        && !pkg.starts_with('.')
+        && pkg.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if !is_valid {
+        return Err(ApiError::BadRequest(format!("invalid extension package name {pkg:?}")));
+    }
+    Ok(pkg)
+}
+
 async fn list(State(s): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
     let rows = suwayomi_db::query("SELECT * FROM extension ORDER BY name ASC")
         .fetch_all(s.db.pool())
@@ -56,6 +70,7 @@ async fn list(State(s): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
 /// 三条路都要求**真的图片字节**（`looks_like_image`），否则 404 正文会被当成图标
 /// 写进缓存，并被后续请求一直"命中"。
 async fn icon(State(s): State<AppState>, Path(pkg): Path<String>) -> ApiResult<axum::response::Response> {
+    let pkg = checked_pkg_name(&pkg)?.to_string();
     // 磁盘缓存：<cache>/extensions/icons/{pkg}.{png|jpg|webp}（按内容类型定扩展名）
     let cache_dir = crate::routes::cache_root().join("extensions").join("icons");
 
@@ -121,24 +136,27 @@ async fn icon(State(s): State<AppState>, Path(pkg): Path<String>) -> ApiResult<a
 }
 
 async fn install(State(s): State<AppState>, Path(pkg): Path<String>) -> ApiResult<Json<serde_json::Value>> {
+    let pkg = checked_pkg_name(&pkg)?;
     s.extension_store
-        .install(&pkg)
+        .install(pkg)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(serde_json::json!({ "installed": true, "pkgName": pkg })))
 }
 
 async fn update(State(s): State<AppState>, Path(pkg): Path<String>) -> ApiResult<Json<serde_json::Value>> {
+    let pkg = checked_pkg_name(&pkg)?;
     s.extension_store
-        .install(&pkg) // install() replaces the previous version's file
+        .install(pkg) // install() replaces the previous version's file
         .await
         .map_err(ApiError::from)?;
     Ok(Json(serde_json::json!({ "updated": true, "pkgName": pkg })))
 }
 
 async fn uninstall(State(s): State<AppState>, Path(pkg): Path<String>) -> ApiResult<Json<serde_json::Value>> {
+    let pkg = checked_pkg_name(&pkg)?;
     s.extension_store
-        .uninstall(&pkg)
+        .uninstall(pkg)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(serde_json::json!({ "uninstalled": true, "pkgName": pkg })))

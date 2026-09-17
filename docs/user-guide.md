@@ -29,12 +29,63 @@ cargo run --release -p suwayomi-server
 | `SUWAYOMI_SQLITE_PATH` | `<数据库目录>/suwayomi.db` | SQLite 数据库文件路径（显式指定时不做旧库迁移） |
 | `SUWAYOMI_DB_BACKEND` | `sqlite` | 后端：`sqlite` / `postgres` |
 | `SUWAYOMI_DATABASE_URL` | （空） | PostgreSQL 连接串（设置后自动改用外部 PostgreSQL，如 `postgres://user:pass@host:5432/db`） |
-| `SUWAYOMI_AUTH_MODE` | `DISABLED` | 认证模式：`DISABLED` / `SIMPLE_LOGIN` / `BASIC_AUTH` |
-| `SUWAYOMI_AUTH_USERNAME` / `SUWAYOMI_AUTH_PASSWORD` | — | 认证凭据 |
+| `SUWAYOMI_AUTH_MODE` | `DISABLED` | 认证模式：`DISABLED` / `BASIC_AUTH` / `SIMPLE_LOGIN` / `UI_LOGIN` |
+| `SUWAYOMI_AUTH_USERNAME` / `SUWAYOMI_AUTH_PASSWORD` | — | 认证凭据（用户名与密码都不能为空，否则服务端拒绝启动） |
+| `SUWAYOMI_JWT_AUDIENCE` | `suwayomi-server-api` | JWT 的 `aud` 声明 |
+| `SUWAYOMI_JWT_TOKEN_EXPIRY` | `5m` | 访问令牌有效期（也接受 `PT5M` 这类 ISO-8601 写法） |
+| `SUWAYOMI_JWT_REFRESH_EXPIRY` | `60d` | 刷新令牌有效期 |
+| `SUWAYOMI_SESSION_SECRET` | — | 会话 cookie 与 JWT 的签名密钥；未设置时首次启动生成 `<数据库目录>/session.key` |
+| `SUWAYOMI_AUTH_COOKIE_SECURE` | — | 设为 `1` 时给会话 cookie 加 `Secure`（仅 HTTPS 反代后开启） |
 | `SUWAYOMI_SANDBOX_JAR` | — | JVM 扩展沙盒 jar 路径（未设置则扩展源不可用） |
 | `SUWAYOMI_SANDBOX_PORT` | `8091` | 沙盒 HTTP 端口 |
 | `SUWAYOMI_EXTENSIONS_DIR` | `./extensions` | 扩展 APK 目录（只放 APK） |
 | `SUWAYOMI_JAR_DIR` | `<extensions>/../bin/extensions` | dex2jar 转换产物 jar 目录 |
+
+## 认证
+
+默认 `DISABLED`（不认证）。开启后，**所有数据接口都要凭据**：`/api/v1/**`、
+`/api/graphql`（含 WebSocket 订阅）、`/api/opds/v1.2/**`、`/api/v1/local/**` 与
+`/local/**`。WebUI 的静态产物（`/assets/*`、`/favicon.svg`、`/sw.js` 等）匿名可读——
+否则登录页本身都加载不出来——但 `index.html` 不在豁免之内。
+
+| 模式 | 凭据通道 | 未认证时 |
+| --- | --- | --- |
+| `DISABLED` | 不需要 | 一切照常（启动时日志会打一条 warning） |
+| `BASIC_AUTH` | 每个请求的 `Authorization: Basic` | 页面与接口都回 `401` + `WWW-Authenticate` |
+| `SIMPLE_LOGIN` | 登录一次换取会话 cookie（30 分钟） | 页面 `303` 到 `/login.html`，接口 `401` |
+| `UI_LOGIN` | 登录一次换取访问 / 刷新令牌（JWT） | 接口 `401`，页面照常返回外壳 → WebUI 自己弹登录页 |
+
+**登录页**：`GET /login.html` 是服务端自渲染的最小表单（内联样式、零外部资源），
+`POST /login.html`（字段 `user` / `pass`）成功后种下签名会话 cookie 并 `303` 回
+`?redirect=` 指定的站内路径。`GET /logout` 清 cookie。`UI_LOGIN` 的 WebUI 走的是
+GraphQL 的 `login` / `refreshToken`，不需要这两个页面。
+
+**别把服务暴露到公网还开着 `DISABLED`**；`BASIC_AUTH` / `SIMPLE_LOGIN` 只做认证不做
+传输加密，公网部署请套 HTTPS 反代并设 `SUWAYOMI_AUTH_COOKIE_SECURE=1`。
+
+**`?token=` 查询参数**只在 OPDS 与章节取页路径上接受
+（`/api/opds/**`、`/api/v1/manga/{id}/chapter/{n}/page/{i}`）。查询参数会进访问日志与
+浏览器历史，所以其余接口只认请求头或 cookie。
+
+**CSRF**：靠 cookie 认证且方法不是 GET/HEAD/OPTIONS 的请求，会校验 `Origin` 同源与
+`Sec-Fetch-Site`。用 Basic 或 Bearer 的请求不受影响（浏览器不会自动带上它们）。
+
+**设置页**：WebUI 的「设置 → 高级 → 服务器设置 → 认证」可以改模式与凭据。改动先落在
+草稿里，`Save` 才提交、`Discard` 丢弃。认证参数是**启动时读取**的——保存后需要重启服务端
+才生效。环境变量优先于设置页里保存的值；两者都空则用默认值。清空凭据并保持认证开启会让
+服务端拒绝启动（页面上会拦住这个组合）。
+
+`DISABLED` 下不签发任何凭据：`login` 与 `POST /login.html` 一律失败。关掉认证的实例上
+拿不到令牌，所以也就不存在「趁认证关着先换好令牌、等管理员打开认证后继续用」这条路。
+
+### 从旧版迁移
+
+旧版的 `SIMPLE_LOGIN` 只拦页面，`/api/**` 完全不设防。升级后这部分接口需要凭据：
+
+- WebUI 用户无感（浏览器带着会话 cookie）。
+- 直连 API 的脚本 / 第三方客户端要给 Basic 凭据，或先 `POST /login.html` 拿到
+  `logged-in` cookie 再带着它请求。
+- `/api/v1/local/**` 在本项目里也属于数据接口，同样需要凭据。
 
 ## 从 Kotlin 版迁移
 
@@ -79,3 +130,6 @@ docker run -p 8090:8090   -e SUWAYOMI_DB_BACKEND=postgres   -e SUWAYOMI_DATABASE
   多实例并发写请切到外部 PostgreSQL。
 - 真实扩展源（Mihon APK→JAR）依赖 JVM 沙盒（`SUWAYOMI_SANDBOX_JAR`）；
   未配置时来源相关端点返回"source unavailable"。
+- WebUI 只在内存里保存访问令牌，刷新页面后靠持久化的刷新令牌重新换取。换令牌之前
+  发出的请求会先拿到一次 `401`，客户端据此触发展开——服务端访问日志里出现零星
+  `401 /api/graphql` 属正常。

@@ -8,16 +8,20 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::{ConnectInfo, State};
+use axum::extract::{ConnectInfo, Extension, State};
 use axum::http::StatusCode;
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
+use suwayomi_core::auth::Principal;
 use suwayomi_core::config::ServerConfig;
 use suwayomi_core::db::{Db, DbSettings};
 use suwayomi_domain::source::{SourceFetcher, StubFetcher};
 use suwayomi_rest::AppState;
+
+/// 认证参数的启动期解析（env → 设置 → 默认值）。
+pub mod auth_setup;
 
 /// Build version name — `r{versionCode}`（由 suwayomi-core/build.rs 统一注入）。
 pub const VERSION: &str = suwayomi_core::version::VERSION;
@@ -47,6 +51,15 @@ pub fn config_from_env() -> ServerConfig {
     }
     if let Ok(v) = std::env::var("SUWAYOMI_AUTH_PASSWORD") {
         cfg.auth_password = v;
+    }
+    if let Ok(v) = std::env::var("SUWAYOMI_JWT_AUDIENCE") {
+        cfg.jwt_audience = v;
+    }
+    if let Ok(v) = std::env::var("SUWAYOMI_JWT_TOKEN_EXPIRY") {
+        cfg.jwt_token_expiry = v;
+    }
+    if let Ok(v) = std::env::var("SUWAYOMI_JWT_REFRESH_EXPIRY") {
+        cfg.jwt_refresh_expiry = v;
     }
     cfg
 }
@@ -116,16 +129,28 @@ fn build_router(
 ) -> Router {
     let api = Router::new()
         .nest("/api/v1", suwayomi_rest::routes::api_v1_router())
-        .nest("/api", suwayomi_graphql::schema::graphql_router(graphql_schema))
+        .nest("/api", suwayomi_graphql::schema::graphql_router(graphql_schema, state.auth.clone()))
         .nest("/api/opds/v1.2", suwayomi_opds::router::opds_router())
         // 优雅关闭端点（托盘用）：触发 axum graceful shutdown → Db drop 停
-        // postgres、杀 JVM 沙盒子进程。仅限 loopback。
+        // postgres、杀 JVM 沙盒子进程。
+        //
+        // 要凭据，但**放行不带 `Origin` 的本机调用**：桌面托盘是裸 HTTP 客户端，
+        // 拿不到凭据；而浏览器发的 POST 一定带 `Origin`（恶意页面从本机页面
+        // 触发它才是真正的风险）。两条判据叠加后，跨站页面仍打不进来。
         .route(
             "/api/v1/shutdown",
             post(
-                move |ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>| async move {
+                |State(state): State<AppState>,
+                 ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+                 Extension(principal): Extension<Principal>,
+                 headers: axum::http::HeaderMap| async move {
                     if !addr.ip().is_loopback() {
                         return (StatusCode::FORBIDDEN, "shutdown only allowed from loopback");
+                    }
+                    let from_browser = headers.contains_key(axum::http::header::ORIGIN)
+                        || headers.contains_key("sec-fetch-site");
+                    if !state.auth.is_disabled() && !principal.is_authenticated() && from_browser {
+                        return (StatusCode::UNAUTHORIZED, "shutdown requires authentication");
                     }
                     let _ = shutdown_tx.send(true);
                     (StatusCode::OK, "shutdown requested")
@@ -136,11 +161,21 @@ fn build_router(
         .route("/local/{*path}", get(local_file))
         .route("/api/v1/local/{*path}", get(local_file));
 
+    // 登录流程：服务端自渲染的最小页面，不依赖 /assets/*（issue #5 的白屏就是
+    // 重定向到一个并不存在的登录页，落到 SPA fallback 后又被门禁掐死 assets）。
+    let login = Router::new()
+        .route(
+            "/login.html",
+            get(suwayomi_rest::auth::login_page).post(suwayomi_rest::auth::login_submit),
+        )
+        .route("/logout", get(suwayomi_rest::auth::logout));
+
     let auth = middleware::from_fn_with_state(state.clone(), suwayomi_rest::auth::require_auth);
     if state.webui_dir.join("index.html").is_file() {
         tracing::info!("webui static hosting from {}", state.webui_dir.display());
         Router::new()
             .merge(api)
+            .merge(login)
             .fallback(webui_fallback)
             .layer(auth)
             .with_state(state)
@@ -149,6 +184,7 @@ fn build_router(
             .route("/", get(index))
             .route("/api/v1", get(index))
             .merge(api)
+            .merge(login)
             .layer(auth)
             .with_state(state)
     }
@@ -157,10 +193,14 @@ fn build_router(
 /// 服务本地图源文件（封面/页面/归档内图片），防路径穿越
 async fn local_file(State(_state): State<AppState>, path: axum::extract::Path<String>) -> Response {
     let rel = path.replace('\\', "/");
-    if rel.is_empty() || rel.split('/').any(|seg| seg == "..") || rel.contains("://") {
+    if !suwayomi_rest::auth::is_safe_rel(&rel) || rel.contains("://") {
         return StatusCode::BAD_REQUEST.into_response();
     }
     let root = suwayomi_domain::source::local::local_source_root();
+    // 拼接结果必须还在 root 之下：Windows 上带盘符的绝对路径会整体替换 base
+    if !root.join(&rel).starts_with(&root) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
     let file = root.join(&rel);
     if file.is_file() {
         return read_file_response(&file).await;
@@ -218,18 +258,25 @@ fn image_content_type(name: &str) -> &'static str {
 }
 
 /// WebUI 静态托管 fallback：存在则返回文件，否则回退 index.html（SPA 路由）
+///
+/// 路径一律经 [`suwayomi_rest::auth::safe_join`] 解析——`dir.join(rel)` 允许
+/// `..` 与 Windows 盘符绝对路径逃出目录，等于把整个磁盘暴露出去。
 async fn webui_fallback(State(state): State<AppState>, uri: axum::http::Uri) -> Response {
     let dir = &state.webui_dir;
     let rel = uri.path().trim_start_matches('/');
-    let candidate = if rel.is_empty() {
-        dir.join("index.html")
+    let resolved = if rel.is_empty() {
+        Some(dir.join("index.html"))
     } else {
-        dir.join(rel)
+        // 先解码再判越界（`%2f` 写法必须被识破），且**不要求文件存在**：
+        // 深链接要回退到 index.html，用要求文件存在的 safe_join 会让刷新变 404。
+        suwayomi_rest::auth::safe_public_path(dir, rel)
     };
-    let file = if candidate.is_file() {
-        candidate
-    } else {
-        dir.join("index.html")
+    let file = match resolved {
+        Some(path) if path.is_file() => path,
+        // 目录内不存在的普通路径按 SPA 深链接处理
+        Some(_) => dir.join("index.html"),
+        // 越界路径（`..`、盘符、NTFS 数据流）直接 404，不回退 index.html
+        None => return StatusCode::NOT_FOUND.into_response(),
     };
     match tokio::fs::read(&file).await {
         Ok(bytes) => {
@@ -287,11 +334,8 @@ fn blob_str(json: &serde_json::Value, key: &str) -> Option<String> {
 
 /// 把持久化的 localSourcePath（setSettings 存的 global_meta）还原到进程内
 /// 本地图源根目录 override，自定义目录重启后仍生效
-async fn load_local_source_path(db: &Db) {
-    let Some(json) = load_settings_blob(db).await else {
-        return;
-    };
-    let Some(p) = blob_str(&json, "localSourcePath") else {
+fn load_local_source_path(blob: Option<&serde_json::Value>) {
+    let Some(p) = blob.and_then(|json| blob_str(json, "localSourcePath")) else {
         return;
     };
     suwayomi_domain::source::local::set_local_source_root(Some(std::path::PathBuf::from(&p)));
@@ -306,8 +350,8 @@ async fn load_local_source_path(db: &Db) {
 ///
 /// 这一项之所以能存进库里，是因为**数据库文件不在数据目录下**
 /// （见 `suwayomi_db::config::default_db_dir`）。
-async fn load_data_dir_setting(db: &Db, fallback: std::path::PathBuf) -> std::path::PathBuf {
-    let Some(dir) = load_settings_blob(db).await.and_then(|json| blob_str(&json, "dataDir")) else {
+fn load_data_dir_setting(blob: Option<&serde_json::Value>, fallback: std::path::PathBuf) -> std::path::PathBuf {
+    let Some(dir) = blob.and_then(|json| blob_str(json, "dataDir")) else {
         return fallback;
     };
     let dir = std::path::PathBuf::from(dir);
@@ -387,13 +431,31 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
     .await
     .map_err(anyhow::Error::from)?;
 
+    // WebUI 写的那份设置（`global_meta['settings']`）：下面几项启动期设置都从
+    // 它兜底，只查一次
+    let settings_blob = load_settings_blob(&db).await;
+
     // 还原持久化的 localSourcePath，重启后自定义本地图源目录仍生效
-    load_local_source_path(&db).await;
+    load_local_source_path(settings_blob.as_ref());
 
     // 存储位置（dataDir）同样从设置里读 —— 数据库文件不在这个目录下，所以它
     // 可以被随便改而不影响设置本身（见 suwayomi_db::config::default_db_dir）
-    let data_dir = load_data_dir_setting(&db, data_dir).await;
+    let data_dir = load_data_dir_setting(settings_blob.as_ref(), data_dir);
     tracing::info!("data dir: {}", data_dir.display());
+
+    // 认证：模式解析失败直接不启动。静默退化成「无认证」比启动失败危险得多。
+    let mut config = config;
+    let (auth, secret_source) =
+        auth_setup::resolve(&config, settings_blob.as_ref(), &suwayomi_db::config::default_db_dir())?;
+    config.auth_mode = auth.mode.as_str().to_string();
+    config.auth_username = auth.username.clone();
+    config.auth_password = auth.password.clone();
+    config.jwt_audience = auth.jwt_audience.clone();
+    let auth = Arc::new(auth);
+    tracing::info!("auth mode: {} (session secret: {})", auth.mode.as_str(), secret_source.describe());
+    if auth.is_disabled() {
+        tracing::warn!("authentication is disabled; the library is reachable by anyone who can reach this port");
+    }
 
     // 扩展来源（见 docs/migration/ANDROID_IMPL.md）：
     // * Spawn    —— 桌面默认：拉起 JVM 沙盒子进程（jar 由调用方解析好）
@@ -462,12 +524,20 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
         tracing::warn!("downloads reconcile failed: {e}");
     }
 
-    let graphql_state = suwayomi_graphql::GraphQLState::new(db.clone(), config.clone(), fetcher.clone(), sandbox_base.clone(), webui_dir.clone(), data_dir_path.clone());
+    let graphql_state = suwayomi_graphql::GraphQLState::new(db.clone(), config.clone(), auth.clone(), fetcher.clone(), sandbox_base.clone(), webui_dir.clone(), data_dir_path.clone());
     // Scheduled auto-backup loop (`autoBackupFrequency`/`backupPath` settings).
     suwayomi_graphql::autobackup::spawn(graphql_state.clone());
     let schema = suwayomi_graphql::schema::build_schema(graphql_state);
     tracing::info!("graphql schema ready ({} type definitions)", suwayomi_graphql::schema::schema_type_count());
-    let state = AppState::new(db.clone(), config.clone(), fetcher, sandbox_base, webui_dir.clone(), data_dir_path.clone());
+    let state = AppState::new(
+        db.clone(),
+        config.clone(),
+        auth.clone(),
+        fetcher,
+        sandbox_base,
+        webui_dir.clone(),
+        data_dir_path.clone(),
+    );
     // shutdown 通知通道：POST /api/v1/shutdown（或 Ctrl+C）触发优雅关闭，
     // 干净停掉数据库连接与沙盒子进程而非遗留孤儿
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);

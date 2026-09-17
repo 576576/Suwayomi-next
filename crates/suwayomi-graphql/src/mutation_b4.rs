@@ -1830,28 +1830,44 @@ impl MutationRootB4 {
         }
         Ok(SetSettingsPayload {
             client_mutation_id: input.client_mutation_id,
-            settings: crate::settings::SettingsType::from_config(&state.config),
+            // 回读刚写下去的值：直接回 `from_config` 会把改动前的旧值当成保存结果，
+            // 前端写进 Apollo 缓存后表现为"保存了但显示没变"。
+            settings: state.effective_settings().await,
         })
     }
 
-    /// Mirrors `login` — SIMPLE_LOGIN auth (Phase 6 wires JWT issuance).
-    async fn login(&self, _ctx: &Context<'_>, input: LoginInput) -> async_graphql::Result<LoginPayload> {
-        let _ = (input.username, input.password);
-        Ok(LoginPayload {
-            access_token: String::new(),
-            client_mutation_id: input.client_mutation_id,
-            refresh_token: String::new(),
-        })
+    /// Mirrors `login` — UI_LOGIN 模式下 WebUI 的登录入口。
+    ///
+    /// 用户名密码比对成功即签发一对 JWT；失败返回与其它未认证请求同样的
+    /// `UnauthorizedException` 文案（WebUI 靠它识别认证失败）。
+    async fn login(&self, ctx: &Context<'_>, input: LoginInput) -> async_graphql::Result<LoginPayload> {
+        let state = ctx.data::<GraphQLState>()?;
+        if !state.auth.verify_credentials(&input.username, &input.password) {
+            return Err(async_graphql::Error::new(unauthorized_message()));
+        }
+        let (access_token, refresh_token) = state.auth.issue_tokens(suwayomi_core::auth::now());
+        Ok(LoginPayload { access_token, client_mutation_id: input.client_mutation_id, refresh_token })
     }
 
+    /// Mirrors `refreshToken` — 用 refresh token 换新的 access token。
     async fn refresh_token(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: RefreshTokenInput,
     ) -> async_graphql::Result<RefreshTokenPayload> {
-        let _ = input.refresh_token;
-        Ok(RefreshTokenPayload { access_token: String::new(), client_mutation_id: input.client_mutation_id })
+        let state = ctx.data::<GraphQLState>()?;
+        if !state.auth.verify_token(&input.refresh_token, "refresh", suwayomi_core::auth::now()) {
+            return Err(async_graphql::Error::new(unauthorized_message()));
+        }
+        let access_token = state.auth.issue_access_token(suwayomi_core::auth::now());
+        Ok(RefreshTokenPayload { access_token, client_mutation_id: input.client_mutation_id })
     }
+}
+
+/// WebUI 的 `GraphQLClient.isAuthError` 就是按这个名字识别「凭据无效」的，
+/// 与上游 `UnauthorizedException` 的类名一致——改它之前先改前端。
+fn unauthorized_message() -> String {
+    "suwayomi.tachidesk.server.user.UnauthorizedException: Unauthorized".to_string()
 }
 
 async fn fetch_chapter_row(state: &GraphQLState, id: i32) -> async_graphql::Result<suwayomi_core::schema::ChapterRow> {

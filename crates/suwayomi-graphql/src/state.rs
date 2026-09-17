@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use suwayomi_core::auth::AuthContext;
 use suwayomi_core::config::ServerConfig;
 use suwayomi_core::db::Db;
 use suwayomi_domain::category::category_manga::CategoryMangaService;
@@ -23,6 +24,8 @@ use crate::updater::UpdateManager;
 pub struct GraphQLState {
     pub db: Db,
     pub config: ServerConfig,
+    /// 认证参数：`login` / `refreshToken` 用它签发 JWT（与 session cookie 同一把密钥）。
+    pub auth: Arc<AuthContext>,
     pub manga: MangaService,
     pub chapter: ChapterService,
     pub category: CategoryService,
@@ -54,6 +57,7 @@ impl GraphQLState {
     pub fn new(
         db: Db,
         config: ServerConfig,
+        auth: Arc<AuthContext>,
         fetcher: Arc<dyn SourceFetcher>,
         sandbox_base: Option<String>,
         webui_dir: std::path::PathBuf,
@@ -71,7 +75,7 @@ impl GraphQLState {
         let koreader = KoreaderSyncService::new(db.clone(), config.clone());
         let sync_yomi = SyncYomiService::new(db.clone(), config.clone());
         let extension_store = ExtensionStoreService::new(db.clone(), sandbox_base.clone());
-        Self { db, config, manga, chapter, category, category_manga, library, manga_list, page, update, download, koreader, sync_yomi, extension_store, webui_dir, data_dir, sandbox_base, backup_restores: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())) }
+        Self { db, config, auth, manga, chapter, category, category_manga, library, manga_list, page, update, download, koreader, sync_yomi, extension_store, webui_dir, data_dir, sandbox_base, backup_restores: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())) }
     }
 
     pub async fn set_backup_restore_status(&self, id: &str, status: crate::mutation_b4::BackupRestoreStatus) {
@@ -80,5 +84,25 @@ impl GraphQLState {
 
     pub async fn get_backup_restore_status(&self, id: &str) -> Option<crate::mutation_b4::BackupRestoreStatus> {
         self.backup_restores.lock().await.get(id).cloned()
+    }
+
+    /// `settings` 查询与 `setSettings` 返回值共用的装配：`ServerConfig` 上盖一层
+    /// `global_meta` 里持久化的 blob（`setSettings` 写的）覆盖。
+    ///
+    /// `self.config` 是**启动时**算出来的，进程内不会随写入变化；不回读 blob 的话
+    /// `setSettings` 的返回值永远是改动前的旧值，前端把它写进 Apollo 缓存后
+    /// 保存过的项会显示成没保存。
+    pub async fn effective_settings(&self) -> crate::settings::SettingsType {
+        use suwayomi_domain::sql::bind_placeholders;
+        let mut settings = crate::settings::SettingsType::from_config(&self.config);
+        let sql = bind_placeholders("SELECT value FROM global_meta WHERE meta_key = ?");
+        if let Ok(row) = suwayomi_db::query(&sql).bind("settings").fetch_optional(self.db.pool()).await
+            && let Some(row) = row
+            && let Ok(value) = row.try_get::<String, _>("value")
+            && let Ok(blob) = serde_json::from_str::<serde_json::Value>(&value)
+        {
+            settings.apply_overrides(&blob);
+        }
+        settings
     }
 }

@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use suwayomi_core::auth::AuthContext;
 use suwayomi_core::config::ServerConfig;
 use suwayomi_core::db::Db;
 use suwayomi_domain::category::category_manga::CategoryMangaService;
@@ -19,6 +20,8 @@ use suwayomi_domain::source::SourceFetcher;
 pub struct AppState {
     pub db: Db,
     pub config: ServerConfig,
+    /// 认证参数（模式、凭据、会话/JWT 密钥），启动时解析一次后只读。
+    pub auth: Arc<AuthContext>,
     /// Extension source fetcher (stub until the JVM sandbox loads real extensions).
     pub fetcher: Arc<dyn SourceFetcher>,
     pub manga: MangaService,
@@ -43,6 +46,7 @@ impl AppState {
     pub fn new(
         db: Db,
         config: ServerConfig,
+        auth: Arc<AuthContext>,
         fetcher: Arc<dyn SourceFetcher>,
         sandbox_base: Option<String>,
         webui_dir: std::path::PathBuf,
@@ -60,6 +64,7 @@ impl AppState {
         Self {
             db,
             config,
+            auth,
             fetcher,
             manga,
             chapter,

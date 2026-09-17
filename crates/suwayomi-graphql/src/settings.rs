@@ -3,9 +3,14 @@
 //! against `docs/graphql/schema-baseline.graphql`).
 
 use async_graphql::{Enum, SimpleObject};
+use suwayomi_core::auth::parse_duration;
 use suwayomi_core::config::{DatabaseType as CoreDatabaseType, ServerConfig};
 
 use crate::scalars::{parse_iso8601_duration, DurationScalar, LongString};
+
+/// `ServerConfig` 里 jwt 时长的默认值（与 `config::ServerConfig::default` 一致）。
+const DEFAULT_TOKEN_EXPIRY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+const DEFAULT_REFRESH_EXPIRY: std::time::Duration = std::time::Duration::from_secs(60 * 24 * 3600);
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 pub enum AuthMode {
@@ -290,9 +295,13 @@ impl SettingsType {
             gql_debug_logs_enabled: false,
             initial_open_in_browser_enabled: c.initial_open_in_browser_enabled,
             ip: c.ip.clone(),
-            jwt_audience: String::new(),
-            jwt_refresh_expiry: DurationScalar(std::time::Duration::ZERO),
-            jwt_token_expiry: DurationScalar(std::time::Duration::ZERO),
+            jwt_audience: c.jwt_audience.clone(),
+            jwt_refresh_expiry: DurationScalar(
+                parse_duration(&c.jwt_refresh_expiry).unwrap_or(DEFAULT_REFRESH_EXPIRY),
+            ),
+            jwt_token_expiry: DurationScalar(
+                parse_duration(&c.jwt_token_expiry).unwrap_or(DEFAULT_TOKEN_EXPIRY),
+            ),
             kcef_enabled: false, // R3: CEF removed (Tauri shell instead)
             koreader_sync_checksum_method: KoreaderSyncChecksumMethod::Binary,
             koreader_sync_device_id: String::new(),
@@ -349,15 +358,19 @@ impl SettingsType {
     /// values are reflected by the `settings` query.
     pub fn apply_overrides(&mut self, o: &serde_json::Value) {
         use serde_json::Value;
+        // authMode / authUsername / authPassword 这里照样覆盖：设置页显示的是
+        // **存下来的值**，而生效值由启动期 `auth_setup::resolve` 决定（env 优先、
+        // 这份设置兜底）。两者不一致只可能因为机器上另配了 `SUWAYOMI_AUTH_*`，
+        // 启动日志会写明最终用的是哪个来源。
         self.auth_mode = match o.get("authMode").and_then(Value::as_str) {
+            Some("NONE") => AuthMode::None,
             Some("BASIC_AUTH") => AuthMode::BasicAuth,
             Some("SIMPLE_LOGIN") => AuthMode::SimpleLogin,
             Some("UI_LOGIN") => AuthMode::UiLogin,
-            Some("NONE") => AuthMode::None,
             _ => self.auth_mode,
         };
-        self.auth_password = ov_str(o, "authPassword", self.auth_password.clone());
         self.auth_username = ov_str(o, "authUsername", self.auth_username.clone());
+        self.auth_password = ov_str(o, "authPassword", self.auth_password.clone());
         self.auto_backup_include_categories = ov_bool(o, "autoBackupIncludeCategories", self.auto_backup_include_categories);
         self.auto_backup_include_chapters = ov_bool(o, "autoBackupIncludeChapters", self.auto_backup_include_chapters);
         self.auto_backup_include_client_data = ov_bool(o, "autoBackupIncludeClientData", self.auto_backup_include_client_data);

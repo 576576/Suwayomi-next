@@ -1392,18 +1392,9 @@ impl QueryRoot {
     /// Mirrors `settings()` — full settings registry.
     async fn settings(&self, ctx: &Context<'_>) -> async_graphql::Result<SettingsType> {
         let state = ctx.data::<GraphQLState>()?;
-        let mut settings = SettingsType::from_config(&state.config);
-        // Apply persisted overrides (the `settings` global_meta JSON blob
-        // written by setSettings) so saved values survive restarts.
-        let sql = bind_placeholders("SELECT value FROM global_meta WHERE meta_key = ?");
-        if let Ok(row) = suwayomi_db::query(&sql).bind("settings").fetch_optional(state.db.pool()).await
-            && let Some(row) = row
-            && let Ok(value) = row.try_get::<String, _>("value")
-            && let Ok(blob) = serde_json::from_str::<serde_json::Value>(&value)
-        {
-            settings.apply_overrides(&blob);
-        }
-        Ok(settings)
+        // `ServerConfig` + `global_meta` 里持久化的 blob（`setSettings` 写的）覆盖，
+        // 保存过的值才能跨越重启读回来。
+        Ok(state.effective_settings().await)
     }
 
     /// Mirrors `aboutServer()` — full payload.

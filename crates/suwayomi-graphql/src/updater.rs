@@ -383,7 +383,15 @@ mod tests {
     /// WebUI，data 目录仅作 DownloadManager 的根，避免污染工作目录）。
     fn test_state(db: Db, fetcher: Arc<dyn SourceFetcher>) -> GraphQLState {
         let tmp = std::env::temp_dir().join(format!("updater-test-{}", std::process::id()));
-        GraphQLState::new(db, ServerConfig::default(), fetcher, None, tmp.join("webui"), tmp.join("data"))
+        GraphQLState::new(
+            db,
+            ServerConfig::default(),
+            std::sync::Arc::new(suwayomi_core::auth::AuthContext::disabled()),
+            fetcher,
+            None,
+            tmp.join("webui"),
+            tmp.join("data"),
+        )
     }
 
     #[tokio::test]

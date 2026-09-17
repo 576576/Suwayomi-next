@@ -1,13 +1,13 @@
 //! Rust server 的 JNI 绑定。
 //!
-//! 导出的符号名由 JNI 规则决定（`Java_suwayomi_android_NativeServer_*`），
-//! 与 `crates/suwayomi-android/src/lib.rs` 一一对应 —— **类名/包名/method 名
-//! 任何一处不一致都会变成 UnsatisfiedLinkError**，这里的包名是 `suwayomi.android`。
+//! 导出的符号名由 JNI 规则决定（`Java_org_suwayomi_next_NativeServer_*`），与
+//! `crates/suwayomi-android/src/lib.rs` 一一对应 —— **类名/包名/method 名任何一处
+//! 不一致都会变成 UnsatisfiedLinkError**。
 //!
 //! 该 object 的 `init` 不主动 load：由 `SuwayomiApp` 在合适时机调用 [load]，
 //! 好把 `loadLibrary` 的失败包成可上报的错误而不是静态初始化异常。
 
-package suwayomi.android
+package org.suwayomi.next
 
 import android.util.Log
 
@@ -49,6 +49,6 @@ object NativeServer {
     /** 请求优雅关闭；0 = 已发出，1 = 尚未 start。 */
     external fun stop(): Int
 
-    /** 编译期版本号（`r{versionCode}`）。 */
+    /** 编译期版本名（`r{versionCode}`；release/beta 是 `3.y.z`）。与 APK 的 `versionName` 同源。 */
     external fun version(): String
 }

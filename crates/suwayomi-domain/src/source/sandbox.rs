@@ -198,6 +198,30 @@ impl HttpSandboxFetcher {
         r.json::<SandboxExtension>().await.map_err(DomainError::from)
     }
 
+    /// 扩展 **APK 里**那张图标（PNG 字节）。
+    ///
+    /// 端不认这个路由（旧沙盒）、包没装、取不出来 —— 一律 `None`，调用方自己兜底。
+    pub async fn icon(&self, pkg_name: &str) -> Option<Vec<u8>> {
+        #[derive(serde::Deserialize)]
+        struct SandboxIcon {
+            #[serde(default)]
+            data: String,
+        }
+
+        let r = self.client.get(format!("{}/icon/{pkg_name}", self.base_url)).send().await.ok()?;
+        if !r.status().is_success() {
+            return None;
+        }
+        let payload = r.json::<SandboxIcon>().await.ok()?;
+        if payload.data.is_empty() {
+            return None;
+        }
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(payload.data).ok()?;
+        // 回环另一端回 200 却带着一段正文（比如上游 404 页面）并不罕见，认一下魔数。
+        is_image(&bytes).then_some(bytes)
+    }
+
     async fn fetch_mangas_page(&self, source_id: i64, params: &[(&str, String)]) -> Result<MangasPage> {
         let url = format!("{}/source/{source_id}/manga", self.base_url);
         let resp = self.client.get(&url).query(params).send().await.map_err(DomainError::from)?;
@@ -635,6 +659,14 @@ impl Drop for SandboxProcess {
         let mut guard = self.child.lock().unwrap();
         let _ = fetch_child_kill(&mut guard);
     }
+}
+
+/// 按魔数认 PNG / JPEG / WebP。
+fn is_image(bytes: &[u8]) -> bool {
+    let png = bytes.len() > 3 && bytes[0] == 0x89 && &bytes[1..4] == b"PNG";
+    let jpeg = bytes.len() > 2 && bytes[0] == 0xff && bytes[1] == 0xd8;
+    let webp = bytes.len() > 3 && &bytes[0..4] == b"RIFF";
+    png || jpeg || webp
 }
 
 fn urlencode(s: &str) -> String {

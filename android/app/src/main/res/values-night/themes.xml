@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  深色模式的 AppTheme（系统开了深色时由资源限定符自动选中）。
+
+  WebView 的 `prefers-color-scheme` 跟的是**应用主题**，不是系统设置 —— 主题固定
+  Light 的话，WebUI 里「跟随系统」永远解析成浅色。没有 AppCompat，所以用资源限定
+  符做 DayNight。父主题刻意不写 `.Light`：`Theme.DeviceDefault` 本身就是深色。
+-->
+<resources>
+    <style name="AppTheme" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <!-- 与 WebUI 深色底一致：WebView 绘制页面之前铺的就是这个色，避免闪白 -->
+        <item name="android:windowBackground">#FF121212</item>
+    </style>
+</resources>

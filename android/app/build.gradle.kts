@@ -12,19 +12,44 @@ plugins {
     id("com.android.application")
 }
 
+// 版本号必须与 Rust 侧 `crates/suwayomi-server/build.rs` 同一口径：
+//
+//   versionCode = 提交数 + 3000
+//   versionName = SUWAYOMI_VERSION_NAME（CI 的 release/beta 通道注入 `3.y.z`）
+//                 缺省 = `r{versionCode}`（alpha / 本地构包）
+//
+// 系统「应用信息」显示的是这里的 versionName，WebUI「关于」页显示的是服务端编译期
+// 常量（`aboutServer.version`），两者必须同源。
+val versionCommitCount: Int = System.getenv("SUWAYOMI_VERSION_COUNT")?.trim()?.toIntOrNull()
+    ?: runCatching {
+        // `android/` 的上一级就是仓库根；没装 git / 不在仓库里就走兜底
+        val proc = ProcessBuilder("git", "rev-list", "--count", "HEAD")
+            .directory(rootProject.projectDir.parentFile)
+            .redirectErrorStream(true)
+            .start()
+        val out = proc.inputStream.bufferedReader().use { it.readText() }
+        proc.waitFor()
+        out.trim().toInt()
+    }.getOrNull()
+    ?: 38
+
+val appVersionCode = versionCommitCount + 3000
+val appVersionName = System.getenv("SUWAYOMI_VERSION_NAME")?.trim()?.takeIf { it.isNotEmpty() }
+    ?: "r$appVersionCode"
+
 android {
-    namespace = "suwayomi.android"
+    namespace = "org.suwayomi.next"
     // 与 :extension-host 一致（okhttp-android 的 AAR metadata 要求 37）
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "suwayomi.android"
+        applicationId = "org.suwayomi.next"
         // 与 NDK 交叉编译用的 API level（aarch64-linux-android26-clang）保持一致；
         // 26 同时满足 java.nio.file（扩展运行时用到）与 dalvik DelegateLastClassLoader 的下限。
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
     }
 
     // release 签名：CI 通过环境变量注入 keystore（见 .github/workflows/build.yml 的

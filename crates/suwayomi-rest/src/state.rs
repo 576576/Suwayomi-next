@@ -32,6 +32,9 @@ pub struct AppState {
     pub download: DownloadManager,
     /// Extension store: repo refresh + online install.
     pub extension_store: ExtensionStoreService,
+    /// 扩展宿主的 base url（JVM 沙盒 / Android 宿主），没接扩展时为 None。
+    /// 图标路由要用它去取「扩展 APK 里那张图」。
+    pub sandbox_base: Option<String>,
     /// Bundled WebUI static directory (SPA hosting; empty = disabled).
     pub webui_dir: std::path::PathBuf,
 }
@@ -53,7 +56,22 @@ impl AppState {
         let manga_list = MangaListService::new(db.clone(), fetcher.clone());
         let page = PageService::new(db.clone());
         let download = DownloadManager::new(db.clone(), fetcher.clone(), data_dir);
-        let extension_store = ExtensionStoreService::new(db.clone(), sandbox_base);
-        Self { db, config, fetcher, manga, chapter, category, category_manga, library, manga_list, page, download, extension_store, webui_dir }
+        let extension_store = ExtensionStoreService::new(db.clone(), sandbox_base.clone());
+        Self {
+            db,
+            config,
+            fetcher,
+            manga,
+            chapter,
+            category,
+            category_manga,
+            library,
+            manga_list,
+            page,
+            download,
+            extension_store,
+            sandbox_base,
+            webui_dir,
+        }
     }
 }

@@ -2,6 +2,7 @@ package sandbox
 
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
+import java.util.Base64
 
 /**
  * Routes incoming requests to handlers. /source/ drives the loaded extension
@@ -23,7 +24,11 @@ class Router(private val registry: SourceRegistry) : HttpHandler {
             "/sources" -> HttpResponse(200, registry.toSourcesJson())
             "/reload" -> reload()
             "/inspect" -> inspect(req)
-            else -> if (req.rawPath.startsWith("/source/")) sourceDispatch(req) else notFound()
+            else -> when {
+                req.rawPath.startsWith("/source/") -> sourceDispatch(req)
+                req.rawPath.startsWith("/icon/") -> icon(req)
+                else -> notFound()
+            }
         }
     }
 
@@ -59,6 +64,24 @@ class Router(private val registry: SourceRegistry) : HttpHandler {
         }
     } catch (t: Throwable) {
         HttpResponse(500, """{"error":${jsonStr(t.message ?: t.toString())}}""")
+    }
+
+    /**
+     * GET /icon/{pkg} — 扩展 APK 里的图标，base64 装在 JSON 里。
+     *
+     * `HttpResponse.body` 是 `String`，两端都按 UTF-8 写体，为一个几十 KB 的图标
+     * 去加二进制体支持不划算。拿不到就 404，由 server 侧决定用什么兜底。
+     */
+    private fun icon(req: HttpRequest): HttpResponse {
+        val pkg = URLDecoder.decode(req.rawPath.removePrefix("/icon/"), StandardCharsets.UTF_8)
+        if (pkg.isBlank() || pkg.contains('/')) return notFound()
+        val bytes = try {
+            registry.icon(pkg)
+        } catch (t: Throwable) {
+            System.err.println("sandbox: read icon of $pkg failed: $t")
+            return HttpResponse(500, """{"error":${jsonStr(t.message ?: t.toString())}}""")
+        } ?: return HttpResponse(404, """{"error":"no icon for $pkg"}""")
+        return HttpResponse(200, """{"mime":"image/png","data":"${Base64.getEncoder().encodeToString(bytes)}"}""")
     }
 
     private fun sourceDispatch(req: HttpRequest): HttpResponse {

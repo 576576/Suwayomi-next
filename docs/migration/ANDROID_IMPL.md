@@ -43,7 +43,7 @@ suwayomi-server 当子进程 spawn」这条桌面路径在 Android 上**不可�
 ### C3 Rust 与扩展宿主之间的调用通道
 
 **决策 D3**：同进程内走**回环 HTTP**，复用 jvm-sandbox 已有的 JSON 契约
-（`/health`、`/extensions`、`/sources`、`/reload`、`/source/{id}/...`）。
+（`/health`、`/extensions`、`/sources`、`/reload`、`/icon/{pkg}`、`/source/{id}/...`）。
 Rust 侧因此**不需要新的 SourceFetcher 实现** —— `HttpSandboxFetcher` 直接可用，
 只是不再由 `SandboxProcess` 去 spawn 一个 JVM，而是连宿主 App 起的端口。
 
@@ -174,6 +174,25 @@ release 签名支持从 secret 注入 keystore，没配则回退 debug key。详
 - 沙盒不再报告的扩展回写 `is_installed = FALSE`（Android 走系统安装器卸载时收不到
   回调，只能靠这次同步），但**本地 APK 文件仍在**的桌面行不动，避免与按文件判定的
   `upsert_index` 来回打架。
+
+### 扩展图标（`GET /icon/{pkg}`）
+
+契约里多了 `/icon/{pkg}`：沙盒端返回 `{"mime":"image/png","data":"<base64>"}`，
+REST 侧的 `/api/v1/extension/icon/{pkg}` 按 **磁盘缓存 → 沙盒 → 仓库索引 `icon_url`**
+取值，三条路都要求拿到**真的图片字节**（PNG/JPEG/WebP 魔数）。
+
+沙盒排在 `icon_url` 之前，是因为后者对系统装进来的扩展**恒为死链**：
+`extension.icon_url` 的**列默认值**是个早已 404 的占位 URL
+（`migrations/0001_schema_baseline.sql`），而这些扩展没有仓库索引行去盖掉默认值。
+真图就在 APK 里（Android 取自 `PackageManager`，桌面取自 APK 的 `android:icon`）。
+
+不校验字节的后果比"缺一张图"更麻烦：死链的 404 正文会被当成图标写进磁盘缓存，下次
+请求"命中缓存"再喂一遍。注意 WebUI 的 Service Worker 对 `/extension/icon/` 配了
+**1 年**的 `CacheFirst` —— 改图标逻辑前要先清掉 CacheStorage，否则会误判成没修好。
+
+配套修的一个静默失败：`cache_root()` 在 Android 上会退化成相对路径 `cache`，
+而进程 CWD 是 `/`，`create_dir_all("/cache/…")` 一律权限失败（调用方普遍 `let _ =`）。
+现在 JNI 入口用 `suwayomi_core::config::set_cache_root(data_dir/cache)` 显式钉住。
 
 ### 工具链版本（本地实测）
 

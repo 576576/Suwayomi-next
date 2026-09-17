@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- server 要抓扩展站点、下载章节图片 -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -10,6 +11,22 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
+      「编辑存储位置」把数据目录搬到用户自选的目录后，写盘的是**同进程里的 Rust
+      库**（普通 POSIX 调用），SAF 的「按 URI 授权」对它无效 —— 必须有真正的文件
+      系统权限。API 30+ 只能靠「所有文件访问」；本 App 不走 Play 分发。
+    -->
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+    <!-- API 29 及以下没有「所有文件访问」，退到传统读写权限（运行时申请） -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
 
     <!--
       Android 11+ 的包可见性：默认 getInstalledPackages 只会返回自己，
@@ -37,11 +54,19 @@
         android:label="@string/app_name"
         android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true"
-        android:theme="@style/AppTheme">
+        android:theme="@style/AppTheme"
+        android:enableOnBackInvokedCallback="true">
 
+        <!--
+          返回手势：显式打开 `enableOnBackInvokedCallback`，让 API 33/34 也走
+          `OnBackInvokedCallback`（targetSdk ≥ 35 时本来就是强制的）。
+
+          configChanges **不含 uiMode**：切深浅色时让 Activity 重建，WebView 才会
+          重新去问 `prefers-color-scheme`（WebUI 的「跟随系统」靠它）。
+        -->
         <activity
             android:name=".MainActivity"
-            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:exported="true"
             android:launchMode="singleTask">
             <intent-filter>

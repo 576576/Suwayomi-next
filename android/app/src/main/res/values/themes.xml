@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  刻意用平台主题（不引 AppCompat/Material）：
-  界面就是一个全屏 WebView，系统主题足够，而且能随系统深浅色。
+  刻意用平台主题（不引 AppCompat/Material）：界面就是一个全屏 WebView。
+  深色那一半在 values-night/themes.xml。
   windowSoftInputMode 由清单里的 Activity 决定，这里只管窗口外观。
 -->
 <resources>

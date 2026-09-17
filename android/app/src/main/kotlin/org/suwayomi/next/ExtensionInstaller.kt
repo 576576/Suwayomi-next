@@ -8,7 +8,7 @@
 //! 这么做的收益是「扩展的所有权在系统」：Mihon/Komikku 之类装了或卸了扩展，
 //! 本 App 下一次 `/reload` 立刻能看到，不需要也不存在一份属于自己的副本。
 
-package suwayomi.android
+package org.suwayomi.next
 
 import android.app.Activity
 import android.content.ActivityNotFoundException

@@ -5,7 +5,7 @@
 //! 所以这里同样先只读 zip 里的 version.txt 做比较，一致就整体跳过解压 ——
 //! 每次启动都重解 40MB 既慢又白白磨损闪存。
 
-package suwayomi.android
+package org.suwayomi.next
 
 import android.content.Context
 import android.util.Log
@@ -23,9 +23,12 @@ internal object WebUiInstaller {
         val target = File(context.filesDir, DIR)
         return try {
             val assetVersion = readAssetEntry(context, VERSION_ENTRY)
+            // zip 里的 version.txt 结尾带换行，直接比会永远不相等（表现为每次启动
+            // 都重解一遍 WebUI），所以两边都 trim
             val currentVersion = File(target, VERSION_ENTRY)
                 .takeIf { it.isFile }
                 ?.readText()
+                ?.trim()
             if (assetVersion != null && assetVersion == currentVersion) {
                 target
             } else {

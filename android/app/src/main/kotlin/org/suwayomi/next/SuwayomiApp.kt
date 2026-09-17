@@ -9,7 +9,7 @@
 //! App 退到后台不主动停 server：Android 会按需回收进程，`onTerminate` 也不可靠。
 //! 需要真正停止时用 [shutdown]（例如设置页里的「退出」）。
 
-package suwayomi.android
+package org.suwayomi.next
 
 import android.app.Application
 import android.content.Intent

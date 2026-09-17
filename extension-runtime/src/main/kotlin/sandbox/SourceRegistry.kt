@@ -45,4 +45,12 @@ interface SourceRegistry {
      * 端上不支持该操作时返回 null —— Android 的安装走系统安装器，不经这条路径。
      */
     fun inspect(apkBytes: ByteArray): ExtensionInfo? = null
+
+    /**
+     * 扩展**自己 APK 里**的图标（PNG 字节），拿不到返回 null（`GET /icon/{pkg}`）。
+     *
+     * `extension.icon_url` 只有**仓库索引**会填，从系统装进来的扩展没有索引行，
+     * server 侧只能回 404 —— 真图在 APK 里，端上取出来即可。
+     */
+    fun icon(pkgName: String): ByteArray? = null
 }

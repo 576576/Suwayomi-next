@@ -9,7 +9,11 @@ import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.BitmapDrawable
 import android.os.Build
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
@@ -214,6 +218,35 @@ class PackageManagerRegistry(private val context: Context) : SourceRegistry {
             else -> false
         }
         return if (on) 1 else 0
+    }
+
+    /**
+     * 系统里那个扩展的图标（`GET /icon/{pkg}`）。
+     *
+     * `AdaptiveIconDrawable`（API 26+ 的自适应图标）没有 bitmap，只能自己画到画布
+     * 上再压成 PNG。
+     */
+    override fun icon(pkgName: String): ByteArray? {
+        val drawable = try {
+            context.packageManager.getApplicationIcon(pkgName)
+        } catch (e: PackageManager.NameNotFoundException) {
+            android.util.Log.w(TAG, "no icon for $pkgName: $e")
+            return null
+        }
+        val bitmap = when (drawable) {
+            is BitmapDrawable -> drawable.bitmap
+            else -> {
+                // intrinsic 尺寸对自适应图标是 108dp 级别的值；为 0 时退回 144
+                val size = maxOf(drawable.intrinsicWidth, drawable.intrinsicHeight).takeIf { it > 0 } ?: 144
+                Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888).also { bmp ->
+                    drawable.setBounds(0, 0, size, size)
+                    drawable.draw(Canvas(bmp))
+                }
+            }
+        }
+        return ByteArrayOutputStream().use { out ->
+            if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) null else out.toByteArray()
+        }
     }
 
     // ---- SourceRegistry ----------------------------------------------------

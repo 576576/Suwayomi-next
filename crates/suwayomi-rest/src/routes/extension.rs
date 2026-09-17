@@ -44,43 +44,74 @@ async fn list(State(s): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
     Ok(Json(serde_json::json!({ "extensions": out })))
 }
 
+/// `GET /api/v1/extension/icon/{pkg}` —— 扩展图标。
+///
+/// 来源按代价从低到高：磁盘缓存 `<cache>/extensions/icons/` → 沙盒（扩展自己 APK
+/// 里那张，`GET /icon/{pkg}`）→ `extension.icon_url`。
+///
+/// 沙盒排在 `icon_url` 之前：后者的列 DEFAULT 是个早已 404 的占位 URL
+/// （`migrations/0001_schema_baseline.sql`），而系统装进来的扩展没有仓库索引行去
+/// 盖掉它，该字段于是恒为死链。
+///
+/// 三条路都要求**真的图片字节**（`looks_like_image`），否则 404 正文会被当成图标
+/// 写进缓存，并被后续请求一直"命中"。
 async fn icon(State(s): State<AppState>, Path(pkg): Path<String>) -> ApiResult<axum::response::Response> {
-    let icon_url: Option<String> =
-        suwayomi_db::query_scalar("SELECT icon_url FROM extension WHERE pkg_name = $1")
-            .bind(&pkg)
-            .fetch_optional(s.db.pool())
-            .await
-            .map_err(ApiError::from)?;
-    let url = icon_url.filter(|u| !u.is_empty()).ok_or_else(|| ApiError::NotFound("no icon".into()))?;
-
-    // 磁盘缓存：<cache>/extensions/icons/{pkg}.{png|jpg|webp}（按内容类型定扩展名，
-    // 避免回源下载）。统一缓存根见 cache_root()。
+    // 磁盘缓存：<cache>/extensions/icons/{pkg}.{png|jpg|webp}（按内容类型定扩展名）
     let cache_dir = crate::routes::cache_root().join("extensions").join("icons");
-    // 读取：依次尝试常见图标扩展名；均无则下载并落盘
+
+    // 缓存命中同样要过魔数，否则写坏的文件会一直命中。
     let mut bytes: Option<Vec<u8>> = None;
     for ext in ["png", "jpg", "webp"] {
-        let cand = cache_dir.join(format!("{pkg}.{ext}"));
-        if cand.is_file() {
-            bytes = Some(std::fs::read(&cand).map_err(|e| ApiError::Internal(e.to_string()))?);
+        if let Ok(cached) = std::fs::read(cache_dir.join(format!("{pkg}.{ext}")))
+            && looks_like_image(&cached)
+        {
+            bytes = Some(cached);
             break;
         }
     }
-    let bytes = match bytes {
-        Some(b) => b,
-        None => {
-            let resp = reqwest::get(&url).await.map_err(|e| ApiError::Internal(format!("icon fetch: {e}")))?;
-            let b = resp.bytes().await.map_err(|e| ApiError::Internal(format!("icon read: {e}")))?;
-            let b = b.to_vec();
-            let _ = std::fs::create_dir_all(&cache_dir);
-            let ext = match guess_content_type(&b) {
-                "image/jpeg" => "jpg",
-                "image/webp" => "webp",
-                _ => "png",
-            };
-            let _ = std::fs::write(cache_dir.join(format!("{pkg}.{ext}")), &b);
-            b
+
+    if bytes.is_none()
+        && let Some(base) = &s.sandbox_base
+    {
+        bytes = suwayomi_domain::source::sandbox::HttpSandboxFetcher::new(base.clone()).icon(&pkg).await;
+    }
+
+    if bytes.is_none() {
+        let icon_url: Option<String> =
+            suwayomi_db::query_scalar("SELECT icon_url FROM extension WHERE pkg_name = $1")
+                .bind(&pkg)
+                .fetch_optional(s.db.pool())
+                .await
+                .map_err(ApiError::from)?;
+        if let Some(url) = icon_url.filter(|u| !u.is_empty()) {
+            match reqwest::get(&url).await {
+                // 死链会把 404 正文喂回来，状态码与魔数都要过。
+                Ok(resp) if resp.status().is_success() => match resp.bytes().await {
+                    Ok(b) if looks_like_image(&b) => bytes = Some(b.to_vec()),
+                    Ok(b) => tracing::debug!("icon_url for {pkg} is not an image ({} bytes)", b.len()),
+                    Err(e) => tracing::warn!("icon_url read for {pkg} failed: {e}"),
+                },
+                Ok(resp) => tracing::debug!("icon_url for {pkg} returned {}", resp.status()),
+                Err(e) => tracing::warn!("icon_url fetch for {pkg} failed: {e}"),
+            }
         }
+    }
+
+    let bytes = bytes.ok_or_else(|| ApiError::NotFound("no icon".into()))?;
+
+    // 写失败不致命（下次回源），但记一条，别让缓存静默失效。
+    if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+        tracing::debug!("cannot create icon cache {}: {e}", cache_dir.display());
+    }
+    let ext = match guess_content_type(&bytes) {
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        _ => "png",
     };
+    if let Err(e) = std::fs::write(cache_dir.join(format!("{pkg}.{ext}")), &bytes) {
+        tracing::debug!("cannot cache icon for {pkg}: {e}");
+    }
+
     let ctype = guess_content_type(&bytes);
     let resp = axum::response::Response::builder()
         .header("Content-Type", ctype)
@@ -129,4 +160,10 @@ fn guess_content_type(bytes: &[u8]) -> &'static str {
     } else {
         "image/*"
     }
+}
+
+/// 这批字节是不是一张图片 —— 判据直接复用 `guess_content_type` 的兜底值
+/// （`image/*` 表示没认出来），省得两处魔数判断各写一份而漂移。
+fn looks_like_image(bytes: &[u8]) -> bool {
+    guess_content_type(bytes) != "image/*"
 }

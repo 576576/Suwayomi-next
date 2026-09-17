@@ -38,9 +38,9 @@ static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 /// `stop()` 用的关闭通道 —— `run()` 收到它就优雅关闭（释放 SQLite 文件锁等）。
 static SHUTDOWN: Mutex<Option<tokio::sync::watch::Sender<bool>>> = Mutex::new(None);
 
-/// `Java_suwayomi_android_NativeServer_start` —— 启动 server。
+/// `Java_org_suwayomi_next_NativeServer_start` —— 启动 server。
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_suwayomi_android_NativeServer_start<'local>(
+pub extern "system" fn Java_org_suwayomi_next_NativeServer_start<'local>(
     mut env: JNIEnv<'local>,
     _this: JObject<'local>,
     data_dir: JString<'local>,
@@ -61,9 +61,9 @@ pub extern "system" fn Java_suwayomi_android_NativeServer_start<'local>(
     }
 }
 
-/// `Java_suwayomi_android_NativeServer_stop` —— 请求优雅关闭。
+/// `Java_org_suwayomi_next_NativeServer_stop` —— 请求优雅关闭。
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_suwayomi_android_NativeServer_stop<'local>(
+pub extern "system" fn Java_org_suwayomi_next_NativeServer_stop<'local>(
     _env: JNIEnv<'local>,
     _this: JObject<'local>,
 ) -> jint {
@@ -82,9 +82,9 @@ pub extern "system" fn Java_suwayomi_android_NativeServer_stop<'local>(
     }
 }
 
-/// `Java_suwayomi_android_NativeServer_version` —— `r{versionCode}`，给宿主显示用。
+/// `Java_org_suwayomi_next_NativeServer_version` —— `r{versionCode}`，给宿主显示用。
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_suwayomi_android_NativeServer_version<'local>(
+pub extern "system" fn Java_org_suwayomi_next_NativeServer_version<'local>(
     env: JNIEnv<'local>,
     _this: JObject<'local>,
 ) -> jstring {
@@ -124,6 +124,10 @@ fn start_inner(
         tracing::error!("cannot create data dir {}: {e}", data_dir.display());
         return 4;
     }
+
+    // Android 没有环境变量可设，缓存根必须显式钉住：否则 `cache_root()` 退化成
+    // 相对路径 `cache`，而进程 CWD 是 `/`，写 `/cache/…` 恒失败。
+    suwayomi_core::config::set_cache_root(data_dir.join("cache"));
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     {

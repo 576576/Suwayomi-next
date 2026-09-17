@@ -21,24 +21,30 @@ class ExtensionRegistry(private val rootDir: Path, private val jarDir: Path) : S
     /** pkgName -> 扩展的 APK 路径（`/icon/{pkg}` 要回读 APK）。与 `extensions` 一起在 reload() 里清。 */
     private val apkFiles = ConcurrentHashMap<String, Path>()
 
+    /** APK 文件名 -> 最近一次扫描的失败根因。见 `failures()`。 */
+    private val loadFailures = ConcurrentHashMap<String, String>()
+
     private val loader = ExtensionLoader(rootDir, jarDir)
 
     override val extensionCount: Int get() = extensions.size
     override val sourceCount: Int get() = sources.size
 
+    override fun failures(): Map<String, String> = loadFailures.toMap()
+
     fun scan() {
         if (!Files.isDirectory(rootDir)) {
             Files.createDirectories(rootDir)
         }
+        // 排序 + catch Throwable：
+        //  - 排序让「哪些 APK 加载失败」可复现（Files.list 的顺序不保证）；
+        //  - dex2jar 产物被 JVM 校验器拒时抛的是 VerifyError / NoClassDefFoundError
+        //    这类 **Error 而非 Exception**，只 catch Exception 会让单个坏 APK 顺着
+        //    forEach 冒泡打断整轮扫描 —— 它之后的扩展全部不加载，`/reload` 还会回
+        //    500 连带让安装失败。
         Files.list(rootDir).use { stream ->
-            stream.filter { it.fileName.toString().endsWith(".apk") }.forEach { apk ->
-                try {
-                    loadApk(apk)
-                } catch (e: Exception) {
-                    System.err.println("sandbox: failed to load $apk: ${e.message}")
-                    e.printStackTrace()
-                }
-            }
+            stream.filter { it.fileName.toString().endsWith(".apk") }
+                .sorted(Comparator.comparing<Path, String> { it.fileName.toString() })
+                .forEach { apk -> loadApkSafely(apk) }
         }
     }
 
@@ -47,8 +53,30 @@ class ExtensionRegistry(private val rootDir: Path, private val jarDir: Path) : S
         extensions.clear()
         sources.clear()
         apkFiles.clear()
+        loadFailures.clear()
+        // 换掉类加载器：上一轮初始化失败的类在 JVM 里处于 erroneous 状态，之后每次
+        // 触碰都直接抛 NoClassDefFoundError，重扫也救不回来（比如上一轮 Koin 还没起来）。
+        loader.reset()
         scan()
-        println("sandbox: reload complete — ${extensions.size} extension(s), ${sources.size} source(s)")
+        println(
+            "sandbox: reload complete — ${extensions.size} extension(s), ${sources.size} source(s)" +
+                if (loadFailures.isEmpty()) "" else ", ${loadFailures.size} failed",
+        )
+    }
+
+    private fun loadApkSafely(apk: Path) {
+        try {
+            loadApk(apk)
+        } catch (t: Throwable) {
+            // 记最深一层 cause：顶层恒是 InvocationTargetException 这类包装，
+            // 真因（NullPointerException / VerifyError / NoClassDefFoundError）
+            // 只在 cause 链末尾。
+            val root = generateSequence(t) { it.cause }.last()
+            val msg = root.javaClass.name + (root.message?.let { ": $it" } ?: "")
+            loadFailures[apk.fileName.toString()] = msg
+            System.err.println("sandbox: failed to load $apk: $msg")
+            t.printStackTrace()
+        }
     }
 
     /**
@@ -66,7 +94,8 @@ class ExtensionRegistry(private val rootDir: Path, private val jarDir: Path) : S
     }
 
     private fun loadApk(apk: Path) {
-        val info = readApkInfo(apk) ?: return
+        val info = readApkInfo(apk)
+            ?: throw IllegalStateException("not a tachiyomi extension (manifest unreadable)")
         val loaded = loader.load(apk, info.className, info.extensionId)
         extensions[info.pkgName] = info
         apkFiles[info.pkgName] = apk
@@ -118,10 +147,7 @@ class ExtensionRegistry(private val rootDir: Path, private val jarDir: Path) : S
             val manifest = apkFile.manifestXml ?: return@use null
             // tachiyomi.extension.class meta-data (attribute order varies)
             val className = metaValue(manifest, "tachiyomi.extension.class")
-            if (className == null) {
-                System.err.println("sandbox: ${apk.fileName} has no tachiyomi.extension.class meta-data; skipped")
-                return@use null
-            }
+                ?: throw IllegalStateException("no tachiyomi.extension.class meta-data")
             val nsfw = metaValue(manifest, "tachiyomi.extension.nsfw")
             ExtensionInfo(
                 pkgName = meta.packageName ?: apk.fileName.toString(),

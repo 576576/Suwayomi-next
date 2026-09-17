@@ -41,6 +41,15 @@ interface SourceRegistry {
     fun reload()
 
     /**
+     * 最近一次发现里**加载失败**的扩展：APK 文件名 -> 根因（异常类 + 消息）。
+     *
+     * 桌面端一个坏 APK 只会让自己缺席，不会让整轮扫描失败，所以失败必须能被读出来，
+     * 否则表现为「装上却什么都没发生」。Android 端由 PackageManager 负责加载，
+     * 装不上就是装不上，没有这一层，保持默认空实现。
+     */
+    fun failures(): Map<String, String> = emptyMap()
+
+    /**
      * 解析一个**尚未安装**的 APK 的元信息（`POST /inspect`）。
      * 端上不支持该操作时返回 null —— Android 的安装走系统安装器，不经这条路径。
      */

@@ -46,7 +46,15 @@ class Router(private val registry: SourceRegistry) : HttpHandler {
     /** POST /reload — rescans the extensions directory (install/uninstall hook). */
     private fun reload(): HttpResponse = try {
         registry.reload()
-        HttpResponse(200, """{"ok":true,"extensions":${registry.extensionCount},"sources":${registry.sourceCount}}""")
+        // 失败清单必须回给调用方：单个 APK 加载失败不再让 /reload 失败，
+        // 不回传的话「装上了但没反应」就完全没有征兆。
+        val failJson = registry.failures().entries.joinToString(",") {
+            """{"apk":${jsonStr(it.key)},"error":${jsonStr(it.value)}}"""
+        }
+        HttpResponse(
+            200,
+            """{"ok":true,"extensions":${registry.extensionCount},"sources":${registry.sourceCount},"failures":[$failJson]}""",
+        )
     } catch (t: Throwable) {
         HttpResponse(500, """{"error":${jsonStr(t.message ?: t.toString())}}""")
     }
@@ -62,6 +70,8 @@ class Router(private val registry: SourceRegistry) : HttpHandler {
                 """{"pkgName":${jsonStr(info.pkgName)},"name":${jsonStr(info.name)},"lang":${jsonStr(info.lang)},"versionName":${jsonStr(info.versionName)},"className":${jsonStr(info.className)},"extensionId":${info.extensionId},"versionCode":${info.versionCode},"contentWarning":${info.contentWarning}}""",
             )
         }
+    } catch (e: IllegalStateException) {
+        HttpResponse(400, """{"error":${jsonStr(e.message ?: e.toString())}}""")
     } catch (t: Throwable) {
         HttpResponse(500, """{"error":${jsonStr(t.message ?: t.toString())}}""")
     }

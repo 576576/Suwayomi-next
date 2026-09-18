@@ -19,7 +19,12 @@ dependencies {
     implementation("com.google.code.gson:gson:2.11.0")
     implementation("io.reactivex.rxjava2:rxjava:2.2.21")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+    // 必须 >= 1.11.0：keiyoushi 扩展是按 1.11 编译的，它们在源里直接调 `runBlocking`，
+    // 编译产物指向 `BuildersKt.runBlockingK(...)`，而这个方法 1.9/1.10 里还没有
+    // （只有 `runBlocking`），低版本会在请求时抛 NoSuchMethodError。
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
+    // mangaplus 这类扩展用 protobuf 编码读站点接口（`kotlinx/serialization/protobuf/ProtoNumber`）。
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-protobuf:1.11.0")
     implementation("com.squareup.moshi:moshi:1.15.1")
     implementation("com.squareup.moshi:moshi-kotlin:1.15.1")
     implementation("io.insert-koin:koin-core:3.5.6")

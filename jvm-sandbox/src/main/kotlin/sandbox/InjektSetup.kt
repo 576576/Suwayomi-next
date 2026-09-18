@@ -12,6 +12,7 @@ import android.app.Application
 import android.content.SharedPreferences
 import eu.kanade.tachiyomi.network.NetworkHelper
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.protobuf.ProtoBuf
 import org.koin.core.context.startKoin
 import org.koin.dsl.module
 import uy.kohesive.injekt.api.InjektScope
@@ -121,6 +122,12 @@ fun setupInjekt() {
                 explicitNulls = false
             }
         }
+        // 也要给 protobuf 编解码器：MangaPlus / Manga Million / Peppercarrot 用
+        // `Injekt.get<ProtoBuf>()` 读站点接口。不注册时 Koin 抛 NoDefinitionFoundException，
+        // 而它发生在扩展的 `<clinit>` 里 → 异常记在类上，之后该类永久 erroneous。
+        // 必须写 `single<ProtoBuf>`：Koin 按 lambda 的推断类型注册，不写类型参数会把
+        // `ProtoBuf.Companion` 注册进去，`get<ProtoBuf>()` 照样找不到。
+        single<ProtoBuf> { ProtoBuf }
     }
     startKoin { modules(m) }
     uy.kohesive.injekt.Injekt = InjektScope(KoinRegistrar())

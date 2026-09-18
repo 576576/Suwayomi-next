@@ -18,6 +18,9 @@ class ExtensionRegistry(private val rootDir: Path, private val jarDir: Path) : S
     val extensions = ConcurrentHashMap<String, ExtensionInfo>() // pkgName -> info
     val sources = ConcurrentHashMap<Long, LoadedSource>() // source id -> loaded
 
+    /** extensionId -> 该扩展这次产出的源。归属在加载时就定下来，序列化时不再靠 id 反查。 */
+    private val sourcesByExtension = ConcurrentHashMap<Long, List<LoadedSource>>()
+
     /** pkgName -> 扩展的 APK 路径（`/icon/{pkg}` 要回读 APK）。与 `extensions` 一起在 reload() 里清。 */
     private val apkFiles = ConcurrentHashMap<String, Path>()
 
@@ -26,11 +29,23 @@ class ExtensionRegistry(private val rootDir: Path, private val jarDir: Path) : S
 
     private val loader = ExtensionLoader(rootDir, jarDir)
 
+    /** 下一个可用的 extensionId；只在扩展真正注册成功时推进（见 `loadApk`）。`inspect()` 无锁读它。 */
+    @Volatile
+    private var nextExtensionId = 1L
+
     override val extensionCount: Int get() = extensions.size
     override val sourceCount: Int get() = sources.size
 
     override fun failures(): Map<String, String> = loadFailures.toMap()
 
+    /**
+     * `@Synchronized`：`scan()` 会清空重填 `extensions` / `sources` / `nextExtensionId` 三份
+     * 状态，两轮扫描交错时后一轮清的正是前一轮刚写下的东西 —— 表现为扩展 id 重复、
+     * 源挂到别的扩展名下。HTTP 宿主是多线程的（见 `Main` 的 executor），
+     * 「扩展装好立刻 reload」叠上任何一次定时/手动 reload 就能撞上。
+     * `reload()` 会回调本方法，Java 的同步块可重入，不会自锁。
+     */
+    @Synchronized
     fun scan() {
         if (!Files.isDirectory(rootDir)) {
             Files.createDirectories(rootDir)
@@ -49,11 +64,14 @@ class ExtensionRegistry(private val rootDir: Path, private val jarDir: Path) : S
     }
 
     /** Drops all loaded extensions/sources and rescans the directory (hot reload). */
+    @Synchronized
     override fun reload() {
         extensions.clear()
         sources.clear()
+        sourcesByExtension.clear()
         apkFiles.clear()
         loadFailures.clear()
+        nextExtensionId = 1L
         // 换掉类加载器：上一轮初始化失败的类在 JVM 里处于 erroneous 状态，之后每次
         // 触碰都直接抛 NoClassDefFoundError，重扫也救不回来（比如上一轮 Koin 还没起来）。
         loader.reset()
@@ -87,19 +105,29 @@ class ExtensionRegistry(private val rootDir: Path, private val jarDir: Path) : S
         val tmp = Files.createTempFile("ext-inspect-", ".apk")
         return try {
             Files.write(tmp, apkBytes)
-            readApkInfo(tmp)
+            // 没注册过就不占号，报「下一个可用号」，与 Android 侧同形。
+            readApkInfo(tmp, nextExtensionId)
         } finally {
             Files.deleteIfExists(tmp)
         }
     }
 
     private fun loadApk(apk: Path) {
-        val info = readApkInfo(apk)
+        // 传 0 只是占位：这个包的 id 要等确定是「新包」还是「重扫到的老包」之后才定。
+        val parsed = readApkInfo(apk, 0L)
             ?: throw IllegalStateException("not a tachiyomi extension (manifest unreadable)")
+        // 重扫到已注册的包时**沿用**它原来的号。`extensions[pkgName] = info` 是覆盖写，
+        // 换成新号会让旧号名下的源变成孤儿：`/sources` 里那些源还写着旧号，server 侧
+        // 按号回查就找不到扩展，源列表整个挂空。
+        val existing = extensions[parsed.pkgName]
+        val info = parsed.copy(extensionId = existing?.extensionId ?: nextExtensionId)
         val loaded = loader.load(apk, info.className, info.extensionId)
         extensions[info.pkgName] = info
         apkFiles[info.pkgName] = apk
+        sourcesByExtension[info.extensionId] = loaded
         loaded.forEach { sources[it.id] = it }
+        // 加载失败会从这里抛出去，号不推进，号段里不留空洞
+        if (existing == null) nextExtensionId++
         println("sandbox: loaded ${loaded.size} source(s) from ${apk.fileName} (${info.name}/${info.versionName})")
     }
 
@@ -141,7 +169,7 @@ class ExtensionRegistry(private val rootDir: Path, private val jarDir: Path) : S
         }
 
     /** Reads pkg info + the Source class name from the APK manifest. */
-    private fun readApkInfo(apk: Path): ExtensionInfo? {
+    private fun readApkInfo(apk: Path, extensionId: Long): ExtensionInfo? {
         return ApkFile(apk.toFile()).use { apkFile ->
             val meta = apkFile.apkMeta ?: return@use null
             val manifest = apkFile.manifestXml ?: return@use null
@@ -155,7 +183,7 @@ class ExtensionRegistry(private val rootDir: Path, private val jarDir: Path) : S
                 lang = extractLang(apk.fileName.toString()),
                 versionName = meta.versionName ?: "0",
                 className = className,
-                extensionId = (extensions.size + 1).toLong(),
+                extensionId = extensionId,
                 versionCode = meta.versionCode,
                 contentWarning = if (nsfw == "true" || nsfw == "1") 1 else 0,
             )
@@ -177,7 +205,8 @@ class ExtensionRegistry(private val rootDir: Path, private val jarDir: Path) : S
 
     override fun toExtensionsJson(): String {
         val parts = extensions.values.joinToString(",") { e ->
-            """{"pkgName":${jsonStr(e.pkgName)},"name":${jsonStr(e.name)},"lang":${jsonStr(e.lang)},"versionName":${jsonStr(e.versionName)},"className":${jsonStr(e.className)},"versionCode":${e.versionCode},"contentWarning":${e.contentWarning},"sources":[${sources.values.filter { it.extensionId == e.extensionId }.joinToString(",") { """{"id":${it.id},"name":${jsonStr(it.name)},"lang":${jsonStr(it.lang)}}""" }}]}"""
+            val srcs = sourcesByExtension[e.extensionId].orEmpty()
+            """{"pkgName":${jsonStr(e.pkgName)},"name":${jsonStr(e.name)},"lang":${jsonStr(e.lang)},"versionName":${jsonStr(e.versionName)},"className":${jsonStr(e.className)},"extensionId":${e.extensionId},"versionCode":${e.versionCode},"contentWarning":${e.contentWarning},"sources":[${srcs.joinToString(",") { """{"id":${it.id},"name":${jsonStr(it.name)},"lang":${jsonStr(it.lang)}}""" }}]}"""
         }
         return "[$parts]"
     }

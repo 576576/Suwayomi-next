@@ -254,7 +254,7 @@ class PackageManagerRegistry(private val context: Context) : SourceRegistry {
     override fun toExtensionsJson(): String {
         val parts = extensions.values.joinToString(",") { e ->
             val srcs = sourcesByExtension[e.extensionId].orEmpty()
-            """{"pkgName":${jsonStr(e.pkgName)},"name":${jsonStr(e.name)},"lang":${jsonStr(e.lang)},"versionName":${jsonStr(e.versionName)},"className":${jsonStr(e.className)},"versionCode":${e.versionCode},"contentWarning":${e.contentWarning},"sources":[${srcs.joinToString(",") { """{"id":${it.id},"name":${jsonStr(it.name)},"lang":${jsonStr(it.lang)}}""" }}]}"""
+            """{"pkgName":${jsonStr(e.pkgName)},"name":${jsonStr(e.name)},"lang":${jsonStr(e.lang)},"versionName":${jsonStr(e.versionName)},"className":${jsonStr(e.className)},"extensionId":${e.extensionId},"versionCode":${e.versionCode},"contentWarning":${e.contentWarning},"sources":[${srcs.joinToString(",") { """{"id":${it.id},"name":${jsonStr(it.name)},"lang":${jsonStr(it.lang)}}""" }}]}"""
         }
         return "[$parts]"
     }

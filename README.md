@@ -101,8 +101,9 @@ server 可启动一个 JVM 沙盒进程，通过 HTTP 契约驱动真实 Mihon/T
 ```bash
 # 1) 构建 sandbox（JDK 25 toolchain；产物 build/libs/suwayomi-jvm-sandbox.jar）
 cd jvm-sandbox
-gradle build          # 需要 jvm-sandbox/libs/AndroidCompat-1.0.jar（从 Suwayomi-Server
-                      #   AndroidCompat 模块构建后复制，或自行替换为等价 Android stub）
+gradle build          # 需要 jvm-sandbox/libs/ 下两个 jar：AndroidCompat-1.0.jar 与
+                      #   Config-1.0.jar（分别从 Suwayomi-Server 的 AndroidCompat 与
+                      #   AndroidCompat/Config 模块构建后复制，或自行替换为等价 Android stub）
 cd ..
 
 # 2) 把扩展 APK 放入目录（默认 ./extensions，或用 SUWAYOMI_EXTENSIONS_DIR 指定）

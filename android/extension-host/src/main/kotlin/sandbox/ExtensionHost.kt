@@ -11,7 +11,10 @@
 package sandbox
 
 import android.app.Application
+import android.content.pm.PackageManager
+import android.os.Build
 import android.util.Log
+import eu.kanade.tachiyomi.AppInfo
 
 object ExtensionHost {
     private const val TAG = "suwayomi-ext-host"
@@ -38,6 +41,7 @@ object ExtensionHost {
     fun start(app: Application, preferredPort: Int): Int {
         server?.let { return it.boundPort }
 
+        installAppInfo(app)
         setupInjekt(app)
         val reg = PackageManagerRegistry(app)
         reg.scan()
@@ -79,6 +83,30 @@ object ExtensionHost {
         server?.stop()
         server = null
         registry = null
+    }
+
+    /**
+     * 把本应用自己的版本号/版本名交给扩展面（`AppInfo`）。扩展会拿它拼
+     * User-Agent，值的来源只能是宿主包信息，不能在宿主代码里写死常量。
+     */
+    @Suppress("DEPRECATION")
+    private fun installAppInfo(app: Application) {
+        try {
+            val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                app.packageManager.getPackageInfo(app.packageName, PackageManager.PackageInfoFlags.of(0))
+            } else {
+                app.packageManager.getPackageInfo(app.packageName, 0)
+            }
+            val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                info.longVersionCode.toInt()
+            } else {
+                info.versionCode
+            }
+            AppInfo.installVersion(code, info.versionName ?: "0")
+        } catch (e: PackageManager.NameNotFoundException) {
+            // 自己包的版本读不出来不该阻止扩展宿主启动：AppInfo 保持 0。
+            Log.w(TAG, "cannot read host package info: ${e.message}")
+        }
     }
 
     /** 最近一次扩展加载失败的原因，供界面/日志排障。 */

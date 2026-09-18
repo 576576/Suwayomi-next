@@ -46,6 +46,14 @@ dependencies {
     // --- Android stub API (from the AndroidCompat project) ---
     // Android stub API (compiled with Kotlin 2.4, same as the sandbox compiler)
     implementation(files("libs/AndroidCompat-1.0.jar"))
+    // AndroidCompat 的 `android.os.Build` / `SystemProperties` 静态依赖 `xyz.nulldev.ts.config`，
+    // 那套配置子系统在 AndroidCompat 仓里是独立的 Config 模块（上游由 server 侧的
+    // `implementation(projects.androidCompat.config)` 提供），不打进 AndroidCompat-1.0.jar。
+    // 缺了它，凡是在 `headersBuilder()` 里读 `Build.X` 的扩展都会倒在 CNFE 上。
+    implementation(files("libs/Config-1.0.jar"))
+    implementation("com.typesafe:config:1.4.9")
+    implementation("io.github.config4k:config4k:0.7.0")
+    implementation("ca.gosyer:kotlin-multiplatform-appdirs:2.0.0")
 }
 
 application {

@@ -498,6 +498,11 @@ fn spawn_java(jar_path: &str, port: &str) -> std::io::Result<std::process::Child
     if let Ok(proxy) = std::env::var("SUWAYOMI_SANDBOX_PROXY") {
         cmd.env("SUWAYOMI_SANDBOX_PROXY", proxy);
     }
+    // 扩展通过 `eu.kanade.tachiyomi.AppInfo` 读宿主版本并拼进 User-Agent；沙盒是独立
+    // 进程，拿不到 server 的编译期常量，只能在这里传进去（与 build.rs 注入的同名变量
+    // 一致，来源是同一个 `suwayomi_core::version`）。
+    cmd.env("SUWAYOMI_VERSION_NAME", suwayomi_core::version::VERSION);
+    cmd.env("SUWAYOMI_VERSION_CODE", suwayomi_core::version::VERSION_CODE);
     // Windows：server 自身无控制台（windows_subsystem=windows），spawn 的
     // java 是 console 程序，默认会新建一个终端窗口——用 CREATE_NO_WINDOW
     // 静默启动，并把 JVM 输出落到日志目录便于诊断。

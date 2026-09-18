@@ -1,11 +1,9 @@
 package sandbox
 
-import android.os.Looper
 import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
 import java.nio.file.Files
 import java.nio.file.Paths
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 
 /**
@@ -35,11 +33,18 @@ fun main() {
     Files.createDirectories(Paths.get(extensionsDir))
     Files.createDirectories(Paths.get(jarDir))
 
+    // 扩展把 AppInfo 的版本拼进 User-Agent，值取自宿主（见 installHostVersion）。
+    installHostVersion(
+        System.getenv("SUWAYOMI_VERSION_CODE"),
+        System.getenv("SUWAYOMI_VERSION_NAME"),
+    )
+
     val registry = ExtensionRegistry(Paths.get(extensionsDir), Paths.get(jarDir))
-    // 先装 injekt/Koin 再扫：扩展的 <clinit> 会用 injekt 取依赖，Koin 没起来
-    // 会以 ExceptionInInitializerError 记在类上，之后该类永久不可用。
+    // 扫之前先把宿主环境补齐（见 AndroidEnv.kt）：Koin 没起来、主 Looper 没挂、配置模块没注册，
+    // 扩展的 <clinit> 都会以 ExceptionInInitializerError 记在类上，之后该类永久不可用。
     setupInjekt()
     startMainLooper()
+    registerAndroidCompatConfig()
     registry.scan()
     val server = HttpServer.create(InetSocketAddress("127.0.0.1", port), 0)
     val router = Router(registry)
@@ -54,31 +59,4 @@ fun main() {
     server.executor = Executors.newCachedThreadPool()
     server.start()
     println("suwayomi-jvm-sandbox listening on 127.0.0.1:$port (extensions dir: $extensionsDir, jar dir: $jarDir)")
-}
-
-/**
- * 起一个跑真实 `Looper.loop()` 的线程，把 `Looper.getMainLooper()` 挂上去。
- *
- * 扩展在构造期会用 `Handler(Looper.getMainLooper())` 建 Handler（Komga 就是）。桌面
- * JVM 没有 Android 运行时、没人 prepare 过主 Looper，`getMainLooper()` 恒 null，
- * `new Handler(null)` 在 `Handler.<init>` 里解引用 `looper.mQueue` 直接 NPE。
- *
- * AndroidCompat 的 MessageQueue 是能跑的（poll 走 `Object.wait`，不会空转），所以这里
- * 真开一个 looper 线程：post 进去的任务会被执行，而不只是让 Looper 非 null。
- * 必须等它就绪再扫扩展，否则拿到 null 的时序没保证。
- */
-// Android 只在「由 Android 运行时创建主 Looper」这一层意义上把 prepareMainLooper 标成
-// deprecated；桌面沙盒没有那个运行时，只能自己建。
-@Suppress("DEPRECATION")
-private fun startMainLooper() {
-    val ready = CountDownLatch(1)
-    Thread(
-        {
-            Looper.prepareMainLooper()
-            ready.countDown()
-            Looper.loop()
-        },
-        "android-main-looper",
-    ).apply { isDaemon = true }.start()
-    ready.await()
 }

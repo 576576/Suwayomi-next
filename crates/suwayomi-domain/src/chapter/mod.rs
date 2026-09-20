@@ -52,11 +52,42 @@ pub fn remove_duplicates_kotlin(current: &ChapterDataClass, chapters: &[ChapterD
 pub struct ChapterService {
     pub db: Db,
     pub fetcher: Arc<dyn SourceFetcher>,
+    /// 追踪器句柄。没设时「标记已读后自动推进站点进度」这条规则不生效。
+    tracker: Option<crate::tracker::TrackerManager>,
 }
 
 impl ChapterService {
     pub fn new(db: Db, fetcher: Arc<dyn SourceFetcher>) -> Self {
-        Self { db, fetcher }
+        Self { db, fetcher, tracker: None }
+    }
+
+    pub fn with_tracker(mut self, tracker: crate::tracker::TrackerManager) -> Self {
+        self.tracker = Some(tracker);
+        self
+    }
+
+    /// 标记已读后把进度推给站点（对应上游 `Track.asyncTrackChapter`）。
+    ///
+    /// 丢到后台任务里跑：追踪站在境外，同步等它会把翻页与批量勾选的响应拖住好几秒，
+    /// 而上游也是在协程里发的、不阻塞调用方。
+    ///
+    /// 只有 `auto_track` 为真的入口会走到这里。上游只在 REST 章节编辑与
+    /// `updateChapterProgress` 上挂了这一钩；GraphQL 的 `updateChapters` 不挂 ——
+    /// WebUI 自己按「更新进度」设置决定要不要额外发 `trackProgress`，
+    /// 服务端再钩一次会让设置形同虚设。
+    fn spawn_track_chapters(&self, manga_ids: Vec<i32>, auto_track: bool) {
+        if !auto_track {
+            return;
+        }
+        let Some(tracker) = self.tracker.clone() else {
+            return;
+        };
+        if manga_ids.is_empty() {
+            return;
+        }
+        tokio::spawn(async move {
+            tracker.track_chapters(&manga_ids).await;
+        });
     }
 
     pub fn meta(&self) -> MetaService {
@@ -158,6 +189,10 @@ impl ChapterService {
     }
 
     /// Mirrors `modifyChapter` — locate chapter by (manga, source_order).
+    ///
+    /// `auto_track`：标记已读后是否推进追踪器进度（见 [`Self::spawn_track_chapters`]）。
+    // 参数与上游 `Chapter.modifyChapter` 一一对应，`auto_track` 只有 REST 入口会置位。
+    #[allow(clippy::too_many_arguments)]
     pub async fn modify_chapter(
         &self,
         manga_id: i32,
@@ -166,6 +201,7 @@ impl ChapterService {
         is_bookmarked: Option<bool>,
         mark_prev_read: Option<bool>,
         last_page_read: Option<i32>,
+        auto_track: bool,
     ) -> Result<i32> {
         let chapter_id = self.find_id_by_index(manga_id, chapter_index).await?;
 
@@ -196,6 +232,10 @@ impl ChapterService {
             {
                 suwayomi_db::query(&sql).bind(mark).bind(manga_id).bind(chapter_index).execute(self.db.pool()).await?;
             }
+        }
+
+        if is_read == Some(true) || mark_prev_read == Some(true) {
+            self.spawn_track_chapters(vec![manga_id], auto_track);
         }
 
         Ok(chapter_id)
@@ -238,7 +278,8 @@ impl ChapterService {
             .ok_or_else(|| DomainError::not_found("chapter not found"))?;
         let one_indexed = page_no + 1;
         let is_read = (row.page_count == one_indexed).then_some(true);
-        self.modify_chapter(manga_id, chapter_index, is_read, None, None, Some(page_no)).await?;
+        // 进度上报这条路要推进追踪（上游 `updateChapterProgress` → `modifyChapter`）。
+        self.modify_chapter(manga_id, chapter_index, is_read, None, None, Some(page_no), true).await?;
         Ok(row.id)
     }
 
@@ -250,6 +291,7 @@ impl ChapterService {
         is_read: Option<bool>,
         is_bookmarked: Option<bool>,
         last_page_read: Option<i32>,
+        auto_track: bool,
     ) -> Result<()> {
         if indexes.is_empty() {
             return Ok(());
@@ -290,6 +332,9 @@ impl ChapterService {
             }
             q.execute(self.db.pool()).await?;
         }
+        if is_read == Some(true) {
+            self.spawn_track_chapters(vec![manga_id], auto_track);
+        }
         Ok(())
     }
 
@@ -299,6 +344,7 @@ impl ChapterService {
         is_read: Option<bool>,
         is_bookmarked: Option<bool>,
         last_page_read: Option<i32>,
+        auto_track: bool,
     ) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
@@ -338,6 +384,19 @@ impl ChapterService {
             }
             q.execute(self.db.pool()).await?;
         }
+        // 这批章节可能横跨多部漫画（按 id 批量勾选），逐部推。
+        if is_read == Some(true) {
+            let sql = bind_placeholders(&format!(
+                "SELECT DISTINCT manga FROM chapter WHERE id IN ({})",
+                vec!["?"; ids.len()].join(", ")
+            ));
+            let mut q = suwayomi_db::query_scalar::<i32>(&sql);
+            for id in ids {
+                q = q.bind(id);
+            }
+            let manga_ids = q.fetch_all(self.db.pool()).await?;
+            self.spawn_track_chapters(manga_ids, auto_track);
+        }
         Ok(())
     }
 
@@ -360,7 +419,7 @@ impl ChapterService {
         if chapter_ids.is_empty() {
             return Ok(());
         }
-        // mark not downloaded (download files cleanup lands in Phase 6)
+        // mark not downloaded; the archive on disk is left in place
         let sql = bind_placeholders(&format!(
             "UPDATE chapter SET is_downloaded = FALSE WHERE id IN ({})",
             vec!["?"; chapter_ids.len()].join(", ")

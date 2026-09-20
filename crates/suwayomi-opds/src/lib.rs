@@ -1,10 +1,10 @@
 //! suwayomi-opds
 //!
 //! Mirrors `suwayomi.opds.*` — OPDS 1.2 feeds for e-reader clients
-//! (KOReader, etc.). Phase 6: full feed set implemented (root navigation,
-//! search, history, library series with cross-filters/sort, explore sources,
-//! categories/genres/statuses/languages navigation, library updates, series
-//! chapters, chapter metadata, not-found).
+//! (KOReader, etc.). Feed set: root navigation, search, history, library
+//! series with cross-filters/sort, explore sources, categories/genres/
+//! statuses/languages navigation, library updates, series chapters, chapter
+//! metadata, not-found.
 
 pub mod constants;
 pub mod feeds;

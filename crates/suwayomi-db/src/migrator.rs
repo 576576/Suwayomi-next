@@ -7,13 +7,17 @@
 //!
 //! The list is first probed against the tracking table: when every version is
 //! already recorded the migrator returns without issuing any DDL. Otherwise the
-//! whole list is concatenated into **one script** and executed as a single
+//! pending steps are concatenated into **one script** and executed as a single
 //! `batch_execute` call. That is deliberate: the call runs on one pooled
 //! connection, so PostgreSQL wraps it in a single implicit transaction and a
 //! transaction-scoped advisory lock can serialise concurrent migrators (a
-//! second server process, or the parallel integration tests). Every statement
-//! is idempotent (`IF NOT EXISTS` / `CREATE OR REPLACE` / `DROP … IF EXISTS`),
-//! so a partially applied list is simply run again from the top.
+//! second server process, or the parallel integration tests).
+//!
+//! PostgreSQL statements are all idempotent (`IF NOT EXISTS` / `CREATE OR
+//! REPLACE` / `DROP … IF EXISTS`), so a partially applied list is replayed from
+//! the top. SQLite has no `ADD COLUMN IF NOT EXISTS`: there the script carries
+//! only the steps that are still unrecorded, because replaying everything would
+//! fail on a database that already has the column.
 //!
 //! Applied versions live in `_suwayomi_migrations`. This replaces sqlx's
 //! `_sqlx_migrations`, so an existing PostgreSQL database re-applies everything
@@ -30,6 +34,7 @@ use crate::backend::{BackendKind, Db};
 use crate::error::Result;
 
 /// One schema step.
+#[derive(Clone, Copy)]
 struct Migration {
     /// Recorded in `_suwayomi_migrations`; must never change once shipped.
     version: &'static str,
@@ -65,6 +70,14 @@ const SQLITE_MIGRATIONS: &[Migration] = &[
         version: "0003_add_source_flags",
         sql: include_str!("../../../migrations/sqlite/0003_add_source_flags.sql"),
     },
+    Migration {
+        version: "0004_add_source_urls",
+        sql: include_str!("../../../migrations/sqlite/0004_add_source_urls.sql"),
+    },
+    Migration {
+        version: "0005_add_tracker_credentials",
+        sql: include_str!("../../../migrations/sqlite/0005_add_tracker_credentials.sql"),
+    },
 ];
 
 /// PostgreSQL — same files the server used before the dual-backend split.
@@ -89,6 +102,14 @@ const POSTGRES_MIGRATIONS: &[Migration] = &[
         version: "0005_add_source_flags",
         sql: include_str!("../../../migrations/0005_add_source_flags.sql"),
     },
+    Migration {
+        version: "0006_add_source_urls",
+        sql: include_str!("../../../migrations/0006_add_source_urls.sql"),
+    },
+    Migration {
+        version: "0007_add_tracker_credentials",
+        sql: include_str!("../../../migrations/0007_add_tracker_credentials.sql"),
+    },
 ];
 
 /// Applies the schema for the active backend.
@@ -101,12 +122,24 @@ pub async fn migrate(db: &Db) -> Result<()> {
         tracing::debug!(backend = db.kind().as_str(), "database schema already up to date");
         return Ok(());
     }
+    // SQLite 的 `ALTER TABLE ADD COLUMN` 没有 `IF NOT EXISTS`，整套重放会在已经
+    // 升级过的库上撞 `duplicate column name`：只拼还没记账的步骤。
+    let pending: Vec<Migration> = if db.kind() == BackendKind::Sqlite {
+        let applied = applied_versions(db).await;
+        migrations.iter().copied().filter(|m| !applied.iter().any(|v| v == m.version)).collect()
+    } else {
+        migrations.to_vec()
+    };
+    if pending.is_empty() {
+        return Ok(());
+    }
     tracing::info!(
         backend = db.kind().as_str(),
         steps = migrations.len(),
+        pending = pending.len(),
         "applying database schema (idempotent)"
     );
-    let script = build_script(db.kind(), migrations);
+    let script = build_script(db.kind(), &pending);
     if let Err(e) = db.batch_execute(&script).await {
         // SQLite has no implicit transaction around a multi-statement script, so
         // a failed step would leave the transaction open on the connection.
@@ -131,11 +164,16 @@ pub async fn migrate(db: &Db) -> Result<()> {
 /// Any error means "not up to date" — the tracking table may not exist yet, and
 /// on PostgreSQL neither may the whole schema.
 async fn is_up_to_date(db: &Db, migrations: &[Migration]) -> bool {
-    let Ok(rows) = crate::query::query("SELECT version FROM _suwayomi_migrations").fetch_all(db).await else {
-        return false;
-    };
-    let applied: Vec<String> = rows.iter().filter_map(|row| row.try_get::<String, _>(0usize).ok()).collect();
+    let applied = applied_versions(db).await;
     migrations.iter().all(|m| applied.iter().any(|v| v == m.version))
+}
+
+/// 已记账的迁移版本。追踪表还不存在（全新库）时返回空 —— 视为一步都没做过。
+async fn applied_versions(db: &Db) -> Vec<String> {
+    let Ok(rows) = crate::query::query("SELECT version FROM _suwayomi_migrations").fetch_all(db).await else {
+        return Vec::new();
+    };
+    rows.iter().filter_map(|row| row.try_get::<String, _>(0usize).ok()).collect()
 }
 
 /// Concatenates the tracking table, every migration and its bookkeeping row.
@@ -211,6 +249,28 @@ mod tests {
         assert!(script.trim_end().ends_with("COMMIT;"));
         assert!(!script.contains("CREATE SCHEMA"));
         assert!(!script.contains("pg_advisory"));
+    }
+
+    /// 已有库的增量升级：sqlite 上只能补未记账的步骤。
+    ///
+    /// 整套重放会撞 `duplicate column name` —— SQLite 的 `ADD COLUMN` 没有
+    /// `IF NOT EXISTS`，于是升级路径直接起不来。
+    #[tokio::test]
+    async fn sqlite_upgrade_only_replays_unrecorded_steps() {
+        let db = Db::sqlite_in_memory().await.unwrap();
+        // 上一个发布版的状态：最后一步还没做过。
+        let previous = &SQLITE_MIGRATIONS[..SQLITE_MIGRATIONS.len() - 1];
+        db.batch_execute(&build_script(BackendKind::Sqlite, previous)).await.unwrap();
+        assert!(is_up_to_date(&db, previous).await);
+
+        migrate(&db).await.expect("增量升级必须成功");
+        assert!(is_up_to_date(&db, SQLITE_MIGRATIONS).await);
+
+        // 新迁移加的列真的落地了。
+        crate::query::query("SELECT base_url, home_url FROM source")
+            .fetch_all(&db)
+            .await
+            .expect("base_url / home_url 列必须存在");
     }
 
     #[tokio::test]

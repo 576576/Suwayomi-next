@@ -8,7 +8,7 @@
 
 use md5::{Digest, Md5};
 use reqwest::Client;
-use suwayomi_core::config::{KoreaderSyncConflictStrategy, ServerConfig};
+use suwayomi_core::config::{KoreaderSyncConflictStrategy, RuntimeConfig};
 use suwayomi_core::db::Db;
 
 use crate::error::{DomainError, Result};
@@ -63,15 +63,15 @@ struct ProgressResponse {
 #[derive(Clone)]
 pub struct KoreaderSyncService {
     db: Db,
-    config: ServerConfig,
+    config: RuntimeConfig,
     http: Client,
 }
 
 impl KoreaderSyncService {
-    pub fn new(db: Db, config: ServerConfig) -> Self {
+    pub fn new(db: Db, config: impl Into<RuntimeConfig>) -> Self {
         Self {
             db,
-            config,
+            config: config.into(),
             http: Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(10))
                 .build()
@@ -292,8 +292,9 @@ impl KoreaderSyncService {
 
     /// Mirrors `pushProgress`: PUT current page progress to the server.
     pub async fn push_progress(&self, chapter_id: i32) -> Result<()> {
-        let fwd = self.config.koreader_sync_strategy_forward;
-        let back = self.config.koreader_sync_strategy_backward;
+        let cfg = self.config.snapshot();
+        let fwd = cfg.koreader_sync_strategy_forward;
+        let back = cfg.koreader_sync_strategy_backward;
         if fwd == KoreaderSyncConflictStrategy::KeepRemote && back == KoreaderSyncConflictStrategy::KeepRemote {
             return Ok(()); // receive-only mode
         }
@@ -332,8 +333,9 @@ impl KoreaderSyncService {
     /// Mirrors `checkAndPullProgress`: fetch remote progress and apply the
     /// conflict strategy; returns the decided update, if any.
     pub async fn pull_progress(&self, chapter_id: i32) -> Result<Option<SyncResult>> {
-        let fwd = self.config.koreader_sync_strategy_forward;
-        let back = self.config.koreader_sync_strategy_backward;
+        let cfg = self.config.snapshot();
+        let fwd = cfg.koreader_sync_strategy_forward;
+        let back = cfg.koreader_sync_strategy_backward;
         if (fwd == KoreaderSyncConflictStrategy::Disabled && back == KoreaderSyncConflictStrategy::Disabled)
             || (fwd == KoreaderSyncConflictStrategy::KeepLocal && back == KoreaderSyncConflictStrategy::KeepLocal)
         {
@@ -382,7 +384,7 @@ impl KoreaderSyncService {
         let (local_ts, local_page, local_pages) = local.unwrap_or((0, 0, 0));
         let local_pct = if local_pages > 0 { (local_page + 1) as f32 / local_pages as f32 } else { 0.0 };
         let remote_pct = progress.percentage.unwrap_or(0.0);
-        if (local_pct - remote_pct).abs() < self.config.koreader_sync_percentage_tolerance {
+        if (local_pct - remote_pct).abs() < cfg.koreader_sync_percentage_tolerance {
             return Ok(None);
         }
         let is_remote_newer = timestamp > local_ts;

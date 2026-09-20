@@ -93,7 +93,7 @@ impl MangaService {
         if !online_fetch && row.initialized {
             return Ok(manga_row_to_data_class(&row));
         }
-        // initialize manga via the source (JVM sandbox, Phase 5)
+        // initialize manga via the source
         let s_manga = SManga {
             url: row.url.clone(),
             title: row.title.clone(),

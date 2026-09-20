@@ -524,7 +524,14 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
         tracing::warn!("downloads reconcile failed: {e}");
     }
 
-    let graphql_state = suwayomi_graphql::GraphQLState::new(db.clone(), config.clone(), auth.clone(), fetcher.clone(), sandbox_base.clone(), webui_dir.clone(), data_dir_path.clone());
+    let update = suwayomi_domain::updater::UpdateManager::new(db.clone(), fetcher.clone());
+    // REST 与 GraphQL 共用同一个追踪器句柄：登录态是从数据库读的，两个入口看到
+    // 的东西必须一致，克隆出两个实例会让「其中一个刚登录」的状态不同步。
+    let tracker = suwayomi_domain::tracker::TrackerManager::new(db.clone());
+    let graphql_state = suwayomi_graphql::GraphQLState::new(db.clone(), config.clone(), auth.clone(), fetcher.clone(), update.clone(), tracker.clone(), sandbox_base.clone(), webui_dir.clone(), data_dir_path.clone());
+    // 持久化设置（`global_meta` 的 settings blob）盖到 env 基线上：KOReader 同步
+    // 策略、SyncYomi 开关这类设置由服务在运行时读取，重启后必须生效。
+    graphql_state.reload_runtime_config().await;
     // Scheduled auto-backup loop (`autoBackupFrequency`/`backupPath` settings).
     suwayomi_graphql::autobackup::spawn(graphql_state.clone());
     let schema = suwayomi_graphql::schema::build_schema(graphql_state);
@@ -534,6 +541,8 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
         config.clone(),
         auth.clone(),
         fetcher,
+        update,
+        tracker,
         sandbox_base,
         webui_dir.clone(),
         data_dir_path.clone(),

@@ -1,5 +1,5 @@
 //! Source endpoints — mirrors `SourceController.kt`. Fetching goes through
-//! the `SourceFetcher` (JVM sandbox in Phase 5); list/detail are DB-backed.
+//! the `SourceFetcher` (JVM sandbox); list/detail are DB-backed.
 
 use axum::extract::{Path, Query, State};
 use axum::routing::get;

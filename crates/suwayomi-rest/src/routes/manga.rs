@@ -7,7 +7,7 @@ use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 
-use crate::error::ApiResult;
+use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
 #[derive(Deserialize)]
@@ -48,7 +48,7 @@ async fn get_manga(
     Query(q): Query<OnlineParams>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let dc = s.manga.get_manga(manga_id, q.online_fetch).await?;
-    Ok(Json(serde_json::to_value(&dc).map_err(|e| crate::error::ApiError::Internal(e.to_string()))?))
+    Ok(Json(serde_json::to_value(&dc).map_err(|e| ApiError::Internal(e.to_string()))?))
 }
 
 async fn get_manga_full(
@@ -57,15 +57,93 @@ async fn get_manga_full(
     Query(q): Query<OnlineParams>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let dc = s.manga.get_manga_full(manga_id, q.online_fetch).await?;
-    Ok(Json(serde_json::to_value(&dc).map_err(|e| crate::error::ApiError::Internal(e.to_string()))?))
+    Ok(Json(serde_json::to_value(&dc).map_err(|e| ApiError::Internal(e.to_string()))?))
 }
 
+/// Mirrors `MangaController.thumbnail` — 取源站的封面图；先看磁盘缓存，
+/// 没有就抓一次并落盘。带 `cache-control`，浏览器端缓存一天。
 async fn get_thumbnail(
-    State(_s): State<AppState>,
-    Path(_manga_id): Path<i32>,
+    State(s): State<AppState>,
+    Path(manga_id): Path<i32>,
 ) -> crate::error::ApiResult<axum::response::Response> {
-    // image streaming lands with the source layer (Phase 5)
-    Err(crate::error::ApiError::NotFound("thumbnail unavailable in this phase".into()))
+    use axum::http::{header, HeaderValue};
+
+    let row: Option<suwayomi_core::schema::MangaRow> = suwayomi_db::query_as("SELECT * FROM manga WHERE id = $1")
+        .bind(manga_id)
+        .fetch_optional(s.db.pool())
+        .await
+        .map_err(ApiError::from)?;
+    let url = row
+        .and_then(|r| r.thumbnail_url)
+        .filter(|u| !u.trim().is_empty())
+        .ok_or_else(|| ApiError::NotFound(format!("manga {manga_id} has no thumbnail")))?;
+
+    let (bytes, ctype) = load_thumbnail(manga_id, &url)
+        .await
+        .ok_or_else(|| ApiError::NotFound(format!("manga {manga_id} thumbnail unavailable")))?;
+
+    let mut resp = axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .body(axum::body::Body::from(bytes))
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let headers = resp.headers_mut();
+    if let Ok(v) = HeaderValue::from_str(&ctype) {
+        headers.insert(header::CONTENT_TYPE, v);
+    }
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("max-age=86400"));
+    Ok(resp)
+}
+
+/// 封面字节：本地路径直接读，否则查缓存、再退到抓取。
+async fn load_thumbnail(manga_id: i32, url: &str) -> Option<(Vec<u8>, String)> {
+    let dir = suwayomi_core::config::cache_root().join("thumbnails");
+    let img_path = dir.join(format!("{manga_id}.img"));
+    let mime_path = dir.join(format!("{manga_id}.mime"));
+
+    if let Ok(bytes) = tokio::fs::read(&img_path).await {
+        let ctype = tokio::fs::read_to_string(&mime_path).await.unwrap_or_else(|_| "image/png".into());
+        return Some((bytes, ctype));
+    }
+
+    // 已下载到本地的封面（扩展把图落了盘的情况）走文件读。
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        let bytes = tokio::fs::read(url).await.ok()?;
+        let ctype = sniff_image_mime(&bytes).to_string();
+        return Some((bytes, ctype));
+    }
+
+    let client = reqwest::Client::builder()
+        .user_agent("Suwayomi-next/1.0")
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .ok()?;
+    let resp = client.get(url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let ctype = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .unwrap_or_else(|| "image/png".into());
+    let bytes = resp.bytes().await.ok()?.to_vec();
+    let _ = tokio::fs::create_dir_all(&dir).await;
+    let _ = tokio::fs::write(&img_path, &bytes).await;
+    let _ = tokio::fs::write(&mime_path, &ctype).await;
+    Some((bytes, ctype))
+}
+
+fn sniff_image_mime(b: &[u8]) -> &'static str {
+    if b.len() > 3 && &b[0..4] == b"RIFF" {
+        "image/webp"
+    } else if b.len() > 2 && b[0] == 0xff && b[1] == 0xd8 {
+        "image/jpeg"
+    } else if b.len() > 7 && &b[0..8] == b"\x89PNG\r\n\x1a\n" {
+        "image/png"
+    } else {
+        "application/octet-stream"
+    }
 }
 
 async fn add_to_library(State(s): State<AppState>, Path(manga_id): Path<i32>) -> ApiResult<Json<serde_json::Value>> {
@@ -98,7 +176,7 @@ async fn chapter_list(
     Query(q): Query<OnlineParams>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let list = s.chapter.get_chapter_list(manga_id, q.online_fetch).await?;
-    Ok(Json(serde_json::to_value(&list).map_err(|e| crate::error::ApiError::Internal(e.to_string()))?))
+    Ok(Json(serde_json::to_value(&list).map_err(|e| ApiError::Internal(e.to_string()))?))
 }
 
 #[derive(Deserialize)]
@@ -141,11 +219,11 @@ async fn chapter_batch(
     }
     if let Some(indexes) = &chapter_indexes {
         s.chapter
-            .modify_chapters_by_indexes(manga_id, indexes, change.is_read, change.is_bookmarked, change.last_page_read)
+            .modify_chapters_by_indexes(manga_id, indexes, change.is_read, change.is_bookmarked, change.last_page_read, true)
             .await?;
     }
     if let Some(ids) = &chapter_ids {
-        s.chapter.modify_chapters_by_ids(ids, change.is_read, change.is_bookmarked, change.last_page_read).await?;
+        s.chapter.modify_chapters_by_ids(ids, change.is_read, change.is_bookmarked, change.last_page_read, true).await?;
     }
     Ok(Json(serde_json::json!({ "message": "success" })))
 }
@@ -194,10 +272,10 @@ async fn chapter_retrieve(
     State(s): State<AppState>,
     Path((manga_id, chapter_index)): Path<(i32, i32)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let id = find_chapter_id(&s, manga_id, chapter_index).await.map_err(crate::error::ApiError::from)?;
+    let id = find_chapter_id(&s, manga_id, chapter_index).await.map_err(ApiError::from)?;
     let row = s.chapter.fetch_by_id(id).await?;
     let dc = suwayomi_domain::manga::chapter_row_to_data_class(&row);
-    Ok(Json(serde_json::to_value(&dc).map_err(|e| crate::error::ApiError::Internal(e.to_string()))?))
+    Ok(Json(serde_json::to_value(&dc).map_err(|e| ApiError::Internal(e.to_string()))?))
 }
 
 #[derive(Deserialize)]
@@ -225,6 +303,7 @@ async fn chapter_modify(
             body.is_bookmarked,
             body.mark_prev_read,
             body.last_page_read,
+            true,
         )
         .await?;
     Ok(Json(serde_json::json!({ "message": "success" })))
@@ -243,7 +322,7 @@ async fn chapter_meta(
     Path((manga_id, chapter_index)): Path<(i32, i32)>,
     Json(body): Json<MetaParams>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let id = find_chapter_id(&s, manga_id, chapter_index).await.map_err(crate::error::ApiError::from)?;
+    let id = find_chapter_id(&s, manga_id, chapter_index).await.map_err(ApiError::from)?;
     let mut map = std::collections::HashMap::new();
     map.insert(id, std::collections::HashMap::from([(body.key, body.value)]));
     s.chapter.modify_metas(&map).await?;
@@ -254,7 +333,7 @@ async fn page_retrieve(
     State(s): State<AppState>,
     Path((manga_id, chapter_index, index)): Path<(i32, i32, i32)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let id = find_chapter_id_offline(&s, manga_id, chapter_index).await.map_err(crate::error::ApiError::from)?;
+    let id = find_chapter_id_offline(&s, manga_id, chapter_index).await.map_err(ApiError::from)?;
     let page = s.page.get_page(id, index).await?;
     Ok(Json(serde_json::json!({ "index": page.index, "imageUrl": page.image_url })))
 }
@@ -310,7 +389,7 @@ async fn page_image(
 
 async fn category_list(State(s): State<AppState>, Path(manga_id): Path<i32>) -> ApiResult<Json<serde_json::Value>> {
     let list = s.category_manga.get_manga_categories(manga_id).await?;
-    Ok(Json(serde_json::to_value(&list).map_err(|e| crate::error::ApiError::Internal(e.to_string()))?))
+    Ok(Json(serde_json::to_value(&list).map_err(|e| ApiError::Internal(e.to_string()))?))
 }
 
 async fn add_to_category(

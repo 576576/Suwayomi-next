@@ -45,11 +45,15 @@ async fn setup() -> Option<(Router, suwayomi_db::Db)> {
     }
     let pool = db.pool().clone();
     let fetcher: Arc<dyn suwayomi_domain::source::SourceFetcher> = Arc::new(StubFetcher);
+    let update = suwayomi_domain::updater::UpdateManager::new(db.clone(), fetcher.clone());
+    let tracker = suwayomi_domain::tracker::TrackerManager::new(db.clone());
     let state = AppState::new(
         db,
         ServerConfig::default(),
         Arc::new(suwayomi_core::auth::AuthContext::disabled()),
         fetcher,
+        update,
+        tracker,
         None,
         std::path::PathBuf::new(),
         std::env::temp_dir(),

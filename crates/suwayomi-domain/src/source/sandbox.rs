@@ -25,6 +25,11 @@ pub struct SandboxSourceInfo {
     pub supports_latest: bool,
     #[serde(default)]
     pub is_configurable: bool,
+    /// 源的主页地址（`HttpSource.getBaseUrl()` / `getHomeUrl()`）；老沙盒不报。
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub home_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -132,6 +137,11 @@ pub struct SandboxSourceRef {
     pub supports_latest: bool,
     #[serde(default)]
     pub is_configurable: bool,
+    /// 源的主页地址（`HttpSource.getBaseUrl()` / `getHomeUrl()`）；老沙盒不报。
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub home_url: Option<String>,
 }
 
 /// Fetches manga/chapter data from the JVM sandbox over HTTP.
@@ -171,7 +181,7 @@ impl HttpSandboxFetcher {
             .unwrap_or(false)
     }
 
-    /// Lists extensions known to the sandbox (Phase 5 skeleton).
+    /// Lists extensions known to the sandbox.
     pub async fn list_extensions(&self) -> Result<Vec<SandboxExtension>> {
         let r = self.client.get(format!("{}/extensions", self.base_url)).send().await.map_err(DomainError::from)?;
         r.json::<Vec<SandboxExtension>>().await.map_err(DomainError::from)

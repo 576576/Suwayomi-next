@@ -1,7 +1,7 @@
 //! Extension-facing data abstractions — mirrors
 //! `eu/kanade/tachiyomi/source/model/*.kt` (SManga, SChapter, Page, MangasPage).
 //!
-//! These structs are the wire format shared with the JVM sandbox (Phase 5)
+//! These structs are the wire format shared with the JVM sandbox
 //! and the local source implementation. Field names are snake_case to match
 //! the Kotlin properties exactly.
 

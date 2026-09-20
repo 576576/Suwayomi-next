@@ -39,6 +39,9 @@ pub struct SourceRow {
     pub supports_latest: bool,
     /// 源实现 `ConfigurableSource`，有设置界面。
     pub is_configurable: bool,
+    /// 源的主页地址（`HttpSource.getBaseUrl()` / `getHomeUrl()`），建源行时由沙盒写入。
+    pub base_url: Option<String>,
+    pub home_url: Option<String>,
 }
 
 /// `manga` — mirrors `MangaTable`

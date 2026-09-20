@@ -1,4 +1,4 @@
-//! Phase 2 integration tests — service-level port of the Kotlin tests
+//! Integration tests — service-level port of the Kotlin tests
 //! (MangaTest / CategoryMangaTest / library & category behavior) against a
 //! PostgreSQL database with the migration baseline applied.
 //!
@@ -255,14 +255,14 @@ async fn chapter_list_sorting_and_modify() {
     assert_eq!(list[0].index, 5);
     assert_eq!(list[4].index, 1);
 
-    let id = chapter.modify_chapter(manga_id, 3, Some(true), Some(true), None, Some(2)).await.unwrap();
+    let id = chapter.modify_chapter(manga_id, 3, Some(true), Some(true), None, Some(2), false).await.unwrap();
     let row = chapter.fetch_by_id(id).await.unwrap();
     assert!(row.read);
     assert!(row.bookmark);
     assert_eq!(row.last_page_read, 2);
     assert!(row.last_read_at > 0);
 
-    chapter.modify_chapter(manga_id, 5, None, None, Some(true), None).await.unwrap();
+    chapter.modify_chapter(manga_id, 5, None, None, Some(true), None, false).await.unwrap();
     let all = chapter.get_chapter_list(manga_id, false).await.unwrap();
     for c in all {
         if c.index < 5 {

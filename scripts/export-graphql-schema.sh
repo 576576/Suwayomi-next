@@ -2,7 +2,7 @@
 # Export the Kotlin (Suwayomi-Server) GraphQL schema as SDL, saved to
 # docs/graphql/schema-baseline.graphql. Run this once from an environment
 # where the Kotlin server can be built & started; the result is the
-# compatibility baseline used by Phase 4 (async-graphql must diff clean).
+# compatibility baseline (async-graphql must diff clean).
 #
 # Usage:
 #   ./scripts/export-graphql-schema.sh [port]

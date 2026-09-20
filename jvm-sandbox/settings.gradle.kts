@@ -11,3 +11,7 @@ rootProject.name = "suwayomi-jvm-sandbox"
 // 产出的 jar 只含自己的类。
 include("android-compat")
 include("android-compat:config")
+
+// AOSP 公开 API 空壳，构建期按 android-stub/android-stub.properties 的 pin 下载并剥离，
+// 替代原来依赖的上游 com.github.Suwayomi:android-jar:1.0.0（那个坐标内容被原地覆盖过 7 次）。
+include("android-stub")

@@ -5,16 +5,14 @@ plugins {
 repositories {
     mavenCentral()
     google()
-    // android.jar 空壳（官方 SDK stub，上游剔重后发布在这条分支上）。
-    maven("https://github.com/Suwayomi/Suwayomi-Server/raw/android-jar/")
 }
 
 dependencies {
     implementation(project(":android-compat:config"))
 
-    // 编译期需要的 android.* / androidx.* 桩。运行期由应用模块把同一个坐标打进 fat jar ——
+    // 编译期需要的 android.* / androidx.* 桩。运行期由应用模块把同一份打进 fat jar ——
     // 扩展会链到 AndroidCompat 没实现的类（android.widget.TextView 等），缺了就 NoClassDefFoundError。
-    compileOnly("com.github.Suwayomi:android-jar:1.0.0")
+    compileOnly(project(":android-stub"))
 
     // 运行期需要的：坐标与 jvm-sandbox/build.gradle.kts 里的一致，Gradle 去重后 fat jar 不变。
     implementation("com.typesafe:config:1.4.9")

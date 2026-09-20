@@ -23,6 +23,10 @@ class LoadedSource(
     val isConfigurable: Boolean = false,
     /** 提供"最近更新"列表；读的是源自己的 `supportsLatest`。 */
     val supportsLatest: Boolean = false,
+    /** `HttpSource.getBaseUrl()`；不是 HttpSource 的源为 null。 */
+    val baseUrl: String? = null,
+    /** `HttpSource.getHomeUrl()`；默认实现返回 [baseUrl]。 */
+    val homeUrl: String? = null,
 )
 
 /**
@@ -70,6 +74,22 @@ fun readSupportsLatest(instance: Any): Boolean =
         callGetter(instance, "getSupportsLatest") as? Boolean ?: false
     } catch (t: Throwable) {
         false
+    }
+
+/** 读源的 `baseUrl`；不是 HttpSource（没有该 getter）或读到空串时为 null。 */
+fun readBaseUrl(instance: Any): String? =
+    try {
+        (callGetter(instance, "getBaseUrl") as? String)?.takeIf { it.isNotBlank() }
+    } catch (t: Throwable) {
+        null
+    }
+
+/** 读 `getHomeUrl()`；`HttpSource` 的默认实现返回 `baseUrl`。 */
+fun readHomeUrl(instance: Any): String? =
+    try {
+        (callGetter(instance, "getHomeUrl") as? String)?.takeIf { it.isNotBlank() }
+    } catch (t: Throwable) {
+        null
     }
 
 fun findMethod(cls: Class<*>, name: String, vararg paramTypes: Class<*>): java.lang.reflect.Method? =

@@ -167,6 +167,8 @@ class PackageManagerRegistry(private val context: Context) : SourceRegistry {
                     mangasPageCls = classLoader.loadClass("eu.kanade.tachiyomi.source.model.MangasPage"),
                     isConfigurable = implementsInterface(src, CONFIGURABLE_SOURCE),
                     supportsLatest = readSupportsLatest(src),
+                    baseUrl = readBaseUrl(src),
+                    homeUrl = readHomeUrl(src),
                 )
             }
         }
@@ -263,13 +265,13 @@ class PackageManagerRegistry(private val context: Context) : SourceRegistry {
 
     override fun toSourcesJson(): String {
         val parts = sources.values.joinToString(",") { s ->
-            """{"id":${s.id},"name":${jsonStr(s.name)},"lang":${jsonStr(s.lang)},"extension":${s.extensionId},"supportsLatest":${s.supportsLatest},"isConfigurable":${s.isConfigurable}}"""
+            """{"id":${s.id},"name":${jsonStr(s.name)},"lang":${jsonStr(s.lang)},"extension":${s.extensionId},"supportsLatest":${s.supportsLatest},"isConfigurable":${s.isConfigurable},"baseUrl":${s.baseUrl?.let(::jsonStr) ?: "null"},"homeUrl":${s.homeUrl?.let(::jsonStr) ?: "null"}}"""
         }
         return "[$parts]"
     }
 
     private fun sourceRefJson(s: LoadedSource): String =
-        """{"id":${s.id},"name":${jsonStr(s.name)},"lang":${jsonStr(s.lang)},"supportsLatest":${s.supportsLatest},"isConfigurable":${s.isConfigurable}}"""
+        """{"id":${s.id},"name":${jsonStr(s.name)},"lang":${jsonStr(s.lang)},"supportsLatest":${s.supportsLatest},"isConfigurable":${s.isConfigurable},"baseUrl":${s.baseUrl?.let(::jsonStr) ?: "null"},"homeUrl":${s.homeUrl?.let(::jsonStr) ?: "null"}}"""
 
     override fun driver(sourceId: Long): SourceDriver? = sources[sourceId]?.let { SourceDriver(it) }
 

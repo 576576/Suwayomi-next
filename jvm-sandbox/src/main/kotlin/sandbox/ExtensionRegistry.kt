@@ -213,13 +213,13 @@ class ExtensionRegistry(private val rootDir: Path, private val jarDir: Path) : S
 
     override fun toSourcesJson(): String {
         val parts = sources.values.joinToString(",") { s ->
-            """{"id":${s.id},"name":${jsonStr(s.name)},"lang":${jsonStr(s.lang)},"extension":${s.extensionId},"supportsLatest":${s.supportsLatest},"isConfigurable":${s.isConfigurable}}"""
+            """{"id":${s.id},"name":${jsonStr(s.name)},"lang":${jsonStr(s.lang)},"extension":${s.extensionId},"supportsLatest":${s.supportsLatest},"isConfigurable":${s.isConfigurable},"baseUrl":${s.baseUrl?.let(::jsonStr) ?: "null"},"homeUrl":${s.homeUrl?.let(::jsonStr) ?: "null"}}"""
         }
         return "[$parts]"
     }
 
     private fun sourceRefJson(s: LoadedSource): String =
-        """{"id":${s.id},"name":${jsonStr(s.name)},"lang":${jsonStr(s.lang)},"supportsLatest":${s.supportsLatest},"isConfigurable":${s.isConfigurable}}"""
+        """{"id":${s.id},"name":${jsonStr(s.name)},"lang":${jsonStr(s.lang)},"supportsLatest":${s.supportsLatest},"isConfigurable":${s.isConfigurable},"baseUrl":${s.baseUrl?.let(::jsonStr) ?: "null"},"homeUrl":${s.homeUrl?.let(::jsonStr) ?: "null"}}"""
 
     override fun sourcePreferences(sourceId: Long): String? =
         sources[sourceId]?.let { sourcePreferencesJson(it, sandboxContext) }

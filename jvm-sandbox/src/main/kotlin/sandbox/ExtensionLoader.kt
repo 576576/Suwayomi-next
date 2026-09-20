@@ -155,6 +155,8 @@ class ExtensionLoader(private val rootDir: Path, private val jarDir: Path) {
                 mangasPageCls = mangasPageCls,
                 isConfigurable = implementsInterface(src, CONFIGURABLE_SOURCE),
                 supportsLatest = readSupportsLatest(src),
+                baseUrl = readBaseUrl(src),
+                homeUrl = readHomeUrl(src),
             )
         }
         cache[key] = loaded

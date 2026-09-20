@@ -1,6 +1,6 @@
-//! 扩展仓库管理（Phase 6 在线安装半）：refresh_stores（拉各 repo index 并
-//! upsert extension 表）→ install/update/uninstall（APK 下载 + 沙盒热载 +
-//! 注册源）→ sync_sources（读沙盒 /sources 稳定 id upsert source 表）。
+//! 扩展仓库管理：refresh_stores（拉各 repo index 并 upsert extension 表）→
+//! install/uninstall/install_external（APK 下载 + 沙盒热载 + 注册源）→
+//! sync_sources（读沙盒 /sources 稳定 id upsert source 表）。
 //! 无沙盒时仅刷新可用，install 报错。
 
 use reqwest::Client;
@@ -618,11 +618,12 @@ impl ExtensionStoreService {
             for s in &e.sources {
                 suwayomi_db::query(
                     "INSERT INTO suwayomi.source \
-                       (id, name, lang, extension, supports_latest, is_configurable) \
-                     VALUES ($1, $2, $3, $4, $5, $6) \
+                       (id, name, lang, extension, supports_latest, is_configurable, base_url, home_url) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
                      ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, lang = EXCLUDED.lang, \
                        extension = EXCLUDED.extension, supports_latest = EXCLUDED.supports_latest, \
-                       is_configurable = EXCLUDED.is_configurable",
+                       is_configurable = EXCLUDED.is_configurable, base_url = EXCLUDED.base_url, \
+                       home_url = EXCLUDED.home_url",
                 )
                 .bind(s.id)
                 .bind(&s.name)
@@ -630,6 +631,8 @@ impl ExtensionStoreService {
                 .bind(ext_id)
                 .bind(s.supports_latest)
                 .bind(s.is_configurable)
+                .bind(&s.base_url)
+                .bind(&s.home_url)
                 .execute(pool)
                 .await?;
                 n += 1;

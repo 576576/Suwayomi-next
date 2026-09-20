@@ -202,10 +202,17 @@ class SourceDriver(private val src: LoadedSource) {
     }
 
     /**
-     * Tries the legacy rx `fetch*` method first (lib 1.x extensions), falls
-     * back to the suspend `get*` interface method (new keiyoushi lib 2.x).
+     * 扩展自己实现了 suspend `get*` 就直接调它，否则走 legacy rx `fetch*`。
+     *
+     * 不能只按「legacy 先试、抛异常再回退」：框架 `HttpSource.fetchPageList` 的模板
+     * 实现会先用 `pageListRequest`（默认 `baseUrl + chapter.url`）把请求打出去，直到
+     * `pageListParse` 才抛 UnsupportedOperationException。chapter.url 是绝对地址的扩展
+     * （哔咔的 API 与阅读站不同域）会拼出畸形主机名，失败发生在回退之前。
      */
     private fun callFetchOrSuspend(fetchName: String, getName: String, arg: Any): Any? {
+        if (isExtensionOwnMethod(src.instance, getName, 2)) {
+            return callSuspendMethod(src.instance, getName, arg)
+        }
         return try {
             val obs = callMethod(src.instance, fetchName, arg)
             if (obs is rx.Observable<*>) awaitObservable(obs) else obs

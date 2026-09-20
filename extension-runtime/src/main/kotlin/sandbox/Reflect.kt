@@ -43,6 +43,27 @@ private fun collectInterfaceNames(cls: Class<*>?, acc: MutableSet<String> = Link
     return acc
 }
 
+/** 框架自带的源基类所在包：Source / CatalogueSource / online.HttpSource。 */
+private const val FRAMEWORK_SOURCE_PACKAGE = "eu.kanade.tachiyomi.source"
+
+/**
+ * 该方法是不是**扩展自己**实现的，而不是框架基类给的默认实现。
+ *
+ * 判据是"沿父类链最先声明它的那个类落在哪个包"：框架基类保留原名（`eu.kanade.tachiyomi.source.**`），
+ * 扩展自己的类名会被 R8 改写成 `keiyoushi.source.Generated` / `a0` 之类。
+ */
+fun isExtensionOwnMethod(obj: Any, name: String, paramCount: Int): Boolean {
+    var cls: Class<*>? = obj.javaClass
+    while (cls != null) {
+        if (cls.declaredMethods.any { it.name == name && it.parameterCount == paramCount }) {
+            val pkg = cls.name.substringBeforeLast('.', "")
+            return pkg != FRAMEWORK_SOURCE_PACKAGE && !pkg.startsWith("$FRAMEWORK_SOURCE_PACKAGE.")
+        }
+        cls = cls.superclass
+    }
+    return false
+}
+
 /** 读源的 `supportsLatest`；读不到（老 lib 没有这个 getter）按不支持算。 */
 fun readSupportsLatest(instance: Any): Boolean =
     try {

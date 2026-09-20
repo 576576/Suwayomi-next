@@ -26,10 +26,8 @@ data/
 # Node (future WebUI tooling)
 node_modules/
 
-# Kotlin 侧构建产物
-jvm-sandbox/build/
-jvm-sandbox/libs/*
-!jvm-sandbox/libs/AndroidCompat-1.0.jar
+# Kotlin 侧构建产物（含 android-compat 两个子项目）
+jvm-sandbox/**/build/
 .workbuddy/
 extensions
 /.idea

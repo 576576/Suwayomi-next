@@ -125,11 +125,10 @@ reflection):
 # 1) Build the sandbox (JDK 25 toolchain; output
 #    build/libs/suwayomi-jvm-sandbox.jar)
 cd jvm-sandbox
-gradle build          # needs the two jars under jvm-sandbox/libs/:
-                      #   AndroidCompat-1.0.jar and Config-1.0.jar (build them from
-                      #   Suwayomi-Server's AndroidCompat and AndroidCompat/Config
-                      #   modules and copy them over, or substitute equivalent
-                      #   Android stubs)
+gradle build          # every Android stub resolves through the build, no jars to place:
+                      #   AndroidCompat (with its Config module) is vendored source under
+                      #   android-compat/; the android.jar shell comes from the
+                      #   com.github.Suwayomi:android-jar coordinate
 cd ..
 
 # 2) Put extension APKs into a directory (default ./extensions, or set

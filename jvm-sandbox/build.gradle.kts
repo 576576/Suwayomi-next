@@ -1,11 +1,13 @@
 plugins {
-    kotlin("jvm") version "2.4.0"
+    id("org.jetbrains.kotlin.jvm")
     application
 }
 
 repositories {
     mavenCentral()
     maven("https://jitpack.io")
+    // android.jar 空壳（官方 SDK stub，上游剔重后发布在这条分支上）。
+    maven("https://github.com/Suwayomi/Suwayomi-Server/raw/android-jar/")
 }
 
 dependencies {
@@ -48,22 +50,18 @@ dependencies {
     implementation("de.femtopedia.dex2jar:dex-tools:2.4.38")
     implementation("net.dongliu:apk-parser:2.6.10")
 
-    // --- Android stub API (from the AndroidCompat project) ---
-    // Android stub API (compiled with Kotlin 2.4, same as the sandbox compiler)
-    implementation(files("libs/AndroidCompat-1.0.jar"))
+    // --- Android stub API ---
+    // AndroidCompat（android.* / androidx.* 的桌面桩实现）连同它的 Config 模块以源码形式随本仓库
+    // 构建，见 android-compat/ —— 改这些桩不必再去改 jar。两个子项目把三方依赖声明为 compileOnly，
+    // 运行期由本模块提供（同名坐标在下面已列出）。
+    implementation(project(":android-compat"))
+    implementation(project(":android-compat:config"))
     // 官方 android.jar 空壳（上游 `com.github.Suwayomi:android-jar`，已剔除 AndroidCompat
-    // 自己实现的类，与本 jar 零重名）。扩展用到的 `android.*` 远不止 AndroidCompat 那 757 个类：
+    // 自己实现的类，与本工程零重名）。扩展用到的 `android.*` 远不止 AndroidCompat 那 757 个类：
     // 源设置界面会链到 `android.widget.TextView` / `android.text.TextWatcher` /
     // `android.icu.text.*` 等等，缺一个整个设置页就是 NoClassDefFoundError。
     // 方法体一律是 `throw new RuntimeException("Stub!")`，只在**链接期**被用到，不会被调用。
-    // 不引 jitpack（`com.github.Suwayomi:android-jar:1.0.0`）：那条坐标现在回 401，
-    // 构建会卡在依赖解析上。
-    implementation(files("libs/android.jar"))
-    // AndroidCompat 的 `android.os.Build` / `SystemProperties` 静态依赖 `xyz.nulldev.ts.config`，
-    // 那套配置子系统在 AndroidCompat 仓里是独立的 Config 模块（上游由 server 侧的
-    // `implementation(projects.androidCompat.config)` 提供），不打进 AndroidCompat-1.0.jar。
-    // 缺了它，凡是在 `headersBuilder()` 里读 `Build.X` 的扩展都会倒在 CNFE 上。
-    implementation(files("libs/Config-1.0.jar"))
+    implementation("com.github.Suwayomi:android-jar:1.0.0")
     implementation("com.typesafe:config:1.4.9")
     implementation("io.github.config4k:config4k:0.7.0")
     implementation("ca.gosyer:kotlin-multiplatform-appdirs:2.0.0")

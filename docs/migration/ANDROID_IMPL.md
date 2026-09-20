@@ -15,7 +15,7 @@
 | server 进程 | 独立可执行文件 | 与宿主 App **同进程**（Rust 以 cdylib + JNI 嵌入） |
 | 扩展来源 | 服务器下载 APK 落盘 `extensions/` | **系统已安装的扩展应用**（`PackageManager` 发现） |
 | 扩展执行 | 子进程 JVM 沙盒：APK→dex2jar→ASM 修字节码→`URLClassLoader.defineClass` | 宿主 App 进程的 **ART** 内直接加载扩展 APK 的 dex |
-| Android 框架 | `AndroidCompat-1.0.jar` stub 模拟 | 真实 Android 框架（系统提供） |
+| Android 框架 | `android-compat/` 里的 AndroidCompat stub 模拟 | 真实 Android 框架（系统提供） |
 | 安装/卸载 | 服务器写/删 APK 文件 | 交给系统（PackageInstaller / 用户在扩展管理 App 内操作） |
 
 ## 2. 约束与决策

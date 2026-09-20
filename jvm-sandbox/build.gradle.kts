@@ -51,6 +51,14 @@ dependencies {
     // --- Android stub API (from the AndroidCompat project) ---
     // Android stub API (compiled with Kotlin 2.4, same as the sandbox compiler)
     implementation(files("libs/AndroidCompat-1.0.jar"))
+    // 官方 android.jar 空壳（上游 `com.github.Suwayomi:android-jar`，已剔除 AndroidCompat
+    // 自己实现的类，与本 jar 零重名）。扩展用到的 `android.*` 远不止 AndroidCompat 那 757 个类：
+    // 源设置界面会链到 `android.widget.TextView` / `android.text.TextWatcher` /
+    // `android.icu.text.*` 等等，缺一个整个设置页就是 NoClassDefFoundError。
+    // 方法体一律是 `throw new RuntimeException("Stub!")`，只在**链接期**被用到，不会被调用。
+    // 不引 jitpack（`com.github.Suwayomi:android-jar:1.0.0`）：那条坐标现在回 401，
+    // 构建会卡在依赖解析上。
+    implementation(files("libs/android.jar"))
     // AndroidCompat 的 `android.os.Build` / `SystemProperties` 静态依赖 `xyz.nulldev.ts.config`，
     // 那套配置子系统在 AndroidCompat 仓里是独立的 Config 模块（上游由 server 侧的
     // `implementation(projects.androidCompat.config)` 提供），不打进 AndroidCompat-1.0.jar。

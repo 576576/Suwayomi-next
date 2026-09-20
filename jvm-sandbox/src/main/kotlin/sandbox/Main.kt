@@ -1,6 +1,7 @@
 package sandbox
 
 import com.sun.net.httpserver.HttpServer
+import eu.kanade.tachiyomi.source.PreferenceStores
 import java.net.InetSocketAddress
 import java.nio.file.Files
 import java.nio.file.Paths
@@ -18,6 +19,8 @@ import java.util.concurrent.Executors
  *   GET  /source/{id}/manga/{mangaUrl}/chapters -> [SChapter json]
  *   GET  /source/{id}/chapter/{chapterUrl}/pages -> [String urls]
  *   GET  /source/{id}/filters         -> [Filter json]
+ *   GET  /source/{id}/preferences     -> {preferences:[...]}
+ *   POST /source/{id}/preferences     -> {preferences:[...]}
  *
  * 路由与 JSON 契约在 `extension-runtime` 共享；这里只负责**桌面侧**的两件事：
  * 进程入口（读环境变量、扫 `extensions/` 目录）与 `com.sun.net.httpserver` 宿主。
@@ -40,11 +43,21 @@ fun main() {
     )
 
     val registry = ExtensionRegistry(Paths.get(extensionsDir), Paths.get(jarDir))
+
+    // 源设置要跨重启保留：扩展填的服务器地址/账号密码存在 `<instance>/settings/source_<id>.properties`。
+    // 不装这个 factory 会退化成进程内存储，重启即丢。
+    val settingsDir = System.getenv("SUWAYOMI_SETTINGS_DIR")
+        ?: Paths.get(extensionsDir).parent?.resolve("settings")?.toString()
+        ?: "settings"
+    Files.createDirectories(Paths.get(settingsDir))
+    PreferenceStores.installFactory { key -> FilePreferences(Paths.get(settingsDir).resolve("$key.properties")) }
+
     // 扫之前先把宿主环境补齐（见 AndroidEnv.kt）：Koin 没起来、主 Looper 没挂、配置模块没注册，
     // 扩展的 <clinit> 都会以 ExceptionInInitializerError 记在类上，之后该类永久不可用。
     setupInjekt()
     startMainLooper()
     registerAndroidCompatConfig()
+    installSandboxContext()
     registry.scan()
     val server = HttpServer.create(InetSocketAddress("127.0.0.1", port), 0)
     val router = Router(registry)

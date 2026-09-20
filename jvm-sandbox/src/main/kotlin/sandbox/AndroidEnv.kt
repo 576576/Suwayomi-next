@@ -6,9 +6,14 @@
 //! 宿主版本（`AppInfo`）也在这里注入：扩展会把它拼进 User-Agent，值必须来自宿主。
 package sandbox
 
+import android.content.Context
 import android.os.Looper
 import eu.kanade.tachiyomi.AppInfo
 import java.util.concurrent.CountDownLatch
+import org.koin.mp.KoinPlatformTools
+import xyz.nulldev.androidcompat.androidimpl.CustomContext
+import xyz.nulldev.androidcompat.config.ApplicationInfoConfigModule
+import xyz.nulldev.androidcompat.config.FilesConfigModule
 import xyz.nulldev.androidcompat.config.SystemConfigModule
 import xyz.nulldev.ts.config.GlobalConfigManager
 
@@ -51,7 +56,7 @@ fun startMainLooper() {
 }
 
 /**
- * 把 AndroidCompat 的 `SystemConfigModule` 注册进它的 `GlobalConfigManager`。
+ * 把 AndroidCompat 的几个 config 模块注册进它的 `GlobalConfigManager`。
  *
  * `android.os.Build` / `android.os.SystemProperties` 的静态初始化会
  * `GlobalConfigManager.INSTANCE.module(SystemConfigModule::class.java)`，没注册就是空指针；
@@ -59,12 +64,45 @@ fun startMainLooper() {
  * 都倒在 `NoClassDefFoundError: xyz.nulldev.ts.config.ConfigManager` 上。
  * 上游由 server 侧的 `AndroidCompatInitializer` 做这件事，沙盒里没有那个入口。
  *
+ * `FilesConfigModule` / `ApplicationInfoConfigModule` 是 [installSandboxContext] 要用的
+ * `CustomContext` 拉起来的（`AndroidFiles` / `ApplicationInfoImpl` 构造期就取配置）。
+ *
  * 键值来自 AndroidCompat jar 自带的 `compat-reference.conf`（`android.system.isDebuggable`
  * 等）；`ConfigManager` 构造期还会读 `server.debugLogsEnabled`，那个键由本模块
  * `src/main/resources/server-reference.conf` 补上（真正的 server 默认配置不在这里）。
  */
 fun registerAndroidCompatConfig() {
-    GlobalConfigManager.registerModules(SystemConfigModule.register(GlobalConfigManager.config))
+    val config = GlobalConfigManager.config
+    GlobalConfigManager.registerModules(
+        SystemConfigModule.register(config),
+        FilesConfigModule.register(config),
+        ApplicationInfoConfigModule.register(config),
+    )
+}
+
+/**
+ * 偏好项拿到的那个 `Context`。
+ *
+ * `Preference(context)` 只是把它存进字段，但扩展普遍会先 `screen.context` 做一次非空断言
+ * 再传进去（Kotlin 的 `Intrinsics.checkNotNullParameter` 被 R8 内联成 `getClass()`），
+ * 传 null 就是一句 `Cannot invoke "Object.getClass()" because ... is null` —— 设置页整个 500。
+ *
+ * 用 AndroidCompat 自带的 `CustomContext`：它是为这个宿主写的完整实现，代价是要在 Koin 里
+ * 装好它依赖的四个单例（[setupInjekt] 里注册）。取不到就留 null，退回「扩展自己断言失败」
+ * 的老行为，而不是让整个沙盒起不来。
+ */
+var sandboxContext: Context? = null
+    private set
+
+fun installSandboxContext() {
+    sandboxContext = try {
+        KoinPlatformTools.defaultContext().get().get<CustomContext>()
+    } catch (t: Throwable) {
+        // Koin 把构造失败包成一句没有因果链的 InstanceCreationException，不打全栈就只能猜。
+        System.err.println("sandbox: CustomContext unavailable, preferences will run without a context")
+        t.printStackTrace()
+        null
+    }
 }
 
 /**

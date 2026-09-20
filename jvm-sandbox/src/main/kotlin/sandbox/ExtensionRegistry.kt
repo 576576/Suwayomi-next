@@ -206,17 +206,26 @@ class ExtensionRegistry(private val rootDir: Path, private val jarDir: Path) : S
     override fun toExtensionsJson(): String {
         val parts = extensions.values.joinToString(",") { e ->
             val srcs = sourcesByExtension[e.extensionId].orEmpty()
-            """{"pkgName":${jsonStr(e.pkgName)},"name":${jsonStr(e.name)},"lang":${jsonStr(e.lang)},"versionName":${jsonStr(e.versionName)},"className":${jsonStr(e.className)},"extensionId":${e.extensionId},"versionCode":${e.versionCode},"contentWarning":${e.contentWarning},"sources":[${srcs.joinToString(",") { """{"id":${it.id},"name":${jsonStr(it.name)},"lang":${jsonStr(it.lang)}}""" }}]}"""
+            """{"pkgName":${jsonStr(e.pkgName)},"name":${jsonStr(e.name)},"lang":${jsonStr(e.lang)},"versionName":${jsonStr(e.versionName)},"className":${jsonStr(e.className)},"extensionId":${e.extensionId},"versionCode":${e.versionCode},"contentWarning":${e.contentWarning},"sources":[${srcs.joinToString(",") { sourceRefJson(it) }}]}"""
         }
         return "[$parts]"
     }
 
     override fun toSourcesJson(): String {
         val parts = sources.values.joinToString(",") { s ->
-            """{"id":${s.id},"name":${jsonStr(s.name)},"lang":${jsonStr(s.lang)},"extension":${s.extensionId}}"""
+            """{"id":${s.id},"name":${jsonStr(s.name)},"lang":${jsonStr(s.lang)},"extension":${s.extensionId},"supportsLatest":${s.supportsLatest},"isConfigurable":${s.isConfigurable}}"""
         }
         return "[$parts]"
     }
+
+    private fun sourceRefJson(s: LoadedSource): String =
+        """{"id":${s.id},"name":${jsonStr(s.name)},"lang":${jsonStr(s.lang)},"supportsLatest":${s.supportsLatest},"isConfigurable":${s.isConfigurable}}"""
+
+    override fun sourcePreferences(sourceId: Long): String? =
+        sources[sourceId]?.let { sourcePreferencesJson(it, sandboxContext) }
+
+    override fun setSourcePreference(sourceId: Long, position: Int, value: String): String? =
+        sources[sourceId]?.let { writeSourcePreference(it, sandboxContext, position, value) }
 
     override fun driver(sourceId: Long): SourceDriver? = sources[sourceId]?.let { SourceDriver(it) }
 

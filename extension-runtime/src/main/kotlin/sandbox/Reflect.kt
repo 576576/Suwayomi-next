@@ -19,7 +19,37 @@ class LoadedSource(
     val schapterCls: Class<*>,
     val pageCls: Class<*>,
     val mangasPageCls: Class<*>,
+    /** 实现 `ConfigurableSource`：有设置界面可填（账号、服务器地址等）。 */
+    val isConfigurable: Boolean = false,
+    /** 提供"最近更新"列表；读的是源自己的 `supportsLatest`。 */
+    val supportsLatest: Boolean = false,
 )
+
+/**
+ * 实例是否实现名为 [interfaceName] 的接口（沿父接口递归）。
+ *
+ * 按名字而不是编译期类型判断：扩展的类加载器是 child-first 的，若某个扩展自带一份
+ * `eu.kanade.tachiyomi.**`，`is ConfigurableSource` 会因为两份 Class 不同而恒为 false。
+ */
+fun implementsInterface(instance: Any, interfaceName: String): Boolean =
+    collectInterfaceNames(instance.javaClass).contains(interfaceName)
+
+private fun collectInterfaceNames(cls: Class<*>?, acc: MutableSet<String> = LinkedHashSet()): Set<String> {
+    var cur = cls
+    while (cur != null && acc.add(cur.name)) {
+        cur.interfaces.forEach { collectInterfaceNames(it, acc) }
+        cur = cur.superclass
+    }
+    return acc
+}
+
+/** 读源的 `supportsLatest`；读不到（老 lib 没有这个 getter）按不支持算。 */
+fun readSupportsLatest(instance: Any): Boolean =
+    try {
+        callGetter(instance, "getSupportsLatest") as? Boolean ?: false
+    } catch (t: Throwable) {
+        false
+    }
 
 fun findMethod(cls: Class<*>, name: String, vararg paramTypes: Class<*>): java.lang.reflect.Method? =
     try {

@@ -1,5 +1,9 @@
 package sandbox
 
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.util.Base64
@@ -9,8 +13,8 @@ import java.util.Base64
  * sources reflectively through [SourceDriver].
  *
  * 这一层是 Rust 侧 `HttpSandboxFetcher` 的**契约实现**：路由形状、字段名、
- * 错误格式（500 + `{"error": <stackTrace>}`）都必须保持稳定，桌面与 Android
- * 共用同一份代码就不会漂移。
+ * 错误格式（500 + `{"error": <一行>, "stack": <栈>}`，见 `Errors.kt`）都必须保持稳定，
+ * 桌面与 Android 共用同一份代码就不会漂移。
  */
 class Router(private val registry: SourceRegistry) : HttpHandler {
 
@@ -141,10 +145,29 @@ class Router(private val registry: SourceRegistry) : HttpHandler {
                     HttpResponse(200, """{"filters":[${driver.getFilters().joinToString(",") { mapToJson(it) }}]}""")
                 segments.size == 2 && segments[1] == "filters" ->
                     HttpResponse(200, """{"filters":[${driver.getFilters().joinToString(",") { mapToJson(it) }}]}""")
+                // /source/{id}/preferences —— 读（GET）与写回（POST）源的设置项
+                segments.size == 2 && segments[1] == "preferences" -> {
+                    val json = if (req.method == "POST") {
+                        val obj = Json.parseToJsonElement(String(req.body, StandardCharsets.UTF_8)).jsonObject
+                        val position = obj["position"]?.jsonPrimitive?.intOrNull
+                            ?: return HttpResponse(400, """{"error":"missing position"}""")
+                        val value = obj["value"]?.jsonPrimitive?.content ?: ""
+                        registry.setSourcePreference(sourceId, position, value)
+                    } else {
+                        registry.sourcePreferences(sourceId)
+                    }
+                    if (json == null) {
+                        HttpResponse(404, """{"error":"source $sourceId has no preferences"}""")
+                    } else {
+                        HttpResponse(200, """{"preferences":$json}""")
+                    }
+                }
                 else -> notFound()
             }
         } catch (t: Throwable) {
-            HttpResponse(500, """{"error":${jsonStr(t.stackTraceToString())}}""")
+            // 栈留给日志，`error` 只放一行给界面看（见 Errors.kt）。
+            t.printStackTrace()
+            HttpResponse(500, errorJson(t))
         }
     }
 

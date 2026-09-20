@@ -1021,6 +1021,100 @@ pub enum Preference {
     Switch(SwitchPreference),
 }
 
+/// 把沙盒序列化好的偏好项数组转成 union。
+///
+/// 认不出的类型直接丢掉：沙盒那边多出一种控件时，不该让整页设置查询失败。
+pub(crate) fn parse_preferences(json: &str) -> Vec<Preference> {
+    let Ok(items) = serde_json::from_str::<Vec<serde_json::Value>>(json) else {
+        return Vec::new();
+    };
+    items.iter().filter_map(preference_from_json).collect()
+}
+
+fn preference_from_json(v: &serde_json::Value) -> Option<Preference> {
+    fn text(v: &serde_json::Value, key: &str) -> Option<String> {
+        v.get(key).and_then(|x| x.as_str()).map(str::to_string)
+    }
+    fn flag(v: &serde_json::Value, key: &str) -> bool {
+        v.get(key).and_then(|x| x.as_bool()).unwrap_or(false)
+    }
+    fn strings(v: &serde_json::Value, key: &str) -> Vec<String> {
+        v.get(key)
+            .and_then(|x| x.as_array())
+            .map(|a| a.iter().filter_map(|i| i.as_str().map(str::to_string)).collect())
+            .unwrap_or_default()
+    }
+    fn optional_strings(v: &serde_json::Value, key: &str) -> Option<Vec<String>> {
+        v.get(key)
+            .and_then(|x| x.as_array())
+            .map(|a| a.iter().filter_map(|i| i.as_str().map(str::to_string)).collect())
+    }
+
+    let key = text(v, "key");
+    let title = text(v, "title");
+    let summary = text(v, "summary");
+    let visible = flag(v, "visible");
+    let enabled = flag(v, "enabled");
+
+    Some(match text(v, "type")?.as_str() {
+        "CheckBoxPreference" => Preference::CheckBox(CheckBoxPreference {
+            current_value: v.get("currentValue").and_then(|x| x.as_bool()),
+            default: flag(v, "default"),
+            enabled,
+            key,
+            summary,
+            title,
+            visible,
+        }),
+        "SwitchPreference" => Preference::Switch(SwitchPreference {
+            current_value: v.get("currentValue").and_then(|x| x.as_bool()),
+            default: flag(v, "default"),
+            enabled,
+            key,
+            summary,
+            title,
+            visible,
+        }),
+        "EditTextPreference" => Preference::EditText(EditTextPreference {
+            current_value: text(v, "currentValue"),
+            default: text(v, "default"),
+            dialog_message: text(v, "dialogMessage"),
+            dialog_title: text(v, "dialogTitle"),
+            enabled,
+            key,
+            summary,
+            text: text(v, "text"),
+            title,
+            visible,
+        }),
+        "ListPreference" => Preference::List(ListPreference {
+            current_value: text(v, "currentValue"),
+            default: text(v, "default"),
+            enabled,
+            entries: strings(v, "entries"),
+            entry_values: strings(v, "entryValues"),
+            key,
+            summary,
+            title,
+            visible,
+        }),
+        "MultiSelectListPreference" => Preference::MultiSelectList(MultiSelectListPreference {
+            current_value: optional_strings(v, "currentValue"),
+            default: optional_strings(v, "default"),
+            dialog_message: text(v, "dialogMessage"),
+            dialog_title: text(v, "dialogTitle"),
+            enabled,
+            entries: strings(v, "entries"),
+            entry_values: strings(v, "entryValues"),
+            key,
+            summary,
+            title,
+            visible,
+        }),
+        _ => return None,
+    })
+}
+
 /// Mirrors `ExtensionType` — built from the `extension` table row.
 #[derive(Clone)]
 pub struct ExtensionType {
@@ -1174,6 +1268,10 @@ pub struct SourceType {
     pub lang: String,
     pub content_warning: i32,
     pub extension_id: i32,
+    /// 源提供"最近更新"列表（来自沙盒，建源行时写入）。
+    pub supports_latest: bool,
+    /// 源实现 `ConfigurableSource`，有设置界面。
+    pub is_configurable: bool,
     pub extension_row: Option<suwayomi_core::schema::ExtensionRow>,
     /// Batch-injected by the `sources` resolver (avoids N+1 icon lookups).
     pub icon_pkg_name: Option<String>,
@@ -1189,6 +1287,8 @@ impl SourceType {
             lang: row.lang.clone(),
             content_warning: row.content_warning,
             extension_id: row.extension,
+            supports_latest: row.supports_latest,
+            is_configurable: row.is_configurable,
             extension_row: None,
             icon_pkg_name: None,
             meta_cache: Vec::new(),
@@ -1205,6 +1305,9 @@ impl SourceType {
             lang: "OTHER".to_string(),
             content_warning: 0,
             extension_id: -1,
+            // 本地源既没有"最近更新"，也没有设置界面。
+            supports_latest: false,
+            is_configurable: false,
             extension_row: Some(ExtensionRow {
                 id: -1,
                 apk_name: None,
@@ -1271,10 +1374,10 @@ impl SourceType {
         self.content_warning >= 1
     }
     async fn supports_latest(&self) -> bool {
-        false // extension runtime not loaded yet (Phase 5)
+        self.supports_latest
     }
     async fn is_configurable(&self) -> bool {
-        false // extension runtime not loaded yet (Phase 5)
+        self.is_configurable
     }
     /// True when the source's extension is listed by an extension store
     /// (`extension_store` table) — the WebUI uses this to drive the "migrate"
@@ -1350,8 +1453,14 @@ impl SourceType {
             })
             .collect())
     }
-    async fn preferences(&self) -> Vec<Preference> {
-        vec![]
+    async fn preferences(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<Preference>> {
+        let state = ctx.data::<GraphQLState>()?;
+        let Some(base) = state.sandbox_base.clone() else {
+            return Ok(Vec::new());
+        };
+        let fetcher = suwayomi_domain::source::sandbox::HttpSandboxFetcher::new(base);
+        let json = fetcher.source_preferences(self.id).await.map_err(async_graphql::Error::from)?;
+        Ok(json.as_deref().map(parse_preferences).unwrap_or_default())
     }
 }
 

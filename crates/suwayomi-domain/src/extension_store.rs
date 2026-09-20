@@ -617,14 +617,19 @@ impl ExtensionStoreService {
             let Some(&ext_id) = registered.get(&e.pkg_name) else { continue };
             for s in &e.sources {
                 suwayomi_db::query(
-                    "INSERT INTO suwayomi.source (id, name, lang, extension) VALUES ($1, $2, $3, $4) \
+                    "INSERT INTO suwayomi.source \
+                       (id, name, lang, extension, supports_latest, is_configurable) \
+                     VALUES ($1, $2, $3, $4, $5, $6) \
                      ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, lang = EXCLUDED.lang, \
-                       extension = EXCLUDED.extension",
+                       extension = EXCLUDED.extension, supports_latest = EXCLUDED.supports_latest, \
+                       is_configurable = EXCLUDED.is_configurable",
                 )
                 .bind(s.id)
                 .bind(&s.name)
                 .bind(&s.lang)
                 .bind(ext_id)
+                .bind(s.supports_latest)
+                .bind(s.is_configurable)
                 .execute(pool)
                 .await?;
                 n += 1;

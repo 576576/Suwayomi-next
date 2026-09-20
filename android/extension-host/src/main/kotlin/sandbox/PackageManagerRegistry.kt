@@ -165,6 +165,8 @@ class PackageManagerRegistry(private val context: Context) : SourceRegistry {
                     schapterCls = classLoader.loadClass("eu.kanade.tachiyomi.source.model.SChapterImpl"),
                     pageCls = classLoader.loadClass("eu.kanade.tachiyomi.source.model.Page"),
                     mangasPageCls = classLoader.loadClass("eu.kanade.tachiyomi.source.model.MangasPage"),
+                    isConfigurable = implementsInterface(src, CONFIGURABLE_SOURCE),
+                    supportsLatest = readSupportsLatest(src),
                 )
             }
         }
@@ -254,17 +256,20 @@ class PackageManagerRegistry(private val context: Context) : SourceRegistry {
     override fun toExtensionsJson(): String {
         val parts = extensions.values.joinToString(",") { e ->
             val srcs = sourcesByExtension[e.extensionId].orEmpty()
-            """{"pkgName":${jsonStr(e.pkgName)},"name":${jsonStr(e.name)},"lang":${jsonStr(e.lang)},"versionName":${jsonStr(e.versionName)},"className":${jsonStr(e.className)},"extensionId":${e.extensionId},"versionCode":${e.versionCode},"contentWarning":${e.contentWarning},"sources":[${srcs.joinToString(",") { """{"id":${it.id},"name":${jsonStr(it.name)},"lang":${jsonStr(it.lang)}}""" }}]}"""
+            """{"pkgName":${jsonStr(e.pkgName)},"name":${jsonStr(e.name)},"lang":${jsonStr(e.lang)},"versionName":${jsonStr(e.versionName)},"className":${jsonStr(e.className)},"extensionId":${e.extensionId},"versionCode":${e.versionCode},"contentWarning":${e.contentWarning},"sources":[${srcs.joinToString(",") { sourceRefJson(it) }}]}"""
         }
         return "[$parts]"
     }
 
     override fun toSourcesJson(): String {
         val parts = sources.values.joinToString(",") { s ->
-            """{"id":${s.id},"name":${jsonStr(s.name)},"lang":${jsonStr(s.lang)},"extension":${s.extensionId}}"""
+            """{"id":${s.id},"name":${jsonStr(s.name)},"lang":${jsonStr(s.lang)},"extension":${s.extensionId},"supportsLatest":${s.supportsLatest},"isConfigurable":${s.isConfigurable}}"""
         }
         return "[$parts]"
     }
+
+    private fun sourceRefJson(s: LoadedSource): String =
+        """{"id":${s.id},"name":${jsonStr(s.name)},"lang":${jsonStr(s.lang)},"supportsLatest":${s.supportsLatest},"isConfigurable":${s.isConfigurable}}"""
 
     override fun driver(sourceId: Long): SourceDriver? = sources[sourceId]?.let { SourceDriver(it) }
 
@@ -282,6 +287,9 @@ class PackageManagerRegistry(private val context: Context) : SourceRegistry {
         const val METADATA_SOURCE_CLASS = "tachiyomi.extension.class"
         const val METADATA_NAME = "tachiyomix.name"
         const val METADATA_NSFW = "tachiyomi.extension.nsfw"
+
+        /** 设置界面的接口全名，用于判断源是否有可配置项。 */
+        const val CONFIGURABLE_SOURCE = "eu.kanade.tachiyomi.source.ConfigurableSource"
 
         @Suppress("DEPRECATION")
         val PACKAGE_FLAGS = PackageManager.GET_CONFIGURATIONS or

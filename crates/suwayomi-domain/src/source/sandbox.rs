@@ -20,6 +20,11 @@ pub struct SandboxSourceInfo {
     pub name: String,
     pub lang: String,
     pub extension: i32,
+    /// 老沙盒不报这两个字段，缺省按"不支持 / 不可配置"处理。
+    #[serde(default)]
+    pub supports_latest: bool,
+    #[serde(default)]
+    pub is_configurable: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -123,6 +128,10 @@ pub struct SandboxSourceRef {
     pub name: String,
     #[serde(default)]
     pub lang: String,
+    #[serde(default)]
+    pub supports_latest: bool,
+    #[serde(default)]
+    pub is_configurable: bool,
 }
 
 /// Fetches manga/chapter data from the JVM sandbox over HTTP.
@@ -183,6 +192,43 @@ impl HttpSandboxFetcher {
         Ok(())
     }
 
+    /// 源设置界面的 JSON 数组，由沙盒把 `PreferenceScreen` 序列化好。
+    ///
+    /// `None` = 该源没有设置界面（沙盒回 404）。调用方不要把它当错误：
+    /// 绝大多数源本来就没有设置项。
+    pub async fn source_preferences(&self, source_id: i64) -> Result<Option<String>> {
+        let r = self
+            .client
+            .get(format!("{}/source/{source_id}/preferences", self.base_url))
+            .send()
+            .await
+            .map_err(DomainError::from)?;
+        Self::preferences_body(r).await
+    }
+
+    /// 按位置写回一个设置值，返回写回后的设置界面 JSON。
+    pub async fn set_source_preference(&self, source_id: i64, position: i32, value: &str) -> Result<Option<String>> {
+        let r = self
+            .client
+            .post(format!("{}/source/{source_id}/preferences", self.base_url))
+            .json(&serde_json::json!({ "position": position, "value": value }))
+            .send()
+            .await
+            .map_err(DomainError::from)?;
+        Self::preferences_body(r).await
+    }
+
+    async fn preferences_body(r: reqwest::Response) -> Result<Option<String>> {
+        if r.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !r.status().is_success() {
+            return Err(sandbox_error(r).await);
+        }
+        let v: serde_json::Value = r.json().await.map_err(DomainError::from)?;
+        Ok(Some(v.get("preferences").map(|p| p.to_string()).unwrap_or_else(|| "[]".to_string())))
+    }
+
     /// Parses an uploaded APK (raw bytes) and returns its extension metadata.
     pub async fn inspect(&self, apk: &[u8]) -> Result<SandboxExtension> {
         let r = self
@@ -226,11 +272,7 @@ impl HttpSandboxFetcher {
         let url = format!("{}/source/{source_id}/manga", self.base_url);
         let resp = self.client.get(&url).query(params).send().await.map_err(DomainError::from)?;
         if !resp.status().is_success() {
-            return Err(DomainError::Source(format!(
-                "sandbox error {}: {}",
-                resp.status(),
-                resp.text().await.unwrap_or_default()
-            )));
+            return Err(sandbox_error(resp).await);
         }
         let page: SandboxMangasPage = resp.json().await.map_err(DomainError::from)?;
         let mangas = page
@@ -338,7 +380,7 @@ impl SourceFetcher for HttpSandboxFetcher {
             .await
             .map_err(DomainError::from)?;
         if !r.status().is_success() {
-            return Err(DomainError::Sandbox(format!("sandbox filters failed: {}", r.status())));
+            return Err(sandbox_error(r).await);
         }
         let json: serde_json::Value = r.json().await.map_err(DomainError::from)?;
         // /source/{id}/filters 返回 {"filters":[...]}；兼容纯数组
@@ -359,11 +401,7 @@ impl SourceFetcher for HttpSandboxFetcher {
         let url = format!("{}/source/{source_id}/chapter/{cenc}/pages", self.base_url);
         let resp = self.client.get(&url).query(&[("mangaUrl", menc)]).send().await.map_err(DomainError::from)?;
         if !resp.status().is_success() {
-            return Err(DomainError::Source(format!(
-                "sandbox error {}: {}",
-                resp.status(),
-                resp.text().await.unwrap_or_default()
-            )));
+            return Err(sandbox_error(resp).await);
         }
         let pages: SandboxPages = resp.json().await.map_err(DomainError::from)?;
         Ok(pages
@@ -664,6 +702,23 @@ impl Drop for SandboxProcess {
         let mut guard = self.child.lock().unwrap();
         let _ = fetch_child_kill(&mut guard);
     }
+}
+
+/// 沙盒回非 2xx 时的错误，取出来就是能给用户看的一句话。
+///
+/// 沙盒的错误体是 `{"error": <一行>, "stack": <栈>}`（见 `extension-runtime` 的
+/// `Errors.kt`）：`error` 已经是扩展自己那句文案（如哔咔的
+/// `IOException: 请在扩展设置界面输入用户名和密码`），`stack` 有几十行 `at …`。
+/// 两者都往界面上塞就没人看，所以这里只取 `error`，栈由沙盒自己写进日志。
+/// 取不到 `error`（回环上挂了别的进程、代理插了一页 HTML）就退化成截断的原文。
+async fn sandbox_error(resp: reqwest::Response) -> DomainError {
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    let msg = serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_owned))
+        .unwrap_or_else(|| body.trim().chars().take(200).collect());
+    if msg.is_empty() { DomainError::Source(format!("sandbox error {status}")) } else { DomainError::Source(msg) }
 }
 
 /// 按魔数认 PNG / JPEG / WebP。

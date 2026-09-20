@@ -61,6 +61,10 @@ const SQLITE_MIGRATIONS: &[Migration] = &[
         version: "0002_sync_triggers",
         sql: include_str!("../../../migrations/sqlite/0002_sync_triggers.sql"),
     },
+    Migration {
+        version: "0003_add_source_flags",
+        sql: include_str!("../../../migrations/sqlite/0003_add_source_flags.sql"),
+    },
 ];
 
 /// PostgreSQL — same files the server used before the dual-backend split.
@@ -80,6 +84,10 @@ const POSTGRES_MIGRATIONS: &[Migration] = &[
     Migration {
         version: "0004_sync_triggers",
         sql: include_str!("../../../migrations/pg-only/0002_sync_triggers.sql"),
+    },
+    Migration {
+        version: "0005_add_source_flags",
+        sql: include_str!("../../../migrations/0005_add_source_flags.sql"),
     },
 ];
 

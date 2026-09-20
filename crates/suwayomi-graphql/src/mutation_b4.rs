@@ -950,6 +950,29 @@ pub struct UpdateSourcePreferencePayload {
     pub source: crate::types::SourceType,
 }
 
+/// 把 WebUI 的变更输入归一成沙盒要的**一个**字符串值。
+///
+/// 具体怎么解释它由沙盒按该项自己的默认值类型决定（`Boolean` 走 `toBoolean`、
+/// `Set<String>` 是 JSON 数组），这里只负责挑出前端填的那一个字段。
+fn preference_value(change: &SourcePreferenceChangeInput) -> async_graphql::Result<String> {
+    if let Some(v) = change.check_box_state {
+        return Ok(v.to_string());
+    }
+    if let Some(v) = change.switch_state {
+        return Ok(v.to_string());
+    }
+    if let Some(v) = &change.edit_text_state {
+        return Ok(v.clone());
+    }
+    if let Some(v) = &change.list_state {
+        return Ok(v.clone());
+    }
+    if let Some(v) = &change.multi_select_state {
+        return serde_json::to_string(v).map_err(|e| async_graphql::Error::new(e.to_string()));
+    }
+    Err(async_graphql::Error::new("no preference value in change input"))
+}
+
 // ---------------------------------------------------------------------------
 // B4 Mutation root
 // ---------------------------------------------------------------------------
@@ -1709,11 +1732,36 @@ impl MutationRootB4 {
 
     async fn update_source_preference(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: UpdateSourcePreferenceInput,
     ) -> async_graphql::Result<UpdateSourcePreferencePayload> {
-        let _ = (input.change, input.source);
-        Err(async_graphql::Error::new("source preferences require the extension sandbox (Phase 5)"))
+        let state = ctx.data::<GraphQLState>()?;
+        let source_id = input.source.0;
+        let position = input
+            .change
+            .position
+            .ok_or_else(|| async_graphql::Error::new("missing preference position"))?;
+        let value = preference_value(&input.change)?;
+        let base = state
+            .sandbox_base
+            .clone()
+            .ok_or_else(|| async_graphql::Error::new("extension sandbox is not running"))?;
+        let fetcher = suwayomi_domain::source::sandbox::HttpSandboxFetcher::new(base);
+        let updated = fetcher
+            .set_source_preference(source_id, position, &value)
+            .await
+            .map_err(async_graphql::Error::from)?;
+        if updated.is_none() {
+            return Err(async_graphql::Error::new(format!("source {source_id} has no preferences")));
+        }
+        // 回读而不是把入参原样返回：扩展的监听器可能改别的项（比如填了服务器地址后
+        // 把"已连接"开关置上），前端拿返回值直接覆盖本地状态，回读才能看到真实结果。
+        let json = fetcher.source_preferences(source_id).await.map_err(async_graphql::Error::from)?;
+        Ok(UpdateSourcePreferencePayload {
+            client_mutation_id: input.client_mutation_id,
+            preferences: json.as_deref().map(crate::types::parse_preferences).unwrap_or_default(),
+            source: crate::mutation::fetch_source_type(state, source_id).await?,
+        })
     }
 
     // ---- Sync / Cache / Settings / User / WebUI ----

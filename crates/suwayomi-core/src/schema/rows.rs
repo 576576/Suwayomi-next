@@ -35,6 +35,10 @@ pub struct SourceRow {
     pub lang: String,
     pub extension: i32,
     pub content_warning: i32,
+    /// 源提供"最近更新"列表。
+    pub supports_latest: bool,
+    /// 源实现 `ConfigurableSource`，有设置界面。
+    pub is_configurable: bool,
 }
 
 /// `manga` — mirrors `MangaTable`

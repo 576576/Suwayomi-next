@@ -11,20 +11,23 @@ package sandbox
 import android.app.Application
 import android.content.SharedPreferences
 import eu.kanade.tachiyomi.network.NetworkHelper
+import eu.kanade.tachiyomi.source.sourcePreferences
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.protobuf.ProtoBuf
 import org.koin.core.context.startKoin
 import org.koin.dsl.module
 import uy.kohesive.injekt.api.InjektScope
 import uy.kohesive.injekt.api.KoinRegistrar
-import java.lang.reflect.InvocationHandler
-import java.lang.reflect.Method
-import java.lang.reflect.Proxy
-import java.util.concurrent.ConcurrentHashMap
+import xyz.nulldev.androidcompat.androidimpl.CustomContext
+import xyz.nulldev.androidcompat.androidimpl.FakePackageManager
+import xyz.nulldev.androidcompat.info.ApplicationInfoImpl
+import xyz.nulldev.androidcompat.io.AndroidFiles
+import xyz.nulldev.androidcompat.pm.PackageController
+import xyz.nulldev.androidcompat.service.ServiceSupport
+import xyz.nulldev.ts.config.GlobalConfigManager
 
-/** Application stub with an in-memory SharedPreferences store. */
+/** Application stub backed by the sandbox's persistent preference stores. */
 class SandboxApp : Application() {
-    private val stores = ConcurrentHashMap<String, SharedPreferences>()
     // Application 继承 ContextWrapper，`mBase` 没 attach 过（桌面没有 Activity 宿主），
     // 所有默认实现都会在 `mBase.xxx()` 上 NPE。keiyoushi 的库和不少扩展会直接用
     // getCacheDir/getFilesDir/getExternalCacheDir 做磁盘缓存，这里逐个给真实临时目录。
@@ -49,62 +52,10 @@ class SandboxApp : Application() {
 
     override fun getExternalFilesDirs(type: String?): Array<java.io.File> = arrayOf(externalFilesDir)
 
-    override fun getSharedPreferences(name: String, mode: Int): SharedPreferences =
-        stores.computeIfAbsent(name) { memorySharedPreferences() }
-}
-
-/** Builds a `SharedPreferences` implemented as an in-memory map via dynamic proxy. */
-fun memorySharedPreferences(): SharedPreferences {
-    val data = ConcurrentHashMap<String, Any?>()
-    val handler = InvocationHandler { _, method, args ->
-        when (method.name) {
-            "getString" -> data[args[0] as String] as? String ?: (args[1] as? String)
-            "getStringSet" -> data[args[0] as String] as? Set<String> ?: (args[1] as? Set<String>)
-            "getInt" -> (data[args[0] as String] as? Number)?.toInt() ?: (args[1] as? Int) ?: 0
-            "getLong" -> (data[args[0] as String] as? Number)?.toLong() ?: (args[1] as? Long) ?: 0L
-            "getFloat" -> (data[args[0] as String] as? Number)?.toFloat() ?: (args[1] as? Float) ?: 0f
-            "getBoolean" -> data[args[0] as String] as? Boolean ?: (args[1] as? Boolean) ?: false
-            "contains" -> data.containsKey(args[0] as String)
-            "getAll" -> data
-            "edit" -> memoryEditor(data)
-            "registerOnSharedPreferenceChangeListener" -> null
-            "unregisterOnSharedPreferenceChangeListener" -> null
-            else -> null
-        }
-    }
-    return Proxy.newProxyInstance(
-        SharedPreferences::class.java.classLoader,
-        arrayOf(SharedPreferences::class.java),
-        handler,
-    ) as SharedPreferences
-}
-
-/** Builds a `SharedPreferences.Editor` writing into [data]. */
-private fun memoryEditor(data: MutableMap<String, Any?>): SharedPreferences.Editor {
-    lateinit var editor: SharedPreferences.Editor
-    val handler = InvocationHandler { _, method, args ->
-        when (method.name) {
-            // put*/remove/clear 按契约返回自己（`edit().remove(k).putString(…)` 这么链），
-            // 返回 null 会让链上的下一个调用直接 NPE。
-            "putString" -> { data[args[0] as String] = args[1] as String; editor }
-            "putStringSet" -> { data[args[0] as String] = args[1] as Set<String>; editor }
-            "putInt" -> { data[args[0] as String] = args[1] as Int; editor }
-            "putLong" -> { data[args[0] as String] = args[1] as Long; editor }
-            "putFloat" -> { data[args[0] as String] = args[1] as Float; editor }
-            "putBoolean" -> { data[args[0] as String] = args[1] as Boolean; editor }
-            "remove" -> { data.remove(args[0] as String); editor }
-            "clear" -> { data.clear(); editor }
-            "apply" -> { null }
-            "commit" -> { true }
-            else -> null
-        }
-    }
-    editor = Proxy.newProxyInstance(
-        SharedPreferences.Editor::class.java.classLoader,
-        arrayOf(SharedPreferences.Editor::class.java),
-        handler,
-    ) as SharedPreferences.Editor
-    return editor
+    // 扩展有两套拿到偏好的写法：`ConfigurableSource.getSourcePreferences()`（走
+    // `PreferenceStores`）和 `Injekt.get<Application>().getSharedPreferences("source_$id", 0)`
+    // （走这里）。两份存储的后果是「设置填了、请求仍说未登录」，所以两边都指向同一份。
+    override fun getSharedPreferences(name: String, mode: Int): SharedPreferences = sourcePreferences(name)
 }
 
 /** Installs the injekt scope backed by a Koin module with sandbox singletons. */
@@ -128,6 +79,15 @@ fun setupInjekt() {
         // 必须写 `single<ProtoBuf>`：Koin 按 lambda 的推断类型注册，不写类型参数会把
         // `ProtoBuf.Companion` 注册进去，`get<ProtoBuf>()` 照样找不到。
         single<ProtoBuf> { ProtoBuf }
+        // `CustomContext`（见 AndroidEnv.installSandboxContext）构造期按类型从 Koin 取这几
+        // 个。上游由 `androidCompatModule()` 提供，但那个模块还带一条 `single<Context>`，
+        // 会和上面的 SandboxApp 撞定义，所以这里只挑它要的几条。
+        single { AndroidFiles() }
+        single { ApplicationInfoImpl(GlobalConfigManager) }
+        single { ServiceSupport() }
+        single { PackageController() }
+        single { FakePackageManager() }
+        single { CustomContext() }
     }
     startKoin { modules(m) }
     uy.kohesive.injekt.Injekt = InjektScope(KoinRegistrar())

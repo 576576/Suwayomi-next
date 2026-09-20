@@ -31,6 +31,9 @@ import java.util.zip.ZipInputStream
 
 private const val ASSETS_PREFIX = "assets/"
 
+/** 设置界面的接口全名，用于判断源是否有可配置项。 */
+private const val CONFIGURABLE_SOURCE = "eu.kanade.tachiyomi.source.ConfigurableSource"
+
 /**
  * dex→jar 产出内容的版本。**改动产出内容时必须 +1。**
  *
@@ -150,6 +153,8 @@ class ExtensionLoader(private val rootDir: Path, private val jarDir: Path) {
                 schapterCls = schapterCls,
                 pageCls = pageCls,
                 mangasPageCls = mangasPageCls,
+                isConfigurable = implementsInterface(src, CONFIGURABLE_SOURCE),
+                supportsLatest = readSupportsLatest(src),
             )
         }
         cache[key] = loaded

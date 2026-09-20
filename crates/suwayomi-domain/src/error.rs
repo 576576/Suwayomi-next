@@ -8,7 +8,9 @@ pub enum DomainError {
     NotFound(String),
     #[error("{0}")]
     Invalid(String),
-    #[error("source error: {0}")]
+    /// 取源内容失败。消息会被原样送到界面上（GraphQL 直接把 `Display` 当错误文案），
+    /// 所以不加 `source error:` 这类前缀 —— 用户看到的第一句就该是能照着办的事。
+    #[error("{0}")]
     Source(String),
     #[error("sandbox http error: {0}")]
     Sandbox(String),

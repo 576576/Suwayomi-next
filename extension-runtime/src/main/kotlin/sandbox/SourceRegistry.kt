@@ -56,6 +56,19 @@ interface SourceRegistry {
     fun inspect(apkBytes: ByteArray): ExtensionInfo? = null
 
     /**
+     * 源的设置界面 JSON（`GET /source/{id}/preferences`）。
+     *
+     * `null` = 该源没有设置界面（未实现 `ConfigurableSource`），或这一端还没接上
+     * 源设置（Android 宿主目前是后者）。
+     */
+    fun sourcePreferences(sourceId: Long): String? = null
+
+    /**
+     * 按位置写回一个设置值，返回写回后的完整 JSON（`POST /source/{id}/preferences`）。
+     */
+    fun setSourcePreference(sourceId: Long, position: Int, value: String): String? = null
+
+    /**
      * 扩展**自己 APK 里**的图标（PNG 字节），拿不到返回 null（`GET /icon/{pkg}`）。
      *
      * `extension.icon_url` 只有**仓库索引**会填，从系统装进来的扩展没有索引行，

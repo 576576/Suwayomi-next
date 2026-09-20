@@ -1,14 +1,21 @@
-//! Track REST endpoints — mirrors `TrackController.kt`.
-//! `/api/v1/track/list` is fully implemented (built-in tracker registry);
-//! login/search/bind/update return success until tracker services land (Phase 6).
-//! `/api/v1/track/{id}/thumbnail` proxies the tracker's official logo with
-//! on-disk caching under `<cache>/trackers/` (fallback: embedded placeholder).
+//! Track REST endpoints — mirrors `TrackController.kt` + `impl/track/Track.kt`.
+//!
+//! `/list` 与 `/search` 会把追踪器的真实登录态与搜索结果带出来；`login` / `logout`
+//! / `bind` / `update` 都会打到站点 API。未知 tracker id 一律 404（上游
+//! `TrackerManager.getTracker(id)!!` 抛 NPE → 404）。
+//!
+//! `/track/{id}/thumbnail` 读编在二进制里的 PNG（对齐上游从 classpath 读
+//! `/static/tracker/*.png`），不再联网抓图，响应带 `cache-control: max-age=86400`。
 
-use axum::extract::State;
-use axum::http::StatusCode;
-use axum::routing::get;
+use axum::extract::{Path, State};
+use axum::http::{StatusCode, header};
+use axum::routing::{get, post};
 use axum::{Json, Router};
+use serde::Deserialize;
 
+use suwayomi_domain::tracker::{TrackSearch, TrackUpdate};
+
+use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
 /// Mirrors `TrackerDataClass`.
@@ -17,131 +24,159 @@ pub struct TrackerDataClass {
     pub id: i32,
     pub name: String,
     pub icon: String,
+    #[serde(rename = "isLogin")]
     pub is_login: bool,
+    #[serde(rename = "authUrl")]
     pub auth_url: Option<String>,
 }
 
-/// Built-in tracker registry (mirrors `TrackerManager.services`).
-/// 4th tuple element = official logo URL (None → embedded placeholder).
-const TRACKERS: &[(i32, &str, Option<&str>, Option<&str>)] = &[
-    (1, "MyAnimeList", Some("https://myanimelist.net/"), Some("https://cdn.myanimelist.net/img/sp/icon/apple-touch-icon-256.png")),
-    (2, "Anilist", Some("https://anilist.co/api/v2/oauth/authorize"), Some("https://anilist.co/img/logo_al.png")),
-    (3, "Kitsu", None, None),
-    (4, "Shikimori", Some("https://shikimori.one/oauth/authorize"), None),
-    (5, "Bangumi", Some("https://bgm.tv/oauth/authorize"), Some("https://bgm.tv/img/logo.png")),
-    (7, "MangaUpdates", None, None),
-];
-
-/// 内嵌占位图标（128×128 圆角深灰蓝方块，下载不可用时兜底）。
-const PLACEHOLDER_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAABDUlEQVR42u3RAQ2AQBADwROJDgSgnvdAYD9kmlXQmXmw47y0mm/m6IzEoRmDEzMGx5UM/ioNPFUa+Kg08E5s4JoSwC+xgVNKAI/EBu4oAXwRGzgCAAABAKACwAuxgQsAABAAAAIAQAAACAAAAQAgAAAEAIAAABAAAAIAQAAACAAAAQAgAAAEAIAAABAAAAIAQAAACAAAAQAgAAAEAIAAABAAAAIAQAAACAAAAQAgAAAEAIAAABAAAAIAQAAACAAAAQAgAAAEAAAALwAAIAAABACAAAAQAAACAEAAAAgAAAEAIAAABOCXAGteKN8HAACALwAAUAfAIH4fQA/AIH4fQA/AIH4fQA/AIH6fQf8+g/59Bv37GPrrMWxxPYYtrkfy3t03wO75FXwW2NIAAAAASUVORK5CYII=";
-
-fn placeholder_png() -> Vec<u8> {
-    use base64::Engine as _;
-    base64::engine::general_purpose::STANDARD
-        .decode(PLACEHOLDER_PNG_B64)
-        .unwrap_or_default()
-}
-
-fn tracker_list() -> Vec<TrackerDataClass> {
-    TRACKERS
-        .iter()
-        .map(|(id, name, auth, _icon)| TrackerDataClass {
-            id: *id,
-            name: name.to_string(),
-            icon: format!("/api/v1/track/{id}/thumbnail"),
-            is_login: false,
-            auth_url: auth.map(|s| s.to_string()),
+/// 上游 `Track.getTrackerList()`：`authUrl` 只在未登录时给。
+async fn list(State(s): State<AppState>) -> Json<Vec<TrackerDataClass>> {
+    let trackers = s
+        .tracker
+        .list()
+        .await
+        .into_iter()
+        .map(|t| TrackerDataClass {
+            id: t.id,
+            name: t.name,
+            icon: format!("/api/v1/track/{}/thumbnail", t.id),
+            is_login: t.is_login,
+            auth_url: t.auth_url,
         })
-        .collect()
+        .collect();
+    Json(trackers)
 }
 
-async fn list(State(_s): State<AppState>) -> Json<Vec<TrackerDataClass>> {
-    Json(tracker_list())
+/// Mirrors `Track.LoginInput`.
+#[derive(Deserialize)]
+pub struct LoginInput {
+    #[serde(rename = "trackerId")]
+    pub tracker_id: i32,
+    #[serde(rename = "callbackUrl", default)]
+    pub callback_url: Option<String>,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
 }
 
-async fn login(State(_s): State<AppState>) -> StatusCode {
-    // Phase 6: tracker credential login; returns OK without side effects for now.
-    StatusCode::OK
+async fn login(State(s): State<AppState>, Json(input): Json<LoginInput>) -> ApiResult<StatusCode> {
+    // 未知 tracker 先拦下来，否则站点调用会以「未登录」之类的形式报出来。
+    s.tracker.get(input.tracker_id)?;
+    s.tracker
+        .login(
+            input.tracker_id,
+            input.callback_url.as_deref(),
+            input.username.as_deref().unwrap_or_default(),
+            input.password.as_deref().unwrap_or_default(),
+        )
+        .await?;
+    Ok(StatusCode::OK)
 }
 
-async fn logout(State(_s): State<AppState>) -> StatusCode {
-    StatusCode::OK
+#[derive(Deserialize)]
+pub struct LogoutInput {
+    #[serde(rename = "trackerId")]
+    pub tracker_id: i32,
 }
 
-async fn search(State(_s): State<AppState>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "trackSearches": [] }))
+async fn logout(State(s): State<AppState>, Json(input): Json<LogoutInput>) -> ApiResult<StatusCode> {
+    s.tracker.logout(input.tracker_id).await?;
+    Ok(StatusCode::OK)
 }
 
-async fn bind(State(_s): State<AppState>) -> StatusCode {
-    StatusCode::OK
+#[derive(Deserialize)]
+pub struct SearchInput {
+    #[serde(rename = "trackerId")]
+    pub tracker_id: i32,
+    pub title: String,
 }
 
-async fn update(State(_s): State<AppState>) -> StatusCode {
-    StatusCode::OK
+async fn search(State(s): State<AppState>, Json(input): Json<SearchInput>) -> ApiResult<Json<Vec<TrackSearch>>> {
+    Ok(Json(s.tracker.search(input.tracker_id, &input.title).await?))
 }
 
-async fn thumbnail(State(_s): State<AppState>, axum::extract::Path(id): axum::extract::Path<i32>) -> axum::response::Response {
+#[derive(Deserialize)]
+pub struct BindParams {
+    #[serde(rename = "mangaId")]
+    pub manga_id: i32,
+    #[serde(rename = "trackerId")]
+    pub tracker_id: i32,
+    #[serde(rename = "remoteId")]
+    pub remote_id: String,
+    #[serde(default)]
+    pub private: bool,
+}
+
+async fn bind(State(s): State<AppState>, axum::extract::Query(q): axum::extract::Query<BindParams>) -> ApiResult<StatusCode> {
+    let remote_id: i64 = q
+        .remote_id
+        .parse()
+        .map_err(|_| ApiError::BadRequest(format!("remoteId 「{}」不是数字", q.remote_id)))?;
+    s.tracker.bind(q.manga_id, q.tracker_id, remote_id, q.private).await?;
+    Ok(StatusCode::OK)
+}
+
+/// Mirrors `Track.UpdateInput`.
+#[derive(Deserialize)]
+pub struct UpdateInput {
+    #[serde(rename = "recordId")]
+    pub record_id: i32,
+    #[serde(default)]
+    pub status: Option<i32>,
+    #[serde(rename = "lastChapterRead", default)]
+    pub last_chapter_read: Option<f64>,
+    #[serde(rename = "scoreString", default)]
+    pub score_string: Option<String>,
+    #[serde(rename = "startDate", default)]
+    pub start_date: Option<i64>,
+    #[serde(rename = "finishDate", default)]
+    pub finish_date: Option<i64>,
+    #[serde(default)]
+    pub unbind: Option<bool>,
+    #[serde(default)]
+    pub private: Option<bool>,
+}
+
+async fn update(State(s): State<AppState>, Json(input): Json<UpdateInput>) -> ApiResult<StatusCode> {
+    s.tracker
+        .update(TrackUpdate {
+            record_id: input.record_id,
+            status: input.status,
+            last_chapter_read: input.last_chapter_read,
+            score_string: input.score_string,
+            start_date: input.start_date,
+            finish_date: input.finish_date,
+            unbind: input.unbind,
+            private: input.private,
+        })
+        .await?;
+    Ok(StatusCode::OK)
+}
+
+/// 上游 `Track.getTrackerThumbnail`：资源里的 PNG + 一天缓存。
+async fn thumbnail(State(s): State<AppState>, Path(tracker_id): Path<i32>) -> ApiResult<axum::response::Response> {
     use axum::response::IntoResponse;
 
-    let cache_dir = crate::routes::cache_root().join("trackers");
-    let cached: Option<Vec<u8>> = {
-        let mut found = None;
-        for ext in ["png", "jpg", "webp"] {
-            let cand = cache_dir.join(format!("{id}.{ext}"));
-            if cand.is_file() {
-                found = std::fs::read(&cand).ok();
-                break;
-            }
-        }
-        found
-    };
-    let bytes = match cached {
-        Some(b) => b,
-        None => {
-            let url = TRACKERS.iter().find(|t| t.0 == id).and_then(|t| t.3);
-            let fetched = match url {
-                Some(u) => {
-                    match reqwest::get(u).await {
-                        Ok(resp) => resp.bytes().await.ok().map(|b| b.to_vec()),
-                        Err(_) => None,
-                    }
-                }
-                None => None,
-            };
-            match fetched {
-                Some(b) => {
-                    let _ = std::fs::create_dir_all(&cache_dir);
-                    let ext = if b.len() > 3 && &b[0..4] == b"RIFF" {
-                        "webp"
-                    } else if b.len() > 2 && b[0] == 0xff && b[1] == 0xd8 {
-                        "jpg"
-                    } else {
-                        "png"
-                    };
-                    let _ = std::fs::write(cache_dir.join(format!("{id}.{ext}")), &b);
-                    b
-                }
-                None => placeholder_png(),
-            }
-        }
-    };
-    let ctype = if bytes.len() > 3 && &bytes[0..4] == b"RIFF" {
-        "image/webp"
-    } else if bytes.len() > 2 && bytes[0] == 0xff && bytes[1] == 0xd8 {
-        "image/jpeg"
-    } else {
-        "image/png"
-    };
-    ([(axum::http::header::CONTENT_TYPE, ctype)], bytes).into_response()
+    let tracker = s.tracker.get(tracker_id)?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "max-age=86400"),
+        ],
+        tracker.logo(),
+    )
+        .into_response())
 }
 
 pub fn track_router() -> Router<AppState> {
     Router::new()
         .route("/list", get(list))
-        .route("/login", axum::routing::post(login))
-        .route("/logout", axum::routing::post(logout))
-        .route("/search", axum::routing::post(search))
-        .route("/bind", axum::routing::post(bind))
-        .route("/update", axum::routing::post(update))
+        .route("/login", post(login))
+        .route("/logout", post(logout))
+        .route("/search", post(search))
+        .route("/bind", post(bind))
+        .route("/update", post(update))
         .route("/{trackerId}/thumbnail", get(thumbnail))
 }

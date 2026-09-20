@@ -1,6 +1,6 @@
 //! Subscription root — mirrors `graphql/subscriptions/*.kt`.
-//! Emits one initial snapshot per connection (Phase 6 wires the real
-//! broadcast channels for download/update/sync events).
+//! Each stream emits an initial snapshot then follows its live broadcast
+//! channel (download / update / sync events).
 
 use async_graphql::{Context, InputObject, SimpleObject, Subscription};
 use futures::stream::{self, Stream};
@@ -139,10 +139,10 @@ impl SubscriptionRoot {
             };
             Some((
                 UpdaterUpdates {
-                    category_updates: status.category_updates,
+                    category_updates: status.category_updates.into_iter().map(Into::into).collect(),
                     initial: None,
-                    jobs_info: status.jobs_info,
-                    manga_updates: status.manga_updates,
+                    jobs_info: status.jobs_info.into(),
+                    manga_updates: status.manga_updates.into_iter().map(Into::into).collect(),
                     omitted_updates: false,
                 },
                 rx,

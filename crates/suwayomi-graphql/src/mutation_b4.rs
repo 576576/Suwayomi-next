@@ -1,6 +1,5 @@
 //! Mutation batch B4 — Download/Update/Backup/Track/Extension/Sync/User/WebUI
-//! mutations. DB-driven parts are fully implemented; manager-dependent parts
-//! return Kotlin-compatible defaults until Phase 6 services land.
+//! mutations.
 
 use async_graphql::{Context, Enum, InputObject, Object, SimpleObject};
 use std::collections::HashMap;
@@ -8,6 +7,7 @@ use std::collections::HashMap;
 use suwayomi_core::schema::TrackRecordRow;
 use suwayomi_domain::meta::{MetaService, MetaTable};
 use suwayomi_domain::sql::bind_placeholders;
+use suwayomi_domain::tracker::TrackUpdate;
 
 use crate::query::SortOrder;
 use crate::scalars::{DurationScalar, LongString};
@@ -234,10 +234,33 @@ pub enum MangaJobStatus {
     Skipped,
 }
 
+impl From<suwayomi_domain::updater::MangaJobStatus> for MangaJobStatus {
+    fn from(s: suwayomi_domain::updater::MangaJobStatus) -> Self {
+        use suwayomi_domain::updater::MangaJobStatus as D;
+        match s {
+            D::Pending => Self::Pending,
+            D::Running => Self::Running,
+            D::Complete => Self::Complete,
+            D::Failed => Self::Failed,
+            D::Skipped => Self::Skipped,
+        }
+    }
+}
+
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 pub enum CategoryJobStatus {
     Updating,
     Skipped,
+}
+
+impl From<suwayomi_domain::updater::CategoryJobStatus> for CategoryJobStatus {
+    fn from(s: suwayomi_domain::updater::CategoryJobStatus) -> Self {
+        use suwayomi_domain::updater::CategoryJobStatus as D;
+        match s {
+            D::Updating => Self::Updating,
+            D::Skipped => Self::Skipped,
+        }
+    }
 }
 
 #[derive(SimpleObject, Clone)]
@@ -246,10 +269,22 @@ pub struct MangaUpdateType {
     pub manga: MangaType,
 }
 
+impl From<suwayomi_domain::updater::MangaUpdate> for MangaUpdateType {
+    fn from(u: suwayomi_domain::updater::MangaUpdate) -> Self {
+        Self { status: u.status.into(), manga: MangaType::from_row(&u.manga) }
+    }
+}
+
 #[derive(SimpleObject, Clone)]
 pub struct CategoryUpdateType {
     pub category: CategoryType,
     pub status: CategoryJobStatus,
+}
+
+impl From<suwayomi_domain::updater::CategoryUpdate> for CategoryUpdateType {
+    fn from(u: suwayomi_domain::updater::CategoryUpdate) -> Self {
+        Self { category: CategoryType::from(&u.category), status: u.status.into() }
+    }
 }
 
 #[derive(SimpleObject, Clone)]
@@ -261,11 +296,33 @@ pub struct UpdaterJobsInfoType {
     pub total_jobs: i32,
 }
 
+impl From<suwayomi_domain::updater::UpdaterJobsInfo> for UpdaterJobsInfoType {
+    fn from(j: suwayomi_domain::updater::UpdaterJobsInfo) -> Self {
+        Self {
+            finished_jobs: j.finished_jobs,
+            is_running: j.is_running,
+            skipped_categories_count: j.skipped_categories_count,
+            skipped_mangas_count: j.skipped_mangas_count,
+            total_jobs: j.total_jobs,
+        }
+    }
+}
+
 #[derive(SimpleObject, Clone)]
 pub struct LibraryUpdateStatus {
     pub category_updates: Vec<CategoryUpdateType>,
     pub jobs_info: UpdaterJobsInfoType,
     pub manga_updates: Vec<MangaUpdateType>,
+}
+
+impl From<suwayomi_domain::updater::LibraryUpdateStatus> for LibraryUpdateStatus {
+    fn from(s: suwayomi_domain::updater::LibraryUpdateStatus) -> Self {
+        Self {
+            category_updates: s.category_updates.into_iter().map(Into::into).collect(),
+            jobs_info: s.jobs_info.into(),
+            manga_updates: s.manga_updates.into_iter().map(Into::into).collect(),
+        }
+    }
 }
 
 impl LibraryUpdateStatus {
@@ -520,6 +577,8 @@ pub struct UpdateTrackInput {
     pub score_string: Option<String>,
     pub start_date: Option<LongString>,
     pub status: Option<i32>,
+    #[graphql(deprecation = "Replaced with \"unbindTrack\" mutation")]
+    pub unbind: Option<bool>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -557,6 +616,7 @@ pub struct LoginTrackerCredentialsPayload {
 
 #[derive(InputObject)]
 pub struct LoginTrackerOAuthInput {
+    pub callback_url: String,
     pub client_mutation_id: Option<String>,
     pub tracker_id: i32,
 }
@@ -578,6 +638,18 @@ pub struct LogoutTrackerInput {
 pub struct LogoutTrackerPayload {
     pub client_mutation_id: Option<String>,
     pub is_logged_in: bool,
+    pub tracker: TrackerType,
+}
+
+#[derive(InputObject)]
+pub struct RefreshTrackerUserInput {
+    pub client_mutation_id: Option<String>,
+    pub tracker_id: i32,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct RefreshTrackerUserPayload {
+    pub client_mutation_id: Option<String>,
     pub tracker: TrackerType,
 }
 
@@ -1149,24 +1221,13 @@ impl MutationRootB4 {
         input: UpdateLibraryInput,
     ) -> async_graphql::Result<UpdateLibraryPayload> {
         let state = ctx.data::<crate::state::GraphQLState>()?;
-        // Phase 6: run the real updater in the background; events stream to
-        // the `libraryUpdateStatusChanged` subscription.
+        // Run the updater in the background; events stream to the
+        // `libraryUpdateStatusChanged` subscription.
         state.update.start(input.categories).await;
         let running = state.update.is_running().await;
-        Ok(UpdateLibraryPayload {
-            client_mutation_id: input.client_mutation_id,
-            update_status: LibraryUpdateStatus {
-                category_updates: vec![],
-                jobs_info: UpdaterJobsInfoType {
-                    finished_jobs: 0,
-                    is_running: running,
-                    skipped_categories_count: 0,
-                    skipped_mangas_count: 0,
-                    total_jobs: 0,
-                },
-                manga_updates: vec![],
-            },
-        })
+        let mut update_status = LibraryUpdateStatus::idle();
+        update_status.jobs_info.is_running = running;
+        Ok(UpdateLibraryPayload { client_mutation_id: input.client_mutation_id, update_status })
     }
 
     async fn update_stop(
@@ -1187,10 +1248,10 @@ impl MutationRootB4 {
         input: CreateBackupInput,
     ) -> async_graphql::Result<CreateBackupPayload> {
         let state = ctx.data::<crate::state::GraphQLState>()?;
-        // Phase 6: real export — gzipped Mihon protobuf backup; the client
-        // downloads it from the REST export/file endpoint (import pending).
-        let _ = input.flags;
-        suwayomi_core::backup::create_backup(state.db.pool()).await.map_err(async_graphql::Error::from)?;
+        // Gzipped Mihon protobuf backup; the client downloads it from the
+        // REST export/file endpoint.
+        let flags = suwayomi_core::backup::BackupFlags::from_partial(&backup_flags(input.flags.as_ref()));
+        suwayomi_core::backup::create_backup(state.db.pool(), flags).await.map_err(async_graphql::Error::from)?;
         Ok(CreateBackupPayload { client_mutation_id: input.client_mutation_id, url: "/api/v1/backup/export/file".to_string() })
     }
 
@@ -1211,7 +1272,8 @@ impl MutationRootB4 {
             .map_err(|e| async_graphql::Error::new(format!("read upload: {e}")))?;
 
         let id = format!("restore-{}", chrono::Utc::now().timestamp_millis());
-        let final_status = match suwayomi_core::backup::restore_backup(state.db.pool(), &bytes).await {
+        let flags = suwayomi_core::backup::BackupFlags::from_partial(&backup_flags(input.flags.as_ref()));
+        let final_status = match suwayomi_core::backup::restore_backup(state.db.pool(), &bytes, flags).await {
             Ok(summary) => {
                 if !summary.errors.is_empty() {
                     tracing::warn!(errors = ?summary.errors, "backup restore completed with errors");
@@ -1242,92 +1304,49 @@ impl MutationRootB4 {
 
     // ---- Track ----
 
-    /// Mirrors `bindTrack` — creates a track record binding.
+    /// Mirrors `bindTrack`.
     async fn bind_track(&self, ctx: &Context<'_>, input: BindTrackInput) -> async_graphql::Result<BindTrackPayload> {
         let state = ctx.data::<GraphQLState>()?;
-        // upsert track_record for (manga, tracker)
-        let existing: Option<i32> = suwayomi_db::query_scalar(
-            bind_placeholders("SELECT id FROM track_record WHERE manga_id = ? AND sync_id = ?").as_str(),
-        )
-        .bind(input.manga_id)
-        .bind(input.tracker_id)
-        .fetch_optional(state.db.pool())
-        .await
-        .map_err(async_graphql::Error::from)?;
-        let id: i32 = if let Some(id) = existing {
-            suwayomi_db::query(bind_placeholders("UPDATE track_record SET remote_id = ?, private = ? WHERE id = ?").as_str())
-                .bind(input.remote_id.0)
-                .bind(input.private.unwrap_or(false))
-                .bind(id)
-                .execute(state.db.pool())
-                .await
-                .map_err(async_graphql::Error::from)?;
-            id
-        } else {
-            suwayomi_db::query_scalar(
-                bind_placeholders(
-                    "INSERT INTO track_record (manga_id, sync_id, remote_id, title, last_chapter_read, total_chapters, status, score, remote_url, start_date, finish_date, private) VALUES (?, ?, ?, '', 0, 0, 0, 0, '', 0, 0, ?) RETURNING id",
-                )
-                .as_str(),
-            )
-            .bind(input.manga_id)
-            .bind(input.tracker_id)
-            .bind(input.remote_id.0)
-            .bind(input.private.unwrap_or(false))
-            .fetch_one(state.db.pool())
-            .await
-            .map_err(async_graphql::Error::from)?
-        };
-        let row = fetch_track_record_row(state, id).await?;
+        state
+            .tracker
+            .bind(input.manga_id, input.tracker_id, input.remote_id.0, input.private.unwrap_or(false))
+            .await?;
+        let row = fetch_track_record_row_for(state, input.manga_id, input.tracker_id).await?;
         Ok(BindTrackPayload {
             client_mutation_id: input.client_mutation_id,
             track_record: TrackRecordType::from_row(&row),
         })
     }
 
-    /// Mirrors `bindTrackRecord` — binds an existing track search to a manga.
+    /// Mirrors `bindTrackRecord` — 返回并进后的那一行（目标漫画原本已有记录时
+    /// 是目标行，不是入参的那一行）。
     async fn bind_track_record(
         &self,
         ctx: &Context<'_>,
         input: BindTrackRecordInput,
     ) -> async_graphql::Result<BindTrackRecordPayload> {
         let state = ctx.data::<GraphQLState>()?;
-        let sql = bind_placeholders("SELECT * FROM track_record WHERE id = ?");
-        let row = suwayomi_db::query_as::<TrackRecordRow>(&sql)
-            .bind(input.track_record_id)
-            .fetch_optional(state.db.pool())
-            .await
-            .map_err(async_graphql::Error::from)?
-            .ok_or_else(|| async_graphql::Error::new("TrackRecord not found"))?;
-        suwayomi_db::query(bind_placeholders("UPDATE track_record SET manga_id = ? WHERE id = ?").as_str())
-            .bind(input.manga_id)
-            .bind(input.track_record_id)
-            .execute(state.db.pool())
-            .await
-            .map_err(async_graphql::Error::from)?;
+        let id = state.tracker.bind_track_record(input.manga_id, input.track_record_id).await?;
+        let row = fetch_track_record_row(state, id).await?;
         Ok(BindTrackRecordPayload {
             client_mutation_id: input.client_mutation_id,
             track_record: TrackRecordType::from_row(&row),
         })
     }
 
-    /// Mirrors `unbindTrack` — deletes the local record (Phase 6 adds remote deletion).
+    /// Mirrors `unbindTrack` — 本地行总是删；`deleteRemoteTrack` 只在站点支持删除
+    /// 时才会连带删掉站点上的记录。删除后回读，所以 `trackRecord` 恒为 null。
     async fn unbind_track(
         &self,
         ctx: &Context<'_>,
         input: UnbindTrackInput,
     ) -> async_graphql::Result<UnbindTrackPayload> {
         let state = ctx.data::<GraphQLState>()?;
-        let _ = input.delete_remote_track;
+        state.tracker.unbind(input.record_id, input.delete_remote_track.unwrap_or(false)).await?;
         let sql = bind_placeholders("SELECT * FROM track_record WHERE id = ?");
         let row = suwayomi_db::query_as::<TrackRecordRow>(&sql)
             .bind(input.record_id)
             .fetch_optional(state.db.pool())
-            .await
-            .map_err(async_graphql::Error::from)?;
-        suwayomi_db::query(bind_placeholders("DELETE FROM track_record WHERE id = ?").as_str())
-            .bind(input.record_id)
-            .execute(state.db.pool())
             .await
             .map_err(async_graphql::Error::from)?;
         Ok(UnbindTrackPayload {
@@ -1336,13 +1355,14 @@ impl MutationRootB4 {
         })
     }
 
-    /// Mirrors `trackProgress` — all track records of a manga.
+    /// Mirrors `trackProgress` — 先把当前阅读进度推给站点，再返回该漫画的全部记录。
     async fn track_progress(
         &self,
         ctx: &Context<'_>,
         input: TrackProgressInput,
     ) -> async_graphql::Result<TrackProgressPayload> {
         let state = ctx.data::<GraphQLState>()?;
+        state.tracker.track_chapter(input.manga_id).await?;
         let sql = bind_placeholders("SELECT * FROM track_record WHERE manga_id = ?");
         let rows = suwayomi_db::query_as::<TrackRecordRow>(&sql)
             .bind(input.manga_id)
@@ -1353,65 +1373,26 @@ impl MutationRootB4 {
         Ok(TrackProgressPayload { client_mutation_id: input.client_mutation_id, track_records })
     }
 
-    /// Mirrors `updateTrack` — updates local track record fields.
+    /// Mirrors `updateTrack` — 由 `domain::tracker` 负责状态/进度的连带推导，再推给站点。
     async fn update_track(
         &self,
         ctx: &Context<'_>,
         input: UpdateTrackInput,
     ) -> async_graphql::Result<UpdateTrackPayload> {
         let state = ctx.data::<GraphQLState>()?;
-        let score_string = input.score_string.clone();
-        let start_date = input.start_date;
-        let finish_date = input.finish_date;
-        let last_chapter_read = input.last_chapter_read;
-        let status = input.status;
-        let private = input.private;
-        let mut sets: Vec<&str> = Vec::new();
-        if last_chapter_read.is_some() {
-            sets.push("last_chapter_read = ?");
-        }
-        if status.is_some() {
-            sets.push("status = ?");
-        }
-        if score_string.is_some() {
-            sets.push("score = ?");
-        }
-        if start_date.is_some() {
-            sets.push("start_date = ?");
-        }
-        if finish_date.is_some() {
-            sets.push("finish_date = ?");
-        }
-        if private.is_some() {
-            sets.push("private = ?");
-        }
-        if !sets.is_empty() {
-            let sql = bind_placeholders(&format!("UPDATE track_record SET {} WHERE id = ?", sets.join(", ")));
-            let mut q = suwayomi_db::query(sql.as_str());
-            if let Some(v) = last_chapter_read {
-                q = q.bind(v);
-            }
-            if let Some(v) = status {
-                q = q.bind(v);
-            }
-            if let Some(v) = score_string {
-                if let Ok(f) = v.parse::<f64>() {
-                    q = q.bind(f);
-                } else {
-                    q = q.bind(0.0);
-                }
-            }
-            if let Some(v) = start_date {
-                q = q.bind(v.0);
-            }
-            if let Some(v) = finish_date {
-                q = q.bind(v.0);
-            }
-            if let Some(v) = private {
-                q = q.bind(v);
-            }
-            q.bind(input.record_id).execute(state.db.pool()).await.map_err(async_graphql::Error::from)?;
-        }
+        state
+            .tracker
+            .update(TrackUpdate {
+                record_id: input.record_id,
+                status: input.status,
+                last_chapter_read: input.last_chapter_read,
+                score_string: input.score_string,
+                start_date: input.start_date.map(|v| v.0),
+                finish_date: input.finish_date.map(|v| v.0),
+                unbind: input.unbind,
+                private: input.private,
+            })
+            .await?;
         let sql = bind_placeholders("SELECT * FROM track_record WHERE id = ?");
         let row = suwayomi_db::query_as::<TrackRecordRow>(&sql)
             .bind(input.record_id)
@@ -1424,58 +1405,90 @@ impl MutationRootB4 {
         })
     }
 
-    /// Mirrors `fetchTrack` — re-fetch remote track (Phase 6), returns local row.
+    /// Mirrors `fetchTrack` — 先拉站点上的最新状态，再回读本地行。
     async fn fetch_track(&self, ctx: &Context<'_>, input: FetchTrackInput) -> async_graphql::Result<FetchTrackPayload> {
         let state = ctx.data::<GraphQLState>()?;
-        let sql = bind_placeholders("SELECT * FROM track_record WHERE id = ?");
-        let row = suwayomi_db::query_as::<TrackRecordRow>(&sql)
-            .bind(input.record_id)
-            .fetch_optional(state.db.pool())
-            .await
-            .map_err(async_graphql::Error::from)?
-            .ok_or_else(|| async_graphql::Error::new("TrackRecord not found"))?;
+        state.tracker.refresh(input.record_id).await?;
+        let row = fetch_track_record_row(state, input.record_id).await?;
         Ok(FetchTrackPayload {
             client_mutation_id: input.client_mutation_id,
             track_record: TrackRecordType::from_row(&row),
         })
     }
 
-    /// Mirrors `loginTrackerCredentials` — tracker login (Phase 6).
+    /// Mirrors `loginTrackerCredentials`.
     async fn login_tracker_credentials(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: LoginTrackerCredentialsInput,
     ) -> async_graphql::Result<LoginTrackerCredentialsPayload> {
-        let tracker = TrackerType::by_id(input.tracker_id, false)
-            .ok_or_else(|| async_graphql::Error::new("Tracker not found"))?;
-        let _ = (input.username, input.password);
+        let state = ctx.data::<GraphQLState>()?;
+        let service =
+            state.tracker.find(input.tracker_id).ok_or_else(|| async_graphql::Error::new("Could not find tracker"))?;
+        service.login_impl(&input.username, &input.password).await?;
+        let is_logged_in = service.is_logged_in().await?;
         Ok(LoginTrackerCredentialsPayload {
             client_mutation_id: input.client_mutation_id,
-            is_logged_in: false,
-            tracker,
+            is_logged_in,
+            tracker: TrackerType::from_service(service),
         })
     }
 
+    /// Mirrors `loginTrackerOAuth` — `callbackUrl` 即浏览器回调地址，用户名密码不参与。
     async fn login_tracker_o_auth(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: LoginTrackerOAuthInput,
     ) -> async_graphql::Result<LoginTrackerOAuthPayload> {
-        let tracker = TrackerType::by_id(input.tracker_id, false)
-            .ok_or_else(|| async_graphql::Error::new("Tracker not found"))?;
-        Ok(LoginTrackerOAuthPayload { client_mutation_id: input.client_mutation_id, is_logged_in: false, tracker })
+        let state = ctx.data::<GraphQLState>()?;
+        let service =
+            state.tracker.find(input.tracker_id).ok_or_else(|| async_graphql::Error::new("Could not find tracker"))?;
+        service.auth_callback(&input.callback_url).await?;
+        let is_logged_in = service.is_logged_in().await?;
+        Ok(LoginTrackerOAuthPayload {
+            client_mutation_id: input.client_mutation_id,
+            is_logged_in,
+            tracker: TrackerType::from_service(service),
+        })
     }
 
+    /// Mirrors `logoutTracker` — 未登录时报错，不做静默成功。
     async fn logout_tracker(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: LogoutTrackerInput,
     ) -> async_graphql::Result<LogoutTrackerPayload> {
-        let tracker = TrackerType::by_id(input.tracker_id, false)
-            .ok_or_else(|| async_graphql::Error::new("Tracker not found"))?;
-        Ok(LogoutTrackerPayload { client_mutation_id: input.client_mutation_id, is_logged_in: false, tracker })
+        let state = ctx.data::<GraphQLState>()?;
+        let service =
+            state.tracker.find(input.tracker_id).ok_or_else(|| async_graphql::Error::new("Could not find tracker"))?;
+        if !service.is_logged_in().await? {
+            return Err(async_graphql::Error::new("Cannot logout of a tracker that is not logged-in"));
+        }
+        service.logout().await?;
+        let is_logged_in = service.is_logged_in().await?;
+        Ok(LogoutTrackerPayload {
+            client_mutation_id: input.client_mutation_id,
+            is_logged_in,
+            tracker: TrackerType::from_service(service),
+        })
     }
 
+    /// Mirrors Mihon `BaseTracker.refreshUser()` —— 重新拉站点上的用户级设置（评分制）
+    /// 并落库，`tracker.scores` 随之更新。上游 Suwayomi 没有对应 mutation。
+    async fn refresh_tracker_user(
+        &self,
+        ctx: &Context<'_>,
+        input: RefreshTrackerUserInput,
+    ) -> async_graphql::Result<RefreshTrackerUserPayload> {
+        let state = ctx.data::<GraphQLState>()?;
+        let service =
+            state.tracker.find(input.tracker_id).ok_or_else(|| async_graphql::Error::new("Could not find tracker"))?;
+        service.refresh_user().await?;
+        Ok(RefreshTrackerUserPayload {
+            client_mutation_id: input.client_mutation_id,
+            tracker: TrackerType::from_service(service),
+        })
+    }
 
     // ---- KOReader sync ----
 
@@ -1571,8 +1584,10 @@ impl MutationRootB4 {
         let store = state.extension_store.clone();
         // refresh repo indexes (best-effort: a failing repo shouldn't block)
         let _ = store.refresh_stores().await;
-        if store.sandbox_available() {
-            let _ = store.sync_sources().await;
+        if store.sandbox_available()
+            && let Err(e) = store.sync_sources().await
+        {
+            tracing::warn!("source sync after refresh failed: {e}");
         }
         let exts = suwayomi_db::query_as::<suwayomi_core::schema::ExtensionRow>("SELECT * FROM extension")
             .fetch_all(state.db.pool())
@@ -1829,7 +1844,7 @@ impl MutationRootB4 {
         let state = ctx.data::<GraphQLState>()?;
         Ok(ResetSettingsPayload {
             client_mutation_id: input.client_mutation_id,
-            settings: crate::settings::SettingsType::from_config(&state.config),
+            settings: state.effective_settings().await,
         })
     }
 
@@ -1876,6 +1891,9 @@ impl MutationRootB4 {
         if let Some(p) = input.settings.local_source_path.clone() {
             suwayomi_domain::source::local::set_local_source_root(Some(std::path::PathBuf::from(p)));
         }
+        // 重算运行时配置：KOReader 冲突策略 / SyncYomi 开关由服务从 `state.config`
+        // 读取，不刷新的话保存完只有设置页显示变了。
+        state.reload_runtime_config().await;
         Ok(SetSettingsPayload {
             client_mutation_id: input.client_mutation_id,
             // 回读刚写下去的值：直接回 `from_config` 会把改动前的旧值当成保存结果，
@@ -1927,10 +1945,41 @@ async fn fetch_chapter_row(state: &GraphQLState, id: i32) -> async_graphql::Resu
         .map_err(async_graphql::Error::from)
 }
 
+/// GraphQL 的部分开关 → 备份模块的部分开关（字段一一对应）。
+pub(crate) fn backup_flags(input: Option<&PartialBackupFlagsInput>) -> suwayomi_core::backup::PartialBackupFlags {
+    let Some(f) = input else {
+        return suwayomi_core::backup::PartialBackupFlags::default();
+    };
+    suwayomi_core::backup::PartialBackupFlags {
+        include_manga: f.include_manga,
+        include_categories: f.include_categories,
+        include_chapters: f.include_chapters,
+        include_tracking: f.include_tracking,
+        include_history: f.include_history,
+        include_client_data: f.include_client_data,
+        include_server_settings: f.include_server_settings,
+    }
+}
+
 async fn fetch_track_record_row(state: &GraphQLState, id: i32) -> async_graphql::Result<TrackRecordRow> {
     let sql = bind_placeholders("SELECT * FROM track_record WHERE id = ?");
     suwayomi_db::query_as::<TrackRecordRow>(&sql)
         .bind(id)
+        .fetch_one(state.db.pool())
+        .await
+        .map_err(async_graphql::Error::from)
+}
+
+/// 取某漫画在某追踪器上的记录 —— `bindTrack` 之后回读用（上游也是按这两个键找回来）。
+async fn fetch_track_record_row_for(
+    state: &GraphQLState,
+    manga_id: i32,
+    tracker_id: i32,
+) -> async_graphql::Result<TrackRecordRow> {
+    let sql = bind_placeholders("SELECT * FROM track_record WHERE manga_id = ? AND sync_id = ?");
+    suwayomi_db::query_as::<TrackRecordRow>(&sql)
+        .bind(manga_id)
+        .bind(tracker_id)
         .fetch_one(state.db.pool())
         .await
         .map_err(async_graphql::Error::from)

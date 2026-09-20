@@ -1272,6 +1272,9 @@ pub struct SourceType {
     pub supports_latest: bool,
     /// 源实现 `ConfigurableSource`，有设置界面。
     pub is_configurable: bool,
+    /// 源的主页地址，建源行时由沙盒写入。
+    pub base_url: Option<String>,
+    pub home_url: Option<String>,
     pub extension_row: Option<suwayomi_core::schema::ExtensionRow>,
     /// Batch-injected by the `sources` resolver (avoids N+1 icon lookups).
     pub icon_pkg_name: Option<String>,
@@ -1289,6 +1292,8 @@ impl SourceType {
             extension_id: row.extension,
             supports_latest: row.supports_latest,
             is_configurable: row.is_configurable,
+            base_url: row.base_url.clone(),
+            home_url: row.home_url.clone(),
             extension_row: None,
             icon_pkg_name: None,
             meta_cache: Vec::new(),
@@ -1308,6 +1313,9 @@ impl SourceType {
             // 本地源既没有"最近更新"，也没有设置界面。
             supports_latest: false,
             is_configurable: false,
+            // 本地源没有站点主页。
+            base_url: None,
+            home_url: None,
             extension_row: Some(ExtensionRow {
                 id: -1,
                 apk_name: None,
@@ -1403,10 +1411,10 @@ impl SourceType {
         &self.name
     }
     async fn home_url(&self) -> Option<String> {
-        None // requires HttpSource instance (Phase 5)
+        self.home_url.clone()
     }
     async fn base_url(&self) -> Option<String> {
-        None // requires HttpSource instance (Phase 5)
+        self.base_url.clone()
     }
     async fn extension(&self, ctx: &Context<'_>) -> async_graphql::Result<ExtensionType> {
         if let Some(row) = &self.extension_row {

@@ -1,7 +1,7 @@
 //! Business logic layer — mirrors `suwayomi.manga.impl.*`.
-//! Phase 2 scope: database-backed services (Manga / Chapter / Page / Library /
-//! MangaList / Category / CategoryManga / Meta). Source-fetching paths are
-//! behind the `SourceFetcher` trait and get a real implementation in Phase 5.
+//! Database-backed services (Manga / Chapter / Page / Library / MangaList /
+//! Category / CategoryManga / Meta). Source-fetching paths go through the
+//! `SourceFetcher` trait; the JVM-sandbox backend is `source::sandbox`.
 
 pub mod category;
 pub mod download;
@@ -15,6 +15,8 @@ pub mod page;
 pub mod source;
 pub mod sql;
 pub mod sync_yomi;
+pub mod tracker;
+pub mod updater;
 
 #[cfg(test)]
 mod sandbox_e2e {

@@ -1918,7 +1918,7 @@ async fn apply_chapter_patch(
 ) -> async_graphql::Result<()> {
     state
         .chapter
-        .modify_chapters_by_ids(ids, patch.is_read, patch.is_bookmarked, patch.last_page_read)
+        .modify_chapters_by_ids(ids, patch.is_read, patch.is_bookmarked, patch.last_page_read, false)
         .await
         .map_err(async_graphql::Error::from)
 }

@@ -32,8 +32,8 @@ pub fn api_v1_router() -> Router<AppState> {
         .nest("/meta", global::meta_router())
         .nest("/settings", global::settings_router())
         .nest("/webview", global::webview_router())
-        // Phase 6: implemented controllers (track/update/downloads backed by
-        // DB or queue-manager contract; backup still stubbed until protobuf).
+        // Controllers backed by DB or the queue-manager contract; `/track` and
+        // `/update/fetch|reset` accept requests but do not act on them yet.
         .nest("/downloads", download::downloads_router())
         .nest("/download", download::download_router())
         .nest("/update", update::update_router())

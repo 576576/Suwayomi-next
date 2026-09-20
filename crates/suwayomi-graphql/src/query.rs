@@ -7,13 +7,15 @@ use suwayomi_domain::sql::bind_placeholders;
 
 use crate::mutation_b4::{
     BackupRestoreStatus, DownloadStatus, KoSyncStatusPayloadType, LibraryUpdateStatus,
-    ValidateBackupInput, ValidateBackupResult, ValidateBackupSource,
+    ValidateBackupInput, ValidateBackupResult, ValidateBackupSource, ValidateBackupTracker,
 };
 use crate::scalars::{Cursor, LongString};
 use crate::settings::WebUIChannel;
 use crate::settings::{AboutServerPayload, SettingsType};
 use crate::state::GraphQLState;
-use crate::track::{SearchTrackerPayload, TrackRecordNodeList, TrackRecordType, TrackerNodeList, TrackerType};
+use crate::track::{
+    SearchTrackerPayload, TrackRecordNodeList, TrackRecordType, TrackSearchType, TrackerNodeList, TrackerType,
+};
 use crate::types::*;
 
 enum BindVal {
@@ -391,6 +393,7 @@ pub struct ExtensionStoreFilterInput {
 #[graphql(name = "TrackerConditionInput")]
 pub struct TrackerCondition {
     pub id: Option<i32>,
+    pub icon: Option<String>,
     pub is_logged_in: Option<bool>,
     pub name: Option<String>,
 }
@@ -1096,15 +1099,16 @@ impl QueryRoot {
     }
 
     /// Mirrors `tracker(id:)` — single tracker metadata.
-    async fn tracker(&self, _ctx: &Context<'_>, id: i32) -> async_graphql::Result<TrackerType> {
-        TrackerType::by_id(id, false).ok_or_else(|| async_graphql::Error::new("Tracker not found"))
+    async fn tracker(&self, ctx: &Context<'_>, id: i32) -> async_graphql::Result<TrackerType> {
+        let state = ctx.data::<GraphQLState>()?;
+        TrackerType::find(state, id).ok_or_else(|| async_graphql::Error::new("Tracker not found"))
     }
 
     /// Mirrors `trackers(condition:, order:)`.
     #[allow(clippy::too_many_arguments)]
     async fn trackers(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         condition: Option<TrackerCondition>,
         order: Option<Vec<TrackerOrder>>,
         before: Option<Cursor>,
@@ -1113,14 +1117,28 @@ impl QueryRoot {
         last: Option<i32>,
         offset: Option<i32>,
     ) -> async_graphql::Result<TrackerNodeList> {
+        let state = ctx.data::<GraphQLState>()?;
         let _ = (order, before, after, last, offset); // shape parity
-        let mut nodes = TrackerType::all();
-        if let Some(cond) = condition {
-            nodes.retain(|t| {
-                cond.id.map(|v| v == t.id).unwrap_or(true)
-                    && cond.is_logged_in.map(|v| v == t.is_logged_in).unwrap_or(true)
-                    && cond.name.as_ref().map(|v| &t.name == v).unwrap_or(true)
-            });
+        let mut nodes: Vec<TrackerType> = Vec::new();
+        for service in state.tracker.services() {
+            if let Some(cond) = &condition {
+                let id = service.id();
+                if cond.id.is_some_and(|v| v != id) {
+                    continue;
+                }
+                if cond.name.as_ref().is_some_and(|v| v != service.name()) {
+                    continue;
+                }
+                if cond.icon.as_ref().is_some_and(|v| v != &crate::track::thumbnail_url(id)) {
+                    continue;
+                }
+                if let Some(want) = cond.is_logged_in
+                    && service.is_logged_in().await.unwrap_or(false) != want
+                {
+                    continue;
+                }
+            }
+            nodes.push(TrackerType::from_service(service.clone()));
         }
         if let Some(limit) = first {
             nodes.truncate(limit.clamp(0, 500) as usize);
@@ -1233,14 +1251,22 @@ impl QueryRoot {
         Ok(TrackRecordNodeList::from_nodes(nodes))
     }
 
-    /// Mirrors `searchTracker(input:)` — tracker API search (Phase 6 wires login).
+    /// Mirrors `searchTracker(input:)` — 结果会落 `track_search` 并参与绑定；
+    /// 未登录时直接报错。
     async fn search_tracker(
         &self,
-        _ctx: &Context<'_>,
+        ctx: &Context<'_>,
         input: SearchTrackerInput,
     ) -> async_graphql::Result<SearchTrackerPayload> {
-        let _ = input;
-        Ok(SearchTrackerPayload { track_searches: vec![] })
+        let state = ctx.data::<GraphQLState>()?;
+        let tracker =
+            state.tracker.find(input.tracker_id).ok_or_else(|| async_graphql::Error::new("Tracker not found"))?;
+        if !tracker.is_logged_in().await? {
+            return Err(async_graphql::Error::new("Tracker needs to be logged-in to search"));
+        }
+        let hits = state.tracker.search(input.tracker_id, &input.query).await?;
+        let track_searches = hits.iter().map(TrackSearchType::from_search).collect();
+        Ok(SearchTrackerPayload { track_searches })
     }
 
     /// Mirrors `downloadStatus()` — current download queue / progress.
@@ -1257,7 +1283,7 @@ impl QueryRoot {
     /// Mirrors `libraryUpdateStatus()` — live status/progress of the global updater.
     async fn library_update_status(&self, ctx: &Context<'_>) -> async_graphql::Result<LibraryUpdateStatus> {
         let state = ctx.data::<crate::state::GraphQLState>()?;
-        Ok(state.update.latest_status().await)
+        Ok(state.update.latest_status().await.into())
     }
 
     /// Mirrors `lastUpdateTimestamp()` — epoch-millis of the last finished global update.
@@ -1266,7 +1292,7 @@ impl QueryRoot {
         Ok(LastUpdateTimestampPayload { timestamp: LongString(state.update.last_update_timestamp_ms().await) })
     }
 
-    /// Mirrors `koSyncStatus()` — Koreader sync (Phase 6 wires accounts).
+    /// Mirrors `koSyncStatus()`.
     async fn ko_sync_status(&self, ctx: &Context<'_>) -> async_graphql::Result<KoSyncStatusPayloadType> {
         let state = ctx.data::<crate::state::GraphQLState>()?;
         let status = state.koreader.get_status().await?;
@@ -1369,6 +1395,7 @@ impl QueryRoot {
         ctx: &Context<'_>,
         input: ValidateBackupInput,
     ) -> async_graphql::Result<ValidateBackupResult> {
+        let state = ctx.data::<GraphQLState>()?;
         let mut upload = input.backup.value(ctx)?;
         let mut bytes = Vec::new();
         use std::io::Read as _;
@@ -1379,13 +1406,31 @@ impl QueryRoot {
         let summary = suwayomi_core::backup::validate_backup(&bytes)
             .await
             .map_err(async_graphql::Error::from)?;
+        // 上游 `ProtoBackupValidator`：备份里出现过、但本机没登录的追踪器才算「缺」，
+        // 按名字母序去重（同一追踪器可能挂了很多部漫画）。
+        let backup = suwayomi_core::backup::decode_gz_backup(&bytes).map_err(async_graphql::Error::from)?;
+        let mut sync_ids: Vec<i32> =
+            backup.backup_manga.iter().flat_map(|m| m.tracking.iter().map(|t| t.sync_id)).collect();
+        sync_ids.sort_unstable();
+        sync_ids.dedup();
+        let mut missing_trackers: Vec<String> = Vec::new();
+        for sync_id in sync_ids {
+            let Some(service) = state.tracker.find(sync_id) else {
+                continue;
+            };
+            if service.is_logged_in().await? {
+                continue;
+            }
+            missing_trackers.push(service.name().to_string());
+        }
+        missing_trackers.sort();
         Ok(ValidateBackupResult {
             missing_sources: summary
                 .missing_sources
                 .into_iter()
                 .map(|name| ValidateBackupSource { id: LongString(0), name })
                 .collect(),
-            missing_trackers: vec![],
+            missing_trackers: missing_trackers.into_iter().map(|name| ValidateBackupTracker { name }).collect(),
         })
     }
 

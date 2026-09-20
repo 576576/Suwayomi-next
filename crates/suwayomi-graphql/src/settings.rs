@@ -4,7 +4,12 @@
 
 use async_graphql::{Enum, SimpleObject};
 use suwayomi_core::auth::parse_duration;
-use suwayomi_core::config::{DatabaseType as CoreDatabaseType, ServerConfig};
+use suwayomi_core::backup::BackupFlags;
+use suwayomi_core::config::{
+    CbzMediaType as CoreCbzMediaType, DatabaseType as CoreDatabaseType,
+    KoreaderSyncChecksumMethod as CoreKoreaderSyncChecksumMethod,
+    KoreaderSyncConflictStrategy as CoreKoreaderSyncConflictStrategy, ServerConfig,
+};
 
 use crate::scalars::{parse_iso8601_duration, DurationScalar, LongString};
 
@@ -54,6 +59,16 @@ pub enum CbzMediaType {
     Compatible,
 }
 
+impl From<CoreCbzMediaType> for CbzMediaType {
+    fn from(t: CoreCbzMediaType) -> Self {
+        match t {
+            CoreCbzMediaType::Modern => Self::Modern,
+            CoreCbzMediaType::Legacy => Self::Legacy,
+            CoreCbzMediaType::Compatible => Self::Compatible,
+        }
+    }
+}
+
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 pub enum KoreaderSyncChecksumMethod {
     Binary,
@@ -75,6 +90,26 @@ pub enum KoreaderSyncConflictStrategy {
     KeepLocal,
     KeepRemote,
     Disabled,
+}
+
+impl From<CoreKoreaderSyncChecksumMethod> for KoreaderSyncChecksumMethod {
+    fn from(v: CoreKoreaderSyncChecksumMethod) -> Self {
+        match v {
+            CoreKoreaderSyncChecksumMethod::Binary => Self::Binary,
+            CoreKoreaderSyncChecksumMethod::Filename => Self::Filename,
+        }
+    }
+}
+
+impl From<CoreKoreaderSyncConflictStrategy> for KoreaderSyncConflictStrategy {
+    fn from(v: CoreKoreaderSyncConflictStrategy) -> Self {
+        match v {
+            CoreKoreaderSyncConflictStrategy::Prompt => Self::Prompt,
+            CoreKoreaderSyncConflictStrategy::KeepLocal => Self::KeepLocal,
+            CoreKoreaderSyncConflictStrategy::KeepRemote => Self::KeepRemote,
+            CoreKoreaderSyncConflictStrategy::Disabled => Self::Disabled,
+        }
+    }
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -242,22 +277,26 @@ pub struct SettingsType {
 }
 
 impl SettingsType {
-    /// Builds settings from `ServerConfig`; fields not yet backed by the
-    /// config registry return Kotlin-compatible defaults (Phase 6 wires the
-    /// full settings subsystem).
+    /// Builds settings from the effective config: fields `ServerConfig` owns are
+    /// read from it (it already carries the persisted blob), the rest take
+    /// defaults that `apply_overrides` then overwrites from the same blob.
     pub fn from_config(c: &ServerConfig) -> Self {
         let basic_auth = c.auth_mode.to_uppercase().as_str() == "BASIC_AUTH";
+        // 这组开关的默认值取自 `BackupFlags::DEFAULT`（上游 `ServerConfig` 的
+        // `defaultValue` 就是它）。写成字面量 `false` 的话，自动备份在没保存过这组
+        // 开关的实例上会导出空档，而同一台机器上的手动导出/REST 导入用的是全开。
+        let backup_include = BackupFlags::default();
         Self {
             auth_mode: AuthMode::from_mode(&c.auth_mode),
             auth_password: c.auth_password.clone(),
             auth_username: c.auth_username.clone(),
-            auto_backup_include_categories: false,
-            auto_backup_include_chapters: false,
-            auto_backup_include_client_data: false,
-            auto_backup_include_history: false,
-            auto_backup_include_manga: false,
-            auto_backup_include_server_settings: false,
-            auto_backup_include_tracking: false,
+            auto_backup_include_categories: backup_include.include_categories,
+            auto_backup_include_chapters: backup_include.include_chapters,
+            auto_backup_include_client_data: backup_include.include_client_data,
+            auto_backup_include_history: backup_include.include_history,
+            auto_backup_include_manga: backup_include.include_manga,
+            auto_backup_include_server_settings: backup_include.include_server_settings,
+            auto_backup_include_tracking: backup_include.include_tracking,
             auto_download_ahead_limit: 3,
             auto_download_ignore_re_uploads: false,
             auto_download_new_chapters: false,
@@ -303,13 +342,13 @@ impl SettingsType {
                 parse_duration(&c.jwt_token_expiry).unwrap_or(DEFAULT_TOKEN_EXPIRY),
             ),
             kcef_enabled: false, // R3: CEF removed (Tauri shell instead)
-            koreader_sync_checksum_method: KoreaderSyncChecksumMethod::Binary,
+            koreader_sync_checksum_method: c.koreader_sync_checksum_method.into(),
             koreader_sync_device_id: String::new(),
-            koreader_sync_percentage_tolerance: 0.0,
+            koreader_sync_percentage_tolerance: c.koreader_sync_percentage_tolerance as f64,
             koreader_sync_server_url: String::new(),
             koreader_sync_strategy: KoreaderSyncLegacyStrategy::Disabled,
-            koreader_sync_strategy_backward: KoreaderSyncConflictStrategy::Disabled,
-            koreader_sync_strategy_forward: KoreaderSyncConflictStrategy::Disabled,
+            koreader_sync_strategy_backward: c.koreader_sync_strategy_backward.into(),
+            koreader_sync_strategy_forward: c.koreader_sync_strategy_forward.into(),
             koreader_sync_userkey: String::new(),
             koreader_sync_username: String::new(),
             local_source_path: String::new(),
@@ -317,7 +356,7 @@ impl SettingsType {
             max_log_files: 0,
             max_log_folder_size: String::new(),
             max_sources_in_parallel: 6,
-            opds_cbz_mimetype: CbzMediaType::Modern,
+            opds_cbz_mimetype: c.opds_cbz_mimetype.into(),
             opds_chapter_sort_order: crate::query::SortOrder::Asc,
             opds_enable_page_read_progress: true,
             opds_items_per_page: 30,
@@ -334,15 +373,15 @@ impl SettingsType {
             socks_proxy_port: String::new(),
             socks_proxy_username: String::new(),
             socks_proxy_version: 0,
-            sync_data_categories: false,
-            sync_data_chapters: false,
-            sync_data_history: false,
-            sync_data_manga: false,
-            sync_data_tracking: false,
-            sync_interval: DurationScalar(std::time::Duration::ZERO),
-            sync_yomi_api_key: String::new(),
-            sync_yomi_enabled: false,
-            sync_yomi_host: String::new(),
+            sync_data_categories: c.sync_data_categories,
+            sync_data_chapters: c.sync_data_chapters,
+            sync_data_history: c.sync_data_history,
+            sync_data_manga: c.sync_data_manga,
+            sync_data_tracking: c.sync_data_tracking,
+            sync_interval: DurationScalar(std::time::Duration::from_secs(c.sync_interval.max(0) as u64)),
+            sync_yomi_api_key: c.sync_yomi_api_key.clone(),
+            sync_yomi_enabled: c.sync_yomi_enabled,
+            sync_yomi_host: c.sync_yomi_host.clone(),
             system_tray_enabled: false,
             update_mangas: false,
             use_hikari_connection_pool: c.use_hikari_connection_pool,
@@ -650,5 +689,48 @@ impl AboutServerPayload {
             data_dir: data_dir.to_string(),
             last_auto_backup_at: LongString(last_auto_backup_at),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `from_config` 的自动备份开关必须等于 `BackupFlags::DEFAULT`。两者分叉时
+    /// 设置页显示的勾选状态与自动备份实际导出的内容会不一致。
+    #[test]
+    fn auto_backup_flags_default_matches_backup_default() {
+        let s = SettingsType::from_config(&ServerConfig::default());
+        let d = BackupFlags::default();
+        assert_eq!(s.auto_backup_include_manga, d.include_manga);
+        assert_eq!(s.auto_backup_include_categories, d.include_categories);
+        assert_eq!(s.auto_backup_include_chapters, d.include_chapters);
+        assert_eq!(s.auto_backup_include_tracking, d.include_tracking);
+        assert_eq!(s.auto_backup_include_history, d.include_history);
+        assert_eq!(s.auto_backup_include_client_data, d.include_client_data);
+        assert_eq!(s.auto_backup_include_server_settings, d.include_server_settings);
+    }
+
+    /// `onlyServerSettingsOwned` 的那批字段：`ServerConfig` 持有的值必须原样带出来，
+    /// 不能在 `from_config` 里被字面量覆盖，否则设置页显示的是默认值而非生效值。
+    #[test]
+    fn server_config_owned_fields_come_from_config() {
+        let c = ServerConfig {
+            port: 34567,
+            ip: "127.0.0.9".into(),
+            auth_username: "alice".into(),
+            jwt_audience: "aud-1".into(),
+            sync_yomi_host: "https://sync.example.com".into(),
+            sync_yomi_enabled: true,
+            opds_cbz_mimetype: suwayomi_core::config::CbzMediaType::Compatible,
+            ..ServerConfig::default()
+        };
+        let s = SettingsType::from_config(&c);
+        assert_eq!(s.port, 34567);
+        assert_eq!(s.ip, "127.0.0.9");
+        assert_eq!(s.auth_username, "alice");
+        assert_eq!(s.jwt_audience, "aud-1");
+        assert_eq!(s.sync_yomi_host, "https://sync.example.com");
+        assert!(s.sync_yomi_enabled);
     }
 }

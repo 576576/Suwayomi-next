@@ -1,146 +1,96 @@
 //! Tracker / TrackRecord types — mirrors `graphql/types/TrackType.kt`.
+//!
+//! `TrackerType` 持一个追踪器句柄，各字段按需解析：`isLoggedIn` / `isTokenExpired`
+//! 读 `tracker_credential`，`scores` / `statuses` 问站点适配器，`authUrl` 只在未
+//! 登录时给（且**只在客户端真的取这个字段时才生成** —— MyAnimeList 的 `authUrl`
+//! 会顺带落一个新的 PKCE code_verifier）。
+
+use std::sync::Arc;
 
 use async_graphql::{Context, Object, SimpleObject};
 
 use suwayomi_core::schema::TrackRecordRow;
 use suwayomi_domain::sql::bind_placeholders;
+use suwayomi_domain::tracker::{Track, TrackSearch, TrackerService};
 
 use crate::scalars::{Cursor, LongString};
 use crate::state::GraphQLState;
 use crate::types::{MangaType, PageInfo};
 
-/// One built-in tracker descriptor (mirrors `TrackerManager.services`).
-pub struct TrackerInfo {
-    pub id: i32,
-    pub name: &'static str,
-    pub supports_reading_dates: bool,
-    pub supports_private_tracking: bool,
-    pub supports_track_deletion: bool,
-    pub auth_url: Option<&'static str>,
-}
-
-/// Built-in tracker registry (mirrors `TrackerManager.services`).
-pub const TRACKERS: &[TrackerInfo] = &[
-    TrackerInfo {
-        id: 1,
-        name: "MyAnimeList",
-        supports_reading_dates: true,
-        supports_private_tracking: false,
-        supports_track_deletion: false,
-        auth_url: Some("https://myanimelist.net/"),
-    },
-    TrackerInfo {
-        id: 2,
-        name: "Anilist",
-        supports_reading_dates: true,
-        supports_private_tracking: true,
-        supports_track_deletion: false,
-        auth_url: Some("https://anilist.co/api/v2/oauth/authorize"),
-    },
-    TrackerInfo {
-        id: 3,
-        name: "Kitsu",
-        supports_reading_dates: true,
-        supports_private_tracking: true,
-        supports_track_deletion: false,
-        auth_url: None,
-    },
-    TrackerInfo {
-        id: 4,
-        name: "Shikimori",
-        supports_reading_dates: false,
-        supports_private_tracking: false,
-        supports_track_deletion: false,
-        auth_url: Some("https://shikimori.one/oauth/authorize"),
-    },
-    TrackerInfo {
-        id: 5,
-        name: "Bangumi",
-        supports_reading_dates: false,
-        supports_private_tracking: true,
-        supports_track_deletion: false,
-        auth_url: Some("https://bgm.tv/oauth/authorize"),
-    },
-    TrackerInfo {
-        id: 7,
-        name: "MangaUpdates",
-        supports_reading_dates: false,
-        supports_private_tracking: false,
-        supports_track_deletion: false,
-        auth_url: None,
-    },
-];
-
-/// Mirrors `TrackerType`.
+/// 一个追踪器（对应上游 `TrackerType`）。
 #[derive(Clone)]
 pub struct TrackerType {
-    pub id: i32,
-    pub name: String,
-    pub is_logged_in: bool,
-    pub auth_url: Option<String>,
-    pub supports_track_deletion: bool,
-    pub supports_reading_dates: bool,
-    pub supports_private_tracking: bool,
+    service: Arc<dyn TrackerService>,
+}
+
+/// 追踪器 logo 的代理地址（上游 `Track.proxyThumbnailUrl`）。
+pub fn thumbnail_url(id: i32) -> String {
+    format!("/api/v1/track/{id}/thumbnail")
 }
 
 impl TrackerType {
-    pub fn by_id(id: i32, is_logged_in: bool) -> Option<Self> {
-        TRACKERS.iter().find(|t| t.id == id).map(|t| Self {
-            id: t.id,
-            name: t.name.to_string(),
-            is_logged_in,
-            auth_url: if is_logged_in { None } else { t.auth_url.map(|s| s.to_string()) },
-            supports_track_deletion: t.supports_track_deletion,
-            supports_reading_dates: t.supports_reading_dates,
-            supports_private_tracking: t.supports_private_tracking,
-        })
+    pub fn from_service(service: Arc<dyn TrackerService>) -> Self {
+        Self { service }
     }
 
-    pub fn all() -> Vec<Self> {
-        TRACKERS.iter().map(|t| Self::by_id(t.id, false).expect("known tracker")).collect()
+    /// 按 id 取；未知 id 返回 `None`（上游这里是 `TrackerManager.getTracker(id)`，
+    /// 调用方 `requireNotNull`）。
+    pub fn find(state: &GraphQLState, id: i32) -> Option<Self> {
+        state.tracker.find(id).map(Self::from_service)
     }
 }
 
 #[Object]
 impl TrackerType {
     async fn id(&self) -> i32 {
-        self.id
+        self.service.id()
     }
     async fn name(&self) -> &str {
-        &self.name
+        self.service.name()
     }
     async fn icon(&self) -> String {
-        format!("/api/v1/track/{}/thumbnail", self.id)
+        thumbnail_url(self.service.id())
     }
-    async fn is_logged_in(&self) -> bool {
-        self.is_logged_in
+    async fn is_logged_in(&self) -> async_graphql::Result<bool> {
+        Ok(self.service.is_logged_in().await?)
     }
-    async fn auth_url(&self) -> Option<&str> {
-        self.auth_url.as_deref()
+    /// 已登录时给 null（上游 `TrackerType` 构造时就是这么定的）。
+    async fn auth_url(&self) -> async_graphql::Result<Option<String>> {
+        if self.service.is_logged_in().await? {
+            return Ok(None);
+        }
+        Ok(self.service.auth_url().await?)
     }
     async fn supports_track_deletion(&self) -> bool {
-        self.supports_track_deletion
+        self.service.supports_track_deletion()
     }
     async fn supports_reading_dates(&self) -> bool {
-        self.supports_reading_dates
+        self.service.supports_reading_dates()
     }
     async fn supports_private_tracking(&self) -> bool {
-        self.supports_private_tracking
+        self.service.supports_private_tracking()
     }
-    async fn is_token_expired(&self) -> bool {
-        false
+    async fn is_token_expired(&self) -> async_graphql::Result<bool> {
+        Ok(self.service.is_token_expired().await?)
     }
-    async fn scores(&self) -> Vec<String> {
-        vec![]
+    async fn scores(&self) -> async_graphql::Result<Vec<String>> {
+        Ok(self.service.score_list().await?)
     }
     async fn statuses(&self) -> Vec<TrackStatusType> {
-        vec![]
+        self.service
+            .status_list()
+            .into_iter()
+            .map(|value| TrackStatusType {
+                value,
+                name: self.service.status_name(value).unwrap_or_default().to_string(),
+            })
+            .collect()
     }
     async fn track_records(&self, ctx: &Context<'_>) -> async_graphql::Result<TrackRecordNodeList> {
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT * FROM track_record WHERE sync_id = ?");
         let rows = suwayomi_db::query_as::<TrackRecordRow>(&sql)
-            .bind(self.id)
+            .bind(self.service.id())
             .fetch_all(state.db.pool())
             .await
             .map_err(async_graphql::Error::from)?;
@@ -193,6 +143,25 @@ impl TrackRecordType {
             private: row.private,
         }
     }
+
+    /// 落库行 → 领域模型（对应上游 `TrackRecordType.toTrack()`）。
+    pub fn to_track(&self) -> Track {
+        let mut track = Track::create(self.tracker_id);
+        track.id = Some(self.id);
+        track.manga_id = self.manga_id;
+        track.remote_id = self.remote_id;
+        track.library_id = self.library_id;
+        track.title = self.title.clone();
+        track.last_chapter_read = self.last_chapter_read;
+        track.total_chapters = self.total_chapters;
+        track.status = self.status;
+        track.score = self.score;
+        track.tracking_url = self.remote_url.clone();
+        track.started_reading_date = self.start_date;
+        track.finished_reading_date = self.finish_date;
+        track.private = self.private;
+        track
+    }
 }
 
 #[Object]
@@ -239,9 +208,17 @@ impl TrackRecordType {
     async fn private(&self) -> bool {
         self.private
     }
-    async fn display_score(&self) -> String {
-        self.score.to_string()
+
+    /// Mirrors `displayScore` — 用追踪器的展示口径渲染 `score`。
+    async fn display_score(&self, ctx: &Context<'_>) -> async_graphql::Result<String> {
+        let state = ctx.data::<GraphQLState>()?;
+        let Some(tracker) = state.tracker.find(self.tracker_id) else {
+            return Ok(self.score.to_string());
+        };
+        let track = self.to_track();
+        Ok(tracker.display_score(&track).await?)
     }
+
     async fn manga(&self, ctx: &Context<'_>) -> async_graphql::Result<MangaType> {
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT * FROM manga WHERE id = ?");
@@ -252,12 +229,14 @@ impl TrackRecordType {
             .map_err(async_graphql::Error::from)?;
         Ok(MangaType::from_row(&row))
     }
-    async fn tracker(&self) -> Option<TrackerType> {
-        TrackerType::by_id(self.tracker_id, false)
+
+    async fn tracker(&self, ctx: &Context<'_>) -> Option<TrackerType> {
+        let state = ctx.data::<GraphQLState>().ok()?;
+        TrackerType::find(state, self.tracker_id)
     }
 }
 
-/// Mirrors `TrackSearchType` — minimal (search runs against tracker APIs).
+/// Mirrors `TrackSearchType`.
 #[derive(SimpleObject, Clone)]
 pub struct TrackSearchType {
     pub id: i32,
@@ -278,6 +257,31 @@ pub struct TrackSearchType {
     pub started_reading_date: LongString,
     pub finished_reading_date: LongString,
     pub private: bool,
+}
+
+impl TrackSearchType {
+    pub fn from_search(s: &TrackSearch) -> Self {
+        Self {
+            id: s.id,
+            tracker_id: s.tracker_id,
+            remote_id: LongString(s.remote_id),
+            title: s.title.clone(),
+            total_chapters: s.total_chapters,
+            tracking_url: s.tracking_url.clone(),
+            cover_url: s.cover_url.clone(),
+            summary: s.summary.clone(),
+            publishing_status: s.publishing_status.clone(),
+            publishing_type: s.publishing_type.clone(),
+            start_date: s.start_date.clone(),
+            library_id: s.library_id.map(LongString),
+            last_chapter_read: s.last_chapter_read,
+            status: s.status,
+            score: s.score,
+            started_reading_date: LongString(s.started_reading_date),
+            finished_reading_date: LongString(s.finished_reading_date),
+            private: s.private,
+        }
+    }
 }
 
 /// Mirrors `SearchTrackerPayload`.

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use suwayomi_core::auth::AuthContext;
-use suwayomi_core::config::ServerConfig;
+use suwayomi_core::config::RuntimeConfig;
 use suwayomi_core::db::Db;
 use suwayomi_domain::category::category_manga::CategoryMangaService;
 use suwayomi_domain::category::CategoryService;
@@ -15,11 +15,15 @@ use suwayomi_domain::manga::manga_list::MangaListService;
 use suwayomi_domain::manga::MangaService;
 use suwayomi_domain::page::PageService;
 use suwayomi_domain::source::SourceFetcher;
+use suwayomi_domain::tracker::TrackerManager;
+use suwayomi_domain::updater::UpdateManager;
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: Db,
-    pub config: ServerConfig,
+    /// 运行时配置（env 基线 + `global_meta` 里持久化的 settings blob）。与
+    /// GraphQL 侧共享同一个句柄，`setSettings` 改完不用重启就生效。
+    pub config: RuntimeConfig,
     /// 认证参数（模式、凭据、会话/JWT 密钥），启动时解析一次后只读。
     pub auth: Arc<AuthContext>,
     /// Extension source fetcher (stub until the JVM sandbox loads real extensions).
@@ -31,6 +35,10 @@ pub struct AppState {
     pub library: LibraryService,
     pub manga_list: MangaListService,
     pub page: PageService,
+    /// Library updater — `/api/v1/update/*` 读它的状态并启停任务。
+    pub update: UpdateManager,
+    /// 追踪器（登录态、搜索、绑定、推送），与 GraphQL 侧共用同一个句柄。
+    pub tracker: TrackerManager,
     /// Chapter download manager (queue + worker + event bus).
     pub download: DownloadManager,
     /// Extension store: repo refresh + online install.
@@ -43,17 +51,20 @@ pub struct AppState {
 }
 
 impl AppState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         db: Db,
-        config: ServerConfig,
+        config: impl Into<RuntimeConfig>,
         auth: Arc<AuthContext>,
         fetcher: Arc<dyn SourceFetcher>,
+        update: UpdateManager,
+        tracker: TrackerManager,
         sandbox_base: Option<String>,
         webui_dir: std::path::PathBuf,
         data_dir: std::path::PathBuf,
     ) -> Self {
         let manga = MangaService::new(db.clone(), fetcher.clone());
-        let chapter = ChapterService::new(db.clone(), fetcher.clone());
+        let chapter = ChapterService::new(db.clone(), fetcher.clone()).with_tracker(tracker.clone());
         let category = CategoryService::new(db.clone());
         let category_manga = CategoryMangaService::new(db.clone());
         let library = LibraryService::new(db.clone(), manga.clone());
@@ -63,7 +74,7 @@ impl AppState {
         let extension_store = ExtensionStoreService::new(db.clone(), sandbox_base.clone());
         Self {
             db,
-            config,
+            config: config.into(),
             auth,
             fetcher,
             manga,
@@ -73,6 +84,8 @@ impl AppState {
             library,
             manga_list,
             page,
+            update,
+            tracker,
             download,
             extension_store,
             sandbox_base,

@@ -14,6 +14,15 @@ pub enum DomainError {
     Source(String),
     #[error("sandbox http error: {0}")]
     Sandbox(String),
+    /// 追踪器（站点 API）失败。消息原样送到界面，所以带站点名和站点返回的原文。
+    #[error("{0}")]
+    Tracker(String),
+    /// `TrackerManager` 里没有这个 id。
+    #[error("tracker {0} not found")]
+    TrackerNotFound(i32),
+    /// 对应上游 `TokenExpired`：要重新登录。
+    #[error("{0}: 登录已过期，需要重新登录")]
+    TokenExpired(String),
 }
 
 impl From<reqwest::Error> for DomainError {
@@ -29,6 +38,14 @@ impl DomainError {
 
     pub fn invalid(msg: impl Into<String>) -> Self {
         Self::Invalid(msg.into())
+    }
+
+    pub fn tracker(msg: impl Into<String>) -> Self {
+        Self::Tracker(msg.into())
+    }
+
+    pub fn token_expired(tracker: impl Into<String>) -> Self {
+        Self::TokenExpired(tracker.into())
     }
 }
 

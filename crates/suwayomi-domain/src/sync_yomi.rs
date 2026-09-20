@@ -9,8 +9,8 @@
 
 use prost::Message;
 use reqwest::Client;
-use suwayomi_core::backup::{create_backup_proto, restore_backup_proto, Backup};
-use suwayomi_core::config::ServerConfig;
+use suwayomi_core::backup::{create_backup_proto, restore_backup_proto, Backup, BackupFlags};
+use suwayomi_core::config::{RuntimeConfig, ServerConfig};
 use suwayomi_core::db::Db;
 
 use crate::error::{DomainError, Result};
@@ -31,15 +31,15 @@ pub struct SyncStatus {
 #[derive(Clone)]
 pub struct SyncYomiService {
     db: Db,
-    config: ServerConfig,
+    config: RuntimeConfig,
     http: Client,
 }
 
 impl SyncYomiService {
-    pub fn new(db: Db, config: ServerConfig) -> Self {
+    pub fn new(db: Db, config: impl Into<RuntimeConfig>) -> Self {
         Self {
             db,
-            config,
+            config: config.into(),
             http: Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(30))
                 .read_timeout(std::time::Duration::from_secs(30))
@@ -49,9 +49,8 @@ impl SyncYomiService {
     }
 
     pub fn enabled(&self) -> bool {
-        self.config.sync_yomi_enabled
-            && !self.config.sync_yomi_host.is_empty()
-            && !self.config.sync_yomi_api_key.is_empty()
+        let cfg = self.config.snapshot();
+        cfg.sync_yomi_enabled && !cfg.sync_yomi_host.is_empty() && !cfg.sync_yomi_api_key.is_empty()
     }
 
     async fn etag(&self) -> Result<String> {
@@ -75,14 +74,15 @@ impl SyncYomiService {
     }
 
     fn content_url(&self) -> String {
-        format!("{}/api/sync/content", self.config.sync_yomi_host.trim_end_matches('/'))
+        format!("{}/api/sync/content", self.config.snapshot().sync_yomi_host.trim_end_matches('/'))
     }
 
     /// Pulls the remote backup. Returns (backup, etag) on 200; (None, "") on
     /// 304/404; errors otherwise.
     async fn pull(&self) -> Result<(Option<Backup>, String)> {
         let url = self.content_url();
-        let mut req = self.http.get(&url).header("X-API-Token", &self.config.sync_yomi_api_key);
+        let cfg = self.config.snapshot();
+        let mut req = self.http.get(&url).header("X-API-Token", &cfg.sync_yomi_api_key);
         let last = self.etag().await?;
         if !last.is_empty() {
             req = req.header("If-None-Match", &last);
@@ -119,7 +119,7 @@ impl SyncYomiService {
         let mut req = self
             .http
             .put(&url)
-            .header("X-API-Token", &self.config.sync_yomi_api_key)
+            .header("X-API-Token", &self.config.snapshot().sync_yomi_api_key)
             .header("Content-Type", "application/octet-stream")
             .body(bytes);
         if !etag.is_empty() {
@@ -157,7 +157,8 @@ impl SyncYomiService {
         if !self.enabled() {
             return Err(DomainError::Source("SyncYomi not configured (syncYomiHost / syncYomiApiKey)".into()));
         }
-        let _local = create_backup_proto(self.db.pool()).await.map_err(|e| DomainError::Source(format!("backup: {e}")))?;
+        let flags = build_backup_flags(&self.config.snapshot());
+        let _local = create_backup_proto(self.db.pool(), flags).await.map_err(|e| DomainError::Source(format!("backup: {e}")))?;
         let (remote, etag) = self.pull().await?;
 
         let pulled = remote.is_some();
@@ -165,9 +166,11 @@ impl SyncYomiService {
             // Merge: remote manga/chapters/categories are upserted into the
             // local library (same semantics as backup import). Local-only
             // entries are preserved; the merged backup is what we push back.
-            let _ = restore_backup_proto(self.db.pool(), &remote_backup).await.map_err(|e| DomainError::Source(format!("restore: {e}")))?;
+            let _ = restore_backup_proto(self.db.pool(), &remote_backup, flags)
+                .await
+                .map_err(|e| DomainError::Source(format!("restore: {e}")))?;
         }
-        let merged = create_backup_proto(self.db.pool()).await.map_err(|e| DomainError::Source(format!("backup: {e}")))?;
+        let merged = create_backup_proto(self.db.pool(), flags).await.map_err(|e| DomainError::Source(format!("backup: {e}")))?;
         let pushed_count = merged.backup_manga.len();
         let pushed = self.push(&merged, &etag).await?;
         let now = std::time::SystemTime::now()
@@ -188,6 +191,21 @@ impl SyncYomiService {
             pushed,
             mangas: pushed_count,
         })
+    }
+}
+
+/// SyncYomi 自己那套内容开关（`syncData*`），对应上游 `SyncManager` 构造的
+/// `BackupFlags`：`includeClientData` / `includeServerSettings` 固定为 false ——
+/// 客户端数据与服务端设置不应该被推到远端。
+fn build_backup_flags(cfg: &ServerConfig) -> BackupFlags {
+    BackupFlags {
+        include_manga: cfg.sync_data_manga,
+        include_categories: cfg.sync_data_categories,
+        include_chapters: cfg.sync_data_chapters,
+        include_tracking: cfg.sync_data_tracking,
+        include_history: cfg.sync_data_history,
+        include_client_data: false,
+        include_server_settings: false,
     }
 }
 

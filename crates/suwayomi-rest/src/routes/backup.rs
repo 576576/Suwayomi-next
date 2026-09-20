@@ -1,5 +1,5 @@
 //! REST backup endpoints — mirrors `controller/BackupController.kt`.
-//! Phase 6/7: export + import + validate implemented (gzipped protobuf).
+//! Export + import + validate are implemented (gzipped protobuf).
 
 use axum::body::Bytes;
 use axum::extract::State;
@@ -23,7 +23,7 @@ pub fn backup_router() -> Router<AppState> {
 
 /// Mirrors `protobufExport`: streams the gzipped protobuf backup as the body.
 async fn backup_export(State(state): State<AppState>) -> Response {
-    match suwayomi_core::backup::create_backup(state.db.pool()).await {
+    match suwayomi_core::backup::create_backup(state.db.pool(), suwayomi_core::backup::BackupFlags::default()).await {
         Ok(bytes) => ([(axum::http::header::CONTENT_TYPE, "application/octet-stream")], bytes).into_response(),
         Err(e) => {
             tracing::error!(%e, "backup export failed");
@@ -34,7 +34,7 @@ async fn backup_export(State(state): State<AppState>) -> Response {
 
 /// Mirrors `protobufExportFile`: same payload, advertised as an attachment.
 async fn backup_export_file(State(state): State<AppState>) -> Response {
-    match suwayomi_core::backup::create_backup(state.db.pool()).await {
+    match suwayomi_core::backup::create_backup(state.db.pool(), suwayomi_core::backup::BackupFlags::default()).await {
         Ok(bytes) => {
             // Mirror the autobackup / Mihon naming scheme so the downloaded
             // file sits naturally next to real backups in data/autobackup:
@@ -59,10 +59,10 @@ async fn backup_export_file(State(state): State<AppState>) -> Response {
 
 /// Mirrors `protobufImport`: body is a gzipped Tachiyomi/Mihon protobuf backup.
 async fn backup_import(State(state): State<AppState>, body: Bytes) -> Response {
-    match suwayomi_core::backup::restore_backup(state.db.pool(), &body).await {
+    match suwayomi_core::backup::restore_backup(state.db.pool(), &body, suwayomi_core::backup::BackupFlags::default()).await {
         Ok(summary) => (
             [(axum::http::header::CONTENT_TYPE, "application/json")],
-            summary_json(&summary),
+            summary_json(&summary, &[]),
         )
             .into_response(),
         Err(e) => {
@@ -77,30 +77,55 @@ async fn backup_import_file(State(state): State<AppState>, body: Bytes) -> Respo
     backup_import(State(state), body).await
 }
 
-/// Mirrors `protobufValidate`: reports missing sources without restoring.
-async fn backup_validate(State(_state): State<AppState>, body: Bytes) -> Response {
-    match suwayomi_core::backup::validate_backup(&body).await {
-        Ok(summary) => (
-            [(axum::http::header::CONTENT_TYPE, "application/json")],
-            summary_json(&summary),
-        )
-            .into_response(),
+/// Mirrors `protobufValidate`: reports missing sources/trackers without restoring.
+async fn backup_validate(State(state): State<AppState>, body: Bytes) -> Response {
+    let summary = match suwayomi_core::backup::validate_backup(&body).await {
+        Ok(summary) => summary,
         Err(e) => {
             tracing::error!(%e, "backup validate failed");
-            (StatusCode::BAD_REQUEST, format!("backup validate failed: {e}")).into_response()
+            return (StatusCode::BAD_REQUEST, format!("backup validate failed: {e}")).into_response();
         }
+    };
+    let backup = match suwayomi_core::backup::decode_gz_backup(&body) {
+        Ok(backup) => backup,
+        Err(e) => {
+            tracing::error!(%e, "backup validate failed");
+            return (StatusCode::BAD_REQUEST, format!("backup validate failed: {e}")).into_response();
+        }
+    };
+
+    // 备份里出现过、但本机没登录的追踪器才算「缺」（上游 `ProtoBackupValidator`）。
+    let mut sync_ids: Vec<i32> = backup.backup_manga.iter().flat_map(|m| m.tracking.iter().map(|t| t.sync_id)).collect();
+    sync_ids.sort_unstable();
+    sync_ids.dedup();
+    let mut missing_trackers: Vec<String> = Vec::new();
+    for sync_id in sync_ids {
+        let Some(service) = state.tracker.find(sync_id) else {
+            continue;
+        };
+        if service.is_logged_in().await.unwrap_or(false) {
+            continue;
+        }
+        missing_trackers.push(service.name().to_string());
     }
+    missing_trackers.sort();
+
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        summary_json(&summary, &missing_trackers),
+    )
+        .into_response()
 }
 
 async fn backup_validate_file(State(state): State<AppState>, body: Bytes) -> Response {
     backup_validate(State(state), body).await
 }
 
-fn summary_json(summary: &suwayomi_core::backup::RestoreSummary) -> String {
+fn summary_json(summary: &suwayomi_core::backup::RestoreSummary, missing_trackers: &[String]) -> String {
     json!({
         "missingSources": summary.missing_sources,
         "mangasMissingSources": summary.mangas_missing_sources,
-        "missingTrackers": [],
+        "missingTrackers": missing_trackers,
         "restoredManga": summary.restored_manga,
         "restoredCategories": summary.restored_categories,
         "restoredChapters": summary.restored_chapters,

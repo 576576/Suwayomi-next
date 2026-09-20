@@ -7,7 +7,73 @@ use std::collections::HashMap;
 use prost::Message;
 use suwayomi_db::Db;
 
-use crate::schema::{CategoryRow, ChapterRow, MangaRow};
+use crate::schema::{CategoryRow, ChapterRow, MangaRow, TrackRecordRow};
+
+/// 备份里认得的追踪器 id —— 与 `suwayomi_domain::tracker` 的常量一致
+/// （1 MAL / 2 AniList / 3 Kitsu / 4 Shikimori / 5 Bangumi / 7 MangaUpdates）。
+///
+/// 恢复时用来丢弃备份里本仓库不支持的追踪器记录（上游 `BackupMangaHandler`
+/// 也是这么做的），否则会留下一条没有对应追踪器的 `track_record`。
+/// `suwayomi-domain` 的测试会断言两份清单相等，防止单边漂移。
+pub const SUPPORTED_TRACKER_IDS: [i32; 6] = [1, 2, 3, 4, 5, 7];
+
+/// 备份内容开关（对应上游 `BackupFlags`）。
+///
+/// 默认全开，与上游 `BackupFlags.DEFAULT` 一致。`include_history` /
+/// `include_client_data` / `include_server_settings` 目前是空操作：本仓库的导出
+/// 还没有把 `BackupHistory`、manga/chapter meta、`BackupServerSettings` 填进去。
+#[derive(Debug, Clone, Copy)]
+pub struct BackupFlags {
+    pub include_manga: bool,
+    pub include_categories: bool,
+    pub include_chapters: bool,
+    pub include_tracking: bool,
+    pub include_history: bool,
+    pub include_client_data: bool,
+    pub include_server_settings: bool,
+}
+
+impl Default for BackupFlags {
+    fn default() -> Self {
+        Self {
+            include_manga: true,
+            include_categories: true,
+            include_chapters: true,
+            include_tracking: true,
+            include_history: true,
+            include_client_data: true,
+            include_server_settings: true,
+        }
+    }
+}
+
+/// 只给了部分键的开关（GraphQL `PartialBackupFlagsInput` 的对应物）。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PartialBackupFlags {
+    pub include_manga: Option<bool>,
+    pub include_categories: Option<bool>,
+    pub include_chapters: Option<bool>,
+    pub include_tracking: Option<bool>,
+    pub include_history: Option<bool>,
+    pub include_client_data: Option<bool>,
+    pub include_server_settings: Option<bool>,
+}
+
+impl BackupFlags {
+    /// 未指定的键沿用默认值（上游 `BackupFlags.fromPartial`）。
+    pub fn from_partial(p: &PartialBackupFlags) -> Self {
+        let d = Self::default();
+        Self {
+            include_manga: p.include_manga.unwrap_or(d.include_manga),
+            include_categories: p.include_categories.unwrap_or(d.include_categories),
+            include_chapters: p.include_chapters.unwrap_or(d.include_chapters),
+            include_tracking: p.include_tracking.unwrap_or(d.include_tracking),
+            include_history: p.include_history.unwrap_or(d.include_history),
+            include_client_data: p.include_client_data.unwrap_or(d.include_client_data),
+            include_server_settings: p.include_server_settings.unwrap_or(d.include_server_settings),
+        }
+    }
+}
 
 // 恢复时「查找现有行」用的宽行类型：列多但只作一次性比对，抽别名避免 clippy
 // `type_complexity` 噪音，也让 SELECT 与解构处的形状一目了然。
@@ -42,6 +108,32 @@ pub struct Backup {
     pub meta: HashMap<String, String>,
     #[prost(message, optional, tag = "9001")]
     pub server_settings: Option<BackupServerSettings>,
+    /// 追踪器凭据。上游把凭据放在客户端 SharedPreferences 里，备份格式没有这一节；
+    /// 本仓库凭据落库（`tracker_credential`），用 Suwayomi 自留号段（9000+）带走。
+    /// 其它客户端按 proto3 规则忽略未知字段。
+    #[prost(message, repeated, tag = "9002")]
+    pub tracker_credentials: Vec<BackupTrackerCredential>,
+}
+
+/// `tracker_credential` 表的一行。
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BackupTrackerCredential {
+    #[prost(int32, tag = "1")]
+    pub tracker_id: i32,
+    #[prost(string, tag = "2")]
+    pub username: String,
+    /// OAuth 站点放 access token，MangaUpdates 放 session token。
+    #[prost(string, tag = "3")]
+    pub password: String,
+    /// 整份 OAuth JSON（刷新用）。
+    #[prost(string, tag = "4")]
+    pub token: String,
+    #[prost(bool, tag = "5")]
+    pub token_expired: bool,
+    #[prost(string, tag = "6")]
+    pub score_type: String,
+    #[prost(string, tag = "7")]
+    pub pkce_verifier: String,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -277,13 +369,13 @@ fn validate_backup_inner(backup: &Backup) -> RestoreSummary {
 /// Semantics mirror `ProtoBackupImport.performRestore` + `BackupMangaHandler`:
 /// categories are matched/created by name, manga by (url, source) — existing
 /// rows are merged, new rows inserted; chapters upsert on (url, manga).
-pub async fn restore_backup(pool: &Db, gz: &[u8]) -> Result<RestoreSummary, BackupError> {
+pub async fn restore_backup(pool: &Db, gz: &[u8], flags: BackupFlags) -> Result<RestoreSummary, BackupError> {
     let backup = decode_gz_backup(gz)?;
-    restore_backup_proto(pool, &backup).await
+    restore_backup_proto(pool, &backup, flags).await
 }
 
 /// Restores from an already-decoded `Backup` message (idempotent upserts).
-pub async fn restore_backup_proto(pool: &Db, backup: &Backup) -> Result<RestoreSummary, BackupError> {
+pub async fn restore_backup_proto(pool: &Db, backup: &Backup, flags: BackupFlags) -> Result<RestoreSummary, BackupError> {
     let mut summary = validate_backup_inner(backup);
     let source_names: HashMap<i64, String> = backup.backup_sources.iter().map(|s| (s.source_id, s.name.clone())).collect();
 
@@ -291,6 +383,9 @@ pub async fn restore_backup_proto(pool: &Db, backup: &Backup) -> Result<RestoreS
     //    `BackupCategory.order`-keyed mapping used by BackupManga.categories)
     let mut category_mapping: HashMap<i32, i32> = HashMap::new(); // category order -> db id
     for (idx, c) in backup.backup_categories.iter().enumerate() {
+        if !flags.include_categories {
+            break;
+        }
         let existing: Option<i32> = suwayomi_db::query_scalar("SELECT id FROM category WHERE name = $1").bind(&c.name).fetch_optional(pool).await?;
         let id = match existing {
             Some(id) => id,
@@ -315,6 +410,28 @@ pub async fn restore_backup_proto(pool: &Db, backup: &Backup) -> Result<RestoreS
         category_mapping.insert(c.order, id);
     }
 
+    // 追踪器凭据整表覆盖写回（导出带的那一节）。没有凭据节就什么都不做，
+    // 不会把本机已登录的追踪器登出。
+    if flags.include_tracking {
+        for c in &backup.tracker_credentials {
+            suwayomi_db::query(
+                "INSERT INTO tracker_credential (tracker_id, username, password, token, token_expired, score_type, pkce_verifier) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7) \
+                 ON CONFLICT (tracker_id) DO UPDATE SET username = $2, password = $3, token = $4, \
+                 token_expired = $5, score_type = $6, pkce_verifier = $7",
+            )
+            .bind(c.tracker_id)
+            .bind(&c.username)
+            .bind(&c.password)
+            .bind(&c.token)
+            .bind(c.token_expired)
+            .bind(&c.score_type)
+            .bind(&c.pkce_verifier)
+            .execute(pool)
+            .await?;
+        }
+    }
+
     // 2) ensure an extension row exists (source.extension FK — a violation
     //    would terminate the embedded session)
     let ext_id: i32 = match suwayomi_db::query_scalar::<i32>("SELECT id FROM extension ORDER BY id LIMIT 1").fetch_optional(pool).await? {
@@ -329,7 +446,8 @@ pub async fn restore_backup_proto(pool: &Db, backup: &Backup) -> Result<RestoreS
 
     // 3) restore each manga
     let now_secs = chrono::Utc::now().timestamp();
-    for m in &backup.backup_manga {
+    let manga_to_restore: &[BackupManga] = if flags.include_manga { &backup.backup_manga } else { &[] };
+    for m in manga_to_restore {
         // ensure source exists
         let source_exists: bool = suwayomi_db::query_scalar::<bool>("SELECT EXISTS(SELECT 1 FROM source WHERE id = $1)")
             .bind(m.source)
@@ -432,7 +550,8 @@ pub async fn restore_backup_proto(pool: &Db, backup: &Backup) -> Result<RestoreS
 
         // chapters (upsert on (url, manga))
         let mut chapter_ids: Vec<i32> = Vec::new();
-        for ch in &m.chapters {
+        let chapters_to_restore: &[BackupChapter] = if flags.include_chapters { &m.chapters } else { &[] };
+        for ch in chapters_to_restore {
             let existing_ch: Option<ExistingChapterRow> = suwayomi_db::query_as(
                 "SELECT id, name, scanlator, read, bookmark, last_page_read, date_upload, chapter_number::float4, source_order \
                  FROM chapter WHERE url = $1 AND manga = $2",
@@ -499,7 +618,8 @@ pub async fn restore_backup_proto(pool: &Db, backup: &Backup) -> Result<RestoreS
         }
 
         // category membership (backup index -> db id via mapping)
-        for cidx in &m.categories {
+        let category_indexes: &[i32] = if flags.include_categories { &m.categories } else { &[] };
+        for cidx in category_indexes {
             if let Some(db_cat) = category_mapping.get(cidx) {
                 let _ = suwayomi_db::query("INSERT INTO category_manga (category, manga) VALUES ($1, $2) ON CONFLICT (manga, category) DO NOTHING")
                     .bind(db_cat)
@@ -510,7 +630,8 @@ pub async fn restore_backup_proto(pool: &Db, backup: &Backup) -> Result<RestoreS
         }
 
         // history: match chapter by url, apply last_page_read / last_read_at
-        for h in &m.history {
+        let history_to_restore: &[BackupHistory] = if flags.include_history { &m.history } else { &[] };
+        for h in history_to_restore {
             let _ = suwayomi_db::query("UPDATE chapter SET last_page_read = $1, last_read_at = $2 WHERE url = $3 AND manga = $4")
                 .bind(h.last_read as i32)
                 .bind(h.read_at / 1000)
@@ -520,10 +641,75 @@ pub async fn restore_backup_proto(pool: &Db, backup: &Backup) -> Result<RestoreS
                 .await;
         }
 
+        if flags.include_tracking {
+            restore_manga_tracker_data(pool, manga_id, &m.tracking).await?;
+        }
+
         let _ = chapter_ids;
     }
 
     Ok(summary)
+}
+
+/// 对应上游 `BackupMangaHandler.restoreMangaTrackerData`。
+///
+/// 只在「本地没有该追踪器的记录」时新增；已有记录时按上游的做法只并进
+/// `remote_id` / `library_id` 与取大的 `last_chapter_read`，其余字段保留本机值。
+/// 备份里本仓库不支持的追踪器（例如旧版备份里的 id）直接丢弃。
+async fn restore_manga_tracker_data(pool: &Db, manga_id: i32, tracks: &[BackupTracking]) -> Result<(), BackupError> {
+    if tracks.is_empty() {
+        return Ok(());
+    }
+    let existing: Vec<TrackRecordRow> = suwayomi_db::query_as("SELECT * FROM track_record WHERE manga_id = $1")
+        .bind(manga_id)
+        .fetch_all(pool)
+        .await?;
+    let existing_by_tracker: HashMap<i32, &TrackRecordRow> = existing.iter().map(|r| (r.sync_id, r)).collect();
+
+    for t in tracks {
+        if !SUPPORTED_TRACKER_IDS.contains(&t.sync_id) {
+            continue;
+        }
+        match existing_by_tracker.get(&t.sync_id) {
+            None => {
+                suwayomi_db::query(
+                    "INSERT INTO track_record (manga_id, sync_id, remote_id, library_id, title, last_chapter_read, \
+                     total_chapters, status, score, remote_url, start_date, finish_date, private) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+                )
+                .bind(manga_id)
+                .bind(t.sync_id)
+                .bind(t.media_id)
+                .bind(if t.library_id == 0 { None } else { Some(t.library_id) })
+                .bind(&t.title)
+                .bind(t.last_chapter_read as f64)
+                .bind(t.total_chapters)
+                .bind(t.status)
+                .bind(t.score as f64)
+                .bind(&t.tracking_url)
+                .bind(t.started_reading_date)
+                .bind(t.finished_reading_date)
+                .bind(t.private)
+                .execute(pool)
+                .await?;
+            }
+            Some(db) => {
+                let remote_id = t.media_id;
+                let library_id = if t.library_id == 0 { db.library_id } else { Some(t.library_id) };
+                let last_chapter_read = db.last_chapter_read.max(t.last_chapter_read as f64);
+                suwayomi_db::query(
+                    "UPDATE track_record SET remote_id = $1, library_id = $2, last_chapter_read = $3 WHERE id = $4",
+                )
+                .bind(remote_id)
+                .bind(library_id)
+                .bind(last_chapter_read)
+                .bind(db.id)
+                .execute(pool)
+                .await?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Maps the 0.x update-strategy ordinal back to the DB enum name.
@@ -535,11 +721,11 @@ fn update_strategy_name(ordinal: i32) -> &'static str {
 }
 
 /// Builds the `Backup` protobuf message from the current database (no encoding).
-pub async fn create_backup_proto(pool: &Db) -> Result<Backup, BackupError> {
-    build_backup(pool).await
+pub async fn create_backup_proto(pool: &Db, flags: BackupFlags) -> Result<Backup, BackupError> {
+    build_backup(pool, flags).await
 }
 
-async fn build_backup(pool: &Db) -> Result<Backup, BackupError> {
+async fn build_backup(pool: &Db, flags: BackupFlags) -> Result<Backup, BackupError> {
     let category_rows: Vec<CategoryRow> = suwayomi_db::query_as("SELECT * FROM category ORDER BY sort_order, id")
         .fetch_all(pool)
         .await?;
@@ -556,14 +742,19 @@ async fn build_backup(pool: &Db) -> Result<Backup, BackupError> {
         })
         .collect();
 
-    let manga_rows: Vec<MangaRow> = suwayomi_db::query_as("SELECT * FROM manga WHERE in_library = TRUE ORDER BY id")
-        .fetch_all(pool)
-        .await?;
+    let manga_rows: Vec<MangaRow> = if flags.include_manga {
+        suwayomi_db::query_as("SELECT * FROM manga WHERE in_library = TRUE ORDER BY id").fetch_all(pool).await?
+    } else {
+        Vec::new()
+    };
     let mut backup_mangas: Vec<BackupManga> = Vec::with_capacity(manga_rows.len());
     let mut source_ids: Vec<i64> = Vec::new();
     for m in &manga_rows {
-        let chapters: Vec<ChapterRow> =
-            suwayomi_db::query_as("SELECT * FROM chapter WHERE manga = $1 ORDER BY source_order").bind(m.id).fetch_all(pool).await?;
+        let chapters: Vec<ChapterRow> = if flags.include_chapters {
+            suwayomi_db::query_as("SELECT * FROM chapter WHERE manga = $1 ORDER BY source_order").bind(m.id).fetch_all(pool).await?
+        } else {
+            Vec::new()
+        };
         let backup_chapters = chapters
             .iter()
             .map(|c| BackupChapter {
@@ -591,12 +782,27 @@ async fn build_backup(pool: &Db) -> Result<Backup, BackupError> {
             .collect();
         // BackupManga.categories stores the category ORDER (not id) —
         // mirrors Kotlin: `categoryMapping[it]` keys on `BackupCategory.order`.
-        let category_orders: Vec<i32> = suwayomi_db::query_scalar(
-            "SELECT c.sort_order FROM category_manga cm JOIN category c ON c.id = cm.category WHERE cm.manga = $1",
-        )
-        .bind(m.id)
-        .fetch_all(pool)
-        .await?;
+        let category_orders: Vec<i32> = if flags.include_categories {
+            suwayomi_db::query_scalar(
+                "SELECT c.sort_order FROM category_manga cm JOIN category c ON c.id = cm.category WHERE cm.manga = $1",
+            )
+            .bind(m.id)
+            .fetch_all(pool)
+            .await?
+        } else {
+            Vec::new()
+        };
+        let tracking: Vec<BackupTracking> = if flags.include_tracking {
+            suwayomi_db::query_as::<TrackRecordRow>("SELECT * FROM track_record WHERE manga_id = $1 ORDER BY id")
+                .bind(m.id)
+                .fetch_all(pool)
+                .await?
+                .iter()
+                .map(backup_tracking_of)
+                .collect()
+        } else {
+            Vec::new()
+        };
         let genres: Vec<String> = m
             .genre
             .as_deref()
@@ -619,7 +825,7 @@ async fn build_backup(pool: &Db) -> Result<Backup, BackupError> {
             viewer: 0,
             chapters: backup_chapters,
             categories: category_orders,
-            tracking: vec![],
+            tracking,
             favorite: m.in_library,
             chapter_flags: 0,
             viewer_flags: None,
@@ -644,13 +850,56 @@ async fn build_backup(pool: &Db) -> Result<Backup, BackupError> {
         }
     }
 
+    let tracker_credentials: Vec<BackupTrackerCredential> = if flags.include_tracking {
+        suwayomi_db::query_as::<(i32, String, String, String, bool, String, String)>(
+            "SELECT tracker_id, username, password, token, token_expired, score_type, pkce_verifier \
+             FROM tracker_credential ORDER BY tracker_id",
+        )
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|(tracker_id, username, password, token, token_expired, score_type, pkce_verifier)| BackupTrackerCredential {
+            tracker_id,
+            username,
+            password,
+            token,
+            token_expired,
+            score_type,
+            pkce_verifier,
+        })
+        .collect()
+    } else {
+        Vec::new()
+    };
+
     Ok(Backup {
         backup_manga: backup_mangas,
         backup_categories,
         backup_sources,
         meta: HashMap::new(),
         server_settings: None,
+        tracker_credentials,
     })
+}
+
+/// `track_record` 行 → `BackupTracking`。
+fn backup_tracking_of(r: &TrackRecordRow) -> BackupTracking {
+    BackupTracking {
+        sync_id: r.sync_id,
+        // 上游强制给 0 而不是 null：1.x 的字段是非空 long。
+        library_id: r.library_id.unwrap_or(0),
+        media_id_int: r.remote_id as i32,
+        tracking_url: r.remote_url.clone(),
+        title: r.title.clone(),
+        last_chapter_read: r.last_chapter_read as f32,
+        total_chapters: r.total_chapters,
+        score: r.score as f32,
+        status: r.status,
+        started_reading_date: r.start_date,
+        finished_reading_date: r.finish_date,
+        private: r.private,
+        media_id: r.remote_id,
+    }
 }
 
 /// `UpdateStrategy` enum ordinal (ALWAYS_UPDATE = 0, ALWAYS_FETCH = 1),
@@ -673,8 +922,8 @@ pub enum BackupError {
 }
 
 /// Serializes the current database into a gzipped `Backup` protobuf payload.
-pub async fn create_backup(pool: &Db) -> Result<Vec<u8>, BackupError> {
-    let backup = create_backup_proto(pool).await?;
+pub async fn create_backup(pool: &Db, flags: BackupFlags) -> Result<Vec<u8>, BackupError> {
+    let backup = create_backup_proto(pool, flags).await?;
     let bytes = backup.encode_to_vec();
     use std::io::Write;
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
@@ -719,7 +968,7 @@ mod tests {
     #[tokio::test]
     async fn backup_roundtrip_preserves_manga() {
         let db = seed().await;
-        let gz = create_backup(db.pool()).await.expect("create backup");
+        let gz = create_backup(db.pool(), BackupFlags::default()).await.expect("create backup");
 
         use std::io::Read;
         let mut decoder = flate2::read::GzDecoder::new(gz.as_slice());
@@ -748,7 +997,7 @@ mod tests {
     async fn backup_empty_library_is_valid() {
         let db = Db::sqlite_in_memory().await.expect("connect");
         db.migrate().await.expect("migrate");
-        let gz = create_backup(db.pool()).await.expect("create backup");
+        let gz = create_backup(db.pool(), BackupFlags::default()).await.expect("create backup");
         use std::io::Read;
         let mut decoder = flate2::read::GzDecoder::new(gz.as_slice());
         let mut raw = Vec::new();
@@ -761,12 +1010,12 @@ mod tests {
     #[tokio::test]
     async fn export_restore_roundtrip() {
         let db = seed().await;
-        let gz = create_backup(db.pool()).await.expect("create backup");
+        let gz = create_backup(db.pool(), BackupFlags::default()).await.expect("create backup");
 
         // restore into a fresh embedded database
         let fresh = Db::sqlite_in_memory().await.expect("connect fresh");
         fresh.migrate().await.expect("migrate fresh");
-        let summary = restore_backup(fresh.pool(), &gz).await.expect("restore");
+        let summary = restore_backup(fresh.pool(), &gz, BackupFlags::default()).await.expect("restore");
 
         assert_eq!(summary.restored_manga, 1);
         assert_eq!(summary.restored_chapters, 1);
@@ -787,6 +1036,73 @@ mod tests {
         assert_eq!(cat, "Cat");
         let src: String = suwayomi_db::query_scalar("SELECT name FROM source WHERE id = 1").fetch_one(fresh.pool()).await.expect("source");
         assert_eq!(src, "MangaDex");
+    }
+
+    /// tracking 与凭据要跟着备份往返（`BackupTracking` 走 manga 节，凭据走
+    /// Suwayomi 自留的 9002 节）；备份里本仓库不支持的追踪器不进导出也不恢复。
+    #[tokio::test]
+    async fn export_restore_roundtrip_tracking() {
+        let db = seed().await;
+        let pool = db.pool();
+        suwayomi_db::query(
+            "INSERT INTO track_record (manga_id, sync_id, remote_id, library_id, title, last_chapter_read, \
+             total_chapters, status, score, remote_url, start_date, finish_date, private) \
+             VALUES (1, 2, 12345, 99, 'Bound', 3.5, 10, 3, 8, 'https://anilist.co/manga/12345', 100, 0, TRUE)",
+        )
+        .execute(pool)
+        .await
+        .expect("track record");
+        // id 6 不是本仓库支持的追踪器，应被丢弃。
+        suwayomi_db::query(
+            "INSERT INTO track_record (manga_id, sync_id, remote_id, title, last_chapter_read, total_chapters, \
+             status, score, remote_url, start_date, finish_date, private) \
+             VALUES (1, 6, 7, 'Unsupported', 0, 0, 0, 0, '', 0, 0, FALSE)",
+        )
+        .execute(pool)
+        .await
+        .expect("unsupported track record");
+        suwayomi_db::query("INSERT INTO tracker_credential (tracker_id, username, password, token) VALUES (2, 'user', 'tok', '{}')")
+            .execute(pool)
+            .await
+            .expect("credential");
+
+        let gz = create_backup(pool, BackupFlags::default()).await.expect("create backup");
+        let backup = decode_gz_backup(&gz).expect("decode");
+        assert_eq!(backup.backup_manga[0].tracking.len(), 2, "导出带上全部 track_record");
+        assert_eq!(backup.backup_manga[0].tracking[0].media_id, 12345);
+        assert_eq!(backup.backup_manga[0].tracking[0].last_chapter_read, 3.5);
+        assert_eq!(backup.tracker_credentials.len(), 1);
+
+        // 关掉 tracking 之后两份数据都不带走
+        let no_tracking =
+            create_backup(pool, BackupFlags { include_tracking: false, ..Default::default() }).await.expect("create backup");
+        let backup = decode_gz_backup(&no_tracking).expect("decode");
+        assert!(backup.backup_manga[0].tracking.is_empty());
+        assert!(backup.tracker_credentials.is_empty());
+
+        let fresh = Db::sqlite_in_memory().await.expect("connect fresh");
+        fresh.migrate().await.expect("migrate fresh");
+        restore_backup(fresh.pool(), &gz, BackupFlags::default()).await.expect("restore");
+
+        let (remote_id, last_chapter_read, private): (i64, f64, bool) =
+            suwayomi_db::query_as("SELECT remote_id, last_chapter_read, private FROM track_record WHERE manga_id = 1 AND sync_id = 2")
+                .fetch_one(fresh.pool())
+                .await
+                .expect("track record restored");
+        assert_eq!(remote_id, 12345);
+        assert_eq!(last_chapter_read, 3.5);
+        assert!(private);
+        let unsupported: i64 = suwayomi_db::query_scalar("SELECT COUNT(*) FROM track_record WHERE sync_id = 6")
+            .fetch_one(fresh.pool())
+            .await
+            .expect("count");
+        assert_eq!(unsupported, 0, "不支持的追踪器不进库");
+        let (username, password): (String, String) =
+            suwayomi_db::query_as("SELECT username, password FROM tracker_credential WHERE tracker_id = 2")
+                .fetch_one(fresh.pool())
+                .await
+                .expect("credential restored");
+        assert_eq!((username.as_str(), password.as_str()), ("user", "tok"));
     }
 
     /// A backup whose source is missing must be reported, not crash.
@@ -817,7 +1133,7 @@ mod tests {
         // restore still works: source gets auto-created as a placeholder
         let db = Db::sqlite_in_memory().await.expect("connect");
         db.migrate().await.expect("migrate");
-        let s = restore_backup(db.pool(), &gz).await.expect("restore");
+        let s = restore_backup(db.pool(), &gz, BackupFlags::default()).await.expect("restore");
         assert_eq!(s.restored_manga, 1);
         let src_name: Option<String> = suwayomi_db::query_scalar("SELECT name FROM source WHERE id = 999").fetch_one(db.pool()).await.expect("src");
         assert_eq!(src_name.as_deref(), Some("source-999"));

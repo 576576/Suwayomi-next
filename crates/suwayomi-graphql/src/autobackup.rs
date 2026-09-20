@@ -13,7 +13,6 @@ use std::path::PathBuf;
 
 use suwayomi_domain::meta::{MetaService, MetaTable};
 
-use crate::settings::SettingsType;
 use crate::state::GraphQLState;
 
 /// global_meta key tracking when the last auto backup was written (epoch seconds).
@@ -46,7 +45,7 @@ pub fn spawn(state: GraphQLState) {
 
 /// Creates a backup now if one is due according to `autoBackupFrequency`.
 pub async fn run_if_due(state: &GraphQLState) {
-    let (frequency_secs, folder) = match load_settings(state).await {
+    let (frequency_secs, folder, flags) = match load_settings(state).await {
         Some(v) => v,
         None => return,
     };
@@ -63,7 +62,7 @@ pub async fn run_if_due(state: &GraphQLState) {
         return;
     }
 
-    match create_backup_file(state, &folder).await {
+    match create_backup_file(state, &folder, flags).await {
         Ok(()) => {
             let mut m = HashMap::new();
             m.insert(LAST_AUTO_BACKUP_AT.to_string(), now.to_string());
@@ -80,8 +79,12 @@ pub async fn run_if_due(state: &GraphQLState) {
     }
 }
 
-async fn create_backup_file(state: &GraphQLState, folder: &PathBuf) -> Result<(), String> {
-    let bytes = suwayomi_core::backup::create_backup(state.db.pool()).await.map_err(|e| e.to_string())?;
+async fn create_backup_file(
+    state: &GraphQLState,
+    folder: &PathBuf,
+    flags: suwayomi_core::backup::BackupFlags,
+) -> Result<(), String> {
+    let bytes = suwayomi_core::backup::create_backup(state.db.pool(), flags).await.map_err(|e| e.to_string())?;
     std::fs::create_dir_all(folder).map_err(|e| format!("mkdir: {e}"))?;
     let filename = format!("org.suwayomi.next_{}.tachibk", chrono::Local::now().format("%Y-%m-%d_%H-%M"));
     let path = folder.join(filename);
@@ -89,22 +92,25 @@ async fn create_backup_file(state: &GraphQLState, folder: &PathBuf) -> Result<()
     Ok(())
 }
 
-/// Mirrors the settings query: config defaults overlaid with the persisted
-/// `settings` global_meta JSON blob.
-async fn load_settings(state: &GraphQLState) -> Option<(i32, PathBuf)> {
-    let mut settings = SettingsType::from_config(&state.config);
-    let sql = "SELECT value FROM global_meta WHERE meta_key = 'settings'";
-    if let Ok(Some(row)) = suwayomi_db::query(sql).fetch_optional(state.db.pool()).await
-        && let Ok(value) = row.try_get::<String, _>("value")
-        && let Ok(blob) = serde_json::from_str::<serde_json::Value>(&value)
-    {
-        settings.apply_overrides(&blob);
-    }
+/// 自动备份周期、目录与内容开关，取自当前有效设置（与 `settings` 查询同一份装配）。
+async fn load_settings(
+    state: &GraphQLState,
+) -> Option<(i32, PathBuf, suwayomi_core::backup::BackupFlags)> {
+    let settings = state.effective_settings().await;
     let frequency = settings.auto_backup_frequency;
     let folder = if settings.backup_path.trim().is_empty() {
         state.data_dir.join("autobackup")
     } else {
         PathBuf::from(settings.backup_path.trim())
     };
-    Some((frequency, folder))
+    let flags = suwayomi_core::backup::BackupFlags {
+        include_manga: settings.auto_backup_include_manga,
+        include_categories: settings.auto_backup_include_categories,
+        include_chapters: settings.auto_backup_include_chapters,
+        include_tracking: settings.auto_backup_include_tracking,
+        include_history: settings.auto_backup_include_history,
+        include_client_data: settings.auto_backup_include_client_data,
+        include_server_settings: settings.auto_backup_include_server_settings,
+    };
+    Some((frequency, folder, flags))
 }

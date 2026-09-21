@@ -3,6 +3,10 @@
 //!   data/local/<MangaTitle>/ch001.zip …（归档章节）/ cover.jpg / details.json
 //! details.json 支持 title/author/artist/description/genre/status 字段
 //! （genre 可为数组或逗号串）；归档常带 nhentai 格式 meta.json。
+//!
+//! 目录里没有 `cover.jpg` 时，封面取最新一章的第一张图片、释放到缓存目录
+//! （`<cache>/local-covers`），不往 `local/` 里写东西。
+//! 「最近更新」（Latest）列表按 [`local_latest_update_epoch`] 倒序。
 
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
@@ -565,11 +569,14 @@ pub fn scan_local_source(root: &Path) -> Vec<SManga> {
             .filter(|t| !t.trim().is_empty())
             .or_else(|| archive_meta.as_ref().and_then(|m| m.manga_title.clone()))
             .unwrap_or_else(|| name.clone());
-        let cover = dir.join("cover.jpg");
         // 根相对路径（前导斜杠）：WebUI getValidImgUrlFor 拼接 `baseUrl + thumbnailUrl`，
         // 无前导斜杠会拼出 `http://hostlocal/...`（缺 /）导致封面加载失败；
         // 与阅读器 pages 的 `/local/...` 修复保持一致。
-        let thumbnail_url = cover.is_file().then(|| format!("/local/{name}/cover.jpg"));
+        //
+        // 两种封面共用同一个 URL：目录里的 `cover.jpg`，或（没有它时）用最新一章的
+        // 第一张图片在缓存目录里生成的封面——由 `/local/{name}/cover.jpg` 这条路由
+        // 统一解析。
+        let thumbnail_url = local_cover_available(root, &name).then(|| format!("/local/{name}/cover.jpg"));
         let status = details
             .as_ref()
             .and_then(|d| d.status.as_deref())
@@ -605,6 +612,172 @@ pub fn scan_local_source(root: &Path) -> Vec<SManga> {
         });
     }
     out
+}
+
+/// 文件 mtime（epoch 秒），取不到算 0。
+fn file_mtime(path: &Path) -> i64 {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn is_image_name(name: &str) -> bool {
+    let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("").to_lowercase();
+    IMAGE_EXTS.contains(&ext.as_str())
+}
+
+/// 本地漫画的"最近更新"时间：目录下最新一章的时间戳（epoch 秒），
+/// 目录里没有章节时取目录自身。用于本地源的 Latest 列表排序。
+pub fn local_latest_update_epoch(manga_dir: &Path) -> i64 {
+    let mut newest = file_mtime(manga_dir);
+    let Ok(entries) = std::fs::read_dir(manga_dir) else {
+        return newest;
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || name.eq_ignore_ascii_case("cover.jpg") || name == "details.json" {
+            continue;
+        }
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let ext = Path::new(&name).extension().and_then(|x| x.to_str()).unwrap_or("").to_lowercase();
+        if !is_dir && !ARCHIVE_EXTS.contains(&ext.as_str()) {
+            continue;
+        }
+        newest = newest.max(file_mtime(&entry.path()));
+    }
+    newest
+}
+
+/// 生成封面在缓存根下的目录。
+pub fn local_cover_cache_dir() -> PathBuf {
+    suwayomi_core::config::cache_root().join("local-covers")
+}
+
+/// 本地漫画的封面文件（绝对路径）：
+/// * 目录里有 `cover.jpg` → 用它；
+/// * 否则取**最新一章的第一张图片**，释放到缓存目录（`<cache>/local-covers`），
+///   返回缓存文件——`local/` 里的内容一个字节都不改。
+///
+/// 没有可用图片（空目录、章节目录里没有图片、归档打不开）返回 `None`。
+pub fn local_cover(root: &Path, manga_name: &str) -> Option<PathBuf> {
+    let dir = root.join(manga_name);
+    if !dir.is_dir() {
+        return None;
+    }
+    let real = dir.join("cover.jpg");
+    if real.is_file() {
+        return Some(real);
+    }
+    generated_cover(&dir, manga_name, &local_cover_cache_dir())
+}
+
+/// 该漫画是否能拿到封面——只判断，不生成、不写盘。`scan_local_source` 用它决定
+/// 给不给 thumbnailUrl：拿不到就不给，前端出占位图，而不是挂一个必然 404 的地址。
+pub fn local_cover_available(root: &Path, manga_name: &str) -> bool {
+    let dir = root.join(manga_name);
+    if !dir.is_dir() {
+        return false;
+    }
+    if dir.join("cover.jpg").is_file() {
+        return true;
+    }
+    let cache_dir = local_cover_cache_dir();
+    let key = cover_cache_key(&dir, manga_name);
+    if IMAGE_EXTS.iter().any(|ext| cache_dir.join(format!("{key}.{ext}")).is_file()) {
+        return true;
+    }
+    cover_source(&dir).is_some()
+}
+
+/// 缓存文件名的可读前缀（便于分辨）+ 目录路径哈希（同名目录在不同根下不串封面）。
+fn cover_cache_key(manga_dir: &Path, manga_name: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    manga_dir.hash(&mut hasher);
+    let slug: String = manga_name
+        .chars()
+        .take(48)
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '_' })
+        .collect();
+    format!("{slug}-{:08x}", hasher.finish() as u32)
+}
+
+/// 封面的来源图片：`member` 为 `Some` 时表示它躺在归档里。
+struct CoverSource {
+    path: PathBuf,
+    member: Option<String>,
+    ext: String,
+    /// 源文件 mtime —— 比缓存新就重新生成
+    mtime: i64,
+}
+
+fn cover_source(manga_dir: &Path) -> Option<CoverSource> {
+    // 章节顺序与 UI 的章节列表一致（自然序），最后一个就是最新的一章；
+    // 它没有图片就往前找。
+    let chapters = scan_local_chapters(manga_dir);
+    for chapter in chapters.iter().rev() {
+        let path = manga_dir.join(&chapter.url);
+        if path.is_dir() {
+            if let Some(first) = first_image_in_dir(&path) {
+                return Some(CoverSource {
+                    ext: first.extension().and_then(|e| e.to_str()).unwrap_or("jpg").to_lowercase(),
+                    mtime: file_mtime(&first),
+                    member: None,
+                    path: first,
+                });
+            }
+        } else if let Some((_, member)) = list_archive_pages(&path).into_iter().next() {
+            return Some(CoverSource {
+                ext: member.rsplit_once('.').map(|(_, e)| e).unwrap_or("jpg").to_lowercase(),
+                mtime: file_mtime(&path),
+                member: Some(member),
+                path,
+            });
+        }
+    }
+    None
+}
+
+fn first_image_in_dir(dir: &Path) -> Option<PathBuf> {
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            !name.starts_with('.') && e.file_type().map(|t| t.is_file()).unwrap_or(false) && is_image_name(&name)
+        })
+        .collect();
+    files.sort_by(|a, b| natural_cmp(&a.file_name().to_string_lossy(), &b.file_name().to_string_lossy()));
+    files.first().map(|e| e.path())
+}
+
+/// 取或生成缓存封面。缓存比源图片新就直接复用（生成后 mtime 即当前时间，
+/// 所以下次一定命中）。
+fn generated_cover(manga_dir: &Path, manga_name: &str, cache_dir: &Path) -> Option<PathBuf> {
+    let source = cover_source(manga_dir)?;
+    let key = cover_cache_key(manga_dir, manga_name);
+    for ext in IMAGE_EXTS {
+        let cached = cache_dir.join(format!("{key}.{ext}"));
+        if !cached.is_file() {
+            continue;
+        }
+        if file_mtime(&cached) >= source.mtime {
+            return Some(cached);
+        }
+        // 源图片更新了（换了扩展名/重下了章节）——旧缓存作废
+        let _ = std::fs::remove_file(&cached);
+    }
+    let bytes = match &source.member {
+        Some(member) => read_archive_image(&source.path, member)?,
+        None => std::fs::read(&source.path).ok()?,
+    };
+    std::fs::create_dir_all(cache_dir).ok()?;
+    let out = cache_dir.join(format!("{key}.{}", source.ext));
+    std::fs::write(&out, bytes).ok()?;
+    Some(out)
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -731,6 +904,92 @@ mod tests {
         assert_eq!(mangas[0].title, "Work JP");
         assert_eq!(mangas[0].artist.as_deref(), Some("Pochi"));
         assert!(mangas[0].genre.as_deref().unwrap().contains("Series"));
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn cover_falls_back_to_latest_chapter_first_image() {
+        let tmp = std::env::temp_dir().join(format!("local-cover-test-{}", std::process::id()));
+        let manga = tmp.join("M");
+        std::fs::create_dir_all(manga.join("Chapter 2")).unwrap();
+        std::fs::create_dir_all(manga.join("Chapter 10")).unwrap();
+        std::fs::write(manga.join("Chapter 2").join("p1.jpg"), b"older").unwrap();
+        // 最新一章（自然序里 Chapter 10 在 Chapter 2 之后）里首图是 01.png
+        std::fs::write(manga.join("Chapter 10").join("02.png"), b"second").unwrap();
+        std::fs::write(manga.join("Chapter 10").join("01.png"), b"first").unwrap();
+        let cache = tmp.join("covers");
+
+        let cover = generated_cover(&manga, "M", &cache).expect("cover generated");
+        assert!(cover.starts_with(&cache));
+        assert_eq!(cover.extension().and_then(|e| e.to_str()), Some("png"));
+        assert_eq!(std::fs::read(&cover).unwrap(), b"first");
+        // 不改 local/ 里的内容
+        assert!(!manga.join("cover.jpg").exists());
+
+        // 生成后按缓存复用（同路径）
+        assert_eq!(generated_cover(&manga, "M", &cache).unwrap(), cover);
+
+        // 源图片被换掉（mtime 推到未来以跨过秒级精度）→ 重新生成
+        let src = manga.join("Chapter 10").join("01.png");
+        std::fs::write(&src, b"new").unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&src)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60))
+            .unwrap();
+        let regenerated = generated_cover(&manga, "M", &cache).unwrap();
+        assert_eq!(std::fs::read(&regenerated).unwrap(), b"new");
+
+        // 章节目录里没有图片 → 没有封面
+        let empty = tmp.join("Empty");
+        std::fs::create_dir_all(empty.join("ch1")).unwrap();
+        assert!(generated_cover(&empty, "Empty", &cache).is_none());
+
+        // 最新一章没有图片 → 往前找有图的章节
+        let older = tmp.join("Older");
+        std::fs::create_dir_all(older.join("ch1")).unwrap();
+        std::fs::create_dir_all(older.join("ch2")).unwrap();
+        std::fs::write(older.join("ch1").join("p.jpg"), b"from-older").unwrap();
+        let cover = generated_cover(&older, "Older", &cache).expect("cover from older chapter");
+        assert_eq!(std::fs::read(&cover).unwrap(), b"from-older");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn cover_prefers_real_cover_file() {
+        let tmp = std::env::temp_dir().join(format!("local-cover-real-{}", std::process::id()));
+        let manga = tmp.join("M");
+        std::fs::create_dir_all(&manga).unwrap();
+        std::fs::write(manga.join("cover.jpg"), b"cover").unwrap();
+        assert_eq!(local_cover(&tmp, "M"), Some(manga.join("cover.jpg")));
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn latest_update_epoch_follows_newest_chapter() {
+        let tmp = std::env::temp_dir().join(format!("local-latest-epoch-{}", std::process::id()));
+        let manga = tmp.join("M");
+        std::fs::create_dir_all(&manga).unwrap();
+        let old = manga.join("ch1.cbz");
+        let new = manga.join("ch2.cbz");
+        std::fs::write(&old, b"x").unwrap();
+        std::fs::write(&new, b"x").unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+            .unwrap();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let epoch = local_latest_update_epoch(&manga);
+        assert!(epoch >= now - 5, "应该取更新那一章的时间，得到 {epoch}（now={now}）");
 
         std::fs::remove_dir_all(&tmp).ok();
     }

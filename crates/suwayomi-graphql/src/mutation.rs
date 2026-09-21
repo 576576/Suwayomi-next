@@ -1590,6 +1590,13 @@ impl MutationRoot {
                 let needle = q.to_lowercase();
                 mangas.retain(|m| m.title.to_lowercase().contains(&needle));
             }
+            // 「最近更新」按最新一章的时间倒序；热门/搜索保持目录的自然序（两者
+            // 对本地源是同一份列表，只是顺序不同）
+            if matches!(input.r#type, FetchSourceMangaType::Latest) {
+                mangas.sort_by_key(|m| {
+                    std::cmp::Reverse(suwayomi_domain::source::local::local_latest_update_epoch(&root.join(&m.url)))
+                });
+            }
             if cache_hit {
                 // rows already exist from a previous scan — resolve ids by
                 // url; any miss falls back to the full upsert path below.

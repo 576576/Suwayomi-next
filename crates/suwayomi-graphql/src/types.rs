@@ -1310,8 +1310,9 @@ impl SourceType {
             lang: "OTHER".to_string(),
             content_warning: 0,
             extension_id: -1,
-            // 本地源既没有"最近更新"，也没有设置界面。
-            supports_latest: false,
+            // 本地源有"最近更新"（按最新一章的时间倒序，见 fetchSourceManga），
+            // 但没有设置界面。
+            supports_latest: true,
             is_configurable: false,
             // 本地源没有站点主页。
             base_url: None,

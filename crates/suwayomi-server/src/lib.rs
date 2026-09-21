@@ -234,6 +234,15 @@ async fn local_file(State(_state): State<AppState>, path: axum::extract::Path<St
     if file.is_file() {
         return read_file_response(&file).await;
     }
+    // 虚拟封面：`<漫画>/cover.jpg` 不存在时回退到最新一章的第一张图片（释放到
+    // 缓存目录，不写 local/）。与 `scan_local_source` 给的 thumbnailUrl 同形。
+    if let Some(name) = rel.strip_suffix("/cover.jpg")
+        && !name.is_empty()
+        && !name.contains('/')
+        && let Some(cover) = suwayomi_domain::source::local::local_cover(&root, name)
+    {
+        return read_image_response(&cover).await;
+    }
     // 归档成员路径：local/<manga>/<chapter>.zip/<page>
     let segments: Vec<&str> = rel.split('/').collect();
     for split in 0..segments.len() {
@@ -270,6 +279,20 @@ async fn read_file_response(file: &std::path::Path) -> Response {
                 .body(axum::body::Body::from(bytes))
                 .expect("build response")
         }
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// 图片文件响应。与 [`read_file_response`] 分开：内容类型走 [`image_content_type`]，
+/// 它认的图片扩展名比 webui 资源那套多（gif/bmp/avif/heic）。
+async fn read_image_response(file: &std::path::Path) -> Response {
+    match tokio::fs::read(file).await {
+        Ok(bytes) => Response::builder()
+            .header(axum::http::header::CONTENT_TYPE, image_content_type(&file.to_string_lossy()))
+            .header(axum::http::header::CACHE_CONTROL, "public, max-age=3600")
+            .header(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .body(axum::body::Body::from(bytes))
+            .expect("build response"),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }

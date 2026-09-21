@@ -280,41 +280,6 @@ fn is_webui_origin(url: &tauri::Url) -> bool {
         && matches!(url.host_str(), Some("127.0.0.1") | Some("localhost"))
 }
 
-/// 追踪器授权链会经过的域名：各站点的授权页，以及 suwayomi.org 上把授权码转回
-/// 本机的转发页。这些必须留在应用内。
-const OAUTH_HOSTS: [&str; 6] =
-    ["bgm.tv", "anilist.co", "kitsu.app", "shikimori.io", "myanimelist.net", "suwayomi.org"];
-
-fn is_tracker_auth(url: &tauri::Url) -> bool {
-    url.host_str().map(|host| OAUTH_HOSTS.contains(&host)).unwrap_or(false)
-}
-
-/// 打开/聚焦追踪器授权窗口（label "tracker-auth"）。
-///
-/// 交给系统浏览器的话，认证在浏览器里跑完、授权码回不到应用，用户回到窗口仍是未登录。
-/// 回调页（WebUI 的 `/tracker/login/oauth`）登完会 `window.close()` 关掉它 ——
-/// `NewWindowResponse::Create` 才会让这个窗口被当成「脚本打开的窗口」，close 才生效。
-fn open_tracker_auth_window(app: &tauri::AppHandle, url: tauri::Url) -> Option<tauri::WebviewWindow> {
-    if let Some(existing) = app.get_webview_window("tracker-auth") {
-        let _ = existing.destroy();
-    }
-
-    match WebviewWindowBuilder::new(app, "tracker-auth", WebviewUrl::External(url))
-        .title("登录")
-        .inner_size(560.0, 780.0)
-        .build()
-    {
-        Ok(window) => {
-            let _ = window.set_focus();
-            Some(window)
-        }
-        Err(e) => {
-            tray_log(&format!("[tray] cannot open the tracker auth window ({e})"));
-            None
-        }
-    }
-}
-
 /// 打开/聚焦 WebUI 窗口（label "webui"，已存在→show+focus，销毁后重建）。
 /// 返回 false = 系统 WebView 不可用，调用方应回退系统浏览器。
 fn open_webui_window(app: &tauri::AppHandle, port: u16) -> bool {
@@ -326,8 +291,6 @@ fn open_webui_window(app: &tauri::AppHandle, port: u16) -> bool {
         return true;
     }
 
-    let nav_handle = app.clone();
-    let new_window_handle = app.clone();
     match WebviewWindowBuilder::new(
         app,
         "webui",
@@ -335,30 +298,17 @@ fn open_webui_window(app: &tauri::AppHandle, port: u16) -> bool {
     )
     .title("Suwayomi")
     .inner_size(1280.0, 860.0)
-    // WebUI 里的外部链接（关于/文档等）一律交系统浏览器：拦截顶层导航
-    // 与 target=_blank/window.open 新窗请求，不在 WebView 里打开。
-    // 例外是追踪器授权链 —— 那是登录流程的一部分，留在应用内开窗口。
+    // WebUI 里的外部链接（关于/文档、追踪器授权页等）一律交系统浏览器：拦截顶层导航
+    // 与 target=_blank/window.open 新窗请求，不在 WebView 里打开
     .on_navigation(move |url| {
         if is_webui_origin(url) {
             return true;
-        }
-        if is_tracker_auth(url) {
-            open_tracker_auth_window(&nav_handle, url.clone());
-            return false;
         }
         tray_log(&format!("[tray] external link -> browser: {url}"));
         let _ = open::that(url.to_string());
         false
     })
     .on_new_window(move |url, _features| {
-        if is_tracker_auth(&url) {
-            if let Some(window) = open_tracker_auth_window(&new_window_handle, url.clone()) {
-                return tauri::webview::NewWindowResponse::Create { window };
-            }
-            let _ = open::that(url.to_string());
-            return tauri::webview::NewWindowResponse::Deny;
-        }
-
         tray_log(&format!("[tray] external link (new window) -> browser: {url}"));
         let _ = open::that(url.to_string());
         tauri::webview::NewWindowResponse::Deny

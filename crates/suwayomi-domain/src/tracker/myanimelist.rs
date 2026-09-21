@@ -17,7 +17,8 @@ use super::service::{
 };
 use super::{MYANIMELIST, Track, TrackSearch};
 
-const CLIENT_ID: &str = "3fda277931a4f9bc01fa4a715ce8b91d";
+/// 内置默认值 = 上游 Suwayomi 在 MyAnimeList 注册的应用；`trackers.json` 缺键时用它。
+pub(super) const DEFAULT_CLIENT_ID: &str = "3fda277931a4f9bc01fa4a715ce8b91d";
 const BASE_OAUTH_URL: &str = "https://myanimelist.net/v1/oauth2";
 const BASE_API_URL: &str = "https://api.myanimelist.net/v2";
 /// 上游的列表分页步长（`LIST_PAGINATION_AMOUNT`）。
@@ -76,7 +77,7 @@ impl MyAnimeList {
             .post(format!("{BASE_OAUTH_URL}/token"))
             .header(reqwest::header::AUTHORIZATION, format!("Bearer {}", oauth.access_token))
             .form(&[
-                ("client_id", CLIENT_ID),
+                ("client_id", self.require_oauth_app()?.client_id(self.name())?),
                 ("refresh_token", oauth.refresh_token.as_str()),
                 ("grant_type", "refresh_token"),
             ])
@@ -97,7 +98,7 @@ impl MyAnimeList {
             .http
             .post(format!("{BASE_OAUTH_URL}/token"))
             .form(&[
-                ("client_id", CLIENT_ID),
+                ("client_id", self.require_oauth_app()?.client_id(self.name())?),
                 ("code", code),
                 ("code_verifier", verifier.as_str()),
                 ("grant_type", "authorization_code"),
@@ -329,8 +330,9 @@ impl TrackerService for MyAnimeList {
     async fn auth_url(&self) -> Result<Option<String>> {
         let verifier = generate_code_verifier();
         self.ctx.store.set_pkce_verifier(MYANIMELIST, &verifier).await?;
+        let client_id = self.require_oauth_app()?.client_id(self.name())?.to_string();
         Ok(Some(format!(
-            "{BASE_OAUTH_URL}/authorize?client_id={CLIENT_ID}&code_challenge={verifier}&response_type=code"
+            "{BASE_OAUTH_URL}/authorize?client_id={client_id}&code_challenge={verifier}&response_type=code"
         )))
     }
 

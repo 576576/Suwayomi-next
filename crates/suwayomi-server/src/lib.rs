@@ -100,6 +100,35 @@ pub fn resolve_data_dir() -> std::path::PathBuf {
     std::path::PathBuf::from("data")
 }
 
+/// 追踪器 OAuth 应用凭据文件：`SUWAYOMI_TRACKERS_CONFIG` → `<settings 目录>/trackers.json`。
+///
+/// settings 目录优先取 `SUWAYOMI_SETTINGS_DIR`（沙盒写源偏好用的是同一个变量、同一个
+/// 目录），其次按扩展目录的上一级推（与沙盒的默认规则一致），最后落在数据根的上一级
+/// —— Android 没有环境变量可用，只有 `data_dir`，靠最后一条。
+pub fn resolve_trackers_config_file(data_dir: &std::path::Path) -> std::path::PathBuf {
+    if let Ok(file) = std::env::var("SUWAYOMI_TRACKERS_CONFIG")
+        && !file.trim().is_empty()
+    {
+        return std::path::PathBuf::from(file);
+    }
+    resolve_settings_dir(data_dir).join("trackers.json")
+}
+
+fn resolve_settings_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("SUWAYOMI_SETTINGS_DIR")
+        && !dir.trim().is_empty()
+    {
+        return std::path::PathBuf::from(dir);
+    }
+    if let Ok(ext) = std::env::var("SUWAYOMI_EXTENSIONS_DIR")
+        && let Some(parent) = std::path::Path::new(&ext).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        return parent.join("settings");
+    }
+    data_dir.parent().map(|base| base.join("settings")).unwrap_or_else(|| std::path::PathBuf::from("settings"))
+}
+
 /// 扩展沙盒 jar：`SUWAYOMI_SANDBOX_JAR` → exe 同级/../bin 的 jvm-sandbox.jar（发布布局）
 pub fn resolve_sandbox_jar() -> Option<std::path::PathBuf> {
     if let Ok(jar) = std::env::var("SUWAYOMI_SANDBOX_JAR")
@@ -527,7 +556,13 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
     let update = suwayomi_domain::updater::UpdateManager::new(db.clone(), fetcher.clone());
     // REST 与 GraphQL 共用同一个追踪器句柄：登录态是从数据库读的，两个入口看到
     // 的东西必须一致，克隆出两个实例会让「其中一个刚登录」的状态不同步。
-    let tracker = suwayomi_domain::tracker::TrackerManager::new(db.clone());
+    let oauth_config = resolve_trackers_config_file(&data_dir_path);
+    let oauth_apps = suwayomi_domain::tracker::oauth::load_or_create(&oauth_config);
+    let tracker = suwayomi_domain::tracker::TrackerManager::with_oauth(
+        db.clone(),
+        std::sync::Arc::new(std::sync::RwLock::new(oauth_apps)),
+        oauth_config,
+    );
     let graphql_state = suwayomi_graphql::GraphQLState::new(db.clone(), config.clone(), auth.clone(), fetcher.clone(), update.clone(), tracker.clone(), sandbox_base.clone(), webui_dir.clone(), data_dir_path.clone());
     // 持久化设置（`global_meta` 的 settings blob）盖到 env 基线上：KOReader 同步
     // 策略、SyncYomi 开关这类设置由服务在运行时读取，重启后必须生效。

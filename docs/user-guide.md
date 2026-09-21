@@ -40,6 +40,8 @@ cargo run --release -p suwayomi-server
 | `SUWAYOMI_SANDBOX_PORT` | `8091` | 沙盒 HTTP 端口 |
 | `SUWAYOMI_EXTENSIONS_DIR` | `./extensions` | 扩展 APK 目录（只放 APK） |
 | `SUWAYOMI_JAR_DIR` | `<extensions>/../bin/extensions` | dex2jar 转换产物 jar 目录 |
+| `SUWAYOMI_SETTINGS_DIR` | `<扩展目录>/../settings` | 设置目录（沙盒的源偏好与追踪器凭据都在这里） |
+| `SUWAYOMI_TRACKERS_CONFIG` | `<设置目录>/trackers.json` | 追踪器 OAuth 应用凭据文件（见下） |
 
 ## 认证
 
@@ -86,6 +88,35 @@ GraphQL 的 `login` / `refreshToken`，不需要这两个页面。
 - 直连 API 的脚本 / 第三方客户端要给 Basic 凭据，或先 `POST /login.html` 拿到
   `logged-in` cookie 再带着它请求。
 - `/api/v1/local/**` 在本项目里也属于数据接口，同样需要凭据。
+
+## 追踪器登录
+
+五个追踪器（MyAnimeList / AniList / Kitsu / Shikimori / Bangumi）登录时用的是**应用级**
+OAuth 凭据。首次启动会在设置目录下生成 `trackers.json`（默认值 = 上游 Suwayomi 注册的
+应用；Bangumi 授权页上显示的应用所有者就是上游的注册者）：
+
+```json
+{
+  "bangumi":   { "clientId": "bgm…", "clientSecret": "…", "redirectUri": "https://suwayomi.org/tracker-oauth" },
+  "shikimori": { "clientId": "…",   "clientSecret": "…", "redirectUri": "https://suwayomi.org/tracker-oauth" },
+  "kitsu":     { "clientId": "…",   "clientSecret": "…" },
+  "anilist":   { "clientId": "16186" },
+  "mal":       { "clientId": "…" }
+}
+```
+
+- **在哪改**：设置 → 进度记录，每个追踪器右侧的齿轮（应用凭据）里填，保存即生效 ——
+  落到这个文件、也立刻用在新登录与刷新上。等价的改法是直接编辑这个文件再重启服务端。
+- 想用自己的应用：到站点开发者页注册（Bangumi 是 <https://bgm.tv/dev/app/create>），把
+  `clientId` / `clientSecret` 填进去。`redirectUri` 可以继续沿用
+  `https://suwayomi.org/tracker-oauth`——它是上游网站上的一个转发页，把授权码原样转回
+  本机 WebUI，不要求归你所有；换成自己的回调地址时必须同时在站点应用里登记。
+  **界面里留空 = 回到内置默认值**（不是「不配置」）。
+- **缺键用内置默认值补齐**，所以只写要改的站点即可；文件已存在就**永不重写**（只有设置页
+  保存会写），写坏了只会在日志里告警并退回默认值。文件里显式写成空串表示「不配置」，
+  用到时报错 —— 界面不会写出这种值。
+- 换了 `clientId` 等于换了应用，**旧 token 刷不了**，需要重新登录一次。
+- 用户自己的 token 不在这个文件里（在数据库的 `tracker_credential` 里）。
 
 ## 从 Kotlin 版迁移
 

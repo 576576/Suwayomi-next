@@ -13,7 +13,8 @@ use crate::error::{DomainError, Result};
 use super::service::{TrackerCtx, TrackerService, check, extract_token, now_secs};
 use super::{ANILIST, Track, TrackSearch};
 
-const CLIENT_ID: &str = "16186";
+/// 内置默认值 = 上游 Suwayomi 在 AniList 注册的应用；`trackers.json` 缺键时用它。
+pub(super) const DEFAULT_CLIENT_ID: &str = "16186";
 const API_URL: &str = "https://graphql.anilist.co/";
 const BASE_URL: &str = "https://anilist.co/api/v2/";
 const BASE_MANGA_URL: &str = "https://anilist.co/manga/";
@@ -339,7 +340,8 @@ impl TrackerService for AniList {
     }
 
     async fn auth_url(&self) -> Result<Option<String>> {
-        Ok(Some(format!("{BASE_URL}oauth/authorize?client_id={CLIENT_ID}&response_type=token")))
+        let client_id = self.require_oauth_app()?.client_id(self.name())?.to_string();
+        Ok(Some(format!("{BASE_URL}oauth/authorize?client_id={client_id}&response_type=token")))
     }
 
     async fn auth_callback(&self, url: &str) -> Result<()> {

@@ -40,6 +40,14 @@ impl TrackerType {
     }
 }
 
+/// 站点应用凭据（`trackers.json` 里的那一份）。
+#[derive(SimpleObject, Clone)]
+pub struct TrackerOAuthAppType {
+    pub client_id: String,
+    pub client_secret: String,
+    pub redirect_uri: String,
+}
+
 #[Object]
 impl TrackerType {
     async fn id(&self) -> i32 {
@@ -50,6 +58,14 @@ impl TrackerType {
     }
     async fn icon(&self) -> String {
         thumbnail_url(self.service.id())
+    }
+    /// 站点应用凭据；非 OAuth 站点（MangaUpdates）为 null。
+    async fn oauth_app(&self) -> Option<TrackerOAuthAppType> {
+        self.service.oauth_app().map(|app| TrackerOAuthAppType {
+            client_id: app.client_id,
+            client_secret: app.client_secret,
+            redirect_uri: app.redirect_uri,
+        })
     }
     async fn is_logged_in(&self) -> async_graphql::Result<bool> {
         Ok(self.service.is_logged_in().await?)

@@ -17,9 +17,10 @@ const BASE_URL: &str = "https://shikimori.io";
 const API_URL: &str = "https://shikimori.io/api";
 const OAUTH_URL: &str = "https://shikimori.io/oauth/token";
 const LOGIN_URL: &str = "https://shikimori.io/oauth/authorize";
-const REDIRECT_URL: &str = "https://suwayomi.org/tracker-oauth";
-const CLIENT_ID: &str = "qTrMBF5HtM_33Pv2Vm2fFmEaBUI_c3LvohyJ0beQ9pA";
-const CLIENT_SECRET: &str = "MN_XHQK_aeSqduW_rB64cARi2fFoLGl-AgZ0iMD9zq0";
+/// 内置默认值 = 上游 Suwayomi 在 Shikimori 注册的应用；`trackers.json` 缺键时用它。
+pub(super) const DEFAULT_REDIRECT_URL: &str = "https://suwayomi.org/tracker-oauth";
+pub(super) const DEFAULT_CLIENT_ID: &str = "qTrMBF5HtM_33Pv2Vm2fFmEaBUI_c3LvohyJ0beQ9pA";
+pub(super) const DEFAULT_CLIENT_SECRET: &str = "MN_XHQK_aeSqduW_rB64cARi2fFoLGl-AgZ0iMD9zq0";
 
 const READING: i32 = 1;
 const COMPLETED: i32 = 2;
@@ -65,6 +66,7 @@ impl Shikimori {
             .refresh_token
             .clone()
             .ok_or_else(|| DomainError::token_expired(self.name()))?;
+        let app = self.require_oauth_app()?;
         let resp = self
             .ctx
             .http
@@ -72,8 +74,8 @@ impl Shikimori {
             .header(reqwest::header::USER_AGENT, super::USER_AGENT)
             .form(&[
                 ("grant_type", "refresh_token"),
-                ("client_id", CLIENT_ID),
-                ("client_secret", CLIENT_SECRET),
+                ("client_id", app.client_id(self.name())?),
+                ("client_secret", app.client_secret(self.name())?),
                 ("refresh_token", refresh_token.as_str()),
             ])
             .send()
@@ -98,6 +100,7 @@ impl Shikimori {
 
     /// 对应上游 `Shikimori.login(code)`：用授权码换 token，再拿用户 id 存下来。
     async fn login(&self, code: &str) -> Result<()> {
+        let app = self.require_oauth_app()?;
         let resp = self
             .ctx
             .http
@@ -105,10 +108,10 @@ impl Shikimori {
             .header(reqwest::header::USER_AGENT, super::USER_AGENT)
             .form(&[
                 ("grant_type", "authorization_code"),
-                ("client_id", CLIENT_ID),
-                ("client_secret", CLIENT_SECRET),
+                ("client_id", app.client_id(self.name())?),
+                ("client_secret", app.client_secret(self.name())?),
                 ("code", code),
-                ("redirect_uri", REDIRECT_URL),
+                ("redirect_uri", app.redirect_uri(self.name())?),
             ])
             .send()
             .await
@@ -230,8 +233,11 @@ impl TrackerService for Shikimori {
     }
 
     async fn auth_url(&self) -> Result<Option<String>> {
+        let app = self.require_oauth_app()?;
         Ok(Some(format!(
-            "{LOGIN_URL}?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URL}&response_type=code"
+            "{LOGIN_URL}?client_id={}&redirect_uri={}&response_type=code",
+            app.client_id(self.name())?,
+            app.redirect_uri(self.name())?
         )))
     }
 

@@ -13,12 +13,13 @@ use crate::error::{DomainError, Result};
 use super::service::{TrackerCtx, TrackerService, check, expires_soon, extract_token, now_secs};
 use super::{BANGUMI, Track, TrackSearch};
 
-const CLIENT_ID: &str = "bgm376667faf473119bb";
-const CLIENT_SECRET: &str = "d74caf0b874ddd18e6c6e7fb86d77a06";
+/// 内置默认值 = 上游 Suwayomi 在 Bangumi 注册的应用；`trackers.json` 缺键时用它。
+pub(super) const DEFAULT_CLIENT_ID: &str = "bgm376667faf473119bb";
+pub(super) const DEFAULT_CLIENT_SECRET: &str = "d74caf0b874ddd18e6c6e7fb86d77a06";
 const API_URL: &str = "https://api.bgm.tv";
 const OAUTH_URL: &str = "https://bgm.tv/oauth/access_token";
 const LOGIN_URL: &str = "https://bgm.tv/oauth/authorize";
-const REDIRECT_URL: &str = "https://suwayomi.org/tracker-oauth";
+pub(super) const DEFAULT_REDIRECT_URL: &str = "https://suwayomi.org/tracker-oauth";
 
 const PLAN_TO_READ: i32 = 1;
 const COMPLETED: i32 = 2;
@@ -63,6 +64,7 @@ impl Bangumi {
             .refresh_token
             .clone()
             .ok_or_else(|| DomainError::token_expired(self.name()))?;
+        let app = self.require_oauth_app()?;
         let resp = self
             .ctx
             .http
@@ -70,10 +72,10 @@ impl Bangumi {
             .header(reqwest::header::USER_AGENT, super::USER_AGENT)
             .form(&[
                 ("grant_type", "refresh_token"),
-                ("client_id", CLIENT_ID),
-                ("client_secret", CLIENT_SECRET),
+                ("client_id", app.client_id(self.name())?),
+                ("client_secret", app.client_secret(self.name())?),
                 ("refresh_token", refresh_token.as_str()),
-                ("redirect_uri", REDIRECT_URL),
+                ("redirect_uri", app.redirect_uri(self.name())?),
             ])
             .send()
             .await
@@ -171,6 +173,7 @@ impl Bangumi {
 
     /// 对应上游 `Bangumi.login(code)`。
     async fn login(&self, code: &str) -> Result<()> {
+        let app = self.require_oauth_app()?;
         let resp = self
             .ctx
             .http
@@ -178,10 +181,10 @@ impl Bangumi {
             .header(reqwest::header::USER_AGENT, super::USER_AGENT)
             .form(&[
                 ("grant_type", "authorization_code"),
-                ("client_id", CLIENT_ID),
-                ("client_secret", CLIENT_SECRET),
+                ("client_id", app.client_id(self.name())?),
+                ("client_secret", app.client_secret(self.name())?),
                 ("code", code),
-                ("redirect_uri", REDIRECT_URL),
+                ("redirect_uri", app.redirect_uri(self.name())?),
             ])
             .send()
             .await
@@ -253,8 +256,11 @@ impl TrackerService for Bangumi {
     }
 
     async fn auth_url(&self) -> Result<Option<String>> {
+        let app = self.require_oauth_app()?;
         Ok(Some(format!(
-            "{LOGIN_URL}?client_id={CLIENT_ID}&response_type=code&redirect_uri={REDIRECT_URL}"
+            "{LOGIN_URL}?client_id={}&response_type=code&redirect_uri={}",
+            app.client_id(self.name())?,
+            app.redirect_uri(self.name())?
         )))
     }
 

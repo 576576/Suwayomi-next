@@ -16,19 +16,32 @@ pub mod kitsu;
 mod logos;
 pub mod mangaupdates;
 pub mod myanimelist;
+pub mod oauth;
 mod service;
 pub mod shikimori;
 mod store;
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use suwayomi_core::db::Db;
 use suwayomi_core::schema::{ChapterRow, TrackRecordRow, TrackSearchRow};
 
 use crate::error::{DomainError, Result};
 
+use oauth::TrackerOAuthApps;
+
 pub use service::{TrackerCtx, TrackerService, extract_token};
 pub use store::{TrackerCredential, TrackerStore};
+
+/// 补丁里给了就用它（去掉首尾空白）；留空或全空白 = 回到内置默认值。
+fn filled(value: String, fallback: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
 
 /// 桌面端默认 UA。部分站点（MAL）缺 UA 会直接拒请求。
 pub const USER_AGENT: &str = concat!("Suwayomi-next/", env!("CARGO_PKG_VERSION"));
@@ -204,17 +217,42 @@ pub struct TrackerManager {
     services: Arc<Vec<Arc<dyn TrackerService>>>,
     db: Db,
     store: TrackerStore,
+    oauth: Arc<RwLock<TrackerOAuthApps>>,
+    /// `trackers.json` 的位置（设置页改凭据要落盘）；`None` = 没有配置文件可用。
+    oauth_config: Option<std::path::PathBuf>,
+}
+
+/// 设置页提交上来的站点应用凭据：`None` 或空串 = 回到内置默认值。
+#[derive(Debug, Clone, Default)]
+pub struct OAuthAppPatch {
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    pub redirect_uri: Option<String>,
 }
 
 impl TrackerManager {
     pub fn new(db: Db) -> Self {
+        Self::build(db, Arc::new(RwLock::new(TrackerOAuthApps::default())), None)
+    }
+
+    /// 同 [`Self::new`]，但用 `trackers.json` 里读到的站点应用凭据，并记住它的位置
+    /// 以便设置页改动落盘。
+    pub fn with_oauth(
+        db: Db,
+        oauth: Arc<RwLock<TrackerOAuthApps>>,
+        oauth_config: std::path::PathBuf,
+    ) -> Self {
+        Self::build(db, oauth, Some(oauth_config))
+    }
+
+    fn build(db: Db, oauth: Arc<RwLock<TrackerOAuthApps>>, oauth_config: Option<std::path::PathBuf>) -> Self {
         let store = TrackerStore::new(db.clone());
         let http = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .timeout(std::time::Duration::from_secs(60))
             .build()
             .unwrap_or_default();
-        let ctx = TrackerCtx::new(store.clone(), http);
+        let ctx = TrackerCtx::with_oauth(store.clone(), http, oauth.clone());
         let services: Vec<Arc<dyn TrackerService>> = vec![
             Arc::new(myanimelist::MyAnimeList::new(ctx.clone())),
             Arc::new(anilist::AniList::new(ctx.clone())),
@@ -223,7 +261,42 @@ impl TrackerManager {
             Arc::new(bangumi::Bangumi::new(ctx.clone())),
             Arc::new(mangaupdates::MangaUpdates::new(ctx)),
         ];
-        Self { services: Arc::new(services), db, store }
+        Self { services: Arc::new(services), db, store, oauth, oauth_config }
+    }
+
+    /// 某个站点的应用凭据（非 OAuth 站点为 `None`）。
+    pub fn oauth_app(&self, tracker_id: i32) -> Option<oauth::AppCredentials> {
+        self.oauth.read().unwrap_or_else(|e| e.into_inner()).app(tracker_id).cloned()
+    }
+
+    /// 改站点应用凭据：立刻生效（下一次登录/刷新就用新值）并落盘（重启后仍在）。
+    /// 补丁里留空或没给的字段，回落到内置默认值。
+    pub fn update_oauth_app(&self, tracker_id: i32, patch: OAuthAppPatch) -> Result<()> {
+        let builtin = TrackerOAuthApps::default()
+            .app(tracker_id)
+            .cloned()
+            .ok_or_else(|| DomainError::tracker("该追踪器不使用应用凭据"))?;
+        let app = oauth::AppCredentials {
+            client_id: patch.client_id.map_or(builtin.client_id.clone(), |v| filled(v, &builtin.client_id)),
+            client_secret: patch
+                .client_secret
+                .map_or(builtin.client_secret.clone(), |v| filled(v, &builtin.client_secret)),
+            redirect_uri: patch
+                .redirect_uri
+                .map_or(builtin.redirect_uri.clone(), |v| filled(v, &builtin.redirect_uri)),
+        };
+
+        let path = self
+            .oauth_config
+            .as_ref()
+            .ok_or_else(|| DomainError::tracker("没有可写的 trackers.json 路径"))?;
+        let mut guard = self.oauth.write().unwrap_or_else(|e| e.into_inner());
+        guard.set_app(tracker_id, app);
+        oauth::save(path, &guard)
+            .map_err(|e| DomainError::tracker(format!("写入 trackers.json 失败：{e}")))?;
+        drop(guard);
+        tracing::info!("tracker oauth app updated: {} ({})", tracker_id, path.display());
+        Ok(())
     }
 
     pub fn db(&self) -> &Db {

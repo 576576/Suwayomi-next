@@ -20,8 +20,9 @@ use crate::error::{DomainError, Result};
 use super::service::{TrackerCtx, TrackerService, check, expires_soon};
 use super::{KITSU, Track, TrackSearch};
 
-const CLIENT_ID: &str = "dd031b32d2f56c990b1425efe6c42ad847e7fe3ab46bf1299f05ecd856bdb7dd";
-const CLIENT_SECRET: &str = "54d7307928f63414defd96399fc31ba847961ceaecef3a5fd93144e960c0e151";
+/// 内置默认值 = 上游 Suwayomi 在 Kitsu 注册的应用；`trackers.json` 缺键时用它。
+pub(super) const DEFAULT_CLIENT_ID: &str = "dd031b32d2f56c990b1425efe6c42ad847e7fe3ab46bf1299f05ecd856bdb7dd";
+pub(super) const DEFAULT_CLIENT_SECRET: &str = "54d7307928f63414defd96399fc31ba847961ceaecef3a5fd93144e960c0e151";
 const BASE_URL: &str = "https://kitsu.app/api/edge/";
 const LOGIN_URL: &str = "https://kitsu.app/api/oauth/token";
 const BASE_MANGA_URL: &str = "https://kitsu.app/manga/";
@@ -153,6 +154,7 @@ impl Kitsu {
             .refresh_token
             .clone()
             .ok_or_else(|| DomainError::token_expired(self.name()))?;
+        let app = self.require_oauth_app()?;
         let resp = self
             .ctx
             .http
@@ -161,8 +163,8 @@ impl Kitsu {
             .form(&[
                 ("grant_type", "refresh_token"),
                 ("refresh_token", refresh_token.as_str()),
-                ("client_id", CLIENT_ID),
-                ("client_secret", CLIENT_SECRET),
+                ("client_id", app.client_id(self.name())?),
+                ("client_secret", app.client_secret(self.name())?),
             ])
             .send()
             .await
@@ -404,6 +406,7 @@ impl TrackerService for Kitsu {
     }
 
     async fn login_impl(&self, username: &str, password: &str) -> Result<()> {
+        let app = self.require_oauth_app()?;
         let resp = self
             .ctx
             .http
@@ -413,8 +416,8 @@ impl TrackerService for Kitsu {
                 ("username", username),
                 ("password", password),
                 ("grant_type", "password"),
-                ("client_id", CLIENT_ID),
-                ("client_secret", CLIENT_SECRET),
+                ("client_id", app.client_id(self.name())?),
+                ("client_secret", app.client_secret(self.name())?),
             ])
             .send()
             .await

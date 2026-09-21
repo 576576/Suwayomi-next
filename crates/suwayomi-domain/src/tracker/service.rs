@@ -7,9 +7,11 @@
 //! 追踪器（上游的 `DeletableTracker`）才需要覆写，调用方也只在为真时才调到。
 
 use async_trait::async_trait;
+use std::sync::{Arc, RwLock};
 
 use crate::error::{DomainError, Result};
 
+use super::oauth::{AppCredentials, TrackerOAuthApps};
 use super::store::TrackerStore;
 use super::{Track, TrackSearch};
 
@@ -18,11 +20,28 @@ use super::{Track, TrackSearch};
 pub struct TrackerCtx {
     pub store: TrackerStore,
     pub http: reqwest::Client,
+    /// 站点应用凭据。默认值即各模块内置的 `DEFAULT_*` 常量；生产路径由
+    /// `TrackerManager::with_oauth` 换成 `trackers.json` 里读到的。用
+    /// [`Self::oauth_app`] 取快照 —— 设置页改完凭据后，下一次调用就是新值。
+    pub oauth: Arc<RwLock<TrackerOAuthApps>>,
 }
 
 impl TrackerCtx {
     pub fn new(store: TrackerStore, http: reqwest::Client) -> Self {
-        Self { store, http }
+        Self { store, http, oauth: Arc::new(RwLock::new(TrackerOAuthApps::default())) }
+    }
+
+    pub fn with_oauth(
+        store: TrackerStore,
+        http: reqwest::Client,
+        oauth: Arc<RwLock<TrackerOAuthApps>>,
+    ) -> Self {
+        Self { store, http, oauth }
+    }
+
+    /// 站点应用凭据的快照；非 OAuth 站点（MangaUpdates）为 `None`。
+    pub fn oauth_app(&self, tracker_id: i32) -> Option<AppCredentials> {
+        self.oauth.read().unwrap_or_else(|e| e.into_inner()).app(tracker_id).cloned()
     }
 
     /// 发一个带 `Authorization: Bearer` 的 GET。`401` 会置上「token 过期」
@@ -47,6 +66,17 @@ pub trait TrackerService: Send + Sync {
     /// 图标 PNG 字节（编在二进制里）。
     fn logo(&self) -> &'static [u8];
     fn ctx(&self) -> &TrackerCtx;
+
+    /// 站点应用凭据；非 OAuth 站点（MangaUpdates）为 `None`。
+    fn oauth_app(&self) -> Option<AppCredentials> {
+        self.ctx().oauth_app(self.id())
+    }
+
+    /// 同 [`Self::oauth_app`]，缺失时报错 —— OAuth 站点拿它取用。
+    fn require_oauth_app(&self) -> Result<AppCredentials> {
+        self.oauth_app()
+            .ok_or_else(|| DomainError::tracker(format!("{}：没有可用的应用凭据", self.name())))
+    }
 
     fn supports_reading_dates(&self) -> bool {
         false

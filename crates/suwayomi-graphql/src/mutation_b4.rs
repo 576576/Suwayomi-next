@@ -653,6 +653,22 @@ pub struct RefreshTrackerUserPayload {
     pub tracker: TrackerType,
 }
 
+/// 站点应用凭据（`trackers.json`）。留空 = 回到内置默认值。
+#[derive(InputObject)]
+pub struct UpdateTrackerOAuthAppInput {
+    pub client_mutation_id: Option<String>,
+    pub tracker_id: i32,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    pub redirect_uri: Option<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct UpdateTrackerOAuthAppPayload {
+    pub client_mutation_id: Option<String>,
+    pub tracker: TrackerType,
+}
+
 // ---------------------------------------------------------------------------
 // Extension / Sync / User / WebUI
 // ---------------------------------------------------------------------------
@@ -1485,6 +1501,31 @@ impl MutationRootB4 {
             state.tracker.find(input.tracker_id).ok_or_else(|| async_graphql::Error::new("Could not find tracker"))?;
         service.refresh_user().await?;
         Ok(RefreshTrackerUserPayload {
+            client_mutation_id: input.client_mutation_id,
+            tracker: TrackerType::from_service(service),
+        })
+    }
+
+    /// 改站点的 OAuth 应用凭据（设置页的齿轮）。写完立刻生效并落盘 —— 下一次登录
+    /// 用的就是新 `clientId`。填空白等于回到内置默认值。
+    #[graphql(name = "updateTrackerOAuthApp")]
+    async fn update_tracker_oauth_app(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateTrackerOAuthAppInput,
+    ) -> async_graphql::Result<UpdateTrackerOAuthAppPayload> {
+        let state = ctx.data::<GraphQLState>()?;
+        let service =
+            state.tracker.find(input.tracker_id).ok_or_else(|| async_graphql::Error::new("Could not find tracker"))?;
+        state.tracker.update_oauth_app(
+            input.tracker_id,
+            suwayomi_domain::tracker::OAuthAppPatch {
+                client_id: input.client_id,
+                client_secret: input.client_secret,
+                redirect_uri: input.redirect_uri,
+            },
+        )?;
+        Ok(UpdateTrackerOAuthAppPayload {
             client_mutation_id: input.client_mutation_id,
             tracker: TrackerType::from_service(service),
         })

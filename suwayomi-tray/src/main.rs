@@ -20,20 +20,26 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 struct Settings {
-    port: u16,
+    /// 服务端监听端口
+    server_port: u16,
     /// 自定义工作数据目录（空 = 默认 base/data）
     data_dir: Option<String>,
-    /// 启动时自动打开 WebUI（默认开）
-    open_webui: bool,
-    /// 用窗口（系统 WebView）打开 WebUI，否则系统浏览器。保留旧 JSON key
-    /// `prefer_electron` 兼容既有 settings.json。
-    prefer_electron: bool,
+    /// 启动时自动打开 WebUI 窗口
+    open_web_ui_on_startup: bool,
+    /// 用应用内窗口（系统 WebView）打开 WebUI，否则交系统浏览器
+    prefer_web_view: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { port: 8090, data_dir: None, open_webui: true, prefer_electron: true }
+        Self {
+            server_port: 8090,
+            data_dir: None,
+            open_web_ui_on_startup: true,
+            prefer_web_view: true,
+        }
     }
 }
 
@@ -78,21 +84,26 @@ fn data_dir_of(s: &Settings) -> PathBuf {
     }
 }
 
-/// settings.json 位于发布根目录（数据目录本身可更换，不能存在数据目录里）
+/// 托盘设置文件：`<发布根>/settings/tray.json`。不放在数据目录里 —— 数据目录本身
+/// 就是这个文件配的，放进去会自相矛盾。
 fn settings_path() -> PathBuf {
-    base_dir().join("settings.json")
+    base_dir().join("settings").join("tray.json")
 }
 
 fn load_settings() -> Settings {
-    let text = std::fs::read_to_string(settings_path()).ok()
-        // 兼容旧位置（data/settings.json）
-        .or_else(|| std::fs::read_to_string(base_dir().join("data").join("settings.json")).ok());
-    text.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    std::fs::read_to_string(settings_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
 }
 
 fn save_settings_file(settings: &Settings) -> std::io::Result<()> {
+    let path = settings_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let json = serde_json::to_string_pretty(settings).expect("serialize settings");
-    std::fs::write(settings_path(), json)
+    std::fs::write(path, json)
 }
 
 /// 定位 server 二进制：`SUWAYOMI_BIN` → exe 同级/`bin/` → PATH
@@ -334,7 +345,7 @@ fn open_webui_window(app: &tauri::AppHandle, port: u16) -> bool {
 /// 打开 WebUI：设置开启且 WebView 窗口可用 → 窗口，否则系统浏览器
 fn launch_webui(app: &tauri::AppHandle, port: u16) {
     let settings = load_settings();
-    if settings.prefer_electron && open_webui_window(app, port) {
+    if settings.prefer_web_view && open_webui_window(app, port) {
         return;
     }
     tray_log(&format!("[tray] opening webui in system browser: {}", webui_url(port)));
@@ -342,15 +353,16 @@ fn launch_webui(app: &tauri::AppHandle, port: u16) {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SettingsView {
-    port: u16,
+    server_port: u16,
     /// 当前实际生效的工作目录路径
     data_dir: String,
     /// 设置里的自定义目录（空 = 默认 base/data）
     data_dir_override: String,
-    open_webui: bool,
-    prefer_electron: bool,
-    webui_url: String,
+    open_web_ui_on_startup: bool,
+    prefer_web_view: bool,
+    web_ui_url: String,
 }
 
 #[tauri::command]
@@ -360,12 +372,12 @@ fn get_settings(state: State<AppState>) -> SettingsView {
     let loaded = load_settings();
     let over = loaded.data_dir.unwrap_or_default();
     SettingsView {
-        port,
+        server_port: port,
         data_dir: d.display().to_string(),
         data_dir_override: over,
-        open_webui: loaded.open_webui,
-        prefer_electron: loaded.prefer_electron,
-        webui_url: webui_url(port),
+        open_web_ui_on_startup: loaded.open_web_ui_on_startup,
+        prefer_web_view: loaded.prefer_web_view,
+        web_ui_url: webui_url(port),
     }
 }
 
@@ -373,14 +385,19 @@ fn get_settings(state: State<AppState>) -> SettingsView {
 fn save_settings(
     app: tauri::AppHandle,
     state: State<AppState>,
-    port: u16,
+    server_port: u16,
     data_dir: Option<String>,
-    open_webui: bool,
-    prefer_electron: bool,
+    open_web_ui_on_startup: bool,
+    prefer_web_view: bool,
 ) -> Result<String, String> {
-    let port = port.clamp(1, 65535);
+    let server_port = server_port.clamp(1, 65535);
     let clean = data_dir.map(|d| d.trim().to_string()).filter(|d| !d.is_empty());
-    let settings = Settings { port, data_dir: clean.clone(), open_webui, prefer_electron };
+    let settings = Settings {
+        server_port,
+        data_dir: clean.clone(),
+        open_web_ui_on_startup,
+        prefer_web_view,
+    };
     save_settings_file(&settings).map_err(|e| format!("写入设置失败: {e}"))?;
 
     // 新工作目录：创建（含三个子目录）
@@ -397,14 +414,14 @@ fn save_settings(
     if let Some(mut c) = guard.take() {
         let _ = c.wait();
     }
-    let child = spawn_server(&new_data, port, false)
+    let child = spawn_server(&new_data, server_port, false)
         .ok_or_else(|| "server 启动失败（找不到 suwayomi-server 可执行文件）".to_string())?;
     *guard = Some(child);
-    let _ = wait_ready(port, Duration::from_secs(20));
+    let _ = wait_ready(server_port, Duration::from_secs(20));
 
-    state.port.store(port, Ordering::Relaxed);
+    state.port.store(server_port, Ordering::Relaxed);
     *state.data_dir.lock().unwrap() = new_data;
-    Ok(webui_url(port))
+    Ok(webui_url(server_port))
 }
 
 #[tauri::command]
@@ -435,7 +452,7 @@ fn has_graphical_session() -> bool {
 #[cfg(target_os = "linux")]
 fn run_server_foreground() -> ! {
     let settings = load_settings();
-    let port = settings.port;
+    let port = settings.server_port;
     let data = data_dir_of(&settings);
     ensure_data_dirs(&data);
 
@@ -538,7 +555,7 @@ fn main() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             let settings = load_settings();
-            let port = settings.port;
+            let port = settings.server_port;
             let data = data_dir_of(&settings);
             ensure_data_dirs(&data);
             // 先检测：已有 server 实例（外部启动）则不再重复拉起
@@ -687,7 +704,7 @@ fn main() {
             });
 
             // 启动即打开 WebUI（设置可关）：本托盘拉起或 server 已在运行都要开
-            if settings.open_webui && (started || running) {
+            if settings.open_web_ui_on_startup && (started || running) {
                 launch_webui(app.handle(), port);
             }
             Ok(())

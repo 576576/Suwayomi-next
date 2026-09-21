@@ -47,11 +47,11 @@
     <div class="hint" id="current"></div>
 
     <label class="switch">
-      <input id="open-webui" type="checkbox" /> 启动时自动打开 WebUI
+      <input id="open-webui-on-startup" type="checkbox" /> 启动时自动打开 WebUI
     </label>
 
     <label class="switch">
-      <input id="prefer-electron" type="checkbox" /> 用窗口打开 WebUI（系统 WebView）
+      <input id="prefer-web-view" type="checkbox" /> 用窗口打开 WebUI（系统 WebView）
     </label>
     <div class="hint">关闭后改用系统浏览器打开；无系统 WebView 的环境会自动回退浏览器。</div>
 
@@ -82,12 +82,12 @@
       window.addEventListener("DOMContentLoaded", async () => {
         try {
           const s = await invoke("get_settings");
-          document.getElementById("port").value = s.port;
-          document.getElementById("data-dir").value = s.data_dir_override || "";
-          document.getElementById("current").textContent = "当前目录: " + s.data_dir;
-          document.getElementById("open-webui").checked = s.open_webui;
-          document.getElementById("prefer-electron").checked = s.prefer_electron;
-          document.getElementById("url").textContent = "WebUI: " + s.webui_url;
+          document.getElementById("port").value = s.serverPort;
+          document.getElementById("data-dir").value = s.dataDirOverride || "";
+          document.getElementById("current").textContent = "当前目录: " + s.dataDir;
+          document.getElementById("open-webui-on-startup").checked = s.openWebUiOnStartup;
+          document.getElementById("prefer-web-view").checked = s.preferWebView;
+          document.getElementById("url").textContent = "WebUI: " + s.webUiUrl;
         } catch (e) {
           document.getElementById("msg").textContent = "读取设置失败: " + e;
         }
@@ -97,10 +97,10 @@
         const p = parseInt(document.getElementById("port").value, 10);
         if (!p || p < 1 || p > 65535) { document.getElementById("msg").textContent = "端口无效"; return; }
         const dd = document.getElementById("data-dir").value.trim();
-        const ow = document.getElementById("open-webui").checked;
-        const pe = document.getElementById("prefer-electron").checked;
+        const ow = document.getElementById("open-webui-on-startup").checked;
+        const pe = document.getElementById("prefer-web-view").checked;
         try {
-          const url = await invoke("save_settings", { port: p, dataDir: dd, openWebui: ow, preferElectron: pe });
+          const url = await invoke("save_settings", { serverPort: p, dataDir: dd, openWebUiOnStartup: ow, preferWebView: pe });
           document.getElementById("url").textContent = "WebUI: " + url;
           document.getElementById("current").textContent = "当前目录: " + (dd || "默认");
           document.getElementById("msg").textContent = "已保存并重启服务器";

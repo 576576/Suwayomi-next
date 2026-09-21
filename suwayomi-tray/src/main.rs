@@ -91,10 +91,21 @@ fn settings_path() -> PathBuf {
 }
 
 fn load_settings() -> Settings {
-    std::fs::read_to_string(settings_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    let Ok(text) = std::fs::read_to_string(settings_path()) else {
+        return Settings::default(); // 首次启动还没有这个文件
+    };
+    match serde_json::from_str(&text) {
+        Ok(settings) => settings,
+        Err(e) => {
+            // 解析失败会静默换成默认值（端口 8090、启动即开窗口），看起来就像
+            // "设置没生效"，得留个痕
+            tray_log(&format!(
+                "[tray] WARN: {} 解析失败（{e}），本次使用默认设置",
+                settings_path().display()
+            ));
+            Settings::default()
+        }
+    }
 }
 
 fn save_settings_file(settings: &Settings) -> std::io::Result<()> {
@@ -251,9 +262,10 @@ fn spawn_server(data: &PathBuf, port: u16, inherit_stdio: bool) -> Option<Child>
         .current_dir(data)
         .env("SUWAYOMI_PORT", port.to_string())
         .env("SUWAYOMI_EXTENSIONS_DIR", base_dir().join("extensions"))
-        // server cwd=data，不传 env 时 local_source_root 会落到 data/data/local
-        .env("SUWAYOMI_LOCAL_SOURCE_DIR", base_dir().join("data").join("local"))
-        .env("SUWAYOMI_DATA_DIR", base_dir().join("data"))
+        // 数据目录必须按解析结果显式传：server 自己的兜底是从 cwd 拼
+        // `<cwd>/data/local`，而 cwd 已经设成 data，会解析成 `<data>/data/local`
+        .env("SUWAYOMI_DATA_DIR", data)
+        .env("SUWAYOMI_LOCAL_SOURCE_DIR", data.join("local"))
         .env("SUWAYOMI_LOGS_DIR", logs.clone())
         .env("SUWAYOMI_WEBUI_DIR", base_dir().join("webui"));
 

@@ -161,9 +161,7 @@ fn merge(raw: Option<&FileApp>, default: AppCredentials) -> AppCredentials {
     }
 }
 
-const FILE_COMMENT: &str = "各站点 OAuth 应用凭据。缺键即用内置默认值；显式写成空串表示不配置。用户 token 不在这里（在数据库里）。";
-
-/// 把整份凭据写回文件（保持与首次生成相同的形状：五个站点全写、带说明行）。
+/// 把整份凭据写回文件（与首次生成同形状：五个站点全写）。
 pub fn save(path: &Path, apps: &TrackerOAuthApps) -> std::io::Result<()> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -171,7 +169,6 @@ pub fn save(path: &Path, apps: &TrackerOAuthApps) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let root = FileRoot {
-        comment: Some(FILE_COMMENT.to_string()),
         anilist: Some(FileApp::from(&apps.anilist)),
         bangumi: Some(FileApp::from(&apps.bangumi)),
         kitsu: Some(FileApp::from(&apps.kitsu)),
@@ -183,11 +180,10 @@ pub fn save(path: &Path, apps: &TrackerOAuthApps) -> std::io::Result<()> {
     std::fs::write(path, json)
 }
 
+/// 只认五个站点；文件里的其他键（早期版本写过的 `_comment`）忽略。
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 struct FileRoot {
-    #[serde(rename = "_comment", skip_serializing_if = "Option::is_none")]
-    comment: Option<String>,
     anilist: Option<FileApp>,
     bangumi: Option<FileApp>,
     kitsu: Option<FileApp>,
@@ -234,11 +230,33 @@ mod tests {
         assert_eq!(apps, TrackerOAuthApps::default());
 
         let raw = std::fs::read_to_string(&path).unwrap();
-        let file: FileRoot = serde_json::from_str(&raw).unwrap();
-        assert!(file.comment.is_some());
+        // 生成的文件只有五个站点，没有别的键
+        let root: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let mut keys: Vec<&str> = root.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["anilist", "bangumi", "kitsu", "mal", "shikimori"]);
         assert_eq!(apps.bangumi.client_id, bangumi::DEFAULT_CLIENT_ID);
         assert_eq!(apps.bangumi.redirect_uri, bangumi::DEFAULT_REDIRECT_URL);
         assert_eq!(apps.mal.client_id, myanimelist::DEFAULT_CLIENT_ID);
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn file_with_extra_keys_still_loads() {
+        let path = temp_file();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // 早期版本在文件里写过说明行，读的时候要无视它
+        std::fs::write(&path, r#"{"_comment": "whatever", "bangumi": {"clientId": "bgmCustom"}}"#).unwrap();
+
+        let apps = load_or_create(&path);
+        assert_eq!(apps.bangumi.client_id, "bgmCustom");
+        assert_eq!(apps.bangumi.client_secret, bangumi::DEFAULT_CLIENT_SECRET);
+
+        // 再保存一次就不再写出那个键
+        save(&path, &apps).unwrap();
+        let root: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(root.get("_comment").is_none());
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }

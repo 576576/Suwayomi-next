@@ -155,11 +155,12 @@ Extensions install online from **repo indexes** and their sources are
 registered in the database automatically, shared across the UI and the API:
 
 - **Repos**: `extension_store` keeps the `index_url` (supports the v1 array and
-  the keiyoushi v2 object formats). `POST /api/v1/extension/refresh` (or
-  GraphQL `fetchExtensions`) fetches the index and upserts the `extension`
-  table (apkUrl/version/NSFW etc.). Indexes are cached under
-  `extensions/index/{repo}/index.pb|json` and fall back to the cache when the
-  repo is unreachable.
+  the keiyoushi v2 object formats; within v1 the legacy `code`/`version` keys,
+  numeric `nsfw` and relative apk paths are accepted too). `POST
+  /api/v1/extension/refresh` (or GraphQL `fetchExtensions`) fetches the index
+  and upserts the `extension` table (apkUrl/version/NSFW etc.). Indexes are
+  cached as `extensions/index/index-<hash>.<pb|json>` (`<hash>` of the index
+  URL) and fall back to the cache when the repo is unreachable.
 - **Install/update/uninstall**: `GET /api/v1/extension/{install|update|uninstall}/{pkgName}`
   (GraphQL `updateExtension`/`updateExtensions` patches). Installing downloads
   the APK into `SUWAYOMI_EXTENSIONS_DIR` (default `./extensions`, named

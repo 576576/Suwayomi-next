@@ -100,7 +100,7 @@ struct RepoIndexEntryV2 {
     lang: String,
     version_name: String,
     version_code: StrOrNum,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_bool_or_int")]
     nsfw: bool,
     #[serde(default)]
     obsolete: bool,
@@ -125,6 +125,8 @@ struct RepoResources {
 pub struct RepoIndexEntry {
     pub name: String,
     pub pkg: String,
+    /// 旧版仓库里是**相对 index 的路径**（`xxx.apk`、`apk/xxx.apk`），
+    /// 由 [`parse_index`] 拼成绝对 URL。
     #[serde(default)]
     pub apk: Option<String>,
     #[serde(default)]
@@ -133,9 +135,13 @@ pub struct RepoIndexEntry {
     pub jar: Option<String>,
     #[serde(default)]
     pub lang: String,
+    /// 旧版仓库写 `version`。
+    #[serde(alias = "version")]
     pub version_name: String,
+    /// 旧版仓库写 `code`。
+    #[serde(alias = "code")]
     pub version_code: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_bool_or_int")]
     pub nsfw: bool,
     #[serde(default)]
     pub obsolete: bool,
@@ -143,6 +149,23 @@ pub struct RepoIndexEntry {
     pub has_readme: bool,
     #[serde(default)]
     pub sources: Vec<RepoSource>,
+}
+
+/// `nsfw` 在旧版仓库里是 `0`/`1`，新版才是布尔。
+fn de_bool_or_int<'de, D>(deserializer: D) -> std::result::Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum BoolOrInt {
+        Bool(bool),
+        Int(i64),
+    }
+    Ok(match BoolOrInt::deserialize(deserializer)? {
+        BoolOrInt::Bool(b) => b,
+        BoolOrInt::Int(n) => n != 0,
+    })
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -269,12 +292,15 @@ impl ExtensionStoreService {
     }
 
     /// 拉取单个 repo 的 index 并 upsert。index 缓存到
-    /// `<cache>/extensions/index/<repo>/index.pb|index.json`；网络失败/解析失败
+    /// `<cache>/extensions/index/index-<hash>.<ext>`；网络失败/解析失败
     /// 回退本地缓存——仓库暂时宕机不会挂起刷新或清空仓库
     pub async fn refresh_one(&self, index_url: &str, store_name: &str) -> Result<usize> {
         let _ = store_name;
         let url = normalize_index_url(index_url);
-        let cache_file = self.index_cache_path(index_url);
+        let cache_file = index_cache_path(&self.cache_dir, index_url);
+        if let Some(dir) = cache_file.parent() {
+            prune_legacy_index_dirs(dir);
+        }
         let mut downloaded: Option<Vec<u8>> = None;
 
         match self.http.get(&url).send().await {
@@ -320,15 +346,7 @@ impl ExtensionStoreService {
     /// Parses a repo index (Mihon `index.pb` or tachiyomi `index.json`) and
     /// upserts its entries into the `extension` table.
     async fn upsert_index(&self, bytes: &[u8], url: &str, index_url: &str) -> Result<usize> {
-        // Mihon 协议仓库（index.pb，gzip protobuf）与 Tachiyomi 仓库（index.json）分流
-        let entries: Vec<RepoIndexEntry> = if url.ends_with("index.pb") {
-            parse_mihon_pb_index(bytes)
-                .map_err(|e| DomainError::Source(format!("mihon repo index parse: {e}")))?
-        } else {
-            let index: RepoIndex = serde_json::from_slice(bytes)
-                .map_err(|e| DomainError::Source(format!("repo index parse: {e}")))?;
-            index.entries()
-        };
+        let entries = parse_index(bytes, url)?;
         let pool = self.db.pool();
 
         // 沙盒实际加载了哪些包。`is_installed_for_local_dir` 只看 extensions/
@@ -365,7 +383,10 @@ impl ExtensionStoreService {
             .bind(&e.name)
             .bind(&e.pkg)
             .bind(&e.apk)
-            .bind(&e.icon)
+            // icon_url 是 NOT NULL：旧版仓库条目里压根没有 icon 字段，绑 NULL 会让
+            // 整个 upsert 失败（"NOT NULL constraint failed"）。空串在图标路由那边
+            // 有明确语义 —— 跳过这个来源，回退沙盒/占位。
+            .bind(e.icon.as_deref().unwrap_or(""))
             .bind(&e.jar)
             .bind(&e.version_name)
             .bind(e.version_code)
@@ -381,20 +402,6 @@ impl ExtensionStoreService {
         Ok(n)
     }
 
-    /// Local cache path for a repo index: `<cache>/extensions/index/<repo>/index.pb`
-    /// (or `index.json`). `repo` is derived from the index URL so it is stable
-    /// across refreshes. Cache root lives outside the extensions dir (unified
-    /// `<发布根>/cache`, see `suwayomi_core::config::cache_root`).
-    fn index_cache_path(&self, index_url: &str) -> PathBuf {
-        let url = normalize_index_url(index_url);
-        let repo = repo_dir_name(&url);
-        let file = if url.ends_with("index.pb") { "index.pb" } else { "index.json" };
-        self.cache_dir
-            .join("extensions")
-            .join("index")
-            .join(repo)
-            .join(file)
-    }
 
     // ------------------------------------------------------------------
     // Install / update / uninstall
@@ -726,33 +733,97 @@ fn remove_matching_jars(dir: &Path, pkg: &str) -> Result<()> {
     Ok(())
 }
 
+/// 用户填的可能是仓库根目录（补成 `/index.json`），也可能直接给了索引文件：
+/// `index.json`、Mihon 的 `index.pb`，或旧版仓库那个 `index.min.json`
+/// （后者不能被拼成 `index.min.json/index.json`）。
 fn normalize_index_url(url: &str) -> String {
-    if url.ends_with("index.json") || url.ends_with("index.pb") {
+    let url = url.trim();
+    if url.ends_with(".json") || url.ends_with(".pb") {
         url.to_string()
     } else {
         format!("{}/index.json", url.trim_end_matches('/'))
     }
 }
 
-/// Stable per-repo cache directory name derived from the index URL.
-/// `https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.pb`
-/// -> `keiyoushi` (first path segment after the host); falls back to the
-/// host name for bare domains.
-fn repo_dir_name(index_url: &str) -> String {
-    let rest = index_url.split("://").nth(1).unwrap_or(index_url);
-    let mut segments = rest.split('/').filter(|s| !s.is_empty());
-    let host = segments.next().unwrap_or("repo");
-    if let Some(first_path) = segments.next()
-        && !first_path.is_empty()
-    {
-        return first_path.to_string();
+/// 把仓库索引解析成条目列表（Mihon `index.pb` / Tachiyomi `index.json` 分流）。
+///
+/// 旧版 JSON 仓库里的 `apk` / `icon` / `jar` 是**相对 index 的路径**，直接拿去请求
+/// 会报 "relative URL without a base"，这里补成绝对 URL（见 [`resolve_asset_url`]）。
+fn parse_index(bytes: &[u8], url: &str) -> Result<Vec<RepoIndexEntry>> {
+    let mut entries: Vec<RepoIndexEntry> = if url.ends_with(".pb") {
+        parse_mihon_pb_index(bytes).map_err(|e| DomainError::Source(format!("mihon repo index parse: {e}")))?
+    } else {
+        let index: RepoIndex =
+            serde_json::from_slice(bytes).map_err(|e| DomainError::Source(format!("repo index parse: {e}")))?;
+        index.entries()
+    };
+    let base = index_base_url(url);
+    for entry in &mut entries {
+        let apk = entry.apk.as_deref().map(|v| resolve_asset_url(&base, "apk", v));
+        let icon = entry.icon.as_deref().map(|v| resolve_asset_url(&base, "icon", v));
+        let jar = entry.jar.as_deref().map(|v| resolve_asset_url(&base, "jar", v));
+        entry.apk = apk;
+        entry.icon = icon;
+        entry.jar = jar;
     }
-    host.trim_start_matches("www.")
-        .trim_start_matches("raw.")
-        .split('.')
-        .next()
-        .unwrap_or("repo")
-        .to_string()
+    Ok(entries)
+}
+
+/// index 所在目录：`…/repo/index.min.json` → `…/repo/`（拼相对 URL 用）。
+fn index_base_url(url: &str) -> String {
+    match url.rfind('/') {
+        Some(i) => url[..=i].to_string(),
+        None => url.to_string(),
+    }
+}
+
+/// 旧版仓库的资源路径补全。布局是 `<index 目录>/{apk,icon,jar}/<文件名>`：条目里
+/// 只写文件名（`tachiyomi-zh.copymanga-v1.4.53.apk`），所以光拼 index 目录会 404
+/// —— 实测 `<repo>/apk/xxx.apk` 200、`<repo>/xxx.apk` 404。已经带了目录的相对路径
+/// 原样拼，绝对 URL 不动（新版 JSON 与 Mihon `.pb` 给的都是绝对 URL）。
+fn resolve_asset_url(base: &str, subdir: &str, value: &str) -> String {
+    if value.contains("://") {
+        return value.to_string();
+    }
+    let value = value.trim_start_matches('/');
+    if value.contains('/') {
+        return format!("{base}{value}");
+    }
+    format!("{base}{subdir}/{value}")
+}
+
+/// 仓库索引的本地缓存路径：`<cache>/extensions/index/index-<hash>.<ext>`，
+/// hash 取规范化 index URL 的哈希（跨刷新、跨重启稳定），ext 是 `pb` / `json`。
+/// 缓存根在发布根下的统一 `<发布根>/cache`（见 `suwayomi_core::config::cache_root`），
+/// 不在扩展目录里。
+fn index_cache_path(cache_dir: &Path, index_url: &str) -> PathBuf {
+    let url = normalize_index_url(index_url);
+    let ext = if url.ends_with("index.pb") { "pb" } else { "json" };
+    cache_dir
+        .join("extensions")
+        .join("index")
+        .join(format!("index-{:016x}.{ext}", url_hash(&url)))
+}
+
+/// 同一个 URL 跨进程稳定的哈希（缓存文件名用）。
+fn url_hash(url: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    url.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// 索引缓存目录里只该有 `index-<hash>.<ext>` 文件：老布局留下的 `<repo>/`
+/// 目录顺手删掉（纯缓存，下次刷新会重下）。
+fn prune_legacy_index_dirs(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.path().is_dir() {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 fn decompress_gzip_if_needed(bytes: &[u8]) -> Vec<u8> {
@@ -983,9 +1054,21 @@ mod tests {
             .expect("first refresh");
         assert_eq!(n, 1);
 
-        // write-through cache exists after the first successful refresh
-        let cache_file = tmp.join("cache").join("extensions").join("index").join("repo-1").join("index.json");
+        // write-through cache exists after the first successful refresh：
+        // 平铺的 `index-<hash>.json`，不再给每个仓库建目录
+        let cache_file = index_cache_path(&tmp.join("cache"), &format!("http://{addr}/repo-1/index.json"));
         assert!(cache_file.exists(), "cache written: {}", cache_file.display());
+        assert_eq!(cache_file.parent().unwrap().file_name().unwrap(), "index");
+        assert_eq!(cache_file.extension().unwrap(), "json");
+        assert!(
+            cache_file.file_name().unwrap().to_str().unwrap().starts_with("index-"),
+            "缓存文件名形如 index-<hash>.<ext>：{}",
+            cache_file.file_name().unwrap().to_string_lossy()
+        );
+        assert!(
+            !tmp.join("cache").join("extensions").join("index").join("repo-1").exists(),
+            "不该再按仓库建目录"
+        );
 
         // second refresh: the one-shot server is gone (connection refused),
         // so refresh_one must fall back to the cached copy instead of failing.
@@ -1002,6 +1085,95 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(count, 1, "upsert served from cache");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+    /// 旧版 Tachiyomi 仓库（裸数组 + `code`/`version` + 数字 `nsfw` + 相对 apk 路径）。
+    /// 样本取自 stevenyomi/copymanga 的 index.min.json（issue #8）。
+    #[test]
+    fn parses_legacy_tachiyomi_index_json() {
+        let sample = r#"[
+          {
+            "name": "Tachiyomi: CopyManga",
+            "pkg": "eu.kanade.tachiyomi.extension.zh.copymanga",
+            "apk": "tachiyomi-zh.copymanga-v1.4.53.apk",
+            "lang": "zh",
+            "code": 53,
+            "version": "1.4.53",
+            "nsfw": 1,
+            "sources": [
+              { "id": "6696312508930833206", "lang": "zh", "name": "拷贝漫画", "baseUrl": "https://www.mangacopy.com" }
+            ]
+          }
+        ]"#;
+        let url = "https://raw.githubusercontent.com/stevenyomi/copymanga/repo/index.min.json";
+        let entries = parse_index(sample.as_bytes(), url).expect("legacy index parses");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].version_name, "1.4.53", "`version` 要认成 versionName");
+        assert_eq!(entries[0].version_code, 53, "`code` 要认成 versionCode");
+        assert!(entries[0].nsfw, "数字 1 要认成 true");
+        assert_eq!(entries[0].lang, "zh");
+        assert_eq!(entries[0].sources[0].lang, "zh");
+        assert_eq!(entries[0].sources[0].id, "6696312508930833206");
+        // 相对路径补成 <index 目录>/apk/<文件名>（旧版仓库的固定布局；只拼 index
+        // 目录会 404，实测 .../repo/apk/xxx.apk 才是 200）
+        assert_eq!(
+            entries[0].apk.as_deref(),
+            Some("https://raw.githubusercontent.com/stevenyomi/copymanga/repo/apk/tachiyomi-zh.copymanga-v1.4.53.apk")
+        );
+
+        // 新版写法（versionName/versionCode/布尔 nsfw/绝对 URL）仍然照读
+        let modern = r#"[{"name":"n","pkg":"p","apk":"https://x/a.apk","lang":"en","versionName":"1.0","versionCode":3,"nsfw":false}]"#;
+        let entries = parse_index(modern.as_bytes(), url).expect("modern index parses");
+        assert_eq!(entries[0].version_name, "1.0");
+        assert_eq!(entries[0].version_code, 3);
+        assert!(!entries[0].nsfw);
+        assert_eq!(entries[0].apk.as_deref(), Some("https://x/a.apk"));
+
+        // 文件名按字段各自的子目录补；已经带了目录的（`apk/x.apk`）不重复拼
+        assert_eq!(resolve_asset_url("https://h/repo/", "apk", "x.apk"), "https://h/repo/apk/x.apk");
+        assert_eq!(resolve_asset_url("https://h/repo/", "apk", "apk/x.apk"), "https://h/repo/apk/x.apk");
+        assert_eq!(resolve_asset_url("https://h/repo/", "icon", "p.png"), "https://h/repo/icon/p.png");
+        assert_eq!(resolve_asset_url("https://h/repo/", "apk", "https://x/a.apk"), "https://x/a.apk");
+    }
+
+    /// 仓库地址可能是根目录、也可能是索引文件本身（含旧版的 `index.min.json`）。
+    #[test]
+    fn normalize_index_url_accepts_index_files() {
+        assert_eq!(normalize_index_url("https://h/repo"), "https://h/repo/index.json");
+        assert_eq!(normalize_index_url("https://h/repo/"), "https://h/repo/index.json");
+        assert_eq!(normalize_index_url("https://h/repo/index.json"), "https://h/repo/index.json");
+        assert_eq!(normalize_index_url("https://h/repo/index.pb"), "https://h/repo/index.pb");
+        // 旧版仓库的索引就叫 index.min.json，不能再往后拼 /index.json
+        assert_eq!(
+            normalize_index_url("https://raw.githubusercontent.com/stevenyomi/copymanga/repo/index.min.json"),
+            "https://raw.githubusercontent.com/stevenyomi/copymanga/repo/index.min.json"
+        );
+        assert_eq!(normalize_index_url("  https://h/repo/index.min.json  "), "https://h/repo/index.min.json");
+    }
+
+    /// 索引缓存是平铺的 `index-<hash>.<ext>`：同一个 URL 稳定，扩展名跟协议走。
+    #[test]
+    fn index_cache_path_is_flat_and_stable() {
+        let tmp = tmp_root();
+        let cache = tmp.join("cache");
+        let json_url = "https://raw.githubusercontent.com/stevenyomi/copymanga/repo/index.min.json";
+        let a = index_cache_path(&cache, json_url);
+        let b = index_cache_path(&cache, json_url);
+        assert_eq!(a, b, "同一个 URL 的缓存路径必须稳定");
+        assert_eq!(a.parent().unwrap().file_name().unwrap(), "index");
+        assert_eq!(a.extension().unwrap(), "json");
+        assert!(a.file_name().unwrap().to_str().unwrap().starts_with("index-"), "{}", a.display());
+
+        let pb = index_cache_path(&cache, "https://github.com/keiyoushi/extensions/raw/repo/index.pb");
+        assert_eq!(pb.extension().unwrap(), "pb");
+        assert_ne!(a, pb, "不同仓库不共用一个缓存文件");
+
+        // 老布局留下的 <repo>/ 目录会被清掉
+        let legacy = cache.join("extensions").join("index").join("copymanga");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("index.json"), b"[]").unwrap();
+        prune_legacy_index_dirs(a.parent().unwrap());
+        assert!(!legacy.exists(), "老布局的仓库目录应被清掉");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

@@ -50,7 +50,7 @@ impl RepoEntry {
                 lang: e.lang,
                 version_name: e.version_name,
                 version_code: e.version_code.as_i64(),
-                nsfw: e.nsfw,
+                nsfw: e.nsfw || e.content_warning.as_ref().is_some_and(RawContentWarning::is_nsfw),
                 obsolete: e.obsolete,
                 has_readme: false,
                 sources: e.sources,
@@ -60,14 +60,14 @@ impl RepoEntry {
 }
 
 impl RepoIndex {
-    fn entries(self) -> Vec<RepoIndexEntry> {
+    /// 拆成条目 + 是不是旧版（裸数组）那支 —— 旧版的 icon 要按约定补。
+    fn entries(self) -> (Vec<RepoIndexEntry>, bool) {
         match self {
-            RepoIndex::V1(v) => v.into_iter().map(RepoEntry::into_v1).collect(),
-            RepoIndex::V2 { extension_list } => extension_list
-                .extensions
-                .into_iter()
-                .map(RepoEntry::into_v1)
-                .collect(),
+            RepoIndex::V1(v) => (v.into_iter().map(RepoEntry::into_v1).collect(), true),
+            RepoIndex::V2 { extension_list } => (
+                extension_list.extensions.into_iter().map(RepoEntry::into_v1).collect(),
+                false,
+            ),
         }
     }
 }
@@ -102,10 +102,34 @@ struct RepoIndexEntryV2 {
     version_code: StrOrNum,
     #[serde(default, deserialize_with = "de_bool_or_int")]
     nsfw: bool,
+    /// keiyoushi 的 v2 索引不给 `nsfw`，给的是 `contentWarning` 枚举。
+    #[serde(default)]
+    content_warning: Option<RawContentWarning>,
     #[serde(default)]
     obsolete: bool,
     #[serde(default)]
     sources: Vec<RepoSource>,
+}
+
+/// v2 的 `contentWarning`：`CONTENT_WARNING_SAFE` / `MIXED` / `NSFW`（也见过纯数字）。
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RawContentWarning {
+    Str(String),
+    Int(i64),
+}
+
+impl RawContentWarning {
+    /// 与 Mihon `index.pb` 那边同一条判据（`ContentWarning >= 2`）：**MIXED 也算 NSFW**。
+    fn is_nsfw(&self) -> bool {
+        match self {
+            RawContentWarning::Str(s) => {
+                let s = s.to_ascii_uppercase();
+                s.ends_with("MIXED") || s.ends_with("NSFW")
+            }
+            RawContentWarning::Int(n) => *n >= 2,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -748,10 +772,16 @@ fn normalize_index_url(url: &str) -> String {
 /// 把仓库索引解析成条目列表（Mihon `index.pb` / Tachiyomi `index.json` 分流）。
 ///
 /// 旧版 JSON 仓库里的 `apk` / `icon` / `jar` 是**相对 index 的路径**，直接拿去请求
-/// 会报 "relative URL without a base"，这里补成绝对 URL（见 [`resolve_asset_url`]）。
+/// 会报 "relative URL without a base"，这里补成绝对 URL（见 [`resolve_asset_url`]）；
+/// 旧版条目还没有 `icon`，按仓库约定补 `<index 目录>/icon/<pkg>.png`。新版 JSON 不给
+/// `lang`（见 [`lang_from_apk_name`]）、NSFW 藏在 `contentWarning` 里（见
+/// [`RawContentWarning`]），都在这里抹平。
 fn parse_index(bytes: &[u8], url: &str) -> Result<Vec<RepoIndexEntry>> {
-    let mut entries: Vec<RepoIndexEntry> = if url.ends_with(".pb") {
-        parse_mihon_pb_index(bytes).map_err(|e| DomainError::Source(format!("mihon repo index parse: {e}")))?
+    let (mut entries, legacy) = if url.ends_with(".pb") {
+        (
+            parse_mihon_pb_index(bytes).map_err(|e| DomainError::Source(format!("mihon repo index parse: {e}")))?,
+            false,
+        )
     } else {
         let index: RepoIndex =
             serde_json::from_slice(bytes).map_err(|e| DomainError::Source(format!("repo index parse: {e}")))?;
@@ -765,8 +795,27 @@ fn parse_index(bytes: &[u8], url: &str) -> Result<Vec<RepoIndexEntry>> {
         entry.apk = apk;
         entry.icon = icon;
         entry.jar = jar;
+        // 旧版仓库不写 icon 字段，但图标按约定放在 `<index 目录>/icon/<pkg>.png`
+        // （keiyoushi 的 index.html 与仓库目录都是这个布局）。
+        if entry.icon.is_none() && legacy {
+            entry.icon = Some(format!("{base}icon/{}.png", entry.pkg));
+        }
+        // 新版 JSON 不写 lang（语言散在 `sources[].language`，多语言扩展会列出一堆，
+        // 拿第一条当扩展语言是错的）—— 按 Tachiyomi 的 APK 命名约定取语言段。
+        if entry.lang.is_empty()
+            && let Some(lang) = lang_from_apk_name(entry.apk.as_deref().unwrap_or_default())
+        {
+            entry.lang = lang;
+        }
     }
     Ok(entries)
+}
+
+/// `tachiyomi-zh.copymanga-v1.4.53.apk` → `zh`；多语言扩展是 `all`。
+fn lang_from_apk_name(apk: &str) -> Option<String> {
+    let file = apk.rsplit('/').next()?;
+    let lang = file.strip_prefix("tachiyomi-")?.split('.').next()?;
+    (!lang.is_empty()).then(|| lang.to_string())
 }
 
 /// index 所在目录：`…/repo/index.min.json` → `…/repo/`（拼相对 URL 用）。
@@ -1121,19 +1170,87 @@ mod tests {
             Some("https://raw.githubusercontent.com/stevenyomi/copymanga/repo/apk/tachiyomi-zh.copymanga-v1.4.53.apk")
         );
 
-        // 新版写法（versionName/versionCode/布尔 nsfw/绝对 URL）仍然照读
+        // 旧版条目没有 icon 字段 → 按仓库约定补 <index 目录>/icon/<pkg>.png
+        assert_eq!(
+            entries[0].icon.as_deref(),
+            Some("https://raw.githubusercontent.com/stevenyomi/copymanga/repo/icon/eu.kanade.tachiyomi.extension.zh.copymanga.png")
+        );
+
+        // 同一个数组格式但用新版写法的条目（versionName/versionCode/布尔 nsfw/
+        // 绝对 URL）照样读；它也没 icon，同样按约定补
         let modern = r#"[{"name":"n","pkg":"p","apk":"https://x/a.apk","lang":"en","versionName":"1.0","versionCode":3,"nsfw":false}]"#;
         let entries = parse_index(modern.as_bytes(), url).expect("modern index parses");
         assert_eq!(entries[0].version_name, "1.0");
         assert_eq!(entries[0].version_code, 3);
         assert!(!entries[0].nsfw);
         assert_eq!(entries[0].apk.as_deref(), Some("https://x/a.apk"));
+        assert_eq!(
+            entries[0].icon.as_deref(),
+            Some("https://raw.githubusercontent.com/stevenyomi/copymanga/repo/icon/p.png")
+        );
 
         // 文件名按字段各自的子目录补；已经带了目录的（`apk/x.apk`）不重复拼
         assert_eq!(resolve_asset_url("https://h/repo/", "apk", "x.apk"), "https://h/repo/apk/x.apk");
         assert_eq!(resolve_asset_url("https://h/repo/", "apk", "apk/x.apk"), "https://h/repo/apk/x.apk");
         assert_eq!(resolve_asset_url("https://h/repo/", "icon", "p.png"), "https://h/repo/icon/p.png");
         assert_eq!(resolve_asset_url("https://h/repo/", "apk", "https://x/a.apk"), "https://x/a.apk");
+    }
+
+    /// 新版 JSON（keiyoushi `index.json`）的 v2 对象形状：没有 `lang`、没有 `nsfw`，
+    /// NSFW 走 `contentWarning` 枚举，资源是绝对 URL。样本截自真实条目。
+    #[test]
+    fn parses_v2_index_json() {
+        let sample = r#"{
+          "name": "Keiyoushi",
+          "extensionList": {
+            "extensions": [
+              {
+                "name": "AKuma",
+                "packageName": "eu.kanade.tachiyomi.extension.all.akuma",
+                "resources": { "apkUrl": "https://h/rel/tachiyomi-all.akuma-v1.4.10.apk", "iconUrl": "https://h/icon.png" },
+                "extensionLib": "1.6",
+                "versionCode": "106004",
+                "versionName": "1.4.10",
+                "contentWarning": "CONTENT_WARNING_NSFW",
+                "sources": [ { "id": "1", "name": "AKuma", "language": "ca", "homeUrl": "https://akuma.moe" } ]
+              },
+              {
+                "name": "Safe",
+                "packageName": "eu.kanade.tachiyomi.extension.en.safe",
+                "resources": { "apkUrl": "https://h/rel/tachiyomi-en.safe-v1.0.0.apk" },
+                "versionCode": "1",
+                "versionName": "1.0.0",
+                "contentWarning": "CONTENT_WARNING_SAFE",
+                "sources": [ { "id": "2", "name": "Safe", "language": "en" } ]
+              },
+              {
+                "name": "Mixed",
+                "packageName": "eu.kanade.tachiyomi.extension.all.mixed",
+                "resources": { "apkUrl": "https://h/rel/tachiyomi-all.mixed-v2.0.0.apk" },
+                "versionCode": 200,
+                "versionName": "2.0.0",
+                "contentWarning": "CONTENT_WARNING_MIXED",
+                "sources": []
+              }
+            ]
+          }
+        }"#;
+        let url = "https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.json";
+        let entries = parse_index(sample.as_bytes(), url).expect("v2 index parses");
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].lang, "all", "lang 从 apk 名里取（源语言里有 27 种，取第一条是错的）");
+        assert_eq!(entries[0].version_code, 106004, "versionCode 是字符串");
+        assert!(entries[0].nsfw, "CONTENT_WARNING_NSFW 算 NSFW");
+        assert_eq!(entries[0].apk.as_deref(), Some("https://h/rel/tachiyomi-all.akuma-v1.4.10.apk"));
+        assert_eq!(entries[0].icon.as_deref(), Some("https://h/icon.png"), "v2 给绝对 icon，不按旧版约定补");
+        assert!(!entries[1].nsfw, "CONTENT_WARNING_SAFE 不算");
+        assert_eq!(entries[1].lang, "en");
+        assert!(entries[2].nsfw, "MIXED 也算（与 .pb 的 ContentWarning >= 2 一致）");
+        assert_eq!(entries[2].version_code, 200, "数字 versionCode 也认");
+
+        assert_eq!(lang_from_apk_name("https://h/rel/tachiyomi-zh.copymanga-v1.4.53.apk").as_deref(), Some("zh"));
+        assert_eq!(lang_from_apk_name("tachiyomi-all.akuma-v1.4.10.apk").as_deref(), Some("all"));
+        assert_eq!(lang_from_apk_name("weird.apk"), None);
     }
 
     /// 仓库地址可能是根目录、也可能是索引文件本身（含旧版的 `index.min.json`）。

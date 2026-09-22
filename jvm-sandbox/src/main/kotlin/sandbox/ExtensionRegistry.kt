@@ -173,16 +173,17 @@ class ExtensionRegistry(private val rootDir: Path, private val jarDir: Path) : S
         return ApkFile(apk.toFile()).use { apkFile ->
             val meta = apkFile.apkMeta ?: return@use null
             val manifest = apkFile.manifestXml ?: return@use null
+            val pkgName = meta.packageName ?: apk.fileName.toString()
             // tachiyomi.extension.class meta-data (attribute order varies)
-            val className = metaValue(manifest, "tachiyomi.extension.class")
+            val declared = metaValue(manifest, "tachiyomi.extension.class")
                 ?: throw IllegalStateException("no tachiyomi.extension.class meta-data")
             val nsfw = metaValue(manifest, "tachiyomi.extension.nsfw")
             ExtensionInfo(
-                pkgName = meta.packageName ?: apk.fileName.toString(),
+                pkgName = pkgName,
                 name = meta.label ?: apk.fileName.toString(),
                 lang = extractLang(apk.fileName.toString()),
                 versionName = meta.versionName ?: "0",
-                className = className,
+                className = resolveSourceClass(pkgName, declared),
                 extensionId = extensionId,
                 versionCode = meta.versionCode,
                 contentWarning = if (nsfw == "true" || nsfw == "1") 1 else 0,
@@ -232,4 +233,15 @@ class ExtensionRegistry(private val rootDir: Path, private val jarDir: Path) : S
     private companion object {
         val IMAGE_SUFFIXES = listOf(".png", ".webp", ".jpg", ".jpeg")
     }
+}
+
+/**
+ * 扩展声明的 Source 类名。老模板写的是**相对包名**（`android:value=".CopyManga"`），
+ * 直接拿去 `Class.forName` 会 ClassNotFoundException，要拼上 APK 的包名 ——
+ * 判据与 Mihon 的 `ExtensionLoader` 一致（`if (it.startsWith(".")) pkgName + it`）。
+ * keiyoushi 现在写全限定名（`keiyoushi.source.Generated`），原样用。
+ */
+internal fun resolveSourceClass(pkgName: String, declared: String): String {
+    val name = declared.trim()
+    return if (name.startsWith(".")) pkgName + name else name
 }

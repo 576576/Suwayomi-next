@@ -22,12 +22,14 @@ import org.objectweb.asm.Opcodes
 import org.objectweb.asm.Type
 import java.net.URL
 import java.net.URLClassLoader
-import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
 import java.util.concurrent.ConcurrentHashMap
+import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 
 private const val ASSETS_PREFIX = "assets/"
 
@@ -40,7 +42,7 @@ private const val CONFIGURABLE_SOURCE = "eu.kanade.tachiyomi.source.Configurable
  * jar 按文件名缓存在 `bin/extensions`，上一版转换链转出来的 jar 不会自动被覆盖；不失效的话
  * 只有重装/升级过的扩展会吃到新产物，其余一直用旧 jar。启动时按戳清一次。
  */
-private const val CONVERTER_VERSION = 1
+private const val CONVERTER_VERSION = 2
 
 private const val CONVERTER_STAMP = ".converter-version"
 
@@ -87,26 +89,51 @@ class ExtensionLoader(private val rootDir: Path, private val jarDir: Path) {
     }
 
     /**
-     * 把 APK 里 `assets/` 下的文件按**原路径**搬进 [jar]。
+     * 把 APK 里的资源文件按**原路径**搬进 [jar]（见 [isJarResource]，dex 与 Android 自己的
+     * 东西不搬）。
      *
-     * dex2jar 只产出 class，不搬资源。扩展的多语言文案是靠
-     * `classLoader.getResourceAsStream("assets/i18n/messages_xx.properties")` 从自己包里
-     * 读的（keiyoushi 1.6 的 i18n 走这条路，前缀 `assets/` 也在查找名里），缺了资源
-     * 拿到 null，往下就是 `InputStreamReader(null)` 的 NPE。
+     * dex2jar 只产出 class，不搬资源。缺了资源会一路炸在扩展里：
+     * - 多语言文案走 `getResourceAsStream("assets/i18n/messages_xx.properties")`（keiyoushi 1.6），
+     *   拿到 null 就是 `InputStreamReader(null)` 的 NPE；
+     * - 老扩展打包的第三方库按绝对路径读自己的字典表（copy manga 的 chinese-utils 读
+     *   `/simp.txt`、`/simplified.txt`，文件就躺在 APK 根目录），拿到 null 会在解析期
+     *   `Cannot load from char array because "this.chars" is null`。
      */
     private fun copyAssets(apk: Path, jar: Path) {
-        FileSystems.newFileSystem(jar).use { fs ->
-            ZipInputStream(Files.newInputStream(apk)).use { zip ->
-                var entry = zip.nextEntry
-                while (entry != null) {
-                    if (!entry.isDirectory && entry.name.startsWith(ASSETS_PREFIX)) {
-                        val target = fs.getPath("/" + entry.name)
-                        target.parent?.let { Files.createDirectories(it) }
-                        Files.newOutputStream(target).use { zip.copyTo(it) }
+        val merged = jar.resolveSibling(jar.fileName.toString() + ".merged")
+        try {
+            ZipOutputStream(Files.newOutputStream(merged, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING))
+                .use { out ->
+                    // 先原样搬 dex2jar 产出的 class
+                    val existing = HashSet<String>()
+                    ZipInputStream(Files.newInputStream(jar)).use { zip ->
+                        var entry = zip.nextEntry
+                        while (entry != null) {
+                            if (!entry.isDirectory) {
+                                existing += entry.name
+                                out.putNextEntry(ZipEntry(entry.name))
+                                zip.copyTo(out)
+                                out.closeEntry()
+                            }
+                            entry = zip.nextEntry
+                        }
                     }
-                    entry = zip.nextEntry
+                    // 再补 APK 里的资源（同名不覆盖）
+                    ZipInputStream(Files.newInputStream(apk)).use { zip ->
+                        var entry = zip.nextEntry
+                        while (entry != null) {
+                            if (!entry.isDirectory && isJarResource(entry.name) && existing.add(entry.name)) {
+                                out.putNextEntry(ZipEntry(entry.name))
+                                zip.copyTo(out)
+                                out.closeEntry()
+                            }
+                            entry = zip.nextEntry
+                        }
+                    }
                 }
-            }
+            Files.move(merged, jar, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+        } finally {
+            Files.deleteIfExists(merged)
         }
     }
 
@@ -352,3 +379,18 @@ private class BytesHierarchy(private val loader: java.net.URLClassLoader, privat
         }
     }
 }
+
+/**
+ * APK 里的哪些条目要搬进转换后的 jar：`assets/` 下面的全部文件，加上**根目录下的普通文件**（老扩展打包的
+ * 第三方库按绝对路径读的字典表就放这儿）。
+ *
+ * 不搬的是 Android 自己的东西：`classes*.dex`、清单、`resources.arsc`、`res/`（编译后的资源，
+ * 在桌面 JVM 上没用）、`lib/`（原生库，jar 里放不了）、`META-INF/`（签名/服务描述）。
+ */
+internal fun isJarResource(name: String): Boolean =
+    when {
+        name.startsWith(ASSETS_PREFIX) -> true
+        name.startsWith("res/") || name.startsWith("lib/") || name.startsWith("META-INF/") -> false
+        name.endsWith(".dex") || name == "AndroidManifest.xml" || name == "resources.arsc" -> false
+        else -> true
+    }

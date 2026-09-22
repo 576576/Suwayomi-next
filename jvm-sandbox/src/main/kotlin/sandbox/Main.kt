@@ -56,6 +56,7 @@ fun main() {
     // 扩展的 <clinit> 都会以 ExceptionInInitializerError 记在类上，之后该类永久不可用。
     setupInjekt()
     startMainLooper()
+    installHttpAgent()
     registerAndroidCompatConfig()
     installSandboxContext()
     registry.scan()

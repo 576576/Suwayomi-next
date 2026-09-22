@@ -106,6 +106,22 @@ fun installSandboxContext() {
 }
 
 /**
+ * 补上 Android 运行时会给 JVM 设的 `http.agent` 系统属性。
+ *
+ * 扩展普遍这么取 User-Agent：`System.getProperty("http.agent")` 交给
+ * `Intrinsics.checkNotNull`（copy manga 的 `headersBuilder()` 就是），桌面 JVM 没有这个属性、
+ * 拿到 null，扩展在**构造期**就 NPE —— 和主 Looper 一样属于「AndroidRuntime 本来就提供、
+ * 桩里没有」的东西，必须在 `scan()` 之前补。
+ *
+ * 值按 Android 默认那个形状（真机上 Mihon 发的也是这个）；已经有值就不动。
+ */
+fun installHttpAgent() {
+    if (System.getProperty("http.agent") == null) {
+        System.setProperty("http.agent", "Dalvik/2.1.0 (Linux; U; Android 13; Suwayomi-next jvm-sandbox)")
+    }
+}
+
+/**
  * 把宿主版本注入扩展面（`AppInfo`）。
  *
  * 值由 server spawn 本进程时从 `suwayomi_core::version` 传进来（环境变量名与 `build.rs`

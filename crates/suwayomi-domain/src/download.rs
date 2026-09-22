@@ -748,6 +748,22 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                 .fetch_optional(db.pool())
                 .await
                 .unwrap_or_default();
+            // 1b) 精确匹配不上时按**落盘时用的净化规则**再找一遍：写目录走的是
+            // `sanitize_file_name(title)`，标题里有 Windows 非法字符（`|` `:` `?` 等）
+            // 时目录名与 title 本来就不相等 —— 只按 title 找会永远匹配不上，磁盘上
+            // 明明有归档却显示未下载。
+            let row = match row {
+                Some(r) => Some(r),
+                None => {
+                    let sql = bind_placeholders("SELECT id, title, url FROM manga WHERE source = ?");
+                    let candidates: Vec<(i32, String, String)> =
+                        suwayomi_db::query_as(&sql).bind(source_id).fetch_all(db.pool()).await.unwrap_or_default();
+                    candidates
+                        .into_iter()
+                        .find(|(_, title, _)| manga_dir_matches(title, &manga_title))
+                        .map(|(id, _, url)| (id, url))
+                }
+            };
             let Some((_manga_id, manga_url)) = row else {
                 tracing::warn!(%manga_title, "downloads: no matching manga row");
                 continue;
@@ -1113,6 +1129,12 @@ fn remove_empty_dir_ancestors(start: &std::path::Path, stop: &std::path::Path) {
 
 /// Filesystem-safe directory/file name: strip Windows-invalid characters
 /// and trailing dots/spaces, collapse runs to a single character.
+/// 磁盘上的漫画目录能否对上某一行的标题。目录是按 `sanitize_file_name(title)` 落盘的，
+/// 标题里有 Windows 非法字符时目录名与 title 本来就不相等，所以净化后还要再比一次。
+fn manga_dir_matches(title: &str, dir_name: &str) -> bool {
+    title == dir_name || sanitize_file_name(title) == dir_name
+}
+
 fn sanitize_file_name(raw: &str) -> String {
     let cleaned: String = raw
         .chars()
@@ -1194,6 +1216,40 @@ mod tests {
         mgr.enqueue_chapter(1).await.expect("enqueue 2");
         mgr.clear().await;
         assert!(mgr.snapshot().await.is_empty());
+    }
+
+    #[test]
+    fn manga_dir_matches_sanitized_title() {
+        assert!(manga_dir_matches("M", "M"));
+        // 标题里的 `|` 落盘时变 `_`：目录名跟 title 不相等，但就是同一部
+        assert!(manga_dir_matches("A | B", "A _ B"));
+        assert!(manga_dir_matches("[X] A | B [Chinese]", "[X] A _ B [Chinese]"));
+        assert!(!manga_dir_matches("A | B", "A _ C"));
+    }
+
+    /// 回归：目录名是净化过的（`|` → `_`），对账只按 title 找会永远匹配不上 ——
+    /// 磁盘上明明有归档，章节的已下载标记却会被清掉。
+    #[tokio::test]
+    async fn reconcile_matches_sanitized_manga_dir() {
+        let db = seed().await;
+        suwayomi_db::query("UPDATE manga SET title = 'A | B' WHERE id = 1").execute(db.pool()).await.unwrap();
+        // 外部导入按 `url = 文件名` 匹配，这里把章节 url 设成归档名
+        suwayomi_db::query("UPDATE chapter SET url = 'Ch1.cbz' WHERE id = 1").execute(db.pool()).await.unwrap();
+
+        let data = std::env::temp_dir().join(format!("reconcile-sanitize-{}", std::process::id()));
+        let manga_dir = data.join("downloads").join("S (EN)").join("A _ B");
+        std::fs::create_dir_all(&manga_dir).unwrap();
+        std::fs::write(manga_dir.join("Ch1.cbz"), b"x").unwrap();
+
+        let chapters = reconcile_downloads(&db, &data).await.expect("reconcile");
+        assert!(chapters >= 1, "净化过的目录名没对上，处理了 {chapters} 个章节");
+        let downloaded: Option<bool> = suwayomi_db::query_scalar("SELECT is_downloaded FROM chapter WHERE id = 1")
+            .fetch_optional(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(downloaded, Some(true), "章节的已下载标记没被认回来");
+
+        std::fs::remove_dir_all(&data).ok();
     }
 
     #[tokio::test]

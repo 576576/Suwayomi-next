@@ -6,8 +6,9 @@
 //! [`SourceFetcher::fetch_pages`]; success marks the chapter `is_downloaded`.
 
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, RwLock};
 
 use tokio::sync::{broadcast, Mutex};
 
@@ -16,6 +17,28 @@ use suwayomi_core::models::now_epoch_secs;
 
 use crate::source::SourceFetcher;
 use crate::sql::bind_placeholders;
+
+/// 下载根的显式覆盖（`downloadsPath` 设置，进程级）。服务端启动时与保存设置后写入。
+static DOWNLOADS_ROOT_OVERRIDE: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
+
+/// 设置下载根。`None`/空串表示回到默认的 `<数据目录>/downloads`。
+pub fn set_downloads_root(path: Option<PathBuf>) {
+    let lock = DOWNLOADS_ROOT_OVERRIDE.get_or_init(|| RwLock::new(None));
+    if let Ok(mut guard) = lock.write() {
+        *guard = path.filter(|p| !p.as_os_str().is_empty());
+    }
+}
+
+/// 下载根：设置了 `downloadsPath` 就用它，否则 `<data_dir>/downloads`。
+pub fn downloads_root(data_dir: &Path) -> PathBuf {
+    if let Some(lock) = DOWNLOADS_ROOT_OVERRIDE.get()
+        && let Ok(guard) = lock.read()
+        && let Some(path) = guard.as_ref()
+    {
+        return path.clone();
+    }
+    data_dir.join("downloads")
+}
 
 /// Per-job state (mirrors `DownloadState`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -491,11 +514,7 @@ impl DownloadManager {
         let manga_dir = sanitize_file_name(&job.manga_title);
         let chapter_file = format!("{}.cbz", sanitize_file_name(&job.chapter_name));
 
-        let dir = self
-            .data_dir
-            .join("downloads")
-            .join(&source_dir)
-            .join(&manga_dir);
+        let dir = downloads_root(&self.data_dir).join(&source_dir).join(&manga_dir);
         std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {e}"))?;
         let cbz_path = dir.join(&chapter_file);
 
@@ -552,7 +571,7 @@ impl DownloadManager {
         if downloaded.is_empty() {
             // No page could be fetched — don't leave behind an empty manga
             // folder (or empty {Source} parent chain) in the downloads tree.
-            remove_empty_dir_ancestors(&dir, &self.data_dir.join("downloads"));
+            remove_empty_dir_ancestors(&dir, &downloads_root(&self.data_dir));
             return Err(format!("no page image could be downloaded: {}", errors.join("; ")));
         }
         if !errors.is_empty() {
@@ -611,7 +630,7 @@ impl DownloadManager {
 /// 匹配：目录名先对 manga.title，再以解析出的 manga.url 匹配该源所有语言
 /// 变体的行；章节按 (manga,url) upsert 并标 is_downloaded。
 pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::error::Result<usize> {
-    let downloads_root = data_dir.join("downloads");
+    let root = downloads_root(data_dir);
     // Older builds "downloaded" chapters by flipping is_downloaded without
     // ever storing an archive (real_url stays empty) — nothing to read
     // offline. Clear those stale markers so the chapters can be downloaded
@@ -666,7 +685,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
         let sql = bind_placeholders("DELETE FROM page WHERE chapter = ANY($1)");
         let _ = suwayomi_db::query(&sql).bind(&stale_ids).execute(db.pool()).await;
     }
-    if !downloads_root.is_dir() {
+    if !root.is_dir() {
         return Ok(0);
     }
     // Earlier builds inserted page rows with `ON CONFLICT DO NOTHING`, which
@@ -681,7 +700,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
     let mut matched_mangas: std::collections::HashSet<i32> = std::collections::HashSet::new();
     let mut total_chapters = 0usize;
 
-    let source_dirs = match std::fs::read_dir(&downloads_root) {
+    let source_dirs = match std::fs::read_dir(&root) {
         Ok(it) => it,
         Err(_) => return Ok(0),
     };
@@ -983,7 +1002,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
     // The downloads tree should only contain content-bearing folders (a CBZ
     // per chapter). Drop any empty directories left behind by failed runs or
     // earlier builds — deepest first, keeping the downloads root itself.
-    if let Ok(entries) = std::fs::read_dir(&downloads_root) {
+    if let Ok(entries) = std::fs::read_dir(&root) {
         for entry in entries.flatten() {
             if entry.path().is_dir() {
                 prune_empty_dir_tree(&entry.path());

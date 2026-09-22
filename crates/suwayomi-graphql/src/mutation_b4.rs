@@ -1928,9 +1928,15 @@ impl MutationRootB4 {
             .modify(MetaTable::Global, &by_ref)
             .await
             .map_err(async_graphql::Error::from)?;
-        // Local source path takes effect immediately (no restart needed).
+        // 本地图源 / 下载目录保存后立即生效（不用重启）。`%APPDIR%` / `%DATADIR%`
+        // 占位符以当前数据目录为基准展开；留空 = 回到各自的默认位置。
         if let Some(p) = input.settings.local_source_path.clone() {
-            suwayomi_domain::source::local::set_local_source_root(Some(std::path::PathBuf::from(p)));
+            let path = suwayomi_core::config::resolve_setting_path(&p, &state.data_dir);
+            suwayomi_domain::source::local::set_local_source_root(Some(path));
+        }
+        if let Some(p) = input.settings.downloads_path.clone() {
+            let path = suwayomi_core::config::resolve_setting_path(&p, &state.data_dir);
+            suwayomi_domain::download::set_downloads_root(Some(path));
         }
         // 重算运行时配置：KOReader 冲突策略 / SyncYomi 开关由服务从 `state.config`
         // 读取，不刷新的话保存完只有设置页显示变了。

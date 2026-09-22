@@ -385,13 +385,28 @@ fn blob_str(json: &serde_json::Value, key: &str) -> Option<String> {
 }
 
 /// 把持久化的 localSourcePath（setSettings 存的 global_meta）还原到进程内
-/// 本地图源根目录 override，自定义目录重启后仍生效
-fn load_local_source_path(blob: Option<&serde_json::Value>) {
+/// 本地图源根目录 override，自定义目录重启后仍生效。
+///
+/// `%APPDIR%` / `%DATADIR%` 占位符在这里展开成实际路径（见
+/// `suwayomi_core::config::resolve_setting_path`）。
+fn load_local_source_path(blob: Option<&serde_json::Value>, data_dir: &std::path::Path) {
     let Some(p) = blob.and_then(|json| blob_str(json, "localSourcePath")) else {
         return;
     };
-    suwayomi_domain::source::local::set_local_source_root(Some(std::path::PathBuf::from(&p)));
-    tracing::info!("local source path from settings: {p}");
+    let path = suwayomi_core::config::resolve_setting_path(&p, data_dir);
+    tracing::info!("local source path from settings: {} (from {})", path.display(), p);
+    suwayomi_domain::source::local::set_local_source_root(Some(path));
+}
+
+/// 持久化的 downloadsPath（WebUI「数据与存储 → 下载位置」）→ 进程内下载根 override。
+/// 留空 = 默认的 `<数据目录>/downloads`。
+fn load_downloads_path(blob: Option<&serde_json::Value>, data_dir: &std::path::Path) {
+    let Some(p) = blob.and_then(|json| blob_str(json, "downloadsPath")) else {
+        return;
+    };
+    let path = suwayomi_core::config::resolve_setting_path(&p, data_dir);
+    tracing::info!("downloads path from settings: {} (from {})", path.display(), p);
+    suwayomi_domain::download::set_downloads_root(Some(path));
 }
 
 /// 持久化的数据目录（WebUI「数据与存储」页的「存储位置」）。
@@ -406,7 +421,9 @@ fn load_data_dir_setting(blob: Option<&serde_json::Value>, fallback: std::path::
     let Some(dir) = blob.and_then(|json| blob_str(json, "dataDir")) else {
         return fallback;
     };
-    let dir = std::path::PathBuf::from(dir);
+    // 占位符以**当前生效的数据目录**（env / 发布布局推出来的那个）为基准：
+    // `%APPDIR%/data` 就是发布布局的默认位置，`%DATADIR%/xxx` 表示"现在这个目录下的 xxx"。
+    let dir = suwayomi_core::config::resolve_setting_path(&dir, &fallback);
     if dir != fallback {
         tracing::info!(
             "data dir from settings: {} (overrides {})",
@@ -487,13 +504,16 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
     // 它兜底，只查一次
     let settings_blob = load_settings_blob(&db).await;
 
-    // 还原持久化的 localSourcePath，重启后自定义本地图源目录仍生效
-    load_local_source_path(settings_blob.as_ref());
-
     // 存储位置（dataDir）同样从设置里读 —— 数据库文件不在这个目录下，所以它
     // 可以被随便改而不影响设置本身（见 suwayomi_db::config::default_db_dir）
+    //
+    // 先定数据目录：下面两项的 `%DATADIR%` 占位符都以它为准。
     let data_dir = load_data_dir_setting(settings_blob.as_ref(), data_dir);
     tracing::info!("data dir: {}", data_dir.display());
+
+    // 还原持久化的 localSourcePath / downloadsPath，重启后自定义目录仍生效
+    load_local_source_path(settings_blob.as_ref(), &data_dir);
+    load_downloads_path(settings_blob.as_ref(), &data_dir);
 
     // 认证：模式解析失败直接不启动。静默退化成「无认证」比启动失败危险得多。
     let mut config = config;

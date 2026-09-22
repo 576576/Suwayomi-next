@@ -35,6 +35,56 @@ pub fn cache_root() -> std::path::PathBuf {
     std::path::PathBuf::from("cache")
 }
 
+/// 设置里可用的目录占位符（大小写不敏感，只能出现在开头）：
+/// `%APPDIR%` = 发布根（见 [`app_root`]），`%DATADIR%` = 数据目录。
+pub const APP_DIR_TOKEN: &str = "%APPDIR%";
+pub const DATA_DIR_TOKEN: &str = "%DATADIR%";
+
+/// 发布根 —— 发布布局里 exe 在 `bin/` 下，取它的上级；否则取 exe 所在目录；
+/// 拿不到 exe 就退回当前工作目录。
+///
+/// Android 上宿主不走这条（没有发布布局），`%APPDIR%` 在那里没有意义。
+pub fn app_root() -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        if dir.file_name().map(|n| n == "bin").unwrap_or(false)
+            && let Some(base) = dir.parent()
+        {
+            return base.to_path_buf();
+        }
+        return dir.to_path_buf();
+    }
+    std::env::current_dir().unwrap_or_default()
+}
+
+/// 把设置里填的目录串解析成实际路径。
+///
+/// 支持 `%APPDIR%` / `%DATADIR%` 两个前缀占位符（`data_dir` 由调用方给出 —— 同一份
+/// 设置在不同进程里解析到哪儿，取决于那个进程的数据目录）。占位符之后的分段两种
+/// 斜杠都认，所以 Windows 上 `%DATADIR%\downloads` 与 `%DATADIR%/downloads` 等价。
+///
+/// **不是占位符开头的一律原样返回**：绝对路径照用，相对路径仍按调用进程的当前工作
+/// 目录解析（跟这之前的行为一致）—— 想让相对位置有确定含义就用占位符。
+pub fn resolve_setting_path(value: &str, data_dir: &std::path::Path) -> std::path::PathBuf {
+    let value = value.trim();
+    for (token, base) in [(APP_DIR_TOKEN, app_root()), (DATA_DIR_TOKEN, data_dir.to_path_buf())] {
+        // get(..) 而不是切片：value 开头是多字节字符时，按字节切会 panic
+        if let Some(head) = value.get(..token.len())
+            && head.eq_ignore_ascii_case(token)
+        {
+            let mut path = base;
+            for segment in value[token.len()..].split(['\\', '/']) {
+                if !segment.is_empty() {
+                    path.push(segment);
+                }
+            }
+            return path;
+        }
+    }
+    std::path::PathBuf::from(value)
+}
+
 /// Mirrors `graphql/types/DatabaseType.kt`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DatabaseType {
@@ -325,5 +375,35 @@ impl RuntimeConfig {
 impl From<ServerConfig> for RuntimeConfig {
     fn from(config: ServerConfig) -> Self {
         Self::new(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn setting_path_expands_tokens() {
+        let data = std::path::Path::new("E:/data");
+        let app = app_root();
+
+        assert_eq!(resolve_setting_path("%DATADIR%/downloads", data), data.join("downloads"));
+        assert_eq!(resolve_setting_path("%DATADIR%\\downloads", data), data.join("downloads"));
+        assert_eq!(resolve_setting_path("%DATADIR%", data), data);
+        assert_eq!(resolve_setting_path("%datadir%/a/b", data), data.join("a").join("b"));
+        assert_eq!(resolve_setting_path("  %DATADIR%/a  ", data), data.join("a"));
+        assert_eq!(resolve_setting_path("%APPDIR%/data", data), app.join("data"));
+
+        // 不是占位符开头 → 原样（含绝对路径与普通相对路径）
+        assert_eq!(resolve_setting_path("E:/x/y", data), std::path::PathBuf::from("E:/x/y"));
+        assert_eq!(resolve_setting_path("rel/dir", data), std::path::PathBuf::from("rel/dir"));
+        assert_eq!(resolve_setting_path("", data), std::path::PathBuf::new());
+        // 占位符在中间/后面都不算
+        assert_eq!(
+            resolve_setting_path("data/%DATADIR%", data),
+            std::path::PathBuf::from("data/%DATADIR%")
+        );
+        // 多字节开头的值不会因为按字节切片而 panic
+        assert_eq!(resolve_setting_path("数据目录/%DATADIR%", data), std::path::PathBuf::from("数据目录/%DATADIR%"));
     }
 }

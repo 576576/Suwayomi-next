@@ -101,7 +101,7 @@ async fn load_settings(
     let folder = if settings.backup_path.trim().is_empty() {
         state.data_dir.join("autobackup")
     } else {
-        PathBuf::from(settings.backup_path.trim())
+        suwayomi_core::config::resolve_setting_path(&settings.backup_path, &state.data_dir)
     };
     let flags = suwayomi_core::backup::BackupFlags {
         include_manga: settings.auto_backup_include_manga,

@@ -658,6 +658,9 @@ pub struct AboutServerPayload {
     /// Epoch seconds of the last automatic backup (0 = never ran yet).
     /// Suwayomi-next 扩展字段：WebUI「数据与存储」页在自动备份频率下显示为副标题。
     pub last_auto_backup_at: LongString,
+    /// 发布根（exe 在 `bin/` 下时是它的上级）。Suwayomi-next 扩展字段：设置里可以填
+    /// `%APPDIR%` 占位符，WebUI 要用它把占位符还原成能直接用的绝对路径。
+    pub app_dir: String,
 }
 
 impl AboutServerPayload {
@@ -688,6 +691,7 @@ impl AboutServerPayload {
             version: suwayomi_core::version::VERSION.into(),
             data_dir: data_dir.to_string(),
             last_auto_backup_at: LongString(last_auto_backup_at),
+            app_dir: suwayomi_core::config::app_root().to_string_lossy().to_string(),
         }
     }
 }

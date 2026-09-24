@@ -39,7 +39,7 @@ GitHub Release 提供解压即用的平台包（具体平台与捆绑范围随�
 suwayomi             桌面壳（Tauri 托盘）
 bin/
   ├─ suwayomi-server   无头服务器（单实例）
-  ├─ jvm-sandbox.jar   扩展沙盒
+  ├─ ext-runtime.jar   扩展沙盒
   └─ extensions/       已装扩展的转换 jar（自动生成）
 data/                默认数据目录（Tachiyomi 兼容：downloads/ local/ autobackup/）
 db/                  数据库文件（与 data/ 分开，见「数据库后端」）
@@ -77,7 +77,7 @@ crates/
   suwayomi-graphql/  GraphQL API
   suwayomi-opds/     OPDS
   suwayomi-server/   服务端入口
-jvm-sandbox/         扩展沙盒（Kotlin：AndroidCompat + dex2jar + ChildFirstClassLoader）
+android/             Android 宿主工程（独立 Gradle/AGP 构建，不并入主工程）
 suwayomi-tray/       桌面壳（Tauri 2，独立 workspace，不进主 workspace；Windows/Linux）
 migrations/          SQL 迁移（含 pg-only/：SyncYomi 触发器）
 scripts/             CI/辅助脚本（resolve-webui.sh / unzip_any.py 等）
@@ -98,18 +98,20 @@ docs/                文档（api/、graphql/、migration/、en/、release.md、
 
 server 可启动一个 JVM 沙盒进程，通过 HTTP 契约驱动真实 Mihon/Tachiyomi 扩展（APK → dex2jar → ChildFirst 类加载 + 反射）：
 
+沙盒本身（原 `jvm-sandbox`，现名 `ext-runtime`）在独立仓库
+[576576/Suwayomi-ext-runtime](https://github.com/576576/Suwayomi-ext-runtime)。
+本仓库不再持有它的源码，本地开发**下载发布好的 jar 即可**，不必自己构建。
+`+jre` 桌面包与 Docker 镜像用的那份裁剪 JRE 也在那边用 jlink 产出（模块白名单跟着沙盒
+代码走），这里按 `<版本>-<os>-<arch>` 取资产，本仓库不跑任何 JVM 工具链：
+
 ```bash
-# 1) 构建 sandbox（JDK 25 toolchain；产物 build/libs/suwayomi-jvm-sandbox.jar）
-cd jvm-sandbox
-gradle build          # Android stub 全部由构建产出，不需要预置 jar：
-                      #   AndroidCompat（含 Config 模块）是 android-compat/ 下的 vendor 源码；
-                      #   AOSP 公开 API 空壳由 android-stub/ 按 android-stub.properties 的 pin
-                      #   下载并剥离后生成（首次构建需联网取 platform-30_r03.zip，约 52MB）
-cd ..
+# 1) 取扩展沙盒 jar（省略版本参数则取最新）
+OUT="$(bash scripts/resolve-ext-runtime.sh 30.1.0)"
+curl -fsSL -o ext-runtime.jar "$(printf '%s' "$OUT" | sed -n 's/^url=//p')"
 
 # 2) 把扩展 APK 放入目录（默认 ./extensions，或用 SUWAYOMI_EXTENSIONS_DIR 指定）
 # 3) 启动 server 并启用 sandbox
-SUWAYOMI_SANDBOX_JAR=jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar \
+SUWAYOMI_SANDBOX_JAR=ext-runtime.jar \
 SUWAYOMI_SANDBOX_PORT=8091 \
 SUWAYOMI_EXTENSIONS_DIR=/path/to/extensions \
 SUWAYOMI_SANDBOX_PROXY=127.0.0.1:7890 \   # 可选：HTTP 代理

@@ -9,8 +9,8 @@ REM  Output: target\artifacts\  (cleared on every run)
 REM    Suwayomi-r{code}-windows-x64\           unpacked stage
 REM    Suwayomi-r{code}-windows-x64.zip        release zip (base)
 REM
-REM  Requires: cargo (Rust), JDK 17+ (jvm-sandbox jar),
-REM  git, curl, python (zip extraction), PowerShell (zip pack)
+REM  Requires: cargo (Rust), git, curl, python (zip extraction),
+REM  PowerShell (zip pack)
 REM ============================================================
 setlocal
 cd /d "%~dp0"
@@ -38,22 +38,20 @@ echo [2/6] Building tray shell suwayomi.exe (release) ...
 cargo build --release --manifest-path suwayomi-tray\Cargo.toml
 if errorlevel 1 goto :error
 
-REM [3/6] jvm-sandbox fat jar
-echo [3/6] Building jvm-sandbox jar ...
-pushd jvm-sandbox
-call gradlew -q jar --no-daemon
-if errorlevel 1 (
-  popd
-  goto :error
-)
-popd
+REM [3/6] ext-runtime fat jar (download from Suwayomi-ext-runtime releases)
+REM  版本号 = <AOSP API level>.<主版本>.<修订>；换 pin 就改这一行（CI 侧由 prep 自动解析）。
+echo [3/6] Downloading ext-runtime jar ...
+set "EXT_VER=30.1.0"
+set "EXT_URL=https://github.com/576576/Suwayomi-ext-runtime/releases/download/v%EXT_VER%/ext-runtime-%EXT_VER%.jar"
+curl -fsSL -o "%ART%\ext-runtime.jar" "%EXT_URL%"
+if errorlevel 1 goto :error
 
 REM [4/6] assemble stage layout (matches CI: exe top-level, server+jar in bin/)
 echo [4/6] Assembling %STAGE% ...
 mkdir "%STAGE%\bin"
 copy /y suwayomi-tray\target\release\suwayomi.exe "%STAGE%\" >nul
 copy /y target\release\suwayomi-server.exe "%STAGE%\bin\" >nul
-copy /y jvm-sandbox\build\libs\suwayomi-jvm-sandbox.jar "%STAGE%\bin\jvm-sandbox.jar" >nul
+copy /y "%ART%\ext-runtime.jar" "%STAGE%\bin\ext-runtime.jar" >nul
 
 REM [5/6] bundle WebUI (fork latest release) + data dirs
 echo [5/6] Downloading WebUI (fork latest release) ...

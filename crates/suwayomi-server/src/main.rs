@@ -51,7 +51,7 @@ async fn main() -> anyhow::Result<()> {
     init_logging("info");
 
     // 扩展来源：`SUWAYOMI_SANDBOX_URL`（已运行的扩展宿主，如 Android 宿主 App）优先，
-    // 其次本地 jvm-sandbox.jar（见 resolve_sandbox_jar 的发布布局），都没有则不接扩展。
+    // 其次本地 ext-runtime.jar（见 resolve_sandbox_jar 的发布布局），都没有则不接扩展。
     let sandbox = match std::env::var("SUWAYOMI_SANDBOX_URL") {
         Ok(url) if !url.trim().is_empty() => SandboxMode::External { base_url: url },
         _ => match resolve_sandbox_jar() {

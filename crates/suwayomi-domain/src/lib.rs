@@ -20,7 +20,7 @@ pub mod updater;
 
 #[cfg(test)]
 mod sandbox_e2e {
-    //! End-to-end test against a running JVM sandbox (see `jvm-sandbox/`).
+    //! End-to-end test against a running JVM sandbox (see `ext-runtime.jar`).
     //! Skipped when no sandbox is listening on the test port.
     use crate::source::sandbox::HttpSandboxFetcher;
     use crate::source::SourceFetcher;

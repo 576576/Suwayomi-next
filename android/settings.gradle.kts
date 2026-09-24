@@ -1,4 +1,4 @@
-// Android 宿主工程。与 jvm-sandbox 一样是**独立**的 Gradle 构建（不并入主工程），
+// Android 宿主工程。与 ext-runtime 一样是**独立**的 Gradle 构建（不并入主工程），
 // 原因见 docs/migration/ANDROID_IMPL.md：它只在打 Android 包时才需要，
 // 且需要 Google Maven 与 Android SDK，桌面用户不该为此付出任何代价。
 

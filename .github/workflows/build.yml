@@ -42,12 +42,24 @@ on:
         description: 捆绑的 WebUI zip 下载地址（调用方解析一次，所有 target 复用同一份）
         required: true
         type: string
+      ext_runtime_url:
+        description: 捆绑的 ext-runtime.jar 下载地址（Suwayomi-ext-runtime 的 Release 资产，免鉴权；调用方解析一次，所有 target 复用同一份）
+        required: true
+        type: string
+      ext_runtime_version:
+        description: 捆绑的 ext-runtime 版本号，用于编译期标记、日志与拼 JRE 资产名
+        required: true
+        type: string
+      ext_runtime_jre_base:
+        description: ext-runtime 该版本 Release 的资产下载前缀（裁剪 JRE 按 <base>/ext-runtime-jre-<V>-<os>-<arch>.tar.gz 取）
+        required: true
+        type: string
       targets:
         description: 桌面/服务端构建矩阵 include 数组（JSON 字符串，不含 Android；可为空数组）
         required: true
         type: string
       pack_jre:
-        description: 是否额外产出 +jre 包（在默认包内容之上追加 jlink 裁剪出的对应架构 JRE，见 scripts/make-jre.sh）
+        description: 是否额外产出 +jre 包（在默认包内容之上追加对应架构的裁剪 JRE；裁剪在 Suwayomi-ext-runtime 做，这里只下载资产）
         required: false
         type: boolean
         default: false
@@ -92,8 +104,8 @@ jobs:
           key: ${{ matrix.target }}
       - name: 安装交叉编译工具链
         # 只有"在 x86_64 runner 上出 aarch64 包"才需要交叉工具链。linux-arm64 现在
-        # 跑在原生 arm64 runner 上（见 release.yml 的 target mapping）——jlink 不能
-        # 跨平台生成运行时，+jre 要求 runner 与目标同架构。
+        # 跑在原生 arm64 runner 上（见 release.yml 的 target mapping）——JRE 资产是按
+        # (os, arch) 分开发布的，+jre 取哪一份由矩阵决定，与 runner 是否同架构无关。
         if: matrix.rust_target == 'aarch64-unknown-linux-gnu' && runner.arch == 'X64'
         run: |
           sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
@@ -106,18 +118,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
             librsvg2-dev libxdo-dev libssl-dev
-      - name: 安装 JDK
-        # 两个用途：构建 bin/jvm-sandbox.jar（gradle toolchain 25），以及 +jre 时的
-        # jlink（它只随 JDK 提供）。无条件安装 —— 按 target 细分条件只会让这里更难维护，
-        # 而 setup-java 本身很快。
-        #
-        # 发行版按 matrix.jdk 走：默认 temurin；**windows-arm64 用 zulu** —— Adoptium
-        # 对 windows/aarch64 没发 JDK 25 的任何制品（jdk/jre/jmods 全 404），而 Zulu 的
-        # win_aarch64 归档自带 jmods/，make-jre.sh 会直接用它、跳过下载。
-        uses: actions/setup-java@v5
-        with:
-          distribution: ${{ matrix.jdk }}
-          java-version: '25'
+      # 这一步以前装 JDK 给 +jre 的 jlink 用，现在不需要了：ext-runtime.jar 与裁剪好的
+      # JRE 都从 Suwayomi-ext-runtime 的 Release 资产下载，本仓库不再跑任何 JVM 工具链。
       - name: 构建
         shell: bash
         run: |
@@ -157,10 +159,15 @@ jobs:
             || cp suwayomi-tray/target/release/suwayomi.exe "$STAGE/" 2>/dev/null \
             || echo "WARN: desktop shell binary not found"
 
-          # 扩展沙盒 jar 进 bin/（server 自动查找）；跨平台字节码，各 target 各自构建。
-          # 注意与托盘壳无关：server 跑扩展靠它，任何 target 都不能少。
-          cd jvm-sandbox && ./gradlew -q jar --no-daemon && cd ..
-          cp jvm-sandbox/build/libs/suwayomi-jvm-sandbox.jar "$STAGE/bin/jvm-sandbox.jar"
+          # 扩展沙盒 jar 进 bin/（server 自动查找）。ext-runtime 是纯 JVM 字节码，
+          # 所有 target 用同一份制品 —— 直接下载，不再逐 target 跑 gradle。
+          #   -f 必须加：GitHub 对失败请求返回 HTML/JSON，不加 -f 会把响应体当 jar 存下来，
+          #   要到运行时才发现（见 docs/release.md）。
+          curl -fsSL -o "$STAGE/bin/ext-runtime.jar" "${{ inputs.ext_runtime_url }}"
+          # 落地校验：能列出主类才算真的 jar（只看文件非空会漏掉「下到了错误页」）
+          unzip -l "$STAGE/bin/ext-runtime.jar" | grep -q 'sandbox/MainKt.class' \
+            || { echo "::error::ext-runtime.jar 内容异常（缺 sandbox/MainKt.class）"; exit 1; }
+          echo "ext-runtime ${{ inputs.ext_runtime_version }} → $STAGE/bin/ext-runtime.jar"
           # WebUI：调用方已按通道解析好，所有 target 用同一份
           curl -sL -o webui.zip "${{ inputs.webui_url }}"
           mkdir -p "$STAGE/webui"
@@ -197,9 +204,23 @@ jobs:
           if [ "${{ inputs.pack_jre }}" = "true" ]; then
             JRE_DIR="dist/${BASE}+jre"
             cp -r "$STAGE" "$JRE_DIR"
-            # jlink 只为本平台生成镜像，所以这里 target 必须与 runner 同架构；
-            # release.yml 的 mapping 保证了这一点，make-jre.sh 里再兜底校验一次。
-            bash scripts/make-jre.sh "${{ matrix.jre_os }}" "${{ matrix.jre_arch }}" "$JRE_DIR/jre"
+            # 裁剪好的 JRE 是 Suwayomi-ext-runtime 的发布资产 —— 那边才跑 jlink，因为
+            # 模块白名单完全由沙盒需求决定（jdk.httpserver 是沙盒的 HTTP 宿主、
+            # java.prefs 是共享源码的 PersistentCookieStore）。这里只按
+            # <V>+<os>+<arch> 取回来解开，不再本地构建。
+            JRE_ASSET="ext-runtime-jre-${{ inputs.ext_runtime_version }}-${{ matrix.jre_os }}-${{ matrix.jre_arch }}.tar.gz"
+            curl -fsSL --retry 3 -o "$JRE_ASSET" "${{ inputs.ext_runtime_jre_base }}/$JRE_ASSET"
+            tar -xzf "$JRE_ASSET" -C "$JRE_DIR"
+            rm -f "$JRE_ASSET"
+            # 解出来的必须真是**本平台**的运行时：jlink 不能跨平台，取错资产是
+            # 「Windows 上放了个 ELF」这种，只在装上运行时才炸。跑一次最直接。
+            if [ "${{ matrix.jre_os }}" = "windows" ]; then
+              JAVA_BIN="$JRE_DIR/jre/bin/java.exe"
+            else
+              JAVA_BIN="$JRE_DIR/jre/bin/java"
+            fi
+            test -f "$JAVA_BIN" || { echo "::error::JRE 资产内容异常（缺 $JAVA_BIN）"; exit 1; }
+            "$JAVA_BIN" -version
             pack_dir "$JRE_DIR"
             ARTIFACTS="${ARTIFACTS:+$ARTIFACTS$'\n'}$ARCHIVE"
           fi
@@ -306,6 +327,11 @@ jobs:
           else
             echo "::warning::未配置 ANDROID_KEYSTORE_BASE64，APK 将用临时 debug key 签名（跨次安装需先卸载）"
           fi
+      - name: 取 ext-runtime 共享源码
+        # 桌面侧要的是编好的 jar，Android 侧只能吃源码（AGP 内置 Kotlin 2.3.20
+        # 读不了 ext-runtime 的 Kotlin 2.4.0 元数据），所以这里拿的是同一个 release
+        # 里的 -shared-sources 资产。同样是 Release 资产，同样免鉴权。
+        run: bash android/scripts/fetch-ext-runtime-src.sh "${{ inputs.ext_runtime_version }}"
       - name: Gradle 构建 APK
         working-directory: android
         run: ./gradlew :app:assembleRelease --no-daemon
@@ -337,13 +363,13 @@ jobs:
           path: ${{ steps.pack.outputs.artifacts }}
 
   # ---------------------------------------------------------------------------
-  # OCI 镜像（docker）。与桌面矩阵完全独立：自己从源码编 server、自己 gradle 打沙盒
-  # jar、自己 jlink 一个 JRE。内容与桌面包基本一致，但**不含托盘壳** —— 容器里没有 GUI，
-  # 也没有 webkit2gtk/appindicator，装进去只会是个跑不起来的死文件。
+  # OCI 镜像（docker）。与桌面矩阵完全独立：自己从源码编 server，沙盒 jar 与裁剪 JRE
+  # 都从 Suwayomi-ext-runtime 的 Release 资产下载。内容与桌面包基本一致，但**不含托盘壳**
+  # —— 容器里没有 GUI，也没有 webkit2gtk/appindicator，装进去只会是个跑不起来的死文件。
   # 产物只推 GHCR，不进 Release 附件（镜像的版本由 tag 表达，塞一个 docker-save
   # 出来的大归档没有意义）。
   #
-  # 两个架构各跑**同架构**的 runner：jlink 不能跨平台生成运行时（见 docs/release.md），
+  # 两个架构各跑**同架构**的 runner：JRE 资产是按架构分的（见 docs/release.md），
   # 所以 arm64 用 ubuntu-24.04-arm 原生构建。各推一个 -amd64 / -arm64 标签，再由
   # oci_manifest 合成多架构 manifest —— 否则得用 QEMU 模拟编译 arm64，慢一个数量级。
   oci:
@@ -387,6 +413,7 @@ jobs:
           tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}-${{ matrix.arch }}
           build-args: |
             WEBUI_URL=${{ inputs.webui_url }}
+            EXT_RUNTIME_VERSION=${{ inputs.ext_runtime_version }}
             VERSION_NAME=${{ inputs.version_name }}
             VERSION_COUNT=${{ inputs.count }}
             BUILD_TYPE=${{ inputs.channel }}
@@ -407,13 +434,13 @@ jobs:
         run: |
           IMG="${IMAGE}:${TAG}-${ARCH}"
           # 1) 静态：二进制能跑（Linux server 走 openssl，缺 libssl 会直接起不来）、
-          #    jlink 出来的 JRE 与基础镜像的 glibc 兼容、捆绑的三件套都在
+          #    下载来的 JRE 与基础镜像的 glibc 兼容、捆绑的三件套都在
           docker run --rm --entrypoint sh "$IMG" -c '
             set -e
             /opt/suwayomi/bin/suwayomi-server --version
             /opt/suwayomi/jre/bin/java -version
             test -f /opt/suwayomi/webui/index.html
-            test -f /opt/suwayomi/bin/jvm-sandbox.jar
+            test -f /opt/suwayomi/bin/ext-runtime.jar
             if ldd /opt/suwayomi/bin/suwayomi-server | grep -q "not found"; then
               echo "缺少动态库："
               ldd /opt/suwayomi/bin/suwayomi-server | grep "not found"

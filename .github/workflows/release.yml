@@ -116,6 +116,11 @@ jobs:
       webui_url: ${{ steps.webui.outputs.url }}
       webui_tag: ${{ steps.webui.outputs.tag }}
       webui_kind: ${{ steps.webui.outputs.kind }}
+      ext_runtime_url: ${{ steps.ext_runtime.outputs.url }}
+      ext_runtime_version: ${{ steps.ext_runtime.outputs.version }}
+      # 裁剪 JRE 是同一个 Release 里的资产，按 <base>/ext-runtime-jre-<V>-<os>-<arch>.tar.gz
+      # 拼出来即可，不必每种 (os, arch) 再探测一遍（见 docs/release.md）。
+      ext_runtime_jre_base: ${{ steps.ext_runtime.outputs.jre_base }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -186,29 +191,24 @@ jobs:
             *)       echo "::error::未知通道 $CHANNEL"; exit 1 ;;
           esac
 
-          # 桌面/服务端矩阵。第 3、4 列是 jlink 需要的目标平台（见 scripts/make-jre.sh）：
-          # jlink 只能为**宿主平台**生成运行时，所以每个 target 的 runner 必须与目标
-          # 同架构 —— linux-arm64 因此用 arm64 runner，macos-x64 用 intel runner。
+          # 桌面/服务端矩阵。第 3、4 列是**裁剪 JRE 资产**的 (os, arch) 标签：+jre 包
+          # 按 ext-runtime-jre-<V>-<jre_os>-<jre_arch>.tar.gz 去 Release 里取，见
+          # Suwayomi-ext-runtime 的 .github/workflows/publish.yml（那边用原生 runner 出
+          # 六份资产，因为 jlink 不能跨平台）。
           # （macos-13 已被 GitHub 下线，x64 macOS 现为 macos-15-intel。）
-          #
-          # 第 5 列是 setup-java 的发行版。只有 windows-arm64 需要它：Adoptium 对
-          # `windows/aarch64` **根本没发 JDK 25 的任何制品**（jdk/jre/jmods 全 404，
-          # 该平台只到 JDK 21），拿不到 jmods 就出不了 +jre。Azul Zulu 的
-          # win_aarch64 JDK 归档自带 jmods/（实测 70 个 .jmod），于是那一格用 zulu，
-          # make-jre.sh 见到宿主 JDK 有 jmods/ 就直接用、不再下载。
           INCLUDE="$(python3 - "$SEL" <<'PY'
           import json, sys
           mapping = {
-              "windows-x64":   ("windows-latest",   "x86_64-pc-windows-msvc",   "windows", "x64",     "temurin"),
-              "windows-arm64": ("windows-11-arm",   "aarch64-pc-windows-msvc",  "windows", "aarch64", "zulu"),
-              "linux-x64":     ("ubuntu-latest",    "x86_64-unknown-linux-gnu", "linux",   "x64",     "temurin"),
-              "linux-arm64":   ("ubuntu-24.04-arm", "aarch64-unknown-linux-gnu","linux",   "aarch64", "temurin"),
-              "macos-x64":     ("macos-15-intel",   "x86_64-apple-darwin",      "mac",     "x64",     "temurin"),
-              "macos-arm64":   ("macos-15",         "aarch64-apple-darwin",     "mac",     "aarch64", "temurin"),
+              "windows-x64":   ("windows-latest",   "x86_64-pc-windows-msvc",   "windows", "x64"),
+              "windows-arm64": ("windows-11-arm",   "aarch64-pc-windows-msvc",  "windows", "aarch64"),
+              "linux-x64":     ("ubuntu-latest",    "x86_64-unknown-linux-gnu", "linux",   "x64"),
+              "linux-arm64":   ("ubuntu-24.04-arm", "aarch64-unknown-linux-gnu","linux",   "aarch64"),
+              "macos-x64":     ("macos-15-intel",   "x86_64-apple-darwin",      "mac",     "x64"),
+              "macos-arm64":   ("macos-15",         "aarch64-apple-darwin",     "mac",     "aarch64"),
           }
           sel = sys.argv[1].split()
           inc = [{"target": t, "os": mapping[t][0], "rust_target": mapping[t][1],
-                  "jre_os": mapping[t][2], "jre_arch": mapping[t][3], "jdk": mapping[t][4]}
+                  "jre_os": mapping[t][2], "jre_arch": mapping[t][3]}
                  for t in sel if t in mapping]
           print(json.dumps(inc))
           PY
@@ -284,6 +284,26 @@ jobs:
           echo "kind=$KIND" >> "$GITHUB_OUTPUT"
           echo "捆绑 WebUI: $TAG（kind=$KIND）"
 
+      - name: 解析扩展沙盒制品
+        id: ext_runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # ext-runtime 是纯 JVM 字节码，六个桌面 target 产出的是同一个 jar ——
+          # 所以和 WebUI 一样在这里解析一次、所有 target 复用（见本仓 docs/release.md）。
+          OUT="$(bash scripts/resolve-ext-runtime.sh)"
+          URL="$(printf '%s' "$OUT" | sed -n 's/^url=//p')"
+          VER="$(printf '%s' "$OUT" | sed -n 's/^version=//p')"
+          BASE="$(printf '%s' "$OUT" | sed -n 's/^base=//p')"
+          if [ -z "$URL" ] || [ -z "$VER" ] || [ -z "$BASE" ]; then
+            echo "::error::无法解析 ext-runtime 制品"; exit 1
+          fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "jre_base=$BASE" >> "$GITHUB_OUTPUT"
+          echo "捆绑 ext-runtime: $VER（$URL）"
+          echo "裁剪 JRE 前缀: $BASE"
+
   build:
     name: 构建（复用 build.yml）
     needs: prep
@@ -300,6 +320,9 @@ jobs:
       version_name: ${{ needs.prep.outputs.version_name }}
       count: ${{ needs.prep.outputs.count }}
       webui_url: ${{ needs.prep.outputs.webui_url }}
+      ext_runtime_url: ${{ needs.prep.outputs.ext_runtime_url }}
+      ext_runtime_version: ${{ needs.prep.outputs.ext_runtime_version }}
+      ext_runtime_jre_base: ${{ needs.prep.outputs.ext_runtime_jre_base }}
       targets: ${{ needs.prep.outputs.targets }}
       android_targets: ${{ needs.prep.outputs.android_targets }}
       pack_jre: ${{ needs.prep.outputs.pack_jre == 'true' }}

@@ -42,26 +42,23 @@
 
 手动 dispatch 的平台开关与对应的 runner（`release.yml` 里的 mapping）：
 
-| 开关 | runner | rust target | jlink 目标 | JDK 发行版 |
-|---|---|---|---|---|
-| `build_windows_x64` | `windows-latest` | `x86_64-pc-windows-msvc` | windows/x64 | temurin |
-| `build_windows_arm64` | `windows-11-arm` | `aarch64-pc-windows-msvc` | windows/aarch64 | **zulu** |
-| `build_linux_x64` | `ubuntu-latest` | `x86_64-unknown-linux-gnu` | linux/x64 | temurin |
-| `build_linux_arm64` | `ubuntu-24.04-arm` | `aarch64-unknown-linux-gnu` | linux/aarch64 | temurin |
-| `build_macos_x64` | `macos-15-intel` | `x86_64-apple-darwin` | mac/x64 | temurin |
-| `build_macos_arm64` | `macos-15` | `aarch64-apple-darwin` | mac/aarch64 | temurin |
-| `build_android_arm64` | `ubuntu-latest` | `aarch64-linux-android` | —（Android 不打包 JRE） | temurin |
-| `build_android_x64` | `ubuntu-latest` | `x86_64-linux-android` | —（同上） | temurin |
-| `pack_oci` | 见下 | `linux/amd64` / `linux/arm64` | 容器内的 jlink 自裁剪 | temurin |
+| 开关 | runner | rust target | 取的 JRE 资产 |
+|---|---|---|---|
+| `build_windows_x64` | `windows-latest` | `x86_64-pc-windows-msvc` | windows/x64 |
+| `build_windows_arm64` | `windows-11-arm` | `aarch64-pc-windows-msvc` | windows/aarch64 |
+| `build_linux_x64` | `ubuntu-latest` | `x86_64-unknown-linux-gnu` | linux/x64 |
+| `build_linux_arm64` | `ubuntu-24.04-arm` | `aarch64-unknown-linux-gnu` | linux/aarch64 |
+| `build_macos_x64` | `macos-15-intel` | `x86_64-apple-darwin` | mac/x64 |
+| `build_macos_arm64` | `macos-15` | `aarch64-apple-darwin` | mac/aarch64 |
+| `build_android_arm64` | `ubuntu-latest` | `aarch64-linux-android` | —（Android 不打包 JRE） |
+| `build_android_x64` | `ubuntu-latest` | `x86_64-linux-android` | —（同上） |
+| `pack_oci` | 见下 | `linux/amd64` / `linux/arm64` | linux/x64 与 linux/aarch64（镜像里按 `uname -m` 各取对应那份） |
 
-- **每个 target 的 runner 必须与目标同架构**：`+jre` 用 jlink 生成，而 **jlink 不能跨平台生成运行时**（实测：Windows 的 jlink + linux-aarch64 的 jmods，产出的 `bin/java` 是 PE 头加一堆 `.dll` —— launcher 与原生库取自宿主 JDK）。所以 linux-arm64 用 arm64 runner（原生编译，顺带不再需要交叉工具链），x64 的 macOS 用 `macos-15-intel`。
+- **每个 target 的 runner 都是原生同架构**：Rust 二进制与托盘壳都在本平台原生编译（linux-arm64 用 arm64 runner，顺带不再需要交叉工具链）。以前这里还有第二条理由 —— `+jre` 的 jlink 不能跨平台生成运行时；JRE 搬到 Suwayomi-ext-runtime 后这条约束不再落在本仓库，但"原生编译"本身仍然值得保留。
 - `macos-13` 已被 GitHub 下线，x64 macOS 现为 `macos-15-intel`；Windows arm64 用 `windows-11-arm`（公开预览，公共仓库免费不限量），该镜像自带 VS 2022 + Windows SDK 26100（`build.rs` 嵌图标要的 `rc.exe`）与 Git for Windows，`shell: bash` 可直接用。
 - **判定平台一律用 `runner.os`，不要拿矩阵 runner 标签比字面量**：Windows 的标签不止 `windows-latest`（现在还有 `windows-11-arm`），`matrix.os == "windows-latest"` 这类写法在加第二个 Windows target 时必然踩空。
-- **`uname -m` 在 `windows-11-arm` 上会撒谎**：镜像确实是原生 arm64、装的也是货真价实的 `win_aarch64` JDK，但 runner 上的 **Git for Windows 是 x64 版**，MSYS 的 `uname -m` 因此报 `x86_64`。`make-jre.sh` 的「宿主架构必须等于目标架构」这道闸因此误判过一次（run 35074440661，jlink 都没来得及启动）。现在宿主架构**优先读 `$JAVA_HOME/bin/java` 的可执行文件头**（与产物自检同一套偏移表），再退到 `release` 的 `OS_ARCH`，最后才是 `uname -m`。
-- **`+jre` 有两道闸**：入口比「宿主平台 vs 目标平台」，末尾核「产物 magic **+ 架构**」。只判 magic 拦不住同格式但错架构的产物（x64 的 jlink + aarch64 的 jmods 就会产出那种），装上就是 `UnsatisfiedLinkError`。自检代码在 `make-jre.sh` 的 `binary-probe` 标记块里，被 `.workbuddy/verify/check_jre_arch.sh` 整块抽出来单测（合成夹具 + CI 真产物夹具，共 37 项）。
-- **`jdk` 那一列是为什么**：Adoptium（Temurin）对 `windows/aarch64` **没有发布 JDK 25 的任何制品**（`jdk`/`jre`/`jmods` 三端点全 404；该平台在 Adoptium 上最高只到 JDK 21），而 `+jre` 必须有 jmods。**只有这一个 target 例外用 Azul Zulu**（其 `win_aarch64` 归档自带 `jmods/`），其余平台一律 Temurin —— 这是明确取舍，不是临时权宜；`ci_pack_check.py` 里有断言守着（「只有 windows-arm64 是 zulu」）。
-- **`JAVA_HOME` 是 Windows 形式时不能直接做路径名展开**：CI 的 `setup-java` 注入的是 `C:\hostedtoolcache\…`，反斜杠在 bash 的 glob 里是转义符 —— `[[ -d "$JAVA_HOME/jmods" ]]` 认得，`compgen -G "$JAVA_HOME/jmods/*.jmod"` 却永远匹配不到。`make-jre.sh` 的 `jmods_dir()` 因此先把 `JAVA_HOME` 过 `cygpath -u` 归一化、并用 `find` 代替 glob。这个坑**本地复现不了**（本机 Temurin 25 按 JEP 493 不带 jmods，两条分支都走下载），只在 windows-arm64 上炸（run 35078586922）。
-- **矩阵里每个桌面 target 都出托盘壳与 `bin/jvm-sandbox.jar`**（Windows x64+arm64 / Linux x64+arm64 / macOS x64+arm64）。Linux 侧因此无论架构都装同一套 webkit2gtk/appindicator 依赖；tray 有自己的 workspace 与 `target/`，各 runner 原生编译。Android 不在这个矩阵里。
+- **`+jre` 相关的三个坑随脚本搬走了**：`windows-11-arm` 上 `uname -m` 会撒谎（Git for Windows 是 x64 版）、`+jre` 的入口/出口两道平台闸、`JAVA_HOME` 为 Windows 形式时反斜杠在 bash glob 里当转义符。这些都只影响 `make-jre.sh`，现在记在 Suwayomi-ext-runtime 的 `docs/EXTRACTION_RECORD.md`。
+- **矩阵里每个桌面 target 都出托盘壳与 `bin/ext-runtime.jar`**（Windows x64+arm64 / Linux x64+arm64 / macOS x64+arm64）。Linux 侧因此无论架构都装同一套 webkit2gtk/appindicator 依赖；tray 有自己的 workspace 与 `target/`，各 runner 原生编译。Android 不在这个矩阵里。
 - 平台开关默认只勾 Windows x64 + Linux x64，发布通道默认 `alpha`。
 
 ## 产物形态（默认包 / `+jre` / OCI）
@@ -70,7 +67,7 @@
 
 | 开关 | 默认 | 含义 |
 |---|---|---|
-| `pack_jre` | ⬜ | 额外的 `+jre` 包：在默认包内容之上追加对应架构的 JRE（jlink 裁剪）。 |
+| `pack_jre` | ⬜ | 额外的 `+jre` 包：在默认包内容之上追加对应架构的 JRE（从 Suwayomi-ext-runtime 下载的 jlink 裁剪产物）。 |
 | `pack_oci` | ⬜ | 额外的 OCI 镜像（见下节）。推 GHCR，**不进 Release 附件**。 |
 
 命名（**默认包不带形态后缀** —— 不打包 JRE 的那份就是基线产物）：
@@ -93,7 +90,7 @@
 - **权限链**：被调工作流的权限不能超过调用方 —— `release.yml` 的 `build` job 必须显式给 `packages: write`，`build.yml` 的 `oci` / `oci_manifest` 两个 job 也给同一组。漏了的表现是「build 时 push 403」，而且**只在勾了 OCI 的那次才暴露**。
 - **推之前先冒烟**：`docker/build-push-action` 只 `load: true`，冒烟通过才 `docker push`。冒烟两段：① `--version` + `jre/bin/java -version` + `ldd` 查缺库 + 三件套（webui / 沙盒 jar / jre）在位；② 真起容器等 HTTP 有响应。第一段能抓到「缺 `libssl3t64`」这类问题 —— Linux 的 server 动态链接 `libssl.so.3`（`default-tls` 只对 android 换成 rustls），缺它连 `--version` 都起不来。
 - `provenance: false`：多架构 manifest 由 imagetools 合成，混进 attestation 会让 index 里多出平台未知的条目。
-- Dockerfile 的目录布局必须与 server 的路径解析约定一致（`bin/` 下时 `jre/` 在上一级）：`/opt/suwayomi/{bin/suwayomi-server, bin/jvm-sandbox.jar, jre, webui}`，数据在 `/data`。`ci_pack_check.py` 里有对应断言。
+- Dockerfile 的目录布局必须与 server 的路径解析约定一致（`bin/` 下时 `jre/` 在上一级）：`/opt/suwayomi/{bin/suwayomi-server, bin/ext-runtime.jar, jre, webui}`，数据在 `/data`。`ci_pack_check.py` 里有对应断言。
 
 ## 发布说明
 
@@ -103,29 +100,51 @@
 
 ## JRE 裁剪（`+jre` 用）
 
-由 `scripts/make-jre.sh` 生成（`scripts/` 下，被 `build.yml` 的打包步骤调用）：
+**裁剪已搬到 Suwayomi-ext-runtime 执行**（`scripts/make-jre.sh` 随沙盒一起搬走了）。本仓库只按 `<V>-<os>-<arch>` 下载 `ext-runtime-jre-<V>-<os>-<arch>.tar.gz` 资产、解开即用；`build.yml` 里给 jlink 用的「安装 JDK」步骤与矩阵的 `jdk` 列都已删除。
+
+为什么搬过去：这份 JRE 存在的唯一目的是跑 `ext-runtime.jar`，模块白名单完全由沙盒需求决定（`jdk.httpserver` 是沙盒自己的 HTTP 宿主、`java.prefs` 是共享源码里 `PersistentCookieStore` 用的）。白名单与沙盒代码必须同仓演进 —— 否则改沙盒时加了个模块，运行时会静默缺模块，且只在 `+jre` 包上表现为 `NoClassDefFoundError`。另外 jlink **不能跨平台编译**，那边用原生 runner 出六份资产正合适（本仓库的桌面矩阵与它解耦，不再需要"runner 必须与目标同架构"这条约束）。
 
 | 形态 | 解压后 | 压缩后 |
 |---|---|---|
 | Adoptium 完整 JRE 25（windows-x64） | 180 MB | 58 MB |
-| 本脚本 jlink 产出 | 39 MB | 25 MB |
+| jlink 裁剪产出 | 39 MB | 25 MB |
 
-- **jmods 要单独下载**：Temurin JDK 24 起启用 JEP 493，JDK 归档里不再带 `jmods/`，jlink 的 `--module-path` 没有现成来源。Adoptium 为每个平台单独发 jmods 包（约 85 MB），脚本从 `api.adoptium.net/v3/binary/latest/25/ga/{os}/{arch}/jmods/...` 取。所以 `+jre` 只在勾选时才付出这笔下载。
-- 模块白名单是**实测**出来的（14 个模块，含 `jdk.httpserver` —— 桌面沙盒自己的 HTTP 宿主，和 `jdk.crypto.ec` —— TLS 必需）。验证方式：用产出的运行时真跑 `jvm-sandbox.jar` 并加载真实扩展。刻意排除 `java.desktop`（AWT/ImageIO，约 11 MB 压缩后）：扩展跑的是 Android API。白名单与理由都写在脚本注释里。
+- 六份资产 = 6 个 `(os, arch)`：`windows|linux|mac` × `x64|aarch64`。每次发版出齐 —— 代价是那边 `windows/aarch64` 要单独处理（Adoptium 对该平台没发 JDK 25 的任何制品，jdk/jre/jmods 三端点全 404），换 Azul Zulu（其 `win_aarch64` 归档自带 `jmods/`）。换来的好处是消费侧不必判断"这个版本到底有没有 JRE 资产"。
+- 模块白名单是**实测**出来的（14 个模块，含 `jdk.httpserver` —— 桌面沙盒自己的 HTTP 宿主，和 `jdk.crypto.ec` —— TLS 必需）。验证方式：用产出的运行时真跑 `ext-runtime.jar` 并加载真实扩展。刻意排除 `java.desktop`（AWT/ImageIO，约 11 MB 压缩后）：扩展跑的是 Android API。
 - `--include-locales=en,ja,zh` + `jdk.localedata`：只留这三种语言的 locale 数据。
-- 脚本会**强制校验宿主平台 = 目标平台**，不一致直接报错退出（宁可让 CI 明确失败，也不产出一个"装上去就 UnsatisfiedLinkError"的运行时）。
+- **jmods 要单独下载**：Temurin JDK 24 起启用 JEP 493，JDK 归档里不再带 `jmods/`，jlink 的 `--module-path` 没有现成来源。Adoptium 为每个平台单独发 jmods 包（约 85 MB）。脚本会先探 `$JAVA_HOME/jmods/`，有就直接用、不再下载。
+- 脚本**强制校验宿主平台 = 目标平台**，不一致直接报错退出（宁可让 CI 明确失败，也不产出一个"装上去就 `UnsatisfiedLinkError`"的运行时）。
 - 不打包 JRE 的场合：默认包、Android。桌面端 Linux 基础包历来也不捆（可自行装系统 OpenJDK 或取 `+jre` 包）。
+- 本地要复现裁剪：在 Suwayomi-ext-runtime 里 `bash scripts/make-jre.sh <windows|linux|mac> <x64|aarch64> <输出目录>`。
 
 ## 产物与捆绑
 
 - **不再捆绑 Electron**：WebUI 桌面窗口由托盘经系统 WebView 打开（Win WebView2 / Linux WebKitGTK / macOS WKWebView），无 WebView 的环境托盘回退系统浏览器。
 - 桌面壳（Tauri 托盘）：**所有桌面 target 都出**（Windows / Linux x64+arm64 / macOS x64+arm64），Android 由独立的 `android` job 出 APK、不带桌面壳。各平台都是原生 runner 编译（tray 有自己的 workspace 与 `target/`）。
-- 扩展沙盒（`bin/jvm-sandbox.jar`）：**所有桌面 target 都带**（jar 是跨平台字节码，各 target 各自 gradle 构建）。server 跑扩展靠它，任何 target 都不能少。
+- 扩展沙盒（`bin/ext-runtime.jar`）：**所有桌面 target 都带**，server 跑扩展靠它，任何 target 都不能少。它**不再由本仓库构建** —— 见下面「ext-runtime 从哪来」。
 - 不打包 JRE 的场合：默认包、Android。桌面端 Linux 基础包历来也不捆（可自行装系统 OpenJDK 或取 `+jre` 包），勾 `+jre` 即自带 `jre/`。
+
+## ext-runtime 从哪来
+
+桌面沙盒与 Android 扩展宿主共用的那份代码已经剥离到独立仓库 **`576576/Suwayomi-ext-runtime`**（`jvm-sandbox` 改名为 `ext-runtime`，原来的 `extension-runtime` 共享源码树并入其中）。本仓库**不再**持有任何一份源码，两条消费链都从它发布的 Release 资产取：
+
+| 消费方 | 取的资产 | 落到哪 |
+| --- | --- | --- |
+| 桌面 / 服务端 / Docker | `ext-runtime-<V>.jar` | 各 target 产物的 `bin/ext-runtime.jar` |
+| 桌面 `+jre` / Docker 运行镜像 | `ext-runtime-jre-<V>-<os>-<arch>.tar.gz` | 解开后就是包里的 `jre/` |
+| Android `:extension-host` | `ext-runtime-<V>-shared-sources.jar` | 展开到 `android/build/ext-runtime-src`，作为源目录参与编译 |
+
+三条都走 **Release 资产而不是 GitHub Packages**：两者发布的 jar 是同一份，但 Packages 即使对公开包也要求 token（跨仓库取还要单独配 PAT），Release 资产免鉴权 —— 反正都要先下载再展开（Gradle 没法把一个依赖直接当源目录），没必要为一个 secret 付出 PAT 过期导致 401 的风险。
+
+- 解析脚本：`scripts/resolve-ext-runtime.sh`（默认取桌面 jar，加 `--sources` 取共享源码包），三级探测同 `resolve-webui.sh`。它同时吐一个 `base=`（该 release 的资产下载前缀）—— 同一版本下其余资产按 `<base>/<资产名>` 拼即可，不必为每种 `(os, arch)` 再探测一遍。Android 侧再包一层 `android/scripts/fetch-ext-runtime-src.sh`，下载 + 展开 + 校验三个包根齐全。
+- Android **只能吃源码**：`:extension-host` 由 AGP 9 内置的 Kotlin **2.3.20** 编译，而 ext-runtime 用 Kotlin **2.4.0**，元数据版本不兼容，2.3 读不了 2.4 编出来的 class。
+- 版本由 `release.yml` 的 prep 解析一次、经 `build.yml` 的 `ext_runtime_version`（+ `ext_runtime_jre_base`）传给所有 target，**同一批产物用的是同一个 ext-runtime 版本**。
+- 版本号是 `<AOSP API level>.<主版本>.<修订>`（如 `30.1.0`），大版本跟着沙盒 pin 的 Android API 基线走。
+- 改沙盒的流程：在 Suwayomi-ext-runtime 改 → 打 tag `v30.x.0` → 那边 CI 出 Release（含六份 JRE 资产）→ 回这边跑一次发布即生效（无需改本仓库代码；要换 pin 才动 `build.bat` 里那个默认版本号）。
 
 ## Android 产物
 
-- `build.yml` 的 `android` job 是**矩阵**：`build_android_arm64` / `build_android_x64` 各是一个 job，`ABI` 由矩阵给出（`arm64` → `arm64-v8a`，`x86_64` → `x86_64`，映射在 `android/scripts/build-rust.sh` 里）。步骤：装满足 `compileSdk 37` 的 platform 与钉死版本的 NDK → 交叉编译出 `libsuwayomi_android.so` → 把 WebUI zip 放进 assets → `./gradlew :app:assembleRelease` → 改名成上面的 APK 命名。
+- `build.yml` 的 `android` job 是**矩阵**：`build_android_arm64` / `build_android_x64` 各是一个 job，`ABI` 由矩阵给出（`arm64` → `arm64-v8a`，`x86_64` → `x86_64`，映射在 `android/scripts/build-rust.sh` 里）。步骤：装满足 `compileSdk 37` 的 platform 与钉死版本的 NDK → 交叉编译出 `libsuwayomi_android.so` → 把 WebUI zip 放进 assets → 取 ext-runtime 共享源码（见上节）→ `./gradlew :app:assembleRelease` → 改名成上面的 APK 命名。
 - **x64 APK 只对模拟器有意义**（真机基本是 arm64）；两个都勾就是两份独立构建，互不影响。
 - **签名**：配了 `ANDROID_KEYSTORE_BASE64`（+ `_PASSWORD` / `_ALIAS` / `_KEY_PASSWORD`）就用它签；**没配则回退 AGP 的 debug key**，此时每次 CI 的 key 都不同，跨次覆盖安装前要先卸载（workflow 会打 `::warning::` 提示）。自用分发里"能装上"优先于"签名好看"。
 - Android 侧的设计与阶段见 `docs/migration/ANDROID_IMPL.md`。
@@ -136,7 +155,7 @@
 - 分流：alpha/beta → 最新构建（r{code} 预发布）；release → 最新正式 release。
 - **所有 target 共用一个 URL**：在 prep job 解析一次、job outputs 复用（两次解析间隙 WebUI 推新构建会造成各架构包不一致）。
 
-## 桌面壳 / 扩展沙盒构建注意
+## 桌面壳构建注意（扩展沙盒已外置，见「ext-runtime 从哪来」）
 
 - Linux runner 直接执行的脚本必须 git mode `100755`（Windows 提交默认 100644 且 `core.filemode=false`，需 `git update-index --chmod=+x`）——`./gradlew` 曾因此 Permission denied。
 - 桌面壳二进制经 `bash suwayomi-tray/build-tray.sh` 构建（普通 `cargo build --release`，不走 `tauri build`）；Windows 出 `suwayomi.exe`，Linux/macOS 无后缀。因此产物里是**裸可执行文件**，没有 macOS `.app` bundle / `.dmg`、也没有 Linux AppImage —— 需要这些得改成 `tauri build` 并补 iOS/打包依赖。
@@ -150,13 +169,13 @@
 ```bash
 python .workbuddy/verify/ci_pack_check.py    # 命名/基线包/+jre/Android 双 ABI/OCI 标签/notes 渲染/附件过滤/paths-ignore 判定（358 项）
 python .workbuddy/verify/ci_equiv.py         # 上一轮"合并两个 workflow"的等价性对照
-bash   .workbuddy/verify/check_jre_arch.sh   # make-jre.sh 的宿主探测 + 产物自检（37 项，按标记抽真代码）
-bash   .workbuddy/verify/e2e_host_jmods.sh   # 「宿主自带 jmods 就跳过下载」分支的端到端（本地默认走不到）
 ```
+
+JRE 裁剪那两个脚本（`check_jre_arch.sh` 的宿主探测 + 产物自检、`e2e_host_jmods.sh` 的「宿主自带 jmods 就跳过下载」端到端）**已随 `make-jre.sh` 搬到 Suwayomi-ext-runtime**，在那边 `.workbuddy-ai/verify/` 下跑。
 
 做法（详见 `gh-actions-verify` 技能）：把 `run:` 块抽出来、按场景替换 `${{ }}`、外部 CLI 打桩、在最小的假仓库骨架里真跑，断言 `$GITHUB_OUTPUT` / 产物名 / 归档内容 / gh 的 `--notes`。
 
-**但它验不到"脚本在真平台上会不会炸"**：打桩会把 `make-jre.sh` 之类跳过去，platform 专属代码路径（Windows 的 PE 分支、macOS 的 Mach-O 分支、Android 的 SDK 安装）在本地根本不会被执行。这类问题只能真跑 CI，或本地人为复现条件。**后者有两种做法**：
+**但它验不到"脚本在真平台上会不会炸"**：打桩会把真脚本之类跳过去，platform 专属代码路径（Windows 的 PE 分支、macOS 的 Mach-O 分支、Android 的 SDK 安装）在本地根本不会被执行。这类问题只能真跑 CI，或本地人为复现条件。**后者有两种做法**：
 
 1. 复现**环境条件** —— 例如 `PYTHONIOENCODING=cp1252` 复现 Windows 的 Python 编码；`JAVA_HOME='C:\…'`（反斜杠形式）复现 CI 注入的路径形态。
 2. 复现**分支条件** —— 有些分支在本地是死代码（`e2e_host_jmods.sh` 针对的就是它：本机 Temurin 25 按 JEP 493 不带 jmods，那条"宿主自带"分支永远走不到）。做法是造夹具：假 `JAVA_HOME` 用目录联接指向真 JDK、塞进真 jmods，再用 CI 那种变量形态调真脚本。

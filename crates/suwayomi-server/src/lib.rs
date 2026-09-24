@@ -129,24 +129,35 @@ fn resolve_settings_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
     data_dir.parent().map(|base| base.join("settings")).unwrap_or_else(|| std::path::PathBuf::from("settings"))
 }
 
-/// 扩展沙盒 jar：`SUWAYOMI_SANDBOX_JAR` → exe 同级/../bin 的 jvm-sandbox.jar（发布布局）
+/// 扩展沙盒 jar：`SUWAYOMI_SANDBOX_JAR` → exe 同级/../bin 的 ext-runtime.jar（发布布局）
+///
+/// 两处失败都**留日志**：不记的话「沙盒没起来」在界面上表现为「扩展列表是空的」，
+/// 只能从 server 日志反推，排查成本极高。日志是纯增量，不改变行为。
 pub fn resolve_sandbox_jar() -> Option<std::path::PathBuf> {
     if let Ok(jar) = std::env::var("SUWAYOMI_SANDBOX_JAR")
         && !jar.is_empty()
     {
-        let p = std::path::PathBuf::from(jar);
+        let p = std::path::PathBuf::from(&jar);
         if p.is_file() {
             return Some(p);
         }
+        tracing::warn!(
+            path = %jar,
+            "SUWAYOMI_SANDBOX_JAR 指向的扩展沙盒 jar 不存在，继续按发布布局查找"
+        );
     }
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {
-        for cand in [dir.join("jvm-sandbox.jar"), dir.join("bin").join("jvm-sandbox.jar")] {
+        for cand in [dir.join("ext-runtime.jar"), dir.join("bin").join("ext-runtime.jar")] {
             if cand.is_file() {
                 return Some(cand);
             }
         }
+        tracing::warn!(
+            dir = %dir.display(),
+            "未找到扩展沙盒 jar（ext-runtime.jar），扩展功能不可用"
+        );
     }
     None
 }

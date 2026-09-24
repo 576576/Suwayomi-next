@@ -1,7 +1,8 @@
-# 构建上下文只留「编 server + 打沙盒 jar」需要的东西。
+# 构建上下文只留「编 server + 打 webui/jre」需要的东西。
 #
-# 注意两个目录**必须留着**：`jvm-sandbox/`（要 gradle 打 jar）与 `extension-runtime/`
-# —— jvm-sandbox 的 gradle 工程直接引用 `../extension-runtime/src/main/kotlin` 的共享源码。
+# 扩展沙盒 jar 不再是本地 gradle 构建的 —— 改为从 Suwayomi-ext-runtime 的
+# Release 资产下载（见 Dockerfile 的 sandbox stage），所以上下文里不再需要任何
+# Gradle 工程或共享源码目录。
 
 # 本地产物与缓存。必须写 `**/`：裸 `target/` 只匹配上下文根下的那一层，
 # `suwayomi-tray/target/` 有 2 GB，会被整个传给 docker daemon。

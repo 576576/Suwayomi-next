@@ -1,4 +1,4 @@
-//! HTTP client for the JVM extension sandbox (`jvm-sandbox/`).
+//! HTTP client for the JVM extension sandbox (`ext-runtime.jar`).
 //!
 //! `HttpSandboxFetcher` implements `SourceFetcher` by calling the sandbox
 //! process over its stable HTTP/JSON contract. The sandbox is started and
@@ -716,7 +716,7 @@ impl Drop for SandboxProcess {
 
 /// 沙盒回非 2xx 时的错误，取出来就是能给用户看的一句话。
 ///
-/// 沙盒的错误体是 `{"error": <一行>, "stack": <栈>}`（见 `extension-runtime` 的
+/// 沙盒的错误体是 `{"error": <一行>, "stack": <栈>}`（见 ext-runtime 共享源码的
 /// `Errors.kt`）：`error` 已经是扩展自己那句文案（如哔咔的
 /// `IOException: 请在扩展设置界面输入用户名和密码`），`stack` 有几十行 `at …`。
 /// 两者都往界面上塞就没人看，所以这里只取 `error`，栈由沙盒自己写进日志。

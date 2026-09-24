@@ -157,7 +157,7 @@ fn start_inner(
         // 目录下（不走 suwayomi-db 的目录解析，因此不会随 WebUI「存储位置」设置漂移）。
         // 设置里的 dataDir 只改运行期数据目录（下载/本地图源/自动备份），库的位置不变。
         db: Some(DbSettings::sqlite(data_dir.join("suwayomi.db"))),
-        // Android 不用 jvm-sandbox：由宿主 App 同进程提供扩展宿主（回环 HTTP）
+        // Android 不用桌面沙盒 jar：由宿主 App 同进程提供扩展宿主（回环 HTTP）
         sandbox: if sandbox_url.trim().is_empty() {
             SandboxMode::Disabled
         } else {

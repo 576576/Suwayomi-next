@@ -2,6 +2,10 @@
 
 > 对照基准：`Suwayomi` commit `4b2c19ab`（master）
 > 状态：⬜ 未开始 · 🔄 进行中 · ✅ 已完成 · ⏭️ 裁剪/不迁移（含理由）
+>
+> ⚠️ **后记（剥离后）**：`jvm-sandbox/` 与 `extension-runtime/` 已迁出为独立仓库
+> `576576/Suwayomi-ext-runtime`（`jvm-sandbox` 改名 `ext-runtime`）。文中提到这两个
+> 目录的地方均指剥离前的状态，不再回改。
 
 ## 一、eu.kanade.tachiyomi（扩展 API 抽象）→ `suwayomi-core/src/source/`
 

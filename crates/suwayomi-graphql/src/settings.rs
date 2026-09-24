@@ -683,7 +683,7 @@ impl AboutServerPayload {
             platform_info: PlatformInfo {
                 arch,
                 headless: true,
-                // 真实 JVM 信息由 jvm-sandbox 上报（/jvm），未连接时兜底 n/a。
+                // 真实 JVM 信息由 ext-runtime 上报（/jvm），未连接时兜底 n/a。
                 jvm,
                 os: OSInfo { build: None, name: os_name, version: "n/a".into() },
             },

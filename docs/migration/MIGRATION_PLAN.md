@@ -2,6 +2,11 @@
 
 > 依据 `rust-migrate-guide-0.md` 制定，并逐文件核对 `Suwayomi` 仓库（commit `4b2c19ab`，master 分支）源码后细化。
 > 目标：在 `Suwayomi-next/` 下完成行为兼容的 Rust 实现，**接口、数据、协议与 Kotlin 原版保持一致**。
+>
+> ⚠️ **后记（剥离后）**：文中规划的 `jvm-sandbox/` 目录已连同 `extension-runtime/`
+> 共享源码树一起迁出为独立仓库 `576576/Suwayomi-ext-runtime`（`jvm-sandbox` 改名
+> `ext-runtime`）。本仓库不再持有它们的源码，改为消费该仓库发布的 Release 资产。
+> 以下正文保留制定计划时的原始记录，不再回改。
 
 ---
 

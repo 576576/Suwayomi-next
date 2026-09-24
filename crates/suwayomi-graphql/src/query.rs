@@ -2591,7 +2591,7 @@ pub(crate) async fn fetch_latest_server_release() -> Result<(String, String), St
     Ok((tag, url))
 }
 
-/// JVM info reported by the jvm-sandbox (`GET /jvm`), cached 60s; falls back
+/// JVM info reported by the ext-runtime sandbox (`GET /jvm`), cached 60s; falls back
 /// to "n/a" when the sandbox is absent or unreachable.
 static JVM_CACHE: std::sync::OnceLock<std::sync::Mutex<(i64, crate::settings::JvmInfo)>> =
     std::sync::OnceLock::new();

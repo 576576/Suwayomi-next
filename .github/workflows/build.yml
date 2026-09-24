@@ -164,8 +164,11 @@ jobs:
           #   -f 必须加：GitHub 对失败请求返回 HTML/JSON，不加 -f 会把响应体当 jar 存下来，
           #   要到运行时才发现（见 docs/release.md）。
           curl -fsSL -o "$STAGE/bin/ext-runtime.jar" "${{ inputs.ext_runtime_url }}"
-          # 落地校验：能列出主类才算真的 jar（只看文件非空会漏掉「下到了错误页」）
-          unzip -l "$STAGE/bin/ext-runtime.jar" | grep -q 'sandbox/MainKt.class' \
+          # 落地校验：能列出主类才算真的 jar（只看文件非空会漏掉「下到了错误页」）。
+          # 用 python3 而不是 `unzip -l`：**Git for Windows 的 bash 里没有 unzip**，
+          # 本机 Git Bash 有，所以这条只有真 CI 才炸（run 36026517663 windows-x64）。
+          python3 -c "import sys,zipfile; sys.exit(0 if 'sandbox/MainKt.class' in zipfile.ZipFile(sys.argv[1]).namelist() else 1)" \
+            "$STAGE/bin/ext-runtime.jar" \
             || { echo "::error::ext-runtime.jar 内容异常（缺 sandbox/MainKt.class）"; exit 1; }
           echo "ext-runtime ${{ inputs.ext_runtime_version }} → $STAGE/bin/ext-runtime.jar"
           # WebUI：调用方已按通道解析好，所有 target 用同一份

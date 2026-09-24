@@ -21,8 +21,6 @@ data/
 *.db
 *.db.mv.db
 
-# Tauri build outputs — suwayomi-tray/ 自带 .gitignore 已覆盖（/target、/gen/schemas）
-
 # Node (future WebUI tooling)
 node_modules/
 

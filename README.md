@@ -47,7 +47,8 @@ webui/               Suwayomi-WebUI 构建产物（随发布捆绑）
 jre/                        运行时依赖（可选）
 ```
 
-> 捆绑的 WebUI 来自 [576576/Suwayomi-WebUI](https://github.com/576576/Suwayomi-WebUI)
+> 捆绑的 WebUI 来自 [576576/Suwayomi-WebUI](https://github.com/576576/Suwayomi-WebUI)，
+> 桌面壳 `suwayomi` 来自 [576576/Suwayomi-tray](https://github.com/576576/Suwayomi-tray)
 
 WebUI 桌面窗口由托盘的**系统 WebView** 打开（Windows WebView2 / Linux WebKitGTK /
 macOS WKWebView），不捆绑浏览器运行时；无 WebView 时回退系统浏览器。
@@ -78,7 +79,6 @@ crates/
   suwayomi-opds/     OPDS
   suwayomi-server/   服务端入口
 android/             Android 宿主工程（独立 Gradle/AGP 构建，不并入主工程）
-suwayomi-tray/       桌面壳（Tauri 2，独立 workspace，不进主 workspace；Windows/Linux）
 migrations/          SQL 迁移（含 pg-only/：SyncYomi 触发器）
 scripts/             CI/辅助脚本（resolve-webui.sh / unzip_any.py 等）
 assets/              图标与截图（images/、screenshots/）
@@ -143,7 +143,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Windows 手动构建 release 产物（`suwayomi-server.exe` + 托盘 `suwayomi.exe`）：
+Windows 手动构建 release 产物（`suwayomi-server.exe` + 从 Suwayomi-tray 下载的托盘 `suwayomi.exe`）：
 双击仓库根的 **`build.bat`**（或 `cmd /c build.bat`）。
 
 ## 关键文档

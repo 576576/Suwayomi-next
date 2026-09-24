@@ -121,6 +121,10 @@ jobs:
       # 裁剪 JRE 是同一个 Release 里的资产，按 <base>/ext-runtime-jre-<V>-<os>-<arch>.tar.gz
       # 拼出来即可，不必每种 (os, arch) 再探测一遍（见 docs/release.md）。
       ext_runtime_jre_base: ${{ steps.ext_runtime.outputs.jre_base }}
+      # 桌面壳（Suwayomi-tray）同理：解析一次，各 target 按
+      # <base>/suwayomi-tray-<V>-<target>[.exe] 取。解析不到时这两个为空串。
+      tray_version: ${{ steps.tray.outputs.version }}
+      tray_base: ${{ steps.tray.outputs.base }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -304,6 +308,25 @@ jobs:
           echo "捆绑 ext-runtime: $VER（$URL）"
           echo "裁剪 JRE 前缀: $BASE"
 
+      - name: 解析桌面壳制品
+        id: tray
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 桌面壳由独立仓库 Suwayomi-tray 发布，取最新一份；六个 target 的资产都在同一个
+          # release 里，这里只解析出版本与前缀，各 target 在打包步自己拼资产名。
+          # 解析不到只告警（--optional）：包里没有托盘壳，不该挡住 server 发布。
+          OUT="$(bash scripts/resolve-tray.sh --optional)"
+          VER="$(printf '%s' "$OUT" | sed -n 's/^version=//p')"
+          BASE="$(printf '%s' "$OUT" | sed -n 's/^base=//p')"
+          if [ -z "$VER" ] || [ -z "$BASE" ]; then
+            echo "::warning::本次构建不含桌面壳（未解析到 Suwayomi-tray 资产）"
+          else
+            echo "version=$VER" >> "$GITHUB_OUTPUT"
+            echo "base=$BASE" >> "$GITHUB_OUTPUT"
+            echo "捆绑桌面壳: $VER（$BASE）"
+          fi
+
   build:
     name: 构建（复用 build.yml）
     needs: prep
@@ -323,6 +346,8 @@ jobs:
       ext_runtime_url: ${{ needs.prep.outputs.ext_runtime_url }}
       ext_runtime_version: ${{ needs.prep.outputs.ext_runtime_version }}
       ext_runtime_jre_base: ${{ needs.prep.outputs.ext_runtime_jre_base }}
+      tray_version: ${{ needs.prep.outputs.tray_version }}
+      tray_base: ${{ needs.prep.outputs.tray_base }}
       targets: ${{ needs.prep.outputs.targets }}
       android_targets: ${{ needs.prep.outputs.android_targets }}
       pack_jre: ${{ needs.prep.outputs.pack_jre == 'true' }}

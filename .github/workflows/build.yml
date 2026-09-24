@@ -54,6 +54,16 @@ on:
         description: ext-runtime 该版本 Release 的资产下载前缀（裁剪 JRE 按 <base>/ext-runtime-jre-<V>-<os>-<arch>.tar.gz 取）
         required: true
         type: string
+      tray_version:
+        description: 桌面壳版本号（Suwayomi-tray 的 Release 版本）；空串表示没解析到制品，本包不含桌面壳
+        required: false
+        type: string
+        default: ''
+      tray_base:
+        description: 桌面壳该版本 Release 的资产下载前缀（按 <base>/suwayomi-tray-<V>-<target>[.exe] 取）
+        required: false
+        type: string
+        default: ''
       targets:
         description: 桌面/服务端构建矩阵 include 数组（JSON 字符串，不含 Android；可为空数组）
         required: true
@@ -110,14 +120,9 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-      - name: 安装桌面壳系统依赖（Linux）
-        # 托盘壳（Tauri）在所有 Linux target 上都要（webkit2gtk + appindicator）；
-        # ubuntu-24.04-arm 的 arm64 源里有同名包，所以两个架构共用同一条命令。
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
-            librsvg2-dev libxdo-dev libssl-dev
+      # 桌面壳（Tauri 托盘）不再在这里编译 —— 它已拆到独立仓库 Suwayomi-tray，
+      # 六份二进制由那边发布，本 job 在打包步下载对应的那份。因此 Linux 上也不再装
+      # webkit2gtk/appindicator 那套系统依赖。
       # 这一步以前装 JDK 给 +jre 的 jlink 用，现在不需要了：ext-runtime.jar 与裁剪好的
       # JRE 都从 Suwayomi-ext-runtime 的 Release 资产下载，本仓库不再跑任何 JVM 工具链。
       - name: 构建
@@ -151,13 +156,27 @@ jobs:
           mkdir -p "$STAGE/bin"
           cp "$BIN" "$STAGE/bin/"
 
-          # 桌面壳（Tauri 托盘）：**所有**桌面 target 都出（Windows / Linux x64+arm64 /
+          # 桌面壳（Tauri 托盘）：**所有**桌面 target 都要（Windows / Linux x64+arm64 /
           # macOS x64+arm64）。Android 不在此矩阵里，它由独立的 android job 出 APK。
-          # 三个平台都是原生 runner 编译，tray 有自己的 workspace 与 target 目录。
-          bash suwayomi-tray/build-tray.sh
-          cp suwayomi-tray/target/release/suwayomi "$STAGE/" 2>/dev/null \
-            || cp suwayomi-tray/target/release/suwayomi.exe "$STAGE/" 2>/dev/null \
-            || echo "WARN: desktop shell binary not found"
+          # 由独立仓库 Suwayomi-tray 发布，这里只按 target 下载 —— 托盘代码没变时不重编
+          # （原来每 target 都要编 494 个 crate 的 Tauri 依赖树）。
+          # 解析不到或下载失败只告警、不失败：包里没有托盘壳，server 本身照样可用。
+          TRAY_VER="${{ inputs.tray_version }}"
+          TRAY_BASE="${{ inputs.tray_base }}"
+          if [ -z "$TRAY_VER" ] || [ -z "$TRAY_BASE" ]; then
+            echo "::warning::未解析到桌面壳制品，本包不含托盘壳"
+          else
+            TRAY_ASSET="suwayomi-tray-${TRAY_VER}-${TGT}"
+            [ "$IS_WIN" = "true" ] && TRAY_ASSET="${TRAY_ASSET}.exe"
+            TRAY_OUT="$STAGE/suwayomi"
+            [ "$IS_WIN" = "true" ] && TRAY_OUT="$STAGE/suwayomi.exe"
+            if curl -fsSL --retry 2 -o "$TRAY_OUT" "$TRAY_BASE/$TRAY_ASSET"; then
+              echo "桌面壳 ${TRAY_VER} → $TRAY_OUT"
+            else
+              rm -f "$TRAY_OUT"
+              echo "::warning::桌面壳资产下载失败（$TRAY_BASE/$TRAY_ASSET），本包不含托盘壳"
+            fi
+          fi
 
           # 扩展沙盒 jar 进 bin/（server 自动查找）。ext-runtime 是纯 JVM 字节码，
           # 所有 target 用同一份制品 —— 直接下载，不再逐 target 跑 gradle。

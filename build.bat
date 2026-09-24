@@ -33,10 +33,17 @@ echo [1/6] Building suwayomi-server (release) ...
 cargo build --release -p suwayomi-server
 if errorlevel 1 goto :error
 
-REM [2/6] tray shell
-echo [2/6] Building tray shell suwayomi.exe (release) ...
-cargo build --release --manifest-path suwayomi-tray\Cargo.toml
-if errorlevel 1 goto :error
+REM [2/6] tray shell — 桌面壳已拆到独立仓库 Suwayomi-tray，这里跟 ext-runtime /
+REM WebUI 一样只下载 Release 资产，构建不再需要 Tauri 工具链。
+echo [2/6] Downloading tray shell suwayomi.exe ...
+set "TRAY_URL="
+for /f "usebackq delims=" %%u in (`curl -s "https://api.github.com/repos/576576/Suwayomi-tray/releases/latest" ^| python -c "import json,sys;d=json.load(sys.stdin);print([a['browser_download_url'] for a in d.get('assets',[]) if a['name'].endswith('windows-x64.exe')][0])"`) do set "TRAY_URL=%%u"
+if "%TRAY_URL%"=="" (
+  echo WARNING: failed to resolve tray shell release asset; packing without it.
+) else (
+  curl -fsSL -o "%ART%\suwayomi.exe" "%TRAY_URL%"
+  if errorlevel 1 goto :error
+)
 
 REM [3/6] ext-runtime fat jar (download from Suwayomi-ext-runtime releases)
 REM  版本号 = <AOSP API level>.<主版本>.<修订>；换 pin 就改这一行（CI 侧由 prep 自动解析）。
@@ -49,7 +56,7 @@ if errorlevel 1 goto :error
 REM [4/6] assemble stage layout (matches CI: exe top-level, server+jar in bin/)
 echo [4/6] Assembling %STAGE% ...
 mkdir "%STAGE%\bin"
-copy /y suwayomi-tray\target\release\suwayomi.exe "%STAGE%\" >nul
+if exist "%ART%\suwayomi.exe" copy /y "%ART%\suwayomi.exe" "%STAGE%\" >nul
 copy /y target\release\suwayomi-server.exe "%STAGE%\bin\" >nul
 copy /y "%ART%\ext-runtime.jar" "%STAGE%\bin\ext-runtime.jar" >nul
 

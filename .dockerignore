@@ -5,7 +5,7 @@
 # Gradle 工程或共享源码目录。
 
 # 本地产物与缓存。必须写 `**/`：裸 `target/` 只匹配上下文根下的那一层，
-# `suwayomi-tray/target/` 有 2 GB，会被整个传给 docker daemon。
+# 子目录里的构建产物否则会被整个传给 docker daemon。
 **/target/
 **/build/
 **/.gradle/

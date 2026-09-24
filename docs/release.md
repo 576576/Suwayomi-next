@@ -54,11 +54,11 @@
 | `build_android_x64` | `ubuntu-latest` | `x86_64-linux-android` | —（同上） |
 | `pack_oci` | 见下 | `linux/amd64` / `linux/arm64` | linux/x64 与 linux/aarch64（镜像里按 `uname -m` 各取对应那份） |
 
-- **每个 target 的 runner 都是原生同架构**：Rust 二进制与托盘壳都在本平台原生编译（linux-arm64 用 arm64 runner，顺带不再需要交叉工具链）。以前这里还有第二条理由 —— `+jre` 的 jlink 不能跨平台生成运行时；JRE 搬到 Suwayomi-ext-runtime 后这条约束不再落在本仓库，但"原生编译"本身仍然值得保留。
+- **每个 target 的 runner 都是原生同架构**：Rust 二进制在本平台原生编译（linux-arm64 用 arm64 runner，顺带不再需要交叉工具链；桌面壳在 Suwayomi-tray 那边同样由原生 runner 出）。以前这里还有第二条理由 —— `+jre` 的 jlink 不能跨平台生成运行时；JRE 搬到 Suwayomi-ext-runtime 后这条约束不再落在本仓库，但"原生编译"本身仍然值得保留。
 - `macos-13` 已被 GitHub 下线，x64 macOS 现为 `macos-15-intel`；Windows arm64 用 `windows-11-arm`（公开预览，公共仓库免费不限量），该镜像自带 VS 2022 + Windows SDK 26100（`build.rs` 嵌图标要的 `rc.exe`）与 Git for Windows，`shell: bash` 可直接用。
 - **判定平台一律用 `runner.os`，不要拿矩阵 runner 标签比字面量**：Windows 的标签不止 `windows-latest`（现在还有 `windows-11-arm`），`matrix.os == "windows-latest"` 这类写法在加第二个 Windows target 时必然踩空。
 - **`+jre` 相关的三个坑随脚本搬走了**：`windows-11-arm` 上 `uname -m` 会撒谎（Git for Windows 是 x64 版）、`+jre` 的入口/出口两道平台闸、`JAVA_HOME` 为 Windows 形式时反斜杠在 bash glob 里当转义符。这些都只影响 `make-jre.sh`，现在记在 Suwayomi-ext-runtime 的 `docs/EXTRACTION_RECORD.md`。
-- **矩阵里每个桌面 target 都出托盘壳与 `bin/ext-runtime.jar`**（Windows x64+arm64 / Linux x64+arm64 / macOS x64+arm64）。Linux 侧因此无论架构都装同一套 webkit2gtk/appindicator 依赖；tray 有自己的 workspace 与 `target/`，各 runner 原生编译。Android 不在这个矩阵里。
+- **矩阵里每个桌面 target 都带托盘壳与 `bin/ext-runtime.jar`**（Windows x64+arm64 / Linux x64+arm64 / macOS x64+arm64）。两者都不再在本仓库编译：托盘壳从 Suwayomi-tray 的 Release 下载对应 target 的二进制（见「桌面壳从哪来」），所以本仓库的 Linux runner 不再装 webkit2gtk/appindicator 那套系统依赖。Android 不在这个矩阵里。
 - 平台开关默认只勾 Windows x64 + Linux x64，发布通道默认 `alpha`。
 
 ## 产物形态（默认包 / `+jre` / OCI）
@@ -120,7 +120,7 @@
 ## 产物与捆绑
 
 - **不再捆绑 Electron**：WebUI 桌面窗口由托盘经系统 WebView 打开（Win WebView2 / Linux WebKitGTK / macOS WKWebView），无 WebView 的环境托盘回退系统浏览器。
-- 桌面壳（Tauri 托盘）：**所有桌面 target 都出**（Windows / Linux x64+arm64 / macOS x64+arm64），Android 由独立的 `android` job 出 APK、不带桌面壳。各平台都是原生 runner 编译（tray 有自己的 workspace 与 `target/`）。
+- 桌面壳（Tauri 托盘）：**所有桌面 target 都带**（Windows / Linux x64+arm64 / macOS x64+arm64），Android 由独立的 `android` job 出 APK、不带桌面壳。二进制由独立仓库 Suwayomi-tray 发布，本仓库按 target 下载（见「桌面壳从哪来」）。
 - 扩展沙盒（`bin/ext-runtime.jar`）：**所有桌面 target 都带**，server 跑扩展靠它，任何 target 都不能少。它**不再由本仓库构建** —— 见下面「ext-runtime 从哪来」。
 - 不打包 JRE 的场合：默认包、Android。桌面端 Linux 基础包历来也不捆（可自行装系统 OpenJDK 或取 `+jre` 包），勾 `+jre` 即自带 `jre/`。
 
@@ -155,12 +155,26 @@
 - 分流：alpha/beta → 最新构建（r{code} 预发布）；release → 最新正式 release。
 - **所有 target 共用一个 URL**：在 prep job 解析一次、job outputs 复用（两次解析间隙 WebUI 推新构建会造成各架构包不一致）。
 
-## 桌面壳构建注意（扩展沙盒已外置，见「ext-runtime 从哪来」）
+## 桌面壳从哪来
 
-- Linux runner 直接执行的脚本必须 git mode `100755`（Windows 提交默认 100644 且 `core.filemode=false`，需 `git update-index --chmod=+x`）——`./gradlew` 曾因此 Permission denied。
-- 桌面壳二进制经 `bash suwayomi-tray/build-tray.sh` 构建（普通 `cargo build --release`，不走 `tauri build`）；Windows 出 `suwayomi.exe`，Linux/macOS 无后缀。因此产物里是**裸可执行文件**，没有 macOS `.app` bundle / `.dmg`、也没有 Linux AppImage —— 需要这些得改成 `tauri build` 并补 iOS/打包依赖。
-- Linux 上跑桌面壳要先装 webkit2gtk/appindicator 等系统依赖（CI 里那条 `apt-get install` 就是）；无图形会话时托盘自动降级为前台 server。
+桌面壳（Tauri 托盘）已剥离到独立仓库 **`576576/Suwayomi-tray`**（原 `suwayomi-tray/` 子目录）。本仓库不再持有它的源码、也不再编译它 —— 打包时按 target 从它的 Release 资产取：
+
+| 消费方 | 取的资产 | 落到哪 |
+| --- | --- | --- |
+| 六个桌面 target | `suwayomi-tray-<V>-<target>[.exe]` | 各 target 产物根目录的 `suwayomi` / `suwayomi.exe` |
+
+- 解析脚本：`scripts/resolve-tray.sh`，三级探测同 `resolve-webui.sh`，同样吐 `base=`（该 release 的资产下载前缀）—— 六个 target 的资产都在同一个 release 里，prep 解析一次，各 target 按 `<base>/suwayomi-tray-<V>-<target>[.exe]` 取，不必逐个探测。
+- **解析不到或下载失败只打 `::warning::`，不让发布失败**：没有托盘壳时 server 本身照样可用。这是刻意选的（托盘仓库 CI 挂掉不该阻塞 server 发布），代价是可能静默出一个不含桌面壳的包 —— 看构建日志里的 warning。
+- 版本号由托盘仓库自己管（三段 semver，推 tag `v1.4.0` 触发发布），**不与本仓库的 `r{code}` / `3.y.z` 对齐**：exe 的 PE 版本资源显示的是托盘自己的版本。
+- 改托盘的流程：在 Suwayomi-tray 改 → 推 tag → 那边 CI 出六份资产 → 回这边跑一次发布即生效（无需改本仓库代码）。
+- 为什么拆：托盘是独立 workspace + 494 个 crate 的 Tauri 依赖树，原先在每个 desktop target 的 job 里**串行**编译一次，托盘代码没变也照编。拆走后本仓库每次构建只下载几 MB，顺带省掉 Linux 那套 webkit2gtk/appindicator 系统依赖。
+
+## 桌面壳的形态与行为
+
+- 桌面壳在 Suwayomi-tray 用普通 `cargo build --release` 构建（不走 `tauri build`）；Windows 出 `suwayomi.exe`，Linux/macOS 无后缀。因此产物里是**裸可执行文件**，没有 macOS `.app` bundle / `.dmg`、也没有 Linux AppImage —— 需要这些得改成 `tauri build` 并补打包依赖。
+- Linux 上跑桌面壳要先装 webkit2gtk/appindicator 等系统依赖（装在 Suwayomi-tray 的 CI 里）；无图形会话时托盘自动降级为前台 server。
 - macOS 上托盘进程设为 `ActivationPolicy::Accessory`（不占 Dock、不进 Cmd-Tab），与 Windows 托盘行为对齐。
+- Linux runner 上**直接执行**的脚本必须 git mode `100755`（Windows 提交默认 100644 且 `core.filemode=false`，需 `git update-index --chmod=+x`）——`./gradlew` 曾因此 Permission denied。用 `bash <script>` 调用的（如 `build-tray.sh`）不受此限。
 
 ## CI 改动的本地验证
 

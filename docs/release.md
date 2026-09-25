@@ -8,6 +8,7 @@
 |---|---|
 | `build.yml` | **可复用构建工作流**（只由 `workflow_call` 触发）：算好参数后由它编译 + 打包全部 target，产物用 `upload-artifact` 上传。两个 job：`build`（桌面/服务端矩阵）与 `android`（APK）。所有平台的构建逻辑只有这一份。 |
 | `release.yml` | **唯一入口**：推送 main → 自动 alpha；手动 dispatch → alpha/beta/release。负责算版本号、解析 WebUI 制品，然后 `uses: ./.github/workflows/build.yml` 构建，再用 `download-artifact` 收产物发布 Release。 |
+| `clear.yml` | **预发布清理**（只手动 dispatch）：按「每 N 小时窗口内只留最新的 1 个预发布」删掉多余的 alpha Release，见「预发布清理」。 |
 
 - 产物约定分两套，由 `build.yml` 的 `pack_mode` 表达（调用方按触发方式传入）：
   `channel` = 手动发布（默认包必然产出，`pack_jre` 决定是否另出一份 `+jre`）；
@@ -97,6 +98,28 @@
 - 手动 dispatch 的 `release_notes`（**在「版本计数」下一个**）会附加在标准信息之后、`--generate-notes` 的 changelog 之前。
 - UI 上是**单行**输入框，要分段就写字面量 `\n`，`publish` 里用 `printf '%b'` 还原成真换行；粘贴进来的 `\r` 会被去掉。
 - 标准行**按实际产出渲染**：`pack_jre` 没勾就不写形态行，Android 行只列真正构建的 ABI，OCI 行只在勾了 `pack_oci` 时出现（镜像不进附件，这行是找到它的唯一入口）。
+
+## 预发布清理（`clear.yml`）
+
+推 main 的自动 alpha 每次提交都会多一个 Release，列表很快被 `r{code}-alpha.{run_id}` 淹没。`clear.yml`（workflow 名 `Clear Release`）负责回收，**只手动触发**，三个输入：
+
+| 输入 | 默认 | 含义 |
+|---|---|---|
+| `window_hours` | `24` | 窗口长度（小时）：**每个窗口内只留最新的 1 个预发布**，其余删掉。 |
+| `dry_run` | ☑ | 只打印待删列表、不真删。默认开着 —— 删除不可撤销（Release 连资产一起没），先预览一遍。 |
+| `cleanup_tag` | ☑ | 删 Release 时一并删关联 tag（`gh release delete --cleanup-tag`）。alpha 的 tag 带 run_id、天然唯一，留着只是让 `git fetch --tags` 越来越慢。 |
+
+- **只动 `prerelease=true` 的** —— 实际就是 alpha。正式版 `v3.y.z` 不在范围内；**beta 是 `prerelease=false`**（见「通道与版本」），所以它也不会被清理。
+- **窗口从最新那条往回推，不是按自然日 / 整点切分**：保留最新的一条当锚点，往回凡是距锚点不足 `window_hours` 的都删，遇到早于锚点整整一个窗口的那条就保留并成为新锚点，如此往旧推进。按绝对时刻切会出「同一天推 5 次 → 0 点前后各留一条」的结果，这里不会。
+- **删除顺序从最旧的往回删**：中途失败（tag 受保护等）时留下的是最新的那批，而不是把最近一次构建先删掉。单个失败只打 `::warning::`，不中断整轮。
+- 最新的一条永远是锚点、不会被删 —— 即便仓库里全是预发布、GitHub 把 Latest 标在它身上也安全。
+- 结果写进 job summary（保留 / 删除逐条列表 + 成功失败计数）。
+
+本地验证（不打线上 Release 的主意）：
+
+```bash
+python .workbuddy/verify/clear_dryrun.py    # gh 打桩 + 假 Release 列表，真跑两个 run 块（6 个场景）
+```
 
 ## JRE 裁剪（`+jre` 用）
 

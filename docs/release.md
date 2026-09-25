@@ -113,6 +113,7 @@
 - **窗口从最新那条往回推，不是按自然日 / 整点切分**：保留最新的一条当锚点，往回凡是距锚点不足 `window_hours` 的都删，遇到早于锚点整整一个窗口的那条就保留并成为新锚点，如此往旧推进。按绝对时刻切会出「同一天推 5 次 → 0 点前后各留一条」的结果，这里不会。
 - **删除顺序从最旧的往回删**：中途失败（tag 受保护等）时留下的是最新的那批，而不是把最近一次构建先删掉。单个失败只打 `::warning::`，不中断整轮。
 - 最新的一条永远是锚点、不会被删 —— 即便仓库里全是预发布、GitHub 把 Latest 标在它身上也安全。
+- ⚠️ **删除步必须能跑 git**：`gh release delete --cleanup-tag` 内部会用 git 删本地 tag，job 里没有 `actions/checkout` 时**每条都失败**（`failed to run git: fatal: not a git repository`，一个都删不掉）。所以第一个 step 是 `actions/checkout@v7` 且 `fetch-depth: 0`（浅克隆没有本地 tag，`git tag -d` 照样失败），删除步开头另有一道 `git rev-parse` 自查，缺仓库时直接红在那一步。
 - 结果写进 job summary（保留 / 删除逐条列表 + 成功失败计数）。
 
 本地验证（不打线上 Release 的主意）：

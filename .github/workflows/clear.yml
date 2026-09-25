@@ -43,6 +43,13 @@ jobs:
     name: 清理预发布
     runs-on: ubuntu-latest
     steps:
+      # gh release delete 要跑在 git 仓库里：--cleanup-tag 会用 git 删本地 tag，
+      # 没有仓库时报 "failed to run git: fatal: not a git repository"（**每一条都失败**，
+      # 一个都删不掉）。fetch-depth: 0 是为了把 tag 一起拉下来 —— 浅克隆里没有
+      # 本地 tag，`git tag -d` 同样会失败。
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - name: 列出待清理的预发布
         env:
           GH_TOKEN: ${{ github.token }}
@@ -167,6 +174,13 @@ jobs:
           CLEANUP_TAG: ${{ github.event.inputs.cleanup_tag }}
         run: |
           set -euo pipefail
+
+          # gh release delete 会在内部跑 git（--cleanup-tag 要删本地 tag），不在 git
+          # 仓库里每条都会失败且原因难懂 —— 先自查，缺 checkout 时直接红在这一步。
+          git rev-parse --git-dir >/dev/null 2>&1 || {
+            echo "::error::当前目录不是 git 仓库，gh release delete 无法工作（actions/checkout 丢了？）"
+            exit 1
+          }
 
           if [ ! -s /tmp/delete.txt ]; then
             echo "没有需要删除的预发布"

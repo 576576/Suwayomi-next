@@ -295,7 +295,12 @@ jobs:
         run: |
           # ext-runtime 是纯 JVM 字节码，六个桌面 target 产出的是同一个 jar ——
           # 所以和 WebUI 一样在这里解析一次、所有 target 复用（见本仓 docs/release.md）。
-          OUT="$(bash scripts/resolve-ext-runtime.sh)"
+          # 那个仓推 main 会自动出 alpha 预发布，必须按通道挑：正式发布不能吃到这些。
+          case "${{ steps.out.outputs.channel }}" in
+            release) ER_KIND="--stable" ;;
+            *)       ER_KIND="--build"  ;;
+          esac
+          OUT="$(bash scripts/resolve-ext-runtime.sh $ER_KIND)"
           URL="$(printf '%s' "$OUT" | sed -n 's/^url=//p')"
           VER="$(printf '%s' "$OUT" | sed -n 's/^version=//p')"
           BASE="$(printf '%s' "$OUT" | sed -n 's/^base=//p')"
@@ -313,10 +318,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # 桌面壳由独立仓库 Suwayomi-tray 发布，取最新一份；六个 target 的资产都在同一个
-          # release 里，这里只解析出版本与前缀，各 target 在打包步自己拼资产名。
+          # 桌面壳由独立仓库 Suwayomi-tray 发布，六个 target 的资产都在同一个 release 里，
+          # 这里只解析出版本与前缀，各 target 在打包步自己拼资产名。
           # 解析不到只告警（--optional）：包里没有托盘壳，不该挡住 server 发布。
-          OUT="$(bash scripts/resolve-tray.sh --optional)"
+          # 同 WebUI / ext-runtime：release 通道只认非预发布，alpha/beta 跟最新构建。
+          case "${{ steps.out.outputs.channel }}" in
+            release) TRAY_KIND="--stable" ;;
+            *)       TRAY_KIND="--build"  ;;
+          esac
+          OUT="$(bash scripts/resolve-tray.sh --optional $TRAY_KIND)"
           VER="$(printf '%s' "$OUT" | sed -n 's/^version=//p')"
           BASE="$(printf '%s' "$OUT" | sed -n 's/^base=//p')"
           if [ -z "$VER" ] || [ -z "$BASE" ]; then

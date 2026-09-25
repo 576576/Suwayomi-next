@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # Resolve the ext-runtime.jar release-asset URL published by Suwayomi-ext-runtime.
 #
-# Usage: bash scripts/resolve-ext-runtime.sh [--sources] [<version>]
+# Usage: bash scripts/resolve-ext-runtime.sh [--sources] [--stable|--build] [<version>]
 #   （无参数） 取最新符合条件的 release 资产
 #   --sources  取共享源码包 ext-runtime-<V>-shared-sources.jar（Android 用）
-#   <version>  取指定版本，如 30.1.0（对应 tag v30.1.0；大版本是 AOSP API level）
+#   --stable   只看非预发布 release（Suwayomi-next 正式发布通道用）
+#   --build    只看预发布 release（ext-runtime 推 main 自动出的那批 alpha）
+#   <version>  取指定版本，如 30.0.47（对应 tag v30.0.47；大版本是 AOSP API level）
+#
+# 不加 --stable / --build 时不区分预发布 —— ext-runtime 现在推 main 就会自动出
+# alpha，区分不开会把自动构建的版本混进正式发布包（与 scripts/resolve-webui.sh 同套做法）。
 #
 # 输出：把三个值写到 stdout，格式为
 #   url=<下载地址>
@@ -29,9 +34,12 @@ set -uo pipefail
 
 WANT=""
 KIND="jar"   # jar = 桌面沙盒 jar；sources = 共享源码包
+PICK="any"   # any / stable / build ——是否按 prerelease 过滤
 for arg in "$@"; do
   case "$arg" in
     --sources) KIND="sources" ;;
+    --stable)  PICK="stable" ;;
+    --build)   PICK="build"  ;;
     v*) echo "::error::resolve-ext-runtime.sh: 版本号不要带 v 前缀，收到 '${arg}'" >&2; exit 1 ;;
     *)  WANT="$arg" ;;
   esac
@@ -44,7 +52,8 @@ UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
 PY_PICK='
 import json, re, sys
 
-want, kind = sys.argv[1], sys.argv[2]
+want, kind, pick = sys.argv[1], sys.argv[2], sys.argv[3]
+want_pre = None if pick == "any" else (pick == "build")
 pat = re.compile(r"^ext-runtime-(.+)-shared-sources\.jar$" if kind == "sources"
                  else r"^ext-runtime-(.+)\.jar$")
 try:
@@ -57,6 +66,8 @@ if not isinstance(rels, list):
 cands = []
 for r in rels:
     if not isinstance(r, dict) or r.get("draft"):
+        continue
+    if want_pre is not None and bool(r.get("prerelease")) != want_pre:
         continue
     tag = (r.get("tag_name") or "").lstrip("v")
     if want and tag != want:
@@ -84,7 +95,7 @@ print(url)
 print(ver)
 '
 
-pick() { printf '%s' "$1" | python3 -c "$PY_PICK" "$WANT" "$KIND" 2>/dev/null || true; }
+pick() { printf '%s' "$1" | python3 -c "$PY_PICK" "$WANT" "$KIND" "$PICK" 2>/dev/null || true; }
 
 OUT=""
 
@@ -102,6 +113,8 @@ if [ -z "$OUT" ]; then
 fi
 
 # 3) 匿名 HTML：atom 拿最近 tag → expanded_assets 页抽 .jar
+#    HTML 页区分不出 prerelease，这一级只保证"不失败"，可能与 --stable/--build 不符；
+#    正常环境前两级（gh / REST）一定命中，走不到这里。
 if [ -z "$OUT" ]; then
   if [ -n "$WANT" ]; then
     TAGS="v${WANT}"

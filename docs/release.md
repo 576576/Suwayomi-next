@@ -109,7 +109,7 @@
 | Adoptium 完整 JRE 25（windows-x64） | 180 MB | 58 MB |
 | jlink 裁剪产出 | 39 MB | 25 MB |
 
-- 六份资产 = 6 个 `(os, arch)`：`windows|linux|mac` × `x64|aarch64`。每次发版出齐 —— 代价是那边 `windows/aarch64` 要单独处理（Adoptium 对该平台没发 JDK 25 的任何制品，jdk/jre/jmods 三端点全 404），换 Azul Zulu（其 `win_aarch64` 归档自带 `jmods/`）。换来的好处是消费侧不必判断"这个版本到底有没有 JRE 资产"。
+- 六份资产 = 6 个 `(os, arch)`：`windows|linux|mac` × `x64|aarch64`。手动发版出齐；推 main 的自动 alpha 只出本仓库 `+jre` 包在用的两份（`windows-x64` / `linux-x64`）。代价是 `windows/aarch64` 那一格要单独处理（Adoptium 对该平台没发 JDK 25 的任何制品，jdk/jre/jmods 三端点全 404），换 Azul Zulu（其 `win_aarch64` 归档自带 `jmods/`）。换来的好处是消费侧不必判断"这个版本到底有没有 JRE 资产"。
 - 模块白名单是**实测**出来的（14 个模块，含 `jdk.httpserver` —— 桌面沙盒自己的 HTTP 宿主，和 `jdk.crypto.ec` —— TLS 必需）。验证方式：用产出的运行时真跑 `ext-runtime.jar` 并加载真实扩展。刻意排除 `java.desktop`（AWT/ImageIO，约 11 MB 压缩后）：扩展跑的是 Android API。
 - `--include-locales=en,ja,zh` + `jdk.localedata`：只留这三种语言的 locale 数据。
 - **jmods 要单独下载**：Temurin JDK 24 起启用 JEP 493，JDK 归档里不再带 `jmods/`，jlink 的 `--module-path` 没有现成来源。Adoptium 为每个平台单独发 jmods 包（约 85 MB）。脚本会先探 `$JAVA_HOME/jmods/`，有就直接用、不再下载。
@@ -139,8 +139,9 @@
 - 解析脚本：`scripts/resolve-ext-runtime.sh`（默认取桌面 jar，加 `--sources` 取共享源码包），三级探测同 `resolve-webui.sh`。它同时吐一个 `base=`（该 release 的资产下载前缀）—— 同一版本下其余资产按 `<base>/<资产名>` 拼即可，不必为每种 `(os, arch)` 再探测一遍。Android 侧再包一层 `android/scripts/fetch-ext-runtime-src.sh`，下载 + 展开 + 校验三个包根齐全。
 - Android **只能吃源码**：`:extension-host` 由 AGP 9 内置的 Kotlin **2.3.20** 编译，而 ext-runtime 用 Kotlin **2.4.0**，元数据版本不兼容，2.3 读不了 2.4 编出来的 class。
 - 版本由 `release.yml` 的 prep 解析一次、经 `build.yml` 的 `ext_runtime_version`（+ `ext_runtime_jre_base`）传给所有 target，**同一批产物用的是同一个 ext-runtime 版本**。
-- 版本号是 `<AOSP API level>.<主版本>.<修订>`（如 `30.1.0`），大版本跟着沙盒 pin 的 Android API 基线走。
-- 改沙盒的流程：在 Suwayomi-ext-runtime 改 → 打 tag `v30.x.0` → 那边 CI 出 Release（含六份 JRE 资产）→ 回这边跑一次发布即生效（无需改本仓库代码；要换 pin 才动 `build.bat` 里那个默认版本号）。
+- 版本号是 `<AOSP API level>.{提交数/100}.{提交数%100}`（如 `30.0.47`）：大版本跟着沙盒 pin 的 Android API 基线走，后两位是那个仓库自己的提交数（`versionCode = 提交数 + 1000`，规则同本仓库，只是基线不同）。
+- 改沙盒的流程：在 Suwayomi-ext-runtime 改 → 推 main（自动出 alpha，只有 jar 与两份 JRE）或手动 dispatch release 通道（出齐全六份 JRE 并发 Packages）→ 回这边跑一次发布即生效（无需改本仓库代码）。
+- **通道到这里是分岔的**：那边推 main 会自动出 alpha 预发布，所以本仓库正式发布只认非预发布版本（`resolve-ext-runtime.sh --stable`），alpha/beta 才跟最新构建（`--build`）。要这边的 release 包吃到新沙盒，那边得 dispatch 一次 release/beta 通道。
 
 ## Android 产物
 
@@ -165,8 +166,9 @@
 
 - 解析脚本：`scripts/resolve-tray.sh`，三级探测同 `resolve-webui.sh`，同样吐 `base=`（该 release 的资产下载前缀）—— 六个 target 的资产都在同一个 release 里，prep 解析一次，各 target 按 `<base>/suwayomi-tray-<V>-<target>[.exe]` 取，不必逐个探测。
 - **解析不到或下载失败只打 `::warning::`，不让发布失败**：没有托盘壳时 server 本身照样可用。这是刻意选的（托盘仓库 CI 挂掉不该阻塞 server 发布），代价是可能静默出一个不含桌面壳的包 —— 看构建日志里的 warning。
-- 版本号由托盘仓库自己管（三段 semver，推 tag `v1.4.0` 触发发布），**不与本仓库的 `r{code}` / `3.y.z` 对齐**：exe 的 PE 版本资源显示的是托盘自己的版本。
-- 改托盘的流程：在 Suwayomi-tray 改 → 推 tag → 那边 CI 出六份资产 → 回这边跑一次发布即生效（无需改本仓库代码）。
+- 版本号由托盘仓库自己管（算法与本仓库同款：`versionCode = 提交数 + 1000`，版本名 `1.{提交数/100}.{提交数%100}`；三通道共用同一个版本名，差异在 tag）。**不与本仓库的 `r{code}` / `3.y.z` 对齐**：exe 的 PE 版本资源显示的是托盘自己的版本。
+- 改托盘的流程：在 Suwayomi-tray 改 → 推 main（自动出 alpha，只有 windows-x64 + linux-x64 两份）或手动 dispatch release 通道（六份出齐）→ 回这边跑一次发布即生效（无需改本仓库代码）。
+- **通道到这里是分岔的**：那边推 main 会自动出 alpha 预发布，所以本仓库正式发布只认非预发布版本（`resolve-tray.sh --stable`），alpha/beta 才跟最新构建（`--build`）。
 - 为什么拆：托盘是独立 workspace + 494 个 crate 的 Tauri 依赖树，原先在每个 desktop target 的 job 里**串行**编译一次，托盘代码没变也照编。拆走后本仓库每次构建只下载几 MB，顺带省掉 Linux 那套 webkit2gtk/appindicator 系统依赖。
 
 ## 桌面壳的形态与行为

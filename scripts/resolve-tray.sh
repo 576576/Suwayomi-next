@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # Resolve the desktop-shell (tray) binary published by Suwayomi-tray.
 #
-# Usage: bash scripts/resolve-tray.sh [--optional] [<version>]
-#   （无参数） 取最新 release 里的桌面壳资产
+# Usage: bash scripts/resolve-tray.sh [--optional] [--stable|--build] [<version>]
+#   （无参数） 取最新符合条件的 release 里的桌面壳资产
 #   --optional 解析不到时只打 ::warning:: 并以 0 退出（不给就是 ::error:: + exit 1）
-#   <version>  取指定版本，如 1.4.0（对应 tag v1.4.0）
+#   --stable   只看非预发布 release（Suwayomi-next 正式发布通道用）
+#   --build    只看预发布 release（alpha / beta 自动构建出的那批）
+#   <version>  取指定版本，如 1.0.23（对应 tag v1.0.23）
+#
+# 不加 --stable / --build 时不区分预发布 —— 桌面壳现在推 main 就会自动出 alpha，
+# 区分不开会把自动构建的版本混进正式发布包（与 scripts/resolve-webui.sh 同套做法）。
 #
 # 输出：把三个值写到 stdout，格式为
 #   url=<任意一个桌面壳资产的下载地址>
@@ -25,9 +30,12 @@ set -uo pipefail
 
 WANT=""
 OPTIONAL="no"
+PICK="any"   # any / stable / build ——是否按 prerelease 过滤
 for arg in "$@"; do
   case "$arg" in
     --optional) OPTIONAL="yes" ;;
+    --stable)   PICK="stable" ;;
+    --build)    PICK="build"  ;;
     v*) echo "::error::resolve-tray.sh: 版本号不要带 v 前缀，收到 '${arg}'" >&2; exit 1 ;;
     *)  WANT="$arg" ;;
   esac
@@ -40,7 +48,8 @@ UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
 PY_PICK='
 import json, re, sys
 
-want = sys.argv[1]
+want, pick = sys.argv[1], sys.argv[2]
+want_pre = None if pick == "any" else (pick == "build")
 pat = re.compile(r"^suwayomi-tray-(\d+\.\d+\.\d+)-([A-Za-z0-9-]+?)(\.exe)?$")
 try:
     rels = json.load(sys.stdin)
@@ -52,6 +61,8 @@ if not isinstance(rels, list):
 cands = []
 for r in rels:
     if not isinstance(r, dict) or r.get("draft"):
+        continue
+    if want_pre is not None and bool(r.get("prerelease")) != want_pre:
         continue
     tag = (r.get("tag_name") or "").lstrip("v")
     if want and tag != want:
@@ -76,7 +87,7 @@ print(url)
 print(ver)
 '
 
-pick() { printf '%s' "$1" | python3 -c "$PY_PICK" "$WANT" 2>/dev/null || true; }
+pick() { printf '%s' "$1" | python3 -c "$PY_PICK" "$WANT" "$PICK" 2>/dev/null || true; }
 
 OUT=""
 
@@ -94,6 +105,8 @@ if [ -z "$OUT" ]; then
 fi
 
 # 3) 匿名 HTML：atom 拿最近 tag → expanded_assets 页抽桌面壳资产
+#    HTML 页区分不出 prerelease，这一级只保证"不失败"，可能与 --stable/--build 不符；
+#    正常环境前两级（gh / REST）一定命中，走不到这里。
 if [ -z "$OUT" ]; then
   if [ -n "$WANT" ]; then
     TAGS="v${WANT}"

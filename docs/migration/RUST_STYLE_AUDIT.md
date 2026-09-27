@@ -520,6 +520,7 @@ CI（`build.yml`）里加两个 job：`fmt`（`cargo fmt --all --check`）、
 
 > 阶段 1–2：分支 `refactor/guard-enhance`（87 文件，+1,732 / −1,423）
 > 阶段 3–4：分支 `refactor/oop2fp-1`（`ef0ee9a` / `b9832d1` / `f254e9a` / `6a4de5d`）
+> 之后的测试门修补：`51d42a8`（CI 起 PostgreSQL）/ `c7f1df4` / `1b2534e` / `7155d19`，见「门禁现状」
 > 每个阶段结束时 `cargo fmt --check` / `clippy -D warnings` / `cargo test` 三道门全绿
 
 ### 阶段 1 —— 立门禁
@@ -678,8 +679,48 @@ WebUI 把作业拖到队尾（客户端传 `to == len`）就会触发。现在�
 |----|------|------|
 | 格式 | `cargo fmt --all --check` | ✅ 0 diff |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings` | ✅ 0 warning |
-| 测试 | `cargo test --workspace` | ✅ 176 passed / 0 failed |
+| 测试 | `cargo test --workspace --no-fail-fast` | ✅ 176 passed / 0 failed，25 个测试二进制，**无一行 "skipped"** |
 | pedantic + nursery + indexing_slicing | `-- -W clippy::pedantic -W clippy::nursery -W clippy::indexing_slicing` | 2,134 → **1,982**；`indexing_slicing` 归零，`Arc<dyn …>` 26 → 8，进程级路径单例 3 → 0 |
+
+#### 测试门里那 20 个依赖真库的用例（`51d42a8` … `7155d19`）
+
+`cargo test --workspace` 会"全绿"，不代表测试真的跑了。有 20 个用例只在
+`DATABASE_URL` / `SUWAYOMI_TEST_DB` 存在时才连库，否则打一行 "skipped" 就
+`return`；CI 的 `test` job 原本没有 PostgreSQL，于是这批用例**从未执行**过，
+而总数与本地一样是 176 —— 这正是当时的破绽。
+
+| 用例位置 | 个数 | 认的 env |
+|---|---:|---|
+| `crates/suwayomi-core/tests/db_pg.rs` | 3 | `DATABASE_URL` / `SUWAYOMI_TEST_DB` |
+| `crates/suwayomi-domain/tests/services.rs` | 10 | 同上 |
+| `crates/suwayomi-rest/tests/api.rs` | 2 | 同上 |
+| `crates/suwayomi-domain/src/extension_store.rs`（内联） | 4 | 只认 `DATABASE_URL` |
+| `crates/suwayomi-domain/src/sync_yomi.rs`（内联） | 1 | 只认 `DATABASE_URL` |
+
+补门过程中暴露并修掉的两个**测试隔离**缺陷（与被测代码无关）：
+
+1. **并行 TRUNCATE 竞态**（`c7f1df4`）。`db_lock()` 早已存在（进程内 `tokio`
+   互斥 + 临时目录锁文件，跨线程也跨进程），但内联在两个源文件里的 5 个用例
+   漏了取锁。同一二进制内用例并行跑，后启动者的 `setup_db()` 会把先启动者刚
+   INSERT 的行 TRUNCATE 掉。
+2. **跨二进制残留状态**（`7155d19`）。`suwayomi.manga` 没有指向 `source` 的
+   外键（方向是 `source.extension → extension.id`），所以 extension_store 的
+   `TRUNCATE source, extension, extension_store CASCADE` 清不到 `manga`；
+   而 `db_pg.rs` 会显式插入 `id = 1/2/3` 且不回滚、序列停在 0。测试二进制之间
+   是并行进程，"上一批残留了什么"取决于调度 → 同一份代码 run 1 绿、run 2 挂。
+   三个集成 fixture 各自硬编码同一份 15 表清单，改为收口到
+   `suwayomi_db::test_support::{BUSINESS_TABLES, reset_business_tables}`。
+
+另有两点工程改动：CI 的 `test` job 以 `services:` 起一次性 `postgres:16`
+（`--health-cmd pg_isready` 等它真能接受连接）；`cargo test` 加
+`--no-fail-fast`（`1b2534e`），否则第一个失败的测试二进制会让后面的 target
+一律不跑，一次只能看到一个失败。
+
+本地用嵌入式 PostgreSQL **16.15**（与 CI 的 `postgres:16` 同小版本）实测：
+`cargo test --workspace --no-fail-fast` 连跑 5 轮，每轮 25 个测试二进制全 ok。
+
+仍未覆盖：`crates/suwayomi-graphql` 没有 DB 集成测试（只有 4 个单测），
+GraphQL 侧的真实 SQL 路径尚未被测试触及。
 
 ## 附录 A：命中规则对照表（rust-skills）
 

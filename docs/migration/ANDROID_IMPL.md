@@ -107,6 +107,8 @@ Rust 单独用 `curl` 调试；将来若要省掉这一次回环，可再换成�
 android/                     Android 宿主工程（独立 Gradle/AGP，不并入主工程）
   app/                       :app —— Activity(WebView) + Application(JNI 启服)
                              + ExtensionInstaller（唤起系统安装器/卸载器，FileProvider 暴露 APK）
+                             + DirectoryPicker（选目录，SAF + 全盘写权限）
+                             + FileChooser（选文件，WebUI 的 <input type="file">）
   extension-host/            :extension-host —— 扩展宿主（PackageManager 发现 + ART 加载 + 回环 HTTP）
   build/ext-runtime-src/     由 android/scripts/fetch-ext-runtime-src.sh 下载展开，:extension-host 的源目录
     eu/kanade/tachiyomi/**   扩展 API 实现（HttpSource/ParsedHttpSource/network/model/Filter…）
@@ -201,6 +203,39 @@ REST 侧的 `/api/v1/extension/icon/{pkg}` 按 **磁盘缓存 → 沙盒 → 仓
 现在 JNI 入口经 `ServerOptions::cache_dir = Some(data_dir/cache)` 显式钉住，
 由 `AppPaths` 注入到各服务（没有进程级单例，见 RUST_STYLE_AUDIT.md §7 阶段 4-1）。
 
+### `<input type="file">`：WebView 不会自己弹选择器（「恢复备份」点不动的根因）
+
+WebUI 的「恢复备份」是点一个**隐藏的** `<input type="file">`
+（`Suwayomi-WebUI/src/features/backup/screens/Backup.tsx` 里 `inputRef.current?.click()`）。
+浏览器里这一步由浏览器自己弹选择器；**WebView 里不会** —— WebView 把「弹出文件选择器」
+外包给宿主，只有宿主实现了 `WebChromeClient.onShowFileChooser` 才会弹。此前 `:app`
+只设了 `WebViewClient`、没有 `WebChromeClient`，于是这个按钮按下去**静默无反应**：
+不抛异常、不回调、logcat 里也什么都没有（唯一线索是「点了没反应」本身）。
+
+修法落点 `android/app/src/main/kotlin/org/suwayomi/next/FileChooser.kt`，与「编辑存储位置」
+的 `DirectoryPicker` 分开：那个选**目录**（SAF tree URI → 真实路径，还先要全盘写权限，
+因为写盘的是同进程的 Rust 库），是跨两次 Activity 跳转的状态机；这个选**文件**，选完把
+`content://` 交回 WebView 即可（读盘由 WebView 自己按 URI 做，不需要任何存储权限）。
+
+四个实现要点，都有各自的坑：
+
+- **用 `FileChooserParams.createIntent()`，不要自己拼 `ACTION_GET_CONTENT`。** 平台已经按
+  `<input accept=… multiple>` 补上了 `CATEGORY_OPENABLE`（少了它，某些 provider 会给出
+  宿主打不开的 URI）与 `EXTRA_MIME_TYPES`。
+- **不要加 MIME 过滤。** `.tachibk` 没有注册过的 MIME 类型，一过滤反而会把用户要选的
+  那个备份文件从选择器里藏起来（WebUI 那个 input 本来也没写 `accept`）。
+- **回调必须恰好回一次。** `ValueCallback` 不被回调时，WebView 会把这次请求永久挂起 ——
+  之后再点同一个 `<input type="file">` 都不会有反应，页面刷新前救不回来。所以
+  「构不出 Intent」「没有 DocumentsUI」「用户取消」每一条分支都要走到 `onReceiveValue`。
+  反过来，`onDestroy` 时**只丢引用、不回话**：WebView 马上就被 `destroy()` 了。
+- **请求码分段**：`DirectoryPicker` 占 `0x51xx`、`FileChooser` 占 `0x5201`，避免两边
+  将来各加一个请求码时撞车（`MainActivity.onActivityResult` 依次问两者）。
+
+**尚未修的同源缺口**：「创建备份」（`createBackup` 走 `link.download` + `link.click()`）
+在 WebView 里同样不会落盘 —— 那需要宿主实现 `setDownloadListener`（或在 WebUI 侧改用
+`blob:` + SAF 写入）。目前 `:app` 里没有 `setDownloadListener`，代码层面可确认这一点，
+但**尚未在真机/模拟器上验证过**表现。
+
 ### 工具链版本（本地实测）
 
 | 组件 | 版本 | 说明 |
@@ -208,8 +243,17 @@ REST 侧的 `/api/v1/extension/icon/{pkg}` 按 **磁盘缓存 → 沙盒 → 仓
 | Gradle | 9.5.0 | **必须 ≥ 9.4.1** —— AGP 9.2.1 的硬性下限。9.7.0 虽然也满足下限，但下模块级 DSL 访问器会崩（见下方"AGP 9 的坑"） |
 | AGP | 9.2.1 | 9.0 起**内置 Kotlin 支持**，不能再单独应用 `org.jetbrains.kotlin.android`（会被直接拒绝） |
 | NDK | 28.2.13676358（r28c） | `aarch64-linux-android26-clang` |
-| compileSdk / targetSdk / minSdk | 36 / 36 / 26 | minSdk 26 = `java.nio.file` 与 `DelegateLastClassLoader` 的下限 |
+| compileSdk / targetSdk / minSdk | **37** / 36 / 26 | compileSdk 必须 37：okhttp 5.x 的 Android 变体 `okhttp-android` 的 AAR metadata 就要 37，36 会在 `checkDebugAarMetadata` 直接失败（CI 因此装的是 `platforms;android-37.0`）。minSdk 26 = `java.nio.file` 与 `DelegateLastClassLoader` 的下限 |
 | Kotlin | 由 AGP 内置 | 与 ext-runtime 的 2.4.0 无关，两端各自编译共享源码 |
+
+本机**跑不了** `./gradlew`：compileSdk 是 37，而本机只装了 android-28/34 的 platform、没有
+cmdline-tools，`:extension-host` 又还要 ext-runtime 的共享源码（下载产物）。所以改完 Kotlin
+先在本地过一遍 `.workbuddy/verify/android_kotlin_check.sh` —— 它用 Gradle 缓存里现成的
+`kotlin-compiler-embeddable` 加本机 `android.jar`，对 `app` 模块的**真实源码**做一次类型检查
+（只对 `sandbox.ExtensionHost` 与 `androidx.core.content.FileProvider` 打桩，且断言桩与真货
+同形，真签名一改就红）。抓得住「用错 API / 类型不匹配 / `override` 没对上签名」，抓不住
+Android 运行时行为与资源链接 —— 后者只能靠 CI 的 `assembleRelease` 与真机。
+（`.workbuddy/` 是 gitignore 的，该脚本不入库。）
 
 ### 交叉编译的两个坑（已固化在构建脚本里）
 

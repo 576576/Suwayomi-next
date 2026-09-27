@@ -9,7 +9,9 @@
 //!    ExtensionInstaller），自己不装；
 //!  * **等 server 真的开始监听**再加载 WebUI（见 [waitForServerThenLoad]）；
 //!  * WebView 的原生桥 —— 「编辑存储位置」时要唤起系统的目录授权对话框
-//!    （见 [DirectoryPicker]）。
+//!    （见 [DirectoryPicker]）；
+//!  * WebView 的 `WebChromeClient` —— `<input type="file">` 的文件选择器由宿主
+//!    代劳，「恢复备份」走的就是这条路（见 [FileChooser]）。
 
 package org.suwayomi.next
 
@@ -29,6 +31,8 @@ import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
@@ -48,6 +52,9 @@ class MainActivity : Activity() {
     private var overlay: View? = null
 
     private var directoryPicker: DirectoryPicker? = null
+
+    /** `<input type="file">` 的选择器（「恢复备份」）。 */
+    private var fileChooser: FileChooser? = null
 
     /** 本页加载失败重试了几次（换页/重建会清零）。 */
     private var loadAttempts = 0
@@ -89,6 +96,7 @@ class MainActivity : Activity() {
         }
 
         directoryPicker = DirectoryPicker(this, ::replyPickResult)
+        fileChooser = FileChooser(this)
 
         // 重建（旋转/换主题）时恢复上次浏览的位置，否则 WebUI 每次重建都掉回书架首页
         pendingState = savedInstanceState
@@ -133,6 +141,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         directoryPicker?.detach()
+        fileChooser?.detach()
         // WebView 必须显式销毁：它是原生资源 + 持有 Activity 引用，交给 GC 会泄漏
         container?.removeAllViews()
         webView?.destroy()
@@ -224,6 +233,9 @@ class MainActivity : Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        // 两个选择器的请求码分属不同段（DirectoryPicker 0x51xx / FileChooser 0x52xx），
+        // 谁认领都一样，不必怕吃掉对方的。
+        if (fileChooser?.onActivityResult(requestCode, resultCode, data) == true) return
         directoryPicker?.onActivityResult(requestCode, resultCode, data)
     }
 
@@ -416,6 +428,25 @@ class MainActivity : Activity() {
                 Log.w(TAG, "render process gone (crashed=${detail.didCrash()}); rebuilding the WebView")
                 rebuildWebView()
                 return true
+            }
+        }
+        // `<input type="file">` 的选择器 WebView 不自己弹，要宿主代劳（见 [FileChooser]）。
+        // **不设这个客户端时，点击是静默无反应**：WebUI 的「恢复备份」正是点一个隐藏
+        // input（`Backup.tsx`），没有这里就永远弹不出选择器。
+        wv.webChromeClient = object : WebChromeClient() {
+            override fun onShowFileChooser(
+                view: WebView,
+                filePathCallback: ValueCallback<Array<Uri>>,
+                fileChooserParams: WebChromeClient.FileChooserParams,
+            ): Boolean {
+                val chooser = fileChooser
+                if (chooser == null) {
+                    // 理论上到不了（fileChooser 在 onCreate 里就建好了，早于本 WebView）。
+                    // 真到这儿也必须回一次话，否则这个 input 会被永久挂起。
+                    filePathCallback.onReceiveValue(null)
+                    return true
+                }
+                return chooser.show(filePathCallback, fileChooserParams)
             }
         }
         return wv

@@ -17,7 +17,7 @@
 - Android 的 ABI 矩阵同理由 prep 拼好（`android_targets`），`build.yml` 的 `android` job 直接吃 `include`。
 - 手动触发的 run 标题本应由 prep 里那段 `curl PATCH` 改成 `Release {VER}`，但该请求没有注入 `GITHUB_TOKEN`（恒 401 被 `|| true` 吞掉），实际一直是默认标题。合并 CI 时原样保留以求行为一致；要修就补 `env: GH_TOKEN: <github.token>`（会让 run 标题开始变化，属于行为变更）。
 - Actions 侧边栏里手动与推送两个触发源共用 `Release` 这个名字；推送触发的 run 标题仍是提交信息。
-- **`on: push` 只跟 main**（`dev` 是集成分支，不作为发布触发源）。
+- **`on: push` 只跟 main**：本仓库只有 `main` 一条长期分支（原先的集成分支 `dev` 已删除，两者历史一致，不留分叉）。
 - **纯文档改动不出包**：`push` 上配了 `paths-ignore: ['docs/**', '*.md', '**/*.md']`。一次桌面构建约 12 分钟、还会多出一个 alpha Release，而文档改动对产物没有影响。**只要改动里还有一个非文档文件就照跑**（paths-ignore 只在"全部改动都命中"时才跳过），所以"文档 + 代码"混在一起提交不会漏发布。手动 dispatch 不受影响。
   - 写成 `paths-ignore` 而**不是**顶层 `paths:` —— 后者是白名单语义，会把所有代码改动的 push 一起挡掉，而且完全静默。
   - `*.md` 与 `**/*.md` 两条都给：`**/` 能否匹配"零级目录"（即命中根目录的 `README.md`）在 glob 实现之间有歧义，两条并置后两种语义下都覆盖。

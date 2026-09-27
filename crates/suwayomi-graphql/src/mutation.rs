@@ -1757,9 +1757,9 @@ async fn upsert_local_chapters(
     use suwayomi_domain::source::local::{ARCHIVE_EXTS, read_archive_meta};
     let now = now_epoch_secs();
     for (i, c) in chapters.iter().enumerate() {
-        // sourceOrder is 1-based (Tachiyomi/WebUI convention): the reader
-        // resolves the current chapter as `chapters[len - sourceOrder]`.
-        let source_order = i as i32 + 1;
+        // sourceOrder is 0-based (Mihon convention) — same numbering as the
+        // online fetch and the download-reconcile paths.
+        let source_order = i as i32;
         // Archive chapters carry chapter metadata (`meta.json` /
         // `ComicInfo.xml` — mutually exclusive): apply date, scanlator and
         // chapter number. The chapter name always comes from the on-disk

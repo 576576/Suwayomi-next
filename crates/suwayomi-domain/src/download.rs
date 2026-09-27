@@ -1019,7 +1019,8 @@ pub async fn reconcile_downloads(db: &Db, root: &Path) -> crate::error::Result<u
             for vid in &variant_ids {
                 for (i, entry) in entries.iter().enumerate() {
                     let cname = entry.file_name().to_string_lossy().into_owned();
-                    let source_order = i as i32 + 1;
+                    // 0-based, same convention as the online fetch path.
+                    let source_order = i as i32;
                     let now = now_epoch_secs();
                     let cbz_path = entry.path().to_string_lossy().into_owned();
                     // Match order matters: first try the chapter this server

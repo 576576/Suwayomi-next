@@ -123,14 +123,14 @@ async fn manga_full_counts_and_library_flow() {
         return;
     };
     let id = create_library_manga(&db, "Psyren", 1).await;
-    create_chapters(&db, id, 10, true, 1).await;
+    create_chapters(&db, id, 10, true, 0).await;
 
     let full = manga.get_manga_full(id, false).await.unwrap();
     assert_eq!(full.unread_count, Some(0));
     assert_eq!(full.chapter_count, Some(10));
     assert_eq!(full.download_count, Some(0));
 
-    create_chapters(&db, id, 10, false, 11).await;
+    create_chapters(&db, id, 10, false, 10).await;
     let full = manga.get_manga_full(id, false).await.unwrap();
     assert_eq!(full.unread_count, Some(10));
 
@@ -235,36 +235,36 @@ async fn chapter_list_sorting_and_modify() {
         return;
     };
     let manga_id = create_library_manga(&db, "Chapters", 1).await;
-    create_chapters(&db, manga_id, 5, false, 1).await;
+    create_chapters(&db, manga_id, 5, false, 0).await;
 
     let list = chapter.get_chapter_list(manga_id, false).await.unwrap();
     assert_eq!(list.len(), 5);
-    assert_eq!(list[0].index, 5);
-    assert_eq!(list[4].index, 1);
+    assert_eq!(list[0].index, 4, "source_order is 0-based; the list is newest-first");
+    assert_eq!(list[4].index, 0);
 
-    let id = chapter.modify_chapter(manga_id, 3, Some(true), Some(true), None, Some(2), false).await.unwrap();
+    let id = chapter.modify_chapter(manga_id, 2, Some(true), Some(true), None, Some(2), false).await.unwrap();
     let row = chapter.fetch_by_id(id).await.unwrap();
     assert!(row.read);
     assert!(row.bookmark);
     assert_eq!(row.last_page_read, 2);
     assert!(row.last_read_at > 0);
 
-    chapter.modify_chapter(manga_id, 5, None, None, Some(true), None, false).await.unwrap();
+    chapter.modify_chapter(manga_id, 4, None, None, Some(true), None, false).await.unwrap();
     let all = chapter.get_chapter_list(manga_id, false).await.unwrap();
     for c in all {
-        if c.index < 5 {
-            assert!(c.read, "chapters before index 5 should be marked read");
+        if c.index < 4 {
+            assert!(c.read, "chapters before index 4 should be marked read");
         }
     }
 
     // delete a chapter download → is_downloaded cleared, row stays (Kotlin semantics)
     suwayomi_db::query("UPDATE suwayomi.chapter SET is_downloaded = TRUE WHERE manga = $1 AND source_order = $2")
         .bind(manga_id)
-        .bind(1)
+        .bind(0)
         .execute(pool(&db))
         .await
         .unwrap();
-    chapter.delete_chapter(manga_id, 1).await.unwrap();
+    chapter.delete_chapter(manga_id, 0).await.unwrap();
     let all = chapter.get_chapter_list(manga_id, false).await.unwrap();
     assert_eq!(all.len(), 5, "deleteChapter clears download state, not the row");
     let row = chapter.fetch_by_id(all[4].id).await.unwrap();

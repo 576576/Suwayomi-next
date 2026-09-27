@@ -372,6 +372,10 @@ impl UpdateManager {
         // （判据是 fetched_at > in_library_at，两者都是 epoch 秒）。
         let now = chrono::Utc::now().timestamp();
         for (idx, ch) in chapters.iter().enumerate() {
+            // 0-based (Mihon convention), the same slot the online fetch path
+            // writes — previously this was the only 0-based writer, so a manga
+            // discovered here and one fetched online ended up numbered
+            // differently.
             let res = suwayomi_db::query(
                 "INSERT INTO chapter (url, name, date_upload, chapter_number, scanlator, source_order, real_url, fetched_at, manga) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (url, manga) DO NOTHING",

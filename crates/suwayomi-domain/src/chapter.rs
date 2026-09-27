@@ -128,8 +128,10 @@ impl ChapterService {
             .map_err(|e| DomainError::Source(format!("online chapter fetch failed: {e}")))?;
         let now = now_epoch_secs();
         for (i, c) in chapters.iter().enumerate() {
-            // sourceOrder is 1-based (Tachiyomi/WebUI convention).
-            let source_order = i as i32 + 1;
+            // sourceOrder is 0-based (Mihon convention). Storage, the public
+            // API and a `.tachibk` all use the same numbering, so nothing has
+            // to shift by one on the way in or out.
+            let source_order = i as i32;
             let sql = bind_placeholders("SELECT id FROM chapter WHERE manga = ? AND url = ?");
             let existing: Option<(i32,)> =
                 suwayomi_db::query_as(&sql).bind(manga_id).bind(&c.url).fetch_optional(self.db.pool()).await?;

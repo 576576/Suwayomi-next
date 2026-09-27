@@ -4,6 +4,8 @@
 > 前缀：所有端点位于 `/api/` 下（`ServerSubpath` 支持子路径部署时前缀可配置）。
 > Rust 版须逐条对齐：方法、路径、参数、请求体、响应 JSON、状态码。
 > 状态码映射（源 `JavalinSetup.kt`）：NPE/NoSuchElement→404；IOException→500；IllegalArgumentException→400；Unauthorized→401；Forbidden→403。
+>
+> **有意偏离上游的一处**：`chapterIndex`（`manga/{mangaId}/chapter/{chapterIndex}` 系列、`download/{mangaId}/chapter/{chapterIndex}`、OPDS `series/{id}/chapter/{chapterIndex}`）按 **0-based** 解释，与 Mihon 的 `sourceOrder`、`.tachibk` 备份以及本仓的 `chapter.source_order` 列同一口径；上游 Suwayomi 是 1-based。配套的 WebUI fork 已按 0-based 取值（`chapters[len - 1 - sourceOrder]`、`sourceOrder === 0` 即首章）。
 
 ## 1. Manga API（`/api/v1/`）——源 `MangaAPI.kt`
 

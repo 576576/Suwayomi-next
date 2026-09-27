@@ -575,7 +575,9 @@ pub async fn restore_backup_proto(
             id
         };
 
-        // chapters (upsert on (url, manga))
+        // chapters (upsert on (url, manga)). `source_order` needs no
+        // conversion: the row and a `.tachibk` both use Mihon's 0-based
+        // numbering.
         let mut chapter_ids: Vec<i32> = Vec::new();
         let chapters_to_restore: &[BackupChapter] = if flags.include_chapters { &m.chapters } else { &[] };
         for ch in chapters_to_restore {
@@ -590,11 +592,6 @@ pub async fn restore_backup_proto(
             if let Some((cid, cur_name, cur_scan, cur_read, cur_book, cur_lpr, cur_upload, cur_number, cur_order)) =
                 existing_ch
             {
-                // source_order is 1-based here (Mihon/phone backups are
-                // 0-based): the reader indexes chapters by
-                // `len - sourceOrder` on a DESC-sorted list, so a 0-based
-                // chapter (or 0) can never be opened.
-                let new_order = ch.source_order + 1;
                 let dirty = cur_name != ch.name
                     || cur_scan.as_deref() != ch.scanlator.as_deref()
                     || cur_read != ch.read
@@ -602,7 +599,7 @@ pub async fn restore_backup_proto(
                     || cur_lpr != ch.last_page_read
                     || cur_upload != ch.date_upload
                     || cur_number != ch.chapter_number
-                    || cur_order != new_order;
+                    || cur_order != ch.source_order;
                 if dirty {
                     suwayomi_db::query(
                         "UPDATE chapter SET name = $1, scanlator = $2, read = $3, bookmark = $4, last_page_read = $5, \
@@ -615,7 +612,7 @@ pub async fn restore_backup_proto(
                     .bind(ch.last_page_read)
                     .bind(ch.date_upload)
                     .bind(ch.chapter_number)
-                    .bind(new_order)
+                    .bind(ch.source_order)
                     .bind(cid)
                     .execute(pool)
                     .await?;
@@ -634,7 +631,7 @@ pub async fn restore_backup_proto(
                 .bind(ch.last_page_read)
                 .bind(ch.date_upload)
                 .bind(ch.chapter_number)
-                .bind(ch.source_order + 1)
+                .bind(ch.source_order)
                 .bind(manga_id)
                 .fetch_one(pool)
                 .await?;
@@ -795,13 +792,11 @@ async fn build_backup(pool: &Db, flags: BackupFlags) -> Result<Backup, BackupErr
                 date_fetch: c.fetched_at,
                 date_upload: c.date_upload,
                 chapter_number: c.chapter_number,
-                // File format is the Mihon one: source_order is 0-based in a
-                // `.tachibk`. The server stores it 1-based internally (the
-                // WebUI reader indexes `len - sourceOrder`), so export
-                // subtracts 1 and restore adds it back — a phone backup and a
-                // re-export of a restored library stay numerically identical,
-                // and export→import round-trips without drifting.
-                source_order: c.source_order.saturating_sub(1),
+                // Written as-is: the row already carries Mihon's 0-based
+                // `sourceOrder`, which is what a `.tachibk` stores, so a phone
+                // backup and a re-export of a restored library stay
+                // numerically identical.
+                source_order: c.source_order,
                 last_modified_at: c.last_modified_at,
                 version: c.version,
                 memo: c.memo.clone().into_bytes(),
@@ -981,6 +976,8 @@ mod tests {
         .execute(pool)
         .await
         .expect("manga");
+        // `source_order` is 0-based (Mihon), the same numbering a `.tachibk`
+        // stores — the file is written and read back verbatim.
         suwayomi_db::query(
             "INSERT INTO chapter (url, name, chapter_number, source_order, read, last_page_read, manga) \
              VALUES ('/m/1/c/1','Ch 1',1.0,0,TRUE,3,1)",
@@ -988,6 +985,13 @@ mod tests {
         .execute(pool)
         .await
         .expect("chapter");
+        suwayomi_db::query(
+            "INSERT INTO chapter (url, name, chapter_number, source_order, read, last_page_read, manga) \
+             VALUES ('/m/1/c/2','Ch 2',2.0,1,FALSE,0,1)",
+        )
+        .execute(pool)
+        .await
+        .expect("chapter 2");
         suwayomi_db::query("INSERT INTO category (name, sort_order) VALUES ('Cat',1)")
             .execute(pool)
             .await
@@ -1015,10 +1019,13 @@ mod tests {
         assert_eq!(manga.genre, vec!["Action".to_string(), "Drama".to_string()]);
         assert!(manga.favorite, "in-library manga is a favorite");
         assert_eq!(manga.categories, vec![1]);
-        assert_eq!(manga.chapters.len(), 1);
+        assert_eq!(manga.chapters.len(), 2);
         assert_eq!(manga.chapters[0].name, "Ch 1");
         assert!(manga.chapters[0].read);
         assert_eq!(manga.chapters[0].last_page_read, 3);
+        // exported verbatim: no re-basing between the row and the file
+        assert_eq!(manga.chapters[0].source_order, 0);
+        assert_eq!(manga.chapters[1].source_order, 1);
         assert_eq!(backup.backup_categories.len(), 1);
         assert_eq!(backup.backup_categories[0].name, "Cat");
         assert_eq!(backup.backup_sources.len(), 1);
@@ -1049,7 +1056,7 @@ mod tests {
         let summary = restore_backup(fresh.pool(), &gz, BackupFlags::default()).await.expect("restore");
 
         assert_eq!(summary.restored_manga, 1);
-        assert_eq!(summary.restored_chapters, 1);
+        assert_eq!(summary.restored_chapters, 2);
         assert!(summary.missing_sources.is_empty(), "sources included in backup");
 
         // verify content
@@ -1070,7 +1077,16 @@ mod tests {
             .fetch_one(fresh.pool())
             .await
             .expect("count chapters");
-        assert_eq!(ch, 1);
+        assert_eq!(ch, 2);
+        // The file's 0-based `sourceOrder` lands in the row unchanged (and was
+        // written from the row unchanged): assert the round-trip value, not
+        // just the count — a re-basing shim on either side would shift these.
+        let orders: Vec<i32> =
+            suwayomi_db::query_scalar("SELECT source_order FROM chapter WHERE manga = 1 ORDER BY source_order")
+                .fetch_all(fresh.pool())
+                .await
+                .expect("source_order");
+        assert_eq!(orders, vec![0, 1], "source_order round-trips unchanged");
         let cm: i64 = suwayomi_db::query_scalar("SELECT COUNT(*) FROM category_manga WHERE manga = 1")
             .fetch_one(fresh.pool())
             .await

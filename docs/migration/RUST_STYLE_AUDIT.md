@@ -549,7 +549,7 @@ clippy（`--lib --bins`，排除测试）实测 **29 处**（7 `unwrap` + 19 `ex
 |------|------|
 | `db/row.rs:77` `panic!` | 删掉 `Row::get`（库里 panic 的 API）。唯一调用点 `domain/download.rs` 改用 `try_get` + `let … else { continue }` |
 | `db-macros/lib.rs:20` `expect` | 派生宏改成返回 `syn::Error` → 编译错误能定位到字段，不再是 "proc macro panicked" |
-| `core/config/mod.rs` ×2 | `RwLock` 中毒 → `unwrap_or_else(PoisonError::into_inner)`，读旧值继续跑 |
+| `core/config.rs` ×2 | `RwLock` 中毒 → `unwrap_or_else(PoisonError::into_inner)`，读旧值继续跑 |
 | `domain/download.rs` ×3、`source/sandbox.rs` ×3 | `Mutex` 中毒 → 同上；`Drop` 里尤其不能 panic（否则 JVM 变孤儿进程） |
 | `domain/download.rs:240` | `queue.remove(pos).expect(...)` → `if let Some(job) = queue.remove(pos)` |
 | `domain/download.rs:560` | 信号量关闭 → `map_err(...)?`，只让这一页下载失败 |
@@ -572,7 +572,7 @@ clippy（`--lib --bins`，排除测试）实测 **29 处**（7 `unwrap` + 19 `ex
 `server/lib.rs::android_log`（liblog FFI，模块级，含两条 SAFETY 说明）。
 
 **顺带清掉的**：`rust_2018_idioms` 的 16 处省略生命周期（`&FeedCtx` → `&FeedCtx<'_>` 等）、
-`clippy::manual_filter`（`category/mod.rs:99` 的 `and_then(|n| if …)` → `filter(|n| …)`）。
+`clippy::manual_filter`（`category.rs:99` 的 `and_then(|n| if …)` → `filter(|n| …)`）。
 
 ### 阶段 3 —— 控制流函数式化（`ef0ee9a`，76 文件，+1,751 / −1,706）
 

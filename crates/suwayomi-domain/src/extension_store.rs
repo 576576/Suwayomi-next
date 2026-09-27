@@ -877,6 +877,13 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
+    /// Serialises the database-backed tests in this binary: they all talk to
+    /// the same database and every `setup_db()` truncates the very tables the
+    /// others are working on.
+    async fn lock() -> suwayomi_db::test_support::DbLock {
+        suwayomi_db::test_support::db_lock().await
+    }
+
     /// These tests exercise the extension index/install path against external
     /// PostgreSQL via DATABASE_URL; skipped otherwise (same convention as the
     /// version-bump trigger test).
@@ -928,6 +935,7 @@ mod tests {
 
     #[tokio::test]
     async fn repo_index_refresh_upserts_extensions() {
+        let _guard = lock().await;
         let Some(db) = setup_db().await else {
             eprintln!("SKIP: requires DATABASE_URL");
             return;
@@ -958,6 +966,7 @@ mod tests {
 
     #[tokio::test]
     async fn install_downloads_apk_and_registers_sources() {
+        let _guard = lock().await;
         let Some(db) = setup_db().await else {
             eprintln!("SKIP: requires DATABASE_URL");
             return;
@@ -1036,6 +1045,7 @@ mod tests {
 
     #[tokio::test]
     async fn uninstall_removes_apk_and_sources() {
+        let _guard = lock().await;
         let Some(db) = setup_db().await else {
             eprintln!("SKIP: requires DATABASE_URL");
             return;
@@ -1098,6 +1108,7 @@ mod tests {
 
     #[tokio::test]
     async fn repo_index_refresh_falls_back_to_cache() {
+        let _guard = lock().await;
         let Some(db) = setup_db().await else {
             eprintln!("SKIP: requires DATABASE_URL");
             return;

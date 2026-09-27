@@ -213,6 +213,13 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
+    /// Serialises the PostgreSQL-backed tests in this binary: they share one
+    /// database and truncate each other's tables. (The rest of this module runs
+    /// on in-memory SQLite and needs no lock.)
+    async fn lock() -> suwayomi_db::test_support::DbLock {
+        suwayomi_db::test_support::db_lock().await
+    }
+
     async fn setup(enabled: bool) -> (SyncYomiService, ServerConfig) {
         let db = suwayomi_core::db::Db::sqlite_in_memory().await.expect("db");
         db.migrate().await.expect("migrate");
@@ -308,6 +315,7 @@ mod tests {
     /// on manga changes and respect the `is_syncing` opt-out.
     #[tokio::test]
     async fn version_bump_trigger_semantics() {
+        let _guard = lock().await;
         // Asserts the PL/pgSQL flavour of the sync triggers (the SQLite port
         // is covered by `suwayomi-db`'s own migration tests). Requires
         // DATABASE_URL pointing at a real PostgreSQL instance.

@@ -7,6 +7,7 @@ use std::sync::Mutex;
 
 use suwayomi_core::schema::{CategoryRow, ChapterRow, MangaRow};
 use suwayomi_domain::meta::{MetaService, MetaTable};
+use suwayomi_domain::source::SourceFetcher as _;
 use suwayomi_domain::source::image_proxy_url;
 use suwayomi_domain::sql::bind_placeholders;
 

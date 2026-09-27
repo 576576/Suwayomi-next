@@ -14,7 +14,7 @@ use suwayomi_domain::manga::MangaService;
 use suwayomi_domain::manga::library::LibraryService;
 use suwayomi_domain::manga::manga_list::MangaListService;
 use suwayomi_domain::page::PageService;
-use suwayomi_domain::source::SourceFetcher;
+use suwayomi_domain::source::SourceBackend;
 use suwayomi_domain::tracker::TrackerManager;
 use suwayomi_domain::updater::UpdateManager;
 
@@ -27,7 +27,7 @@ pub struct AppState {
     /// 认证参数（模式、凭据、会话/JWT 密钥），启动时解析一次后只读。
     pub auth: Arc<AuthContext>,
     /// Extension source fetcher (stub until the JVM sandbox loads real extensions).
-    pub fetcher: Arc<dyn SourceFetcher>,
+    pub fetcher: SourceBackend,
     pub manga: MangaService,
     pub chapter: ChapterService,
     pub category: CategoryService,
@@ -56,7 +56,7 @@ impl AppState {
         db: Db,
         config: impl Into<RuntimeConfig>,
         auth: Arc<AuthContext>,
-        fetcher: Arc<dyn SourceFetcher>,
+        fetcher: SourceBackend,
         update: UpdateManager,
         tracker: TrackerManager,
         sandbox_base: Option<String>,

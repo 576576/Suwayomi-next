@@ -32,7 +32,7 @@ use axum::routing::{get, post};
 use suwayomi_core::auth::Principal;
 use suwayomi_core::config::ServerConfig;
 use suwayomi_core::db::{Db, DbSettings};
-use suwayomi_domain::source::{SourceFetcher, StubFetcher};
+use suwayomi_domain::source::SourceBackend;
 use suwayomi_rest::AppState;
 
 /// 认证参数的启动期解析（env → 设置 → 默认值）。
@@ -576,13 +576,14 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
         .as_ref()
         .map(|g| g.fetcher().base_url().to_string())
         .or_else(|| external_host.as_ref().map(|f| f.base_url().to_string()));
-    let fetcher: Arc<dyn SourceFetcher> = if let Some(guard) = &sandbox_guard {
-        Arc::new(guard.fetcher())
-    } else if let Some(host) = &external_host {
-        Arc::new(host.clone())
-    } else {
-        Arc::new(StubFetcher)
-    };
+    // 后端是封闭枚举：沙箱（内嵌进程或外部主机）或 stub。`HttpSandboxFetcher`
+    // 内部只有 `String` + `reqwest::Client`，直接按值装进枚举即可，不必包 `Arc`。
+    // 两条路都没接就是 `Stub`（即 `SourceBackend::default()`）。
+    let fetcher = sandbox_guard
+        .as_ref()
+        .map(|g| SourceBackend::Sandbox(g.fetcher()))
+        .or_else(|| external_host.as_ref().map(|h| SourceBackend::Sandbox(h.clone())))
+        .unwrap_or_default();
     // `let _sandbox = sandbox_guard`（非 `let _ =`）：变量名形式保活整个 server
     // 生命周期，`let _ =` 会立即 drop 杀掉 JVM
     let _sandbox = sandbox_guard;

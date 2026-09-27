@@ -2,11 +2,10 @@
 //! `FeedBuilderInternal.kt`. Produces Atom XML strings for every feed type.
 
 use std::pin::Pin;
-use std::sync::Arc;
 
 use chrono::{SecondsFormat, Utc};
 use suwayomi_core::db::Db;
-use suwayomi_domain::source::SourceFetcher;
+use suwayomi_domain::source::{SourceBackend, SourceFetcher};
 
 use crate::constants::{
     ITEMS_PER_PAGE, REL_ACQUISITION_OPEN_ACCESS, REL_ALTERNATE, REL_FACET, REL_FIRST, REL_IMAGE, REL_IMAGE_THUMBNAIL,
@@ -27,7 +26,7 @@ pub struct FeedCtx<'a> {
     pub db: &'a Db,
     pub base_url: &'a str,
     pub lang: &'a str,
-    pub fetcher: Option<Arc<dyn SourceFetcher>>,
+    pub fetcher: Option<SourceBackend>,
 }
 
 fn now_opds() -> String {

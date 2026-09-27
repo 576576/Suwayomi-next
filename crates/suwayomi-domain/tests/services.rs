@@ -16,7 +16,6 @@
 )]
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use suwayomi_core::db::Db;
 use suwayomi_core::models::{IncludeOrExclude, MangaStatus, PaginatedList, UpdateStrategy};
@@ -27,7 +26,6 @@ use suwayomi_domain::chapter::ChapterService;
 use suwayomi_domain::manga::MangaService;
 use suwayomi_domain::manga::library::LibraryService;
 use suwayomi_domain::manga::manga_list::MangaListService;
-use suwayomi_domain::source::StubFetcher;
 
 const BUSINESS_TABLES: &[&str] = &[
     "track_search",
@@ -65,7 +63,7 @@ async fn setup() -> Option<Services> {
             suwayomi_db::query(&format!("TRUNCATE TABLE suwayomi.{t} RESTART IDENTITY CASCADE")).execute(pool).await;
     }
 
-    let fetcher: Arc<dyn suwayomi_domain::source::SourceFetcher> = Arc::new(StubFetcher);
+    let fetcher = suwayomi_domain::source::SourceBackend::Stub;
     let manga = MangaService::new(db.clone(), fetcher.clone());
     let chapter = ChapterService::new(db.clone(), fetcher.clone());
     let category = CategoryService::new(db.clone());
@@ -354,7 +352,7 @@ async fn manga_list_insert_or_update_dedupes_and_updates() {
         eprintln!("skipped: DATABASE_URL not set");
         return;
     };
-    let fetcher: Arc<dyn suwayomi_domain::source::SourceFetcher> = Arc::new(StubFetcher);
+    let fetcher = suwayomi_domain::source::SourceBackend::Stub;
     let list_svc = MangaListService::new(db.clone(), fetcher);
 
     let s = |url: &str, title: &str| SManga {

@@ -4,7 +4,6 @@ pub mod library;
 pub mod manga_list;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use suwayomi_core::db::Db;
 use suwayomi_core::models::{
@@ -17,7 +16,7 @@ use crate::category::CategoryService;
 use crate::category::category_manga::CategoryMangaService;
 use crate::error::{DomainError, Result};
 use crate::meta::{MetaService, MetaTable};
-use crate::source::SourceFetcher;
+use crate::source::{SourceBackend, SourceFetcher};
 use crate::sql::bind_placeholders;
 
 /// proxyThumbnailUrl
@@ -66,11 +65,11 @@ pub fn manga_row_to_data_class(row: &MangaRow) -> MangaDataClass {
 #[derive(Clone)]
 pub struct MangaService {
     pub db: Db,
-    pub fetcher: Arc<dyn SourceFetcher>,
+    pub fetcher: SourceBackend,
 }
 
 impl MangaService {
-    pub fn new(db: Db, fetcher: Arc<dyn SourceFetcher>) -> Self {
+    pub fn new(db: Db, fetcher: SourceBackend) -> Self {
         Self { db, fetcher }
     }
 

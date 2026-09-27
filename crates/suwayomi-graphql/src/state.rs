@@ -15,7 +15,7 @@ use suwayomi_domain::manga::MangaService;
 use suwayomi_domain::manga::library::LibraryService;
 use suwayomi_domain::manga::manga_list::MangaListService;
 use suwayomi_domain::page::PageService;
-use suwayomi_domain::source::SourceFetcher;
+use suwayomi_domain::source::SourceBackend;
 use suwayomi_domain::sync_yomi::SyncYomiService;
 use suwayomi_domain::tracker::TrackerManager;
 use suwayomi_domain::updater::UpdateManager;
@@ -67,7 +67,7 @@ impl GraphQLState {
         db: Db,
         config: ServerConfig,
         auth: Arc<AuthContext>,
-        fetcher: Arc<dyn SourceFetcher>,
+        fetcher: SourceBackend,
         update: UpdateManager,
         tracker: TrackerManager,
         sandbox_base: Option<String>,

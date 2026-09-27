@@ -19,7 +19,6 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use suwayomi_core::config::ServerConfig;
 use suwayomi_core::db::Db;
-use suwayomi_domain::source::StubFetcher;
 use suwayomi_rest::AppState;
 use suwayomi_rest::routes::api_v1_router;
 use tower::ServiceExt;
@@ -56,7 +55,7 @@ async fn setup() -> Option<(Router, suwayomi_db::Db)> {
             .await;
     }
     let pool = db.pool().clone();
-    let fetcher: Arc<dyn suwayomi_domain::source::SourceFetcher> = Arc::new(StubFetcher);
+    let fetcher = suwayomi_domain::source::SourceBackend::Stub;
     let update = suwayomi_domain::updater::UpdateManager::new(db.clone(), fetcher.clone());
     let tracker = suwayomi_domain::tracker::TrackerManager::new(db.clone());
     let state = AppState::new(

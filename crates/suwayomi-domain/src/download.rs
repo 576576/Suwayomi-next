@@ -15,7 +15,7 @@ use tokio::sync::{Mutex, broadcast};
 use suwayomi_core::db::Db;
 use suwayomi_core::models::now_epoch_secs;
 
-use crate::source::SourceFetcher;
+use crate::source::{SourceBackend, SourceFetcher};
 use crate::sql::bind_placeholders;
 use std::fmt::Write as _;
 
@@ -80,7 +80,7 @@ pub enum DownloadEvent {
 #[derive(Clone)]
 pub struct DownloadManager {
     db: Db,
-    fetcher: Arc<dyn SourceFetcher>,
+    fetcher: SourceBackend,
     data_dir: std::path::PathBuf,
     client: reqwest::Client,
     server_base_url: String,
@@ -95,7 +95,7 @@ pub struct DownloadManager {
 }
 
 impl DownloadManager {
-    pub fn new(db: Db, fetcher: Arc<dyn SourceFetcher>, data_dir: std::path::PathBuf) -> Self {
+    pub fn new(db: Db, fetcher: SourceBackend, data_dir: std::path::PathBuf) -> Self {
         let (tx, _) = broadcast::channel(128);
         let client = reqwest::Client::builder()
             .user_agent("Suwayomi-next/1.0")
@@ -1167,7 +1167,6 @@ fn image_ext_from_content_type(bytes: &[u8]) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source::StubFetcher;
     use suwayomi_core::db::Db;
 
     async fn seed() -> Db {
@@ -1196,7 +1195,7 @@ mod tests {
     #[tokio::test]
     async fn enqueue_dequeue_clear_roundtrip() {
         let db = seed().await;
-        let mgr = DownloadManager::new(db, Arc::new(StubFetcher), std::env::temp_dir());
+        let mgr = DownloadManager::new(db, SourceBackend::Stub, std::env::temp_dir());
 
         mgr.enqueue_chapter(1).await.expect("enqueue");
         let jobs = mgr.snapshot().await;
@@ -1253,7 +1252,7 @@ mod tests {
     #[tokio::test]
     async fn enqueue_unknown_chapter_errors() {
         let db = seed().await;
-        let mgr = DownloadManager::new(db, Arc::new(StubFetcher), std::env::temp_dir());
+        let mgr = DownloadManager::new(db, SourceBackend::Stub, std::env::temp_dir());
         let err = mgr.enqueue_chapter(999).await.unwrap_err();
         assert!(err.contains("not found"), "got: {err}");
     }
@@ -1261,7 +1260,7 @@ mod tests {
     #[tokio::test]
     async fn start_stop_marks_jobs_failed_with_stub_fetcher() {
         let db = seed().await;
-        let mgr = DownloadManager::new(db.clone(), Arc::new(StubFetcher), std::env::temp_dir());
+        let mgr = DownloadManager::new(db.clone(), SourceBackend::Stub, std::env::temp_dir());
         let mut rx = mgr.subscribe();
 
         mgr.enqueue_chapter(1).await.expect("enqueue");

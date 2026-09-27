@@ -2,7 +2,6 @@
 //! (DB-backed parts).
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use suwayomi_core::db::Db;
 use suwayomi_core::models::{ChapterDataClass, MangaChapterDataClass, PaginatedList, now_epoch_secs};
@@ -11,7 +10,7 @@ use suwayomi_core::schema::{ChapterRow, MangaRow};
 use crate::error::{DomainError, Result};
 use crate::manga::{chapter_row_to_data_class, manga_row_to_data_class};
 use crate::meta::{MetaService, MetaTable};
-use crate::source::SourceFetcher;
+use crate::source::{SourceBackend, SourceFetcher};
 use crate::sql::bind_placeholders;
 
 /// Mirrors `removeDuplicates(currentChapter)` — dedupe by chapter number,
@@ -53,13 +52,13 @@ pub fn remove_duplicates_kotlin(current: &ChapterDataClass, chapters: &[ChapterD
 #[derive(Clone)]
 pub struct ChapterService {
     pub db: Db,
-    pub fetcher: Arc<dyn SourceFetcher>,
+    pub fetcher: SourceBackend,
     /// 追踪器句柄。没设时「标记已读后自动推进站点进度」这条规则不生效。
     tracker: Option<crate::tracker::TrackerManager>,
 }
 
 impl ChapterService {
-    pub fn new(db: Db, fetcher: Arc<dyn SourceFetcher>) -> Self {
+    pub fn new(db: Db, fetcher: SourceBackend) -> Self {
         Self { db, fetcher, tracker: None }
     }
 

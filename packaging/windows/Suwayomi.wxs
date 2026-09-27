@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Suwayomi 的 Windows 安装包（msi）。由 build.yml 在 Windows 上调用：
+       wix build packaging/windows/Suwayomi.wxs -acceptEula wix7 -arch <x64|arm64> \
+         -b "<+jre 包的解包目录>" -d Version=<数字点分版本> -d IconFile=<ico> \
+         -d HasTray=<yes|no> -o <输出 msi>
+     设计取舍见 docs/release.md 的「Windows 安装包（msi / setup.exe）」：
+     Scope 用 perUserOrMachine（默认装用户目录，免提权且数据目录可写；装 Program Files
+     需要显式传 MSIINSTALLPERUSER=0）；快捷方式必须是**广告快捷方式**并让 key path 落在
+     exe 自己身上，否则 ICE57 会对「HKMU key path + 开始菜单」误报。 -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Suwayomi" Manufacturer="Suwayomi" Version="$(Version)" Id="Suwayomi.Next"
+           Scope="perUserOrMachine" Compressed="yes">
+    <MediaTemplate EmbedCab="yes" />
+    <!-- 控制面板「程序和功能」里的图标。快捷方式不指定 Icon：广告快捷方式的图标必须
+         与 key file 同源（ICE50），交给 Windows 从托盘 exe 里取。 -->
+    <Icon Id="AppIcon" SourceFile="$(IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Suwayomi" />
+    </StandardDirectory>
+    <!-- per-user 时改指 %LOCALAPPDATA%\Programs\Suwayomi（PerUserProgramFilesFolder 是
+         WiX v6 新增的标准目录）；MSIINSTALLPERUSER 由 Scope=perUserOrMachine 默认置 1。 -->
+    <SetDirectory Id="INSTALLFOLDER" Value="[PerUserProgramFilesFolder]Suwayomi" Condition="MSIINSTALLPERUSER" />
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppMenuFolder" Name="Suwayomi" />
+    </StandardDirectory>
+
+    <Feature Id="Main">
+      <ComponentGroupRef Id="Payload" />
+      <?if $(HasTray) = "yes" ?>
+      <ComponentRef Id="TrayExe" />
+      <?endif?>
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <!-- payload 目录整体 harvest：Files 会为每个文件按相对路径生成组件与目录。
+         **必须用命名 bindpath 引用**（`-b payload=<目录>`）：裸 `Include="**"` 的基准是
+         这个 .wxs 自己所在的目录，不带命名 bindpath 时会把 packaging/windows/ 收进去。 -->
+    <ComponentGroup Id="Payload" Directory="INSTALLFOLDER">
+      <?if $(HasTray) = "yes" ?>
+      <Files Include="!(bindpath.payload)\**">
+        <Exclude Files="!(bindpath.payload)\suwayomi.exe" />
+      </Files>
+      <?else?>
+      <Files Include="!(bindpath.payload)\**" />
+      <?endif?>
+    </ComponentGroup>
+  </Fragment>
+
+  <?if $(HasTray) = "yes" ?>
+  <Fragment>
+    <!-- 托盘壳单独成组件，只为挂那条广告快捷方式（它的 key path 是 exe 文件本身）。 -->
+    <Component Id="TrayExe" Directory="INSTALLFOLDER" Guid="{8B3F1D42-6C57-4E9A-9F21-3D0C7A5E1B04}">
+      <File Id="TrayExe" Source="!(bindpath.payload)\suwayomi.exe" KeyPath="yes">
+        <Shortcut Id="AppShortcut" Directory="AppMenuFolder" Name="Suwayomi" Advertise="yes" />
+      </File>
+      <RemoveFolder Id="RemoveAppMenuFolder" Directory="AppMenuFolder" On="uninstall" />
+    </Component>
+  </Fragment>
+  <?endif?>
+</Wix>

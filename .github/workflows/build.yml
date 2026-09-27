@@ -13,10 +13,11 @@ on:
         description: 产物名与镜像标签里的通道段（仅 beta 为 -beta，其余通道为空串）
         required: true
         type: string
-      pack_mode:
-        description: channel = 手动发布产物约定；alpha = 自动构建产物约定
-        required: true
-        type: string
+      pack_core:
+        description: 是否产出核心包（不含 JRE 的那份）；与 pack_jre 正交，两者都关就没有可发布的包
+        required: false
+        type: boolean
+        default: false
       version_name:
         description: 版本名（release/beta 为 3.y.z，alpha 为 r{code}）
         required: true
@@ -56,10 +57,15 @@ on:
         required: true
         type: string
       pack_jre:
-        description: 是否额外产出 +jre 包（在默认包内容之上追加对应架构的裁剪 JRE；裁剪在 Suwayomi-ext-runtime 做，这里只下载资产）
+        description: 是否产出 +jre 包（在核心包内容之上追加对应架构的裁剪 JRE；裁剪在 Suwayomi-ext-runtime 做，这里只下载资产）
         required: false
         type: boolean
-        default: false
+        default: true
+      pack_msi:
+        description: 是否在 Windows 上额外出 msi 与 setup.exe 安装包（WiX v7 打包，装的内容是 +jre 那份）
+        required: false
+        type: boolean
+        default: true
       android_targets:
         description: Android 构建矩阵 include 数组（JSON 字符串，元素含 target/abi/rust_target；可为空数组）
         required: true
@@ -114,7 +120,6 @@ jobs:
         run: |
           VER="${{ inputs.version_name }}"
           TGT="${{ matrix.target }}"
-          MODE="${{ inputs.pack_mode }}"
           BIN="target/${{ matrix.rust_target }}/release/suwayomi-server"
           # 判平台一律用 runner.os，别拿 matrix.os 的 runner 标签比字面量。
           if [ "${{ runner.os }}" = "Windows" ]; then BIN="${BIN}.exe"; fi
@@ -181,10 +186,8 @@ jobs:
           }
 
           ARTIFACTS=""
-          # alpha 模式只出 +jre；channel 模式必然出基线包。
-          BASE_PACK="true"
-          [ "$MODE" = "alpha" ] && BASE_PACK="false"
-          if [ "$BASE_PACK" = "true" ]; then
+          # 核心包与 +jre 包是两个正交开关：早先「出不出基线包」由 pack_mode 隐式决定，现在由调用方显式给 pack_core。
+          if [ "${{ inputs.pack_core }}" = "true" ]; then
             pack_dir "$STAGE"
             ARTIFACTS="$ARCHIVE"
           fi
@@ -209,9 +212,9 @@ jobs:
           fi
           rm -rf "$STAGE"
 
-          # 兜底：alpha 模式又没勾 +jre（正常不会发生，release.yml 硬编码 jre=true）
+          # 兜底：调用方把两种包都关了。release.yml 的 prep 已先拦一道，这里是 build.yml 自己的防线。
           if [ -z "$ARTIFACTS" ]; then
-            echo "::error::没有任何产物可出（pack_mode=$MODE jre=${{ inputs.pack_jre }}）"
+            echo "::error::没有任何产物可出（core=${{ inputs.pack_core }} jre=${{ inputs.pack_jre }}）"
             exit 1
           fi
 
@@ -228,6 +231,58 @@ jobs:
         with:
           name: ${{ steps.pack.outputs.artifact_name }}
           path: ${{ steps.pack.outputs.artifacts }}
+      - name: 打包 Windows 安装包（msi / setup.exe）
+        id: msi
+        if: runner.os == 'Windows' && inputs.pack_msi
+        shell: bash
+        run: |
+          VER="${{ inputs.version_name }}"
+          TGT="${{ matrix.target }}"
+          BASE="Suwayomi-${VER}${{ inputs.channel_suffix }}-${TGT}"
+          PAYLOAD="dist/${BASE}+jre"
+          # msi 装的就是 +jre 那份；调用方开了 pack_msi 却没出 +jre 时在这里直接失败，别静默出个空包。
+          [ -d "$PAYLOAD" ] || { echo "::error::pack_msi 需要 +jre 产物（$PAYLOAD 不存在）"; exit 1; }
+
+          ARCH="x64"; [ "${{ matrix.jre_arch }}" = "aarch64" ] && ARCH="arm64"
+          # MSI 版本必须数字点分且 major < 256（alpha 的 r{code}、versionCode 都不合法），沿用 beta/release 同款的 3.yy.zz。
+          COUNT="${{ inputs.count }}"
+          MSI_VERSION="3.$((COUNT / 100)).$((COUNT % 100))"
+          # bindpath 与 -d 的相对路径都以 .wxs 所在目录为基准（不是 cwd），所以这里一律给 Windows 绝对路径。
+          PAYLOAD_DIR="$(cd "$PAYLOAD" && pwd -W)"
+          ICON_DIR="$(cd assets/images && pwd -W)"
+          HAS_TRAY="no"; [ -f "$PAYLOAD/suwayomi.exe" ] && HAS_TRAY="yes"
+
+          dotnet tool install --global wix --version 7.0.0
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          # Bal 扩展的包名是 WixToolset.Bal.wixext，但内部 dll 与扩展 id 都是 WixToolset.BootstrapperApplications.wixext，用包名装会被判 damaged。
+          wix extension add -g --acceptEula wix7 WixToolset.BootstrapperApplications.wixext
+
+          MSI="dist/${BASE}.msi"
+          wix build packaging/windows/Suwayomi.wxs --acceptEula wix7 -arch "$ARCH" \
+            -b "payload=$PAYLOAD_DIR" -d Version="$MSI_VERSION" \
+            -d IconFile="$ICON_DIR/icon.ico" -d HasTray="$HAS_TRAY" \
+            -pdbtype none -o "$MSI"
+          # ICE 是静态一致性校验，能提前抓到 per-user/per-machine 混用与 key path 之类的问题。
+          wix msi validate "$MSI" --acceptEula wix7
+
+          SETUP="dist/${BASE}-setup.exe"
+          wix build packaging/windows/Suwayomi.Bundle.wxs --acceptEula wix7 \
+            -ext WixToolset.BootstrapperApplications.wixext \
+            -d Version="$MSI_VERSION" -d MsiPath="$MSI" -pdbtype none -o "$SETUP"
+
+          ls -la "$MSI" "$SETUP"
+          {
+            echo "artifacts<<ARTIFACTS_EOF"
+            printf '%s\n' "$MSI" "$SETUP"
+            echo "ARTIFACTS_EOF"
+            echo "artifact_name=${BASE}-installer"
+          } >> "$GITHUB_OUTPUT"
+      - name: 上传安装包
+        if: runner.os == 'Windows' && inputs.pack_msi
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.msi.outputs.artifact_name }}
+          path: ${{ steps.msi.outputs.artifacts }}
 
   android:
     name: 构建 ${{ matrix.target }}

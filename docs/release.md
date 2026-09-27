@@ -10,10 +10,8 @@
 | `release.yml` | **唯一入口**：推送 main → 自动 alpha；手动 dispatch → alpha/beta/release。负责算版本号、解析 WebUI 制品，然后 `uses: ./.github/workflows/build.yml` 构建，再用 `download-artifact` 收产物发布 Release。 |
 | `clear.yml` | **预发布清理**（只手动 dispatch）：按「每 N 小时窗口内只留最新的 1 个预发布」删掉多余的 alpha Release，见「预发布清理」。 |
 
-- 产物约定分两套，由 `build.yml` 的 `pack_mode` 表达（调用方按触发方式传入）：
-  `channel` = 手动发布（默认包必然产出，`pack_jre` 决定是否另出一份 `+jre`）；
-  `alpha` = 自动构建（产物名固定 `+jre`，两平台都捆 JRE）。**`pack_mode` 现在只决定「出不出基线包」**，命名不再由它分叉。
-- 产物名统一是 `Suwayomi-{VER}{通道段}-{TGT}[+jre]`，**通道段只有 beta 非空**（`-beta`）：beta 与 release 共用 3.y.z 版本名，不区分就会重名；alpha 的 `r{code}` 本身已表明通道。规则在 prep 里算一次（`channel_suffix`），`build.yml` 只负责拼 —— 别在 `build.yml` 里重新推导一遍。
+- 产物形态由四个正交开关表达（`pack_core` / `pack_jre` / `pack_msi` / `pack_oci`，见「产物形态」）。**推 main 的自动 alpha 与手动 dispatch 的默认值完全一致**（core 关、jre 开、msi 开、oci 关），所以两条路径出的包一样，不必再按触发方式分叉。
+- 产物名统一是 `Suwayomi-{VER}{通道段}-{TGT}[+jre]`（Windows 另出 `.msi` 与 `-setup.exe`），**通道段只有 beta 非空**（`-beta`）：beta 与 release 共用 3.y.z 版本名，不区分就会重名；alpha 的 `r{code}` 本身已表明通道。规则在 prep 里算一次（`channel_suffix`），`build.yml` 只负责拼 —— 别在 `build.yml` 里重新推导一遍。
 - Android 的 ABI 矩阵同理由 prep 拼好（`android_targets`），`build.yml` 的 `android` job 直接吃 `include`。
 - 手动触发的 run 标题本应由 prep 里那段 `curl PATCH` 改成 `Release {VER}`，但该请求没有注入 `GITHUB_TOKEN`（恒 401 被 `|| true` 吞掉），实际一直是默认标题。合并 CI 时原样保留以求行为一致；要修就补 `env: GH_TOKEN: <github.token>`（会让 run 标题开始变化，属于行为变更）。
 - Actions 侧边栏里手动与推送两个触发源共用 `Release` 这个名字；推送触发的 run 标题仍是提交信息。
@@ -41,7 +39,7 @@
 
 ## 构建目标与 runner
 
-手动 dispatch 的平台开关与对应的 runner（`release.yml` 里的 mapping）。**行序 = 触发页面上的输入框顺序**：先 Windows/Linux，再 Android，最后 macOS，形态开关垫底；同族内一律 x64 在前、arm64 在后。
+手动 dispatch 的平台开关与对应的 runner（`release.yml` 里的 mapping）。**行序 = 触发页面上的输入框顺序**：先 Windows/Linux，再 Android，最后 macOS，形态开关垫底（顺序固定为 `pack_core` → `pack_jre` → `pack_msi` → `pack_oci`）；同族内一律 x64 在前、arm64 在后。
 
 | 开关 | runner | rust target | 取的 JRE 资产 |
 |---|---|---|---|
@@ -53,6 +51,7 @@
 | `build_android_arm64` | `ubuntu-latest` | `aarch64-linux-android` | —（同上） |
 | `build_macos_x64` | `macos-15-intel` | `x86_64-apple-darwin` | mac/x64 |
 | `build_macos_arm64` | `macos-15` | `aarch64-apple-darwin` | mac/aarch64 |
+| `pack_msi` | 仅 Windows 的 `build` job | 同上 | 同 target（装的就是 `+jre` 那份） |
 | `pack_oci` | 见下 | `linux/amd64` / `linux/arm64` | linux/x64 与 linux/aarch64（镜像里按 `uname -m` 各取对应那份） |
 
 - **每个 target 的 runner 都是原生同架构**：Rust 二进制在本平台原生编译（linux-arm64 用 arm64 runner，顺带不再需要交叉工具链；桌面壳在 Suwayomi-tray 那边同样由原生 runner 出）。以前这里还有第二条理由 —— `+jre` 的 jlink 不能跨平台生成运行时；JRE 搬到 Suwayomi-ext-runtime 后这条约束不再落在本仓库，但"原生编译"本身仍然值得保留。
@@ -62,42 +61,78 @@
 - **矩阵里每个桌面 target 都带托盘壳与 `bin/ext-runtime.jar`**（Windows x64+arm64 / Linux x64+arm64 / macOS x64+arm64）。两者都不再在本仓库编译：托盘壳从 Suwayomi-tray 的 Release 下载对应 target 的二进制（见「桌面壳从哪来」），所以本仓库的 Linux runner 不再装 webkit2gtk/appindicator 那套系统依赖。Android 不在这个矩阵里。
 - 平台开关默认只勾 Windows x64 + Linux x64，发布通道默认 `alpha`。
 
-## 产物形态（默认包 / `+jre` / OCI）
+## 产物形态（`pack_core` / `pack_jre` / `pack_msi` / `pack_oci`）
 
-手动 dispatch 的形态开关（与平台开关正交）：
+四个形态开关都与平台开关正交，**默认值与自动 alpha 逐项一致**（下表就是 dispatch 页面上的默认勾选）：
 
 | 开关 | 默认 | 含义 |
 |---|---|---|
-| `pack_jre` | ⬜ | 额外的 `+jre` 包：在默认包内容之上追加对应架构的 JRE（从 Suwayomi-ext-runtime 下载的 jlink 裁剪产物）。 |
-| `pack_oci` | ⬜ | 额外的 OCI 镜像（见下节）。推 GHCR，**不进 Release 附件**。 |
+| `pack_core` | ⬜ | 核心包：server + 托盘壳 + 沙盒 jar + WebUI，**不含 JRE**。 |
+| `pack_jre` | ☑ | `+jre` 包：在核心包内容之上追加对应架构的 JRE（从 Suwayomi-ext-runtime 下载的 jlink 裁剪产物）。 |
+| `pack_msi` | ☑ | 仅 Windows：另出 `.msi` 与 `-setup.exe` 安装包，装的是 `+jre` 那份内容（见「Windows 安装包」）。 |
+| `pack_oci` | ⬜ | OCI 镜像（见「OCI 镜像」）。推 GHCR，**不进 Release 附件**。 |
 
-命名（**默认包不带形态后缀** —— 不打包 JRE 的那份就是基线产物）：
+- **`pack_core` 与 `pack_jre` 是两个正交开关，谁都不隐含谁**：早先「出不出基线包」由 `pack_mode` 隐式决定，现在要显式给。**两者都关就没有可发布的包** —— `build.yml` 对每个 target 都会 `::error::`，所以 prep 里预先拦一道（选了桌面目标却两种包都关时直接失败，别让每个 target 白跑一遍编译）。
+- `pack_msi` **依赖 `pack_jre`**（装的同一份内容）：`pack_msi` 开着而 `pack_jre` 关着时 prep 直接失败，不留空包。msi 只给 Windows 出，其余平台这个开关无效。
 
-| 模式 | 默认包 | `+jre` |
-|---|---|---|
-| 手动（`channel`） | `Suwayomi-{VER}[-beta]-{TGT}.zip/.tar.gz` | 同左 + `+jre` |
-| 自动（`alpha`） | —（自动构建只出 `+jre`） | `Suwayomi-{VER}-{TGT}+jre` |
-| Android | `Suwayomi-{VER}[-beta]-android-arm64.apk` / `-android-x64.apk` | —（跑系统 ART，不用 JRE） |
+命名规则（**形态一律不进文件名**，不带后缀的那份就是核心包）：
 
-- 默认包**必然产出**、没有开关。早先那个 `-core` 后缀已废弃：它本来就只是"不带 JRE 的基线包"的代号，而基线包永远存在，给必然发生的事加后缀没有信息量。
+| 形态 | 产物名 |
+|---|---|
+| 核心包 | `Suwayomi-{VER}[-beta]-{TGT}.zip`（Windows）/ `.tar.gz`（其余） |
+| `+jre` | 同左，stem 追加 `+jre`：`Suwayomi-{VER}[-beta]-{TGT}+jre.zip` |
+| 安装包 | `Suwayomi-{VER}[-beta]-{TGT}.msi` / `Suwayomi-{VER}[-beta]-{TGT}-setup.exe` |
+| Android | `Suwayomi-{VER}[-beta]-android-arm64.apk` / `-android-x64.apk`（跑系统 ART，不用 JRE） |
+| OCI | 镜像 tag `{VER}[-beta]`，只推 GHCR、不进附件 |
+
+- 自动 alpha（推 main）固定 `windows-x64 + linux-x64`，所以它出的就是这两份 `+jre` 包，外加 Windows 的 msi + setup.exe。
 - 只勾 Android 时桌面矩阵为空数组、`build` job 直接跳过；**只勾 OCI 时两个矩阵都空**，Release 会没有任何附件 —— 这是允许的，`publish` 里的附件列表用数组拼（裸 `artifacts/*` 在空目录下不展开，会把那个字面量当文件名传给 `gh`）。
-- 归档格式：Windows 出 `.zip`，其余出 `.tar.gz`。**两者的归档布局一致**，都带顶层目录名（`Suwayomi-…/bin/…`）—— 用真实产物核对过：Windows 是 `Compress-Archive -Path <目录>`（会把目录本身收进归档），Linux/macOS 是 `tar -C dist`。`.workbuddy/verify/ci_pack_check.py` 里有对应断言，将来想统一时先看那条用例。
+- 归档格式：Windows 出 `.zip`，其余出 `.tar.gz`。**两者的归档布局一致**，都带顶层目录名（`Suwayomi-…/bin/…`）—— 用真实产物核对过：Windows 是 `Compress-Archive -Path <目录>`（会把目录本身收进归档），Linux/macOS 是 `tar -C dist`。将来想统一时先核对真实产物，别信直觉（本地打桩曾按错误模型写过这条断言）。
 - 附件列表**只收 `Suwayomi-*`**，不是收 `artifacts/` 下所有文件：`download-artifact` 不区分来源，CI 内部的 artifact 也会一并拉下来 —— 实测 `docker/build-push-action` 的 `cache-to: type=gha` 就以上传缓存的形式产出 `~<owner>~<repo>~<hash>.dockerbuild`，被下载后名字里的 `~` 变 `.`、且**不含 `-` 分隔符**（早先按"名字里有没有 `-`"过滤根本挡不住），r3226 的两个 `.dockerbuild` 就这么混进了 Release。加过滤时按**正向白名单**写，别按黑名单。这条与 `download-artifact` 的 `merge-multiple: true` 是**成对约束**：`merge-multiple` 去掉后每个 artifact 会进各自子目录，扁平循环里的 `[ -f "$f" ]` 会把产物全判成目录跳过 → Release 零附件（打桩 harness 直接造文件，测不到这条路，所以脚本里做了结构断言）。
+
+## Windows 安装包（`pack_msi`）
+
+用 **WiX Toolset v7** 打两种壳，装在同一个 `build` job 里（`packaging/windows/`）：
+
+| 文件 | 出什么 | 说明 |
+|---|---|---|
+| `Suwayomi.wxs` | `<BASE>.msi` | payload 是 `dist/<BASE>+jre/` 整棵树（846 个文件 / 79 MB），外加开始菜单快捷方式。 |
+| `Suwayomi.Bundle.wxs` | `<BASE>-setup.exe` | Burn bundle，链里只有上面那个 msi，UI 用 WixStdBA 的 `hyperlinkLicense` 主题。 |
+
+- **安装范围是「默认用户目录 + 向导可选」**：`Package/@Scope="perUserOrMachine"`（ALLUSERS=2 + MSIINSTALLPERUSER=1）。默认装 `%LOCALAPPDATA%\Programs\Suwayomi`，管理员在向导里能改选「所有用户」。配 `<SetDirectory Id="INSTALLFOLDER" Value="[PerUserProgramFilesFolder]Suwayomi" Condition="MSIINSTALLPERUSER" />` 让路径跟着范围走 —— 别写死 `ProgramFiles64Folder`，普通用户对它没有写权限。
+- **msi 只装程序、不带数据目录**：托盘的数据目录解析是「设置里的 `data_dir` 优先，否则 `base_dir()/data`」。装进 `Program Files` 后普通用户对那里没有写权限，首次启动会失败；而把数据塞进用户目录又会和绿色版两份数据打架。所以安装包就是「换个地方解压 + 建快捷方式」，数据目录仍按用户原来的习惯走（首次启动时托盘自己按可写位置建）。
+- **版本号必须是数字点分**：`major < 256`、`minor < 256`、`build < 65536`。alpha 的 `r{code}` 与 `versionCode` 都不合法（`ICE24`），所以跟 beta/release 同款取 `3.$((COUNT/100)).$((COUNT%100))`。
+- **两条硬约束**（都踩过）：
+  - 产物**不能叫 `setup.exe`**：WiX `WIX0388` —— Windows 会为这个名字加载兼容性 shim，可被 DLL 劫持。所以叫 `-setup.exe`。
+  - `Files@Include` 里裸 `**` 是**相对 .wxs 所在目录**展开的，必须用命名 bindpath `!(bindpath.payload)\**`；而 `-b` 传相对路径同样以 .wxs 所在目录为基准 → 一律给 `pwd -W` 出来的绝对 Windows 路径。传错只会静默收进几个文件（当年 msi 只有 1.9 MB）。
+- **扩展 id 与 NuGet 包名不一致**：包名是 `WixToolset.Bal.wixext`，包内 dll 与扩展 id 都是 `WixToolset.BootstrapperApplications.wixext`。用包名装 `extension list` 会显示 `(damaged)`。另外 `-g`/`--global` 的短名是 `-g`，没有 `-global`。
+- **v7 强制 OSMF EULA**：所有 `wix` 子命令都要 `--acceptEula wix7`，漏了直接 `WIX7015` 失败。
+- 静态校验跑在 CI 里：`wix msi validate`（ICE）。**ICE57 在这个场景是误报**（它没考虑 ALLUSERS），改用**广告快捷方式**（`Shortcut Advertise="yes"`，挂在托盘 exe 的 `File` 下）让 key path 落在 exe 上；快捷方式上再显式写 `Icon` 会触发 ICE50（扩展名要和 key file 一致），索性不写、由 Windows 从 exe 取图标。
+- 本地产物核对手段：`wix burn extract` 看 bundle 里嵌了什么、`wix msi decompile` 数实际收集的 File、`wix msi validate` 跑 ICE。
 
 ## OCI 镜像（`pack_oci`）
 
 - 与桌面矩阵**完全独立**的一份构建：`oci` job 自己从源码编 server、自己 gradle 打沙盒 jar、自己 jlink 一个 JRE，内容与桌面包基本一致，但**不含托盘壳**（容器里没有 GUI，也没有 webkit2gtk/appindicator，装进去只是个跑不起来的死文件）。
 - 镜像名 `ghcr.io/<owner>/<repo>`，标签 = 产物名那套规则（`{VER}[-beta]`），另推 `-amd64` / `-arm64` 两个单架构标签；`oci_manifest` job 再用 `docker buildx imagetools create` 合成多架构 manifest 覆盖主标签。**两个架构各跑在同架构 runner 上**（`ubuntu-latest` / `ubuntu-24.04-arm`）：jlink 不能跨平台，用 QEMU 模拟只是把同一件错事做得更慢。
+- **镜像不进 Release 附件**，所以发布说明里没有它的文字行 —— 它是下载架构表 **Linux 格末尾那枚 `OCI` 徽章**（`pack_oci` 勾上才出现），点进去是包页面。这是找到镜像地址的唯一入口。
 - **权限链**：被调工作流的权限不能超过调用方 —— `release.yml` 的 `build` job 必须显式给 `packages: write`，`build.yml` 的 `oci` / `oci_manifest` 两个 job 也给同一组。漏了的表现是「build 时 push 403」，而且**只在勾了 OCI 的那次才暴露**。
 - **推之前先冒烟**：`docker/build-push-action` 只 `load: true`，冒烟通过才 `docker push`。冒烟两段：① `--version` + `jre/bin/java -version` + `ldd` 查缺库 + 三件套（webui / 沙盒 jar / jre）在位；② 真起容器等 HTTP 有响应。第一段能抓到「缺 `libssl3t64`」这类问题 —— Linux 的 server 动态链接 `libssl.so.3`（`default-tls` 只对 android 换成 rustls），缺它连 `--version` 都起不来。
 - `provenance: false`：多架构 manifest 由 imagetools 合成，混进 attestation 会让 index 里多出平台未知的条目。
-- Dockerfile 的目录布局必须与 server 的路径解析约定一致（`bin/` 下时 `jre/` 在上一级）：`/opt/suwayomi/{bin/suwayomi-server, bin/ext-runtime.jar, jre, webui}`，数据在 `/data`。`ci_pack_check.py` 里有对应断言。
+- Dockerfile 的目录布局必须与 server 的路径解析约定一致（`bin/` 下时 `jre/` 在上一级）：`/opt/suwayomi/{bin/suwayomi-server, bin/ext-runtime.jar, jre, webui}`，数据在 `/data`。改动时以 `Dockerfile` 与本节的路径为准，本地用 `docker run` 真起一次确认三件套都在（OCI 冒烟的第一段就在做这件事）。
 
 ## 发布说明
 
-- 手动 dispatch 的 `release_notes` 会附加在标准信息之后、`--generate-notes` 的 changelog 之前。
-- UI 上是**单行**输入框，要分段就写字面量 `\n`，`publish` 里用 `printf '%b'` 还原成真换行；粘贴进来的 `\r` 会被去掉。
-- 开头是一张**捆绑组件表**，列出 webui / ext-runtime / tray 三个仓库各自集成的版本（这三个版本号在产物 zip 里都看不到，只有发布说明这一处能查到）：
+**段落顺序固定**：`## 标题` → 手填说明 → 捆绑组件表 → 下载架构表；`--generate-notes` 的 changelog 由 GitHub 追加在这之后。
+
+| 段 | 内容 |
+|---|---|
+| 标题 | `## Suwayomi {VER} · {通道}`。 |
+| 手填说明 | 只有手动 dispatch 有（`release_notes` 输入）；自动 alpha 这一段恒为空。 |
+| 捆绑组件表 | webui / ext-runtime / tray 三个仓库各自集成的版本。 |
+| 下载架构表 | 「Download based on your OS」，一行一个 OS，格内 shields.io 徽章直达附件。 |
+
+- **两张表整体垫在最末**：三个捆绑版本号在产物 zip 里都看不到，是发布说明独有的信息；放末尾既不挡手填说明、又紧挨 changelog。
+- UI 上是**单行**输入框，要分段就写字面量 `\n`，`publish` 里用 `printf '%b'` 还原（`\r` 直接去掉）。手填说明与两张表之间会补空行 —— 表格前必须空行，否则 markdown 表被当成上一段的延续行。
 
   | 捆绑组件 | 集成的版本 |
   |---|---|
@@ -105,18 +140,19 @@
   | Suwayomi-ext-runtime | `{V}` |
   | Suwayomi-tray | `{V}`，解析不到时写「（本次未捆绑）」 |
 
-  三者取制品的通道口径一致（release 取最新正式、alpha/beta 取最新构建），但这只在**挑制品**时起作用 —— 表里只写解析到的 tag，不带「最新构建 / 最新正式」之类的通道描述。推送触发的自动 alpha 用的是同一张表。
-- 紧接着是**下载架构表**（同 FlClash 的 "Download based on your OS"）：一行一个 OS，格内是 shields.io 徽章，点进去就是附件本身 —— 用户不必去 Assets 列表里逐个对架构。
+  三者取制品的通道口径一致（release 取最新正式、alpha/beta 取最新构建），但这只在**挑制品**时起作用 —— 表里只写解析到的 tag，不带「最新构建 / 最新正式」之类的通道描述。推送触发的自动 alpha 用同一套渲染。
+- 下载架构表的行序固定 **Windows → Linux → Android → macOS**（同族内先 x64 再 arm64、先核心包再 `+jre`）：
 
   | OS | 格内徽章（形态 + 架构） |
   |---|---|
-  | Windows | `ZIP-x64`、`ZIP-x64 JRE`（勾了 arm64 就再多两个） |
-  | Linux | `tar.gz-x64`、`tar.gz-x64 JRE`… |
-  | macOS | 同 Linux，图标换成 apple |
+  | Windows | `ZIP-x64`、`ZIP-x64 +JRE`（勾了 arm64 就再多两个） |
+  | Linux | `tar.gz-x64`、`tar.gz-x64 +JRE`…，**勾了 `pack_oci` 时格末尾多一枚 `OCI` 徽章** |
   | Android | `APK-x64` / `APK-arm64` |
+  | macOS | 同 Linux，图标换成 apple |
 
-  **行只按实际收到的附件渲染**（命名规则见 `build.yml`：`Suwayomi-<VER><suffix>-<os>-<arch>[+jre].<zip|tar.gz|apk>`），所以表里不会出现下不下来的链接；**只勾 OCI 时没有附件，整张表不出现**（镜像地址仍在下一条标准行里）。格内顺序固定为「先 x64 再 arm64、先基线包再 `+jre`」——附件的字典序恰好是反的，直接照遍历顺序渲染格子会乱。徽章的 `alt` 就是文件名，图挂了也能看出该下哪个。
-- 两张表之后是标准行，**按实际产出渲染**：`pack_jre` 没勾就不写形态行，Android 行只列真正构建的 ABI，OCI 行只在勾了 `pack_oci` 时出现（镜像不进附件，这行是找到它的唯一入口）。
+  - **行只按实际收到的附件渲染**（命名规则见 `build.yml`），所以表里不会出现下不下来的链接。**只勾 OCI 时没有任何附件，表里就只剩 Linux 一行**（那枚 OCI 徽章）—— 镜像不进附件，这枚徽章是找到它的唯一入口。
+  - 格内顺序是**显式固定**的：附件的字典序恰好把 `+jre` 排在核心包前、`arm64` 排在 `x64` 前，照遍历顺序渲染格子会乱。
+  - `+JRE` 里的加号在 shields.io 的 URL 里要写 `%2B`（`_` 渲染成空格，所以徽章文字是 `x64 +JRE`）。徽章的 `alt` 是文件名 / 镜像地址，图挂了也能看出该下哪个。
 - **没有「版本计数」输入框**：版本号一律由 `git rev-list --count HEAD` 推导（`versionCode = 计数 + 3000`）。早先那个可以手填覆盖计数的框已移除，避免产物名与真实提交数脱钩。
 
 ## 预发布清理（`clear.yml`）
@@ -164,7 +200,7 @@ python .workbuddy/verify/release_inputs_check.py  # 输入顺序 + 发行说明�
 - `--include-locales=en,ja,zh` + `jdk.localedata`：只留这三种语言的 locale 数据。
 - **jmods 要单独下载**：Temurin JDK 24 起启用 JEP 493，JDK 归档里不再带 `jmods/`，jlink 的 `--module-path` 没有现成来源。Adoptium 为每个平台单独发 jmods 包（约 85 MB）。脚本会先探 `$JAVA_HOME/jmods/`，有就直接用、不再下载。
 - 脚本**强制校验宿主平台 = 目标平台**，不一致直接报错退出（宁可让 CI 明确失败，也不产出一个"装上去就 `UnsatisfiedLinkError`"的运行时）。
-- 不打包 JRE 的场合：默认包、Android。桌面端 Linux 基础包历来也不捆（可自行装系统 OpenJDK 或取 `+jre` 包）。
+- 不打包 JRE 的场合：核心包（`pack_core`）、Android。桌面端 Linux 核心包历来也不捆（可自行装系统 OpenJDK 或取 `+jre` 包）。
 - 本地要复现裁剪：在 Suwayomi-ext-runtime 里 `bash scripts/make-jre.sh <windows|linux|mac> <x64|aarch64> <输出目录>`。
 
 ## 产物与捆绑
@@ -172,7 +208,7 @@ python .workbuddy/verify/release_inputs_check.py  # 输入顺序 + 发行说明�
 - **不再捆绑 Electron**：WebUI 桌面窗口由托盘经系统 WebView 打开（Win WebView2 / Linux WebKitGTK / macOS WKWebView），无 WebView 的环境托盘回退系统浏览器。
 - 桌面壳（Tauri 托盘）：**所有桌面 target 都带**（Windows / Linux x64+arm64 / macOS x64+arm64），Android 由独立的 `android` job 出 APK、不带桌面壳。二进制由独立仓库 Suwayomi-tray 发布，本仓库按 target 下载（见「桌面壳从哪来」）。
 - 扩展沙盒（`bin/ext-runtime.jar`）：**所有桌面 target 都带**，server 跑扩展靠它，任何 target 都不能少。它**不再由本仓库构建** —— 见下面「ext-runtime 从哪来」。
-- 不打包 JRE 的场合：默认包、Android。桌面端 Linux 基础包历来也不捆（可自行装系统 OpenJDK 或取 `+jre` 包），勾 `+jre` 即自带 `jre/`。
+- 不打包 JRE 的场合：核心包（`pack_core`）、Android。桌面端 Linux 核心包历来也不捆（可自行装系统 OpenJDK 或取 `+jre` 包），勾 `pack_jre` 即自带 `jre/`；Windows 的 msi / setup.exe 装的就是 `+jre` 那份。
 
 ## ext-runtime 从哪来
 
@@ -230,12 +266,18 @@ python .workbuddy/verify/release_inputs_check.py  # 输入顺序 + 发行说明�
 
 ## CI 改动的本地验证
 
-改 workflow 不要靠推上去试错（一轮矩阵十几分钟还污染 release 列表）。用：
+改 workflow 不要靠推上去试错（一轮矩阵十几分钟还污染 release 列表）。用（都要 `pyyaml`，跑托管 venv 里的解释器）：
 
 ```bash
-python .workbuddy/verify/ci_pack_check.py    # 命名/基线包/+jre/Android 双 ABI/OCI 标签/notes 渲染/附件过滤/paths-ignore 判定（358 项）
-python .workbuddy/verify/ci_equiv.py         # 上一轮"合并两个 workflow"的等价性对照
+python .workbuddy/verify/workflows_check.py         # 四个 workflow：YAML 可解析 + 每个 run 块过 bash -n + 注释块 ≤ 1 行
+python .workbuddy/verify/release_inputs_check.py    # 输入顺序 + prep 形态开关 + 发行说明渲染（真跑两段 run 脚本，78 项）
+python .workbuddy/verify/clear_dryrun.py            # gh 打桩 + 假 Release 列表，真跑 clear.yml 两个 run 块（9 个场景）
 ```
+
+- `release_inputs_check.py` 不只看渲染：它把 prep 的 `out` 步骤也真跑一遍（`git` / `curl` / `python3` 全打桩），断言 **auto 的四个形态开关与 dispatch 默认值逐项一致**、两条路径的矩阵一致、以及两道守卫（`pack_msi` 缺 `pack_jre`、两种包都关）真的会红。
+- 它比对的是**渲染后的整段说明**，所以动排版时它是唯一能提前发现「表被 markdown 当成延续行」这类问题的地方。
+- 打桩验不到 WiX 那一步（`pack_msi`）：`.wxs` 的验证是把真 WiX 装在本机、拿真 payload 跑 `wix build` + `wix msi validate` + `wix burn extract`，见「Windows 安装包」。
+- 平台专属代码路径（Windows 的 PE 分支、macOS 的 Mach-O 分支、Android 的 SDK 安装）在本地根本不会被执行 → 这类问题只能真跑 CI，或本地人为复现条件。
 
 JRE 裁剪那两个脚本（`check_jre_arch.sh` 的宿主探测 + 产物自检、`e2e_host_jmods.sh` 的「宿主自带 jmods 就跳过下载」端到端）**已随 `make-jre.sh` 搬到 Suwayomi-ext-runtime**，在那边 `.workbuddy-ai/verify/` 下跑。
 

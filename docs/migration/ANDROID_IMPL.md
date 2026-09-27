@@ -229,7 +229,7 @@ REST 侧的 `/api/v1/extension/icon/{pkg}` 按 **磁盘缓存 → 沙盒 → 仓
 
 > **本节描述的选项组合已被取代**（在此留作施工记录）：`-core` 这个后缀后来被废除 ——
 > 它就是"不带 JRE 的基线包"的代号，而给必然发生的事加后缀没有信息量。现在「形态」是
-> **四个正交开关**（`pack_core` / `pack_jre` / `pack_msi` / `pack_oci`），产物名里完全
+> **五个正交开关**（`pack_core` / `pack_jre` / `pack_msi` / `pack_exe` / `pack_oci`），产物名里完全
 > 不带形态后缀；`make-jre.sh` 也已随沙盒搬到 Suwayomi-ext-runtime。当前规则以
 > `docs/release.md` 的「产物形态」一节为准。
 

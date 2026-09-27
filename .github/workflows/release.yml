@@ -64,9 +64,13 @@ on:
         type: boolean
         default: true
       pack_msi:
-        description: 产出 msi + exe 安装包（仅 Windows）
+        description: 产出 msi 安装包（仅 Windows）
         type: boolean
         default: true
+      pack_exe:
+        description: 产出 exe 安装包（仅 Windows）
+        type: boolean
+        default: false
       pack_oci:
         description: 额外产出 OCI 包
         type: boolean
@@ -96,6 +100,7 @@ jobs:
       prerelease: ${{ steps.out.outputs.prerelease }}
       pack_jre: ${{ steps.out.outputs.pack_jre }}
       pack_msi: ${{ steps.out.outputs.pack_msi }}
+      pack_exe: ${{ steps.out.outputs.pack_exe }}
       pack_oci: ${{ steps.out.outputs.pack_oci }}
       # WebUI 制品在 prep 解析一次、所有 target 复用（避免各架构拉到不同构建）
       webui_url: ${{ steps.webui.outputs.url }}
@@ -121,6 +126,7 @@ jobs:
             PACK_CORE="${{ github.event.inputs.pack_core }}"
             PACK_JRE="${{ github.event.inputs.pack_jre }}"
             PACK_MSI="${{ github.event.inputs.pack_msi }}"
+            PACK_EXE="${{ github.event.inputs.pack_exe }}"
             PACK_OCI="${{ github.event.inputs.pack_oci }}"
             ANDROID_ARM64="${{ github.event.inputs.build_android_arm64 }}"
             ANDROID_X64="${{ github.event.inputs.build_android_x64 }}"
@@ -137,6 +143,7 @@ jobs:
             PACK_CORE="${PACK_CORE:-false}"
             PACK_JRE="${PACK_JRE:-false}"
             PACK_MSI="${PACK_MSI:-false}"
+            PACK_EXE="${PACK_EXE:-false}"
             PACK_OCI="${PACK_OCI:-false}"
             ANDROID_ARM64="${ANDROID_ARM64:-false}"
             ANDROID_X64="${ANDROID_X64:-false}"
@@ -147,6 +154,7 @@ jobs:
             PACK_CORE="false"
             PACK_JRE="true"
             PACK_MSI="true"
+            PACK_EXE="false"
             PACK_OCI="false"
             ANDROID_ARM64="false"
             ANDROID_X64="false"
@@ -211,10 +219,12 @@ jobs:
             echo "::error::未选择任何构建目标"
             exit 1
           fi
-          # msi 装的就是 +jre 那份内容，关掉 pack_jre 时它无处可取。
-          if [ "$PACK_MSI" = "true" ] && [ "$PACK_JRE" != "true" ]; then
-            echo "::error::pack_msi 需要同时打开 pack_jre（msi 装的是 +jre 那份）"
-            exit 1
+          # 两种安装包装的都是 +jre 那份内容（setup.exe 只是 msi 的 Burn 外壳），关掉 pack_jre 时无处可取。
+          if [ "$PACK_MSI" = "true" ] || [ "$PACK_EXE" = "true" ]; then
+            if [ "$PACK_JRE" != "true" ]; then
+              echo "::error::pack_msi / pack_exe 需要同时打开 pack_jre（安装包装的是 +jre 那份）"
+              exit 1
+            fi
           fi
           # 选了桌面目标却两种包都关：每个 target 都会白跑一遍编译才报错，不如这里先拦。
           if [ -n "$SEL" ] && [ "$PACK_CORE" != "true" ] && [ "$PACK_JRE" != "true" ]; then
@@ -235,10 +245,11 @@ jobs:
             echo "prerelease=$PRE"
             echo "pack_jre=$PACK_JRE"
             echo "pack_msi=$PACK_MSI"
+            echo "pack_exe=$PACK_EXE"
             echo "pack_oci=$PACK_OCI"
           } >> "$GITHUB_OUTPUT"
           echo "$FLOW 发布: $CHANNEL $VER_NAME (code $VER_CODE, commits $COUNT) -> $TAG"
-          echo "   targets=[$SEL] android=[$ANDROID_ARM64 $ANDROID_X64] core=$PACK_CORE jre=$PACK_JRE msi=$PACK_MSI oci=$PACK_OCI"
+          echo "   targets=[$SEL] android=[$ANDROID_ARM64 $ANDROID_X64] core=$PACK_CORE jre=$PACK_JRE msi=$PACK_MSI exe=$PACK_EXE oci=$PACK_OCI"
 
           # 未注入 GITHUB_TOKEN，此请求恒 401 被吞掉，run 标题一直是默认值（要生效补 env: GH_TOKEN）。
           if [ "$FLOW" = "manual" ]; then
@@ -333,6 +344,7 @@ jobs:
       android_targets: ${{ needs.prep.outputs.android_targets }}
       pack_jre: ${{ needs.prep.outputs.pack_jre == 'true' }}
       pack_msi: ${{ needs.prep.outputs.pack_msi == 'true' }}
+      pack_exe: ${{ needs.prep.outputs.pack_exe == 'true' }}
       pack_oci: ${{ needs.prep.outputs.pack_oci == 'true' }}
     # 必须显式继承：被调工作流默认拿不到调用方 secret，漏了会静默回退 debug key 签名。
     secrets: inherit
@@ -401,6 +413,8 @@ jobs:
           # 下载架构表（同 FlClash 的「Download based on your OS」）：只按实际收到的附件渲染，徽章直达下载地址。
           REL_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
           BADGE_HOST="https://img.shields.io/badge"   # 表格里每个格子都走 shields.io，提出来免得下面几行太长
+          # simple-icons 因商标下架了 windows 图标（logo=windows 静默失效），只能内嵌一份；base64 里的 + 在 query 里要写 %2B。
+          WIN_LOGO="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iI2ZmZiI%2BPHBhdGggZD0iTTAgMy40NSA5Ljc1IDIuMXY5LjQ1SDBWMy40NXptMTAuOTUtMS41TDI0IDB2MTEuNTVIMTAuOTVWMS45NXpNMCAxMi42aDkuNzV2OS4zTDAgMjAuNTVWMTIuNnptMTAuOTUgMEgyNFYyNGwtMTMuMDUtMS44VjEyLjZ6Ii8%2BPC9zdmc%2B"
           badge() {   # <形态> <架构> <底色> <图标> <文件名>
             printf '<a href="%s/%s"><img src="%s/%s-%s-%s.svg?logo=%s" alt="%s"></a><br>' \
               "$REL_URL" "$5" "$BADGE_HOST" "$1" "$2" "$3" "$4" "$5"
@@ -414,13 +428,16 @@ jobs:
               android-arm64.apk) DL_BADGE[android-arm64]="$(badge APK arm64 168039 android "$n")"; continue ;;
               android-x64.apk)   DL_BADGE[android-x64]="$(badge APK x64 168039 android "$n")"; continue ;;
             esac
+            FACE=""
             case "$REST" in
               *.zip)       STEM="${REST%.zip}";       LABEL="ZIP" ;;
               *.tar.gz)    STEM="${REST%.tar.gz}";    LABEL="tar.gz" ;;
               *.msi)       STEM="${REST%.msi}";       LABEL="MSI" ;;
-              *-setup.exe) STEM="${REST%-setup.exe}"; LABEL="EXE" ;;
+              # 「EXE」单看太含糊（zip 里也有 exe），徽章上写全「Installer EXE」。
+              *-setup.exe) STEM="${REST%-setup.exe}"; LABEL="EXE"; FACE="Installer_EXE" ;;
               *) echo "跳过未识别的产物：$n"; continue ;;
             esac
+            FACE="${FACE:-$LABEL}"
             # 同一架构的基线包与 +jre 包共处一格：键里留 _JRE 区分，徽章右半边写「+JRE」（%2B 才是字面加号）。
             JRE_KEY=""; JRE_FACE=""
             case "$STEM" in *+jre) STEM="${STEM%+jre}"; JRE_KEY="_JRE"; JRE_FACE="_%2BJRE" ;; esac
@@ -428,14 +445,14 @@ jobs:
             KIND=""
             case "$LABEL" in MSI|EXE) KIND="_$LABEL" ;; esac
             case "${STEM%-*}" in
-              windows) COLOR="2d7d9a"; ICON="windows" ;;
+              windows) COLOR="2d7d9a"; ICON="$WIN_LOGO" ;;
               linux)   COLOR="f84e29"; ICON="linux" ;;
               macos)   COLOR="333333"; ICON="apple" ;;
               *) echo "跳过未知平台：$n"; continue ;;
             esac
             # 安装包与便携包同族不同色（靛蓝 vs 青蓝），一眼能看出这两枚是装上去的。
             [ -z "$KIND" ] || COLOR="4a4e8f"
-            DL_BADGE["${STEM%-*}-${STEM##*-}$KIND$JRE_KEY"]="$(badge "$LABEL" "${STEM##*-}$JRE_FACE" "$COLOR" "$ICON" "$n")"
+            DL_BADGE["${STEM%-*}-${STEM##*-}$KIND$JRE_KEY"]="$(badge "$FACE" "${STEM##*-}$JRE_FACE" "$COLOR" "$ICON" "$n")"
           done
           # OCI 只推 GHCR、不进 Release 附件，所以单独做枚徽章垫在 Linux 格末尾，点进去是包页面。
           if [ "$PACK_OCI" = "true" ]; then

@@ -62,10 +62,15 @@ on:
         type: boolean
         default: true
       pack_msi:
-        description: 是否在 Windows 上额外出 msi 与 setup.exe 安装包（WiX v7 打包，装的内容是 +jre 那份）
+        description: 是否在 Windows 上出 msi 安装包（WiX v7 打包，装的内容是 +jre 那份）
         required: false
         type: boolean
         default: true
+      pack_exe:
+        description: 是否在 Windows 上出 setup.exe 安装包（Burn bundle，把 msi 裹成单文件；内部照样会先构建 msi）
+        required: false
+        type: boolean
+        default: false
       android_targets:
         description: Android 构建矩阵 include 数组（JSON 字符串，元素含 target/abi/rust_target；可为空数组）
         required: true
@@ -233,7 +238,7 @@ jobs:
           path: ${{ steps.pack.outputs.artifacts }}
       - name: 打包 Windows 安装包（msi / setup.exe）
         id: msi
-        if: runner.os == 'Windows' && inputs.pack_msi
+        if: runner.os == 'Windows' && (inputs.pack_msi || inputs.pack_exe)
         shell: bash
         run: |
           VER="${{ inputs.version_name }}"
@@ -265,20 +270,26 @@ jobs:
           # ICE 是静态一致性校验，能提前抓到 per-user/per-machine 混用与 key path 之类的问题。
           wix msi validate "$MSI" --acceptEula wix7
 
-          SETUP="dist/${BASE}-setup.exe"
-          wix build packaging/windows/Suwayomi.Bundle.wxs --acceptEula wix7 \
-            -ext WixToolset.BootstrapperApplications.wixext \
-            -d Version="$MSI_VERSION" -d MsiPath="$MSI" -pdbtype none -o "$SETUP"
+          FILES=()
+          if [ "${{ inputs.pack_msi }}" = "true" ]; then FILES+=("$MSI"); fi
+          # setup.exe 是 msi 的 Burn 外壳：勾了 pack_exe 就顺手构建，但 msi 本身进不进附件只看 pack_msi。
+          if [ "${{ inputs.pack_exe }}" = "true" ]; then
+            SETUP="dist/${BASE}-setup.exe"
+            wix build packaging/windows/Suwayomi.Bundle.wxs --acceptEula wix7 \
+              -ext WixToolset.BootstrapperApplications.wixext \
+              -d Version="$MSI_VERSION" -d MsiPath="$MSI" -pdbtype none -o "$SETUP"
+            FILES+=("$SETUP")
+          fi
 
-          ls -la "$MSI" "$SETUP"
+          ls -la "${FILES[@]}"
           {
             echo "artifacts<<ARTIFACTS_EOF"
-            printf '%s\n' "$MSI" "$SETUP"
+            printf '%s\n' "${FILES[@]}"
             echo "ARTIFACTS_EOF"
             echo "artifact_name=${BASE}-installer"
           } >> "$GITHUB_OUTPUT"
       - name: 上传安装包
-        if: runner.os == 'Windows' && inputs.pack_msi
+        if: runner.os == 'Windows' && (inputs.pack_msi || inputs.pack_exe)
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.msi.outputs.artifact_name }}

@@ -10,7 +10,7 @@
 | `release.yml` | **唯一入口**：推送 main → 自动 alpha；手动 dispatch → alpha/beta/release。负责算版本号、解析 WebUI 制品，然后 `uses: ./.github/workflows/build.yml` 构建，再用 `download-artifact` 收产物发布 Release。 |
 | `clear.yml` | **预发布清理**（只手动 dispatch）：按「每 N 小时窗口内只留最新的 1 个预发布」删掉多余的 alpha Release，见「预发布清理」。 |
 
-- 产物形态由四个正交开关表达（`pack_core` / `pack_jre` / `pack_msi` / `pack_oci`，见「产物形态」）。**推 main 的自动 alpha 与手动 dispatch 的默认值完全一致**（core 关、jre 开、msi 开、oci 关），所以两条路径出的包一样，不必再按触发方式分叉。
+- 产物形态由五个正交开关表达（`pack_core` / `pack_jre` / `pack_msi` / `pack_exe` / `pack_oci`，见「产物形态」）。**推 main 的自动 alpha 与手动 dispatch 的默认值完全一致**（core 关、jre 开、msi 开、exe 关、oci 关），所以两条路径出的包一样，不必再按触发方式分叉。
 - 产物名统一是 `Suwayomi-{VER}{通道段}-{TGT}[+jre]`（Windows 另出 `.msi` 与 `-setup.exe`），**通道段只有 beta 非空**（`-beta`）：beta 与 release 共用 3.y.z 版本名，不区分就会重名；alpha 的 `r{code}` 本身已表明通道。规则在 prep 里算一次（`channel_suffix`），`build.yml` 只负责拼 —— 别在 `build.yml` 里重新推导一遍。
 - Android 的 ABI 矩阵同理由 prep 拼好（`android_targets`），`build.yml` 的 `android` job 直接吃 `include`。
 - 手动触发的 run 标题本应由 prep 里那段 `curl PATCH` 改成 `Release {VER}`，但该请求没有注入 `GITHUB_TOKEN`（恒 401 被 `|| true` 吞掉），实际一直是默认标题。合并 CI 时原样保留以求行为一致；要修就补 `env: GH_TOKEN: <github.token>`（会让 run 标题开始变化，属于行为变更）。
@@ -39,7 +39,7 @@
 
 ## 构建目标与 runner
 
-手动 dispatch 的平台开关与对应的 runner（`release.yml` 里的 mapping）。**行序 = 触发页面上的输入框顺序**：先 Windows/Linux，再 Android，最后 macOS，形态开关垫底（顺序固定为 `pack_core` → `pack_jre` → `pack_msi` → `pack_oci`）；同族内一律 x64 在前、arm64 在后。
+手动 dispatch 的平台开关与对应的 runner（`release.yml` 里的 mapping）。**行序 = 触发页面上的输入框顺序**：先 Windows/Linux，再 Android，最后 macOS，形态开关垫底（顺序固定为 `pack_core` → `pack_jre` → `pack_msi` → `pack_exe` → `pack_oci`）；同族内一律 x64 在前、arm64 在后。
 
 | 开关 | runner | rust target | 取的 JRE 资产 |
 |---|---|---|---|
@@ -52,6 +52,7 @@
 | `build_macos_x64` | `macos-15-intel` | `x86_64-apple-darwin` | mac/x64 |
 | `build_macos_arm64` | `macos-15` | `aarch64-apple-darwin` | mac/aarch64 |
 | `pack_msi` | 仅 Windows 的 `build` job | 同上 | 同 target（装的就是 `+jre` 那份） |
+| `pack_exe` | 同上（与 `pack_msi` 共用一个步骤） | 同上 | 同 target（内容与 msi 完全一致） |
 | `pack_oci` | 见下 | `linux/amd64` / `linux/arm64` | linux/x64 与 linux/aarch64（镜像里按 `uname -m` 各取对应那份） |
 
 - **每个 target 的 runner 都是原生同架构**：Rust 二进制在本平台原生编译（linux-arm64 用 arm64 runner，顺带不再需要交叉工具链；桌面壳在 Suwayomi-tray 那边同样由原生 runner 出）。以前这里还有第二条理由 —— `+jre` 的 jlink 不能跨平台生成运行时；JRE 搬到 Suwayomi-ext-runtime 后这条约束不再落在本仓库，但"原生编译"本身仍然值得保留。
@@ -61,19 +62,21 @@
 - **矩阵里每个桌面 target 都带托盘壳与 `bin/ext-runtime.jar`**（Windows x64+arm64 / Linux x64+arm64 / macOS x64+arm64）。两者都不再在本仓库编译：托盘壳从 Suwayomi-tray 的 Release 下载对应 target 的二进制（见「桌面壳从哪来」），所以本仓库的 Linux runner 不再装 webkit2gtk/appindicator 那套系统依赖。Android 不在这个矩阵里。
 - 平台开关默认只勾 Windows x64 + Linux x64，发布通道默认 `alpha`。
 
-## 产物形态（`pack_core` / `pack_jre` / `pack_msi` / `pack_oci`）
+## 产物形态（`pack_core` / `pack_jre` / `pack_msi` / `pack_exe` / `pack_oci`）
 
-四个形态开关都与平台开关正交，**默认值与自动 alpha 逐项一致**（下表就是 dispatch 页面上的默认勾选）：
+五个形态开关都与平台开关正交，**默认值与自动 alpha 逐项一致**（下表就是 dispatch 页面上的默认勾选）：
 
 | 开关 | 默认 | 含义 |
 |---|---|---|
 | `pack_core` | ⬜ | 核心包：server + 托盘壳 + 沙盒 jar + WebUI，**不含 JRE**。 |
 | `pack_jre` | ☑ | `+jre` 包：在核心包内容之上追加对应架构的 JRE（从 Suwayomi-ext-runtime 下载的 jlink 裁剪产物）。 |
-| `pack_msi` | ☑ | 仅 Windows：另出 `.msi` 与 `-setup.exe` 安装包，装的是 `+jre` 那份内容（见「Windows 安装包」）。 |
+| `pack_msi` | ☑ | 仅 Windows：出 `.msi` 安装包，装的是 `+jre` 那份内容（见「Windows 安装包」）。 |
+| `pack_exe` | ⬜ | 仅 Windows：出 `-setup.exe` 安装包（Burn bundle，把 msi 裹成单文件），内容与 msi 完全一致。 |
 | `pack_oci` | ⬜ | OCI 镜像（见「OCI 镜像」）。推 GHCR，**不进 Release 附件**。 |
 
 - **`pack_core` 与 `pack_jre` 是两个正交开关，谁都不隐含谁**：早先「出不出基线包」由 `pack_mode` 隐式决定，现在要显式给。**两者都关就没有可发布的包** —— `build.yml` 对每个 target 都会 `::error::`，所以 prep 里预先拦一道（选了桌面目标却两种包都关时直接失败，别让每个 target 白跑一遍编译）。
-- `pack_msi` **依赖 `pack_jre`**（装的同一份内容）：`pack_msi` 开着而 `pack_jre` 关着时 prep 直接失败，不留空包。msi 只给 Windows 出，其余平台这个开关无效。
+- **`pack_msi` 与 `pack_exe` 也互不隐含**：两者装的都是 `+jre` 那份内容，所以**任一开着就必须同时开 `pack_jre`**（prep 里拦）。默认只勾 msi —— setup.exe 是给「想双击一个文件装完」的用户，对发布者来说多一个 80 MB 附件。
+- **`pack_exe` 单独勾选也合法**：`setup.exe` 是 msi 的 Burn 外壳，`build.yml` 里无论勾不勾 `pack_msi` 都会先把 msi 构建出来（ICE 也照跑），只是 msi 本身进不进 Release 附件只看 `pack_msi`。
 
 命名规则（**形态一律不进文件名**，不带后缀的那份就是核心包）：
 
@@ -85,19 +88,21 @@
 | Android | `Suwayomi-{VER}[-beta]-android-arm64.apk` / `-android-x64.apk`（跑系统 ART，不用 JRE） |
 | OCI | 镜像 tag `{VER}[-beta]`，只推 GHCR、不进附件 |
 
-- 自动 alpha（推 main）固定 `windows-x64 + linux-x64`，所以它出的就是这两份 `+jre` 包，外加 Windows 的 msi + setup.exe。
+- 自动 alpha（推 main）固定 `windows-x64 + linux-x64`，所以它出的就是这两份 `+jre` 包，外加 Windows 的 msi（`pack_exe` 默认关，所以不出 setup.exe）。
 - 只勾 Android 时桌面矩阵为空数组、`build` job 直接跳过；**只勾 OCI 时两个矩阵都空**，Release 会没有任何附件 —— 这是允许的，`publish` 里的附件列表用数组拼（裸 `artifacts/*` 在空目录下不展开，会把那个字面量当文件名传给 `gh`）。
 - 归档格式：Windows 出 `.zip`，其余出 `.tar.gz`。**两者的归档布局一致**，都带顶层目录名（`Suwayomi-…/bin/…`）—— 用真实产物核对过：Windows 是 `Compress-Archive -Path <目录>`（会把目录本身收进归档），Linux/macOS 是 `tar -C dist`。将来想统一时先核对真实产物，别信直觉（本地打桩曾按错误模型写过这条断言）。
 - 附件列表**只收 `Suwayomi-*`**，不是收 `artifacts/` 下所有文件：`download-artifact` 不区分来源，CI 内部的 artifact 也会一并拉下来 —— 实测 `docker/build-push-action` 的 `cache-to: type=gha` 就以上传缓存的形式产出 `~<owner>~<repo>~<hash>.dockerbuild`，被下载后名字里的 `~` 变 `.`、且**不含 `-` 分隔符**（早先按"名字里有没有 `-`"过滤根本挡不住），r3226 的两个 `.dockerbuild` 就这么混进了 Release。加过滤时按**正向白名单**写，别按黑名单。这条与 `download-artifact` 的 `merge-multiple: true` 是**成对约束**：`merge-multiple` 去掉后每个 artifact 会进各自子目录，扁平循环里的 `[ -f "$f" ]` 会把产物全判成目录跳过 → Release 零附件（打桩 harness 直接造文件，测不到这条路，所以脚本里做了结构断言）。
 
-## Windows 安装包（`pack_msi`）
+## Windows 安装包（`pack_msi` / `pack_exe`）
 
-用 **WiX Toolset v7** 打两种壳，装在同一个 `build` job 里（`packaging/windows/`）：
+用 **WiX Toolset v7** 打两种壳，在同一个 `build` 步骤里（`packaging/windows/`）：
 
-| 文件 | 出什么 | 说明 |
-|---|---|---|
-| `Suwayomi.wxs` | `<BASE>.msi` | payload 是 `dist/<BASE>+jre/` 整棵树（846 个文件 / 79 MB），外加开始菜单快捷方式。 |
-| `Suwayomi.Bundle.wxs` | `<BASE>-setup.exe` | Burn bundle，链里只有上面那个 msi，UI 用 WixStdBA 的 `hyperlinkLicense` 主题。 |
+| 文件 | 出什么 | 开关 | 说明 |
+|---|---|---|---|
+| `Suwayomi.wxs` | `<BASE>.msi` | `pack_msi`（默认 ☑） | payload 是 `dist/<BASE>+jre/` 整棵树（846 个文件 / 79 MB），外加开始菜单快捷方式。 |
+| `Suwayomi.Bundle.wxs` | `<BASE>-setup.exe` | `pack_exe`（默认 ⬜） | Burn bundle，链里只有上面那个 msi，UI 用 WixStdBA 的 `hyperlinkLicense` 主题。 |
+
+- **两个开关互不隐含，但 exe 的构建隐含 msi 的构建**：那个步骤的 `if` 是 `(pack_msi || pack_exe)`，进去先无条件打 msi + 跑 ICE，再按 `pack_exe` 决定要不要裹成 bundle；最后进附件的列表按开关拼（`pack_msi=false` 时 msi 只是构建出来给 bundle 用，不发）。
 
 - **安装范围是「默认用户目录 + 向导可选」**：`Package/@Scope="perUserOrMachine"`（ALLUSERS=2 + MSIINSTALLPERUSER=1）。默认装 `%LOCALAPPDATA%\Programs\Suwayomi`，管理员在向导里能改选「所有用户」。配 `<SetDirectory Id="INSTALLFOLDER" Value="[PerUserProgramFilesFolder]Suwayomi" Condition="MSIINSTALLPERUSER" />` 让路径跟着范围走 —— 别写死 `ProgramFiles64Folder`，普通用户对它没有写权限。
 - **msi 只装程序、不带数据目录**：托盘的数据目录解析是「设置里的 `data_dir` 优先，否则 `base_dir()/data`」。装进 `Program Files` 后普通用户对那里没有写权限，首次启动会失败；而把数据塞进用户目录又会和绿色版两份数据打架。所以安装包就是「换个地方解压 + 建快捷方式」，数据目录仍按用户原来的习惯走（首次启动时托盘自己按可写位置建）。
@@ -145,14 +150,15 @@
 
   | OS | 格内徽章（形态 + 架构） |
   |---|---|
-  | Windows | `MSI-x64`、`EXE-x64`、`ZIP-x64`、`ZIP-x64 +JRE`（勾了 arm64 就再来一组，`MSI` / `EXE` 只在 `pack_msi` 开着时出现） |
+  | Windows | `MSI-x64`、`Installer EXE-x64`、`ZIP-x64`、`ZIP-x64 +JRE`（勾了 arm64 就再来一组；`MSI` 要 `pack_msi`、`Installer EXE` 要 `pack_exe`） |
   | Linux | `tar.gz-x64`、`tar.gz-x64 +JRE`…，**勾了 `pack_oci` 时格末尾多一枚 `OCI` 徽章** |
   | Android | `APK-x64` / `APK-arm64` |
   | macOS | 同 Linux，图标换成 apple |
 
   - **行只按实际收到的附件渲染**（命名规则见 `build.yml`），所以表里不会出现下不下来的链接。**只勾 OCI 时没有任何附件，表里就只剩 Linux 一行**（那枚 OCI 徽章）—— 镜像不进附件，这枚徽章是找到它的唯一入口。
   - 格内顺序是**显式固定**的：附件的字典序恰好把 `+jre` 排在核心包前、`arm64` 排在 `x64` 前，照遍历顺序渲染格子会乱。安装包（`.msi` / `-setup.exe`）进表的时机也在这里 —— 它们不被当成「另一种后缀的便携包」，而是按 `_MSI` / `_EXE` 单独占键、插在同架构核心包之前。
-  - `MSI` / `EXE` 两枚统一用**靛蓝**（`4a4e8f`）与青蓝的 `ZIP` 区分，一眼能看出这两枚是「装上去的」而不是解压即用；两枚都要能直达附件，所以 `EXE` 指的是 `-setup.exe`（Burn bundle）而不是裸 exe。
+  - `MSI` / `Installer EXE` 两枚统一用**靛蓝**（`4a4e8f`）与青蓝的 `ZIP` 区分，一眼能看出这两枚是「装上去的」而不是解压即用。`EXE` 单看太含糊（zip 里也有 exe），所以徽章上写全 `Installer EXE`（shields 的下划线渲染成空格）；它指的是 `-setup.exe`（Burn bundle）而不是裸 exe。
+  - **Windows 徽章的图标是内嵌的**：simple-icons 因商标下架了 `windows`（`logo=windows` 静默失效，徽章只是少个图标，不报错），所以 `WIN_LOGO` 里塞了一份 base64 的自绘四格图标。同样的原因，别把 Windows 徽章改回 `logo=windows`；Linux / macOS / Android / Docker 的 `logo=linux|apple|android|docker` 都还在。
   - `+JRE` 里的加号在 shields.io 的 URL 里要写 `%2B`（`_` 渲染成空格，所以徽章文字是 `x64 +JRE`）。徽章的 `alt` 是文件名 / 镜像地址，图挂了也能看出该下哪个。
 - **没有「版本计数」输入框**：版本号一律由 `git rev-list --count HEAD` 推导（`versionCode = 计数 + 3000`）。早先那个可以手填覆盖计数的框已移除，避免产物名与真实提交数脱钩。
 
@@ -276,10 +282,10 @@ python .workbuddy/verify/clear_dryrun.py            # gh 打桩 + 假 Release �
 python .workbuddy/verify/notes_preview.py           # 拿真渲染结果生成 GitHub 风格的 HTML 预览（改排版时肉眼核对）
 ```
 
-- `release_inputs_check.py` 不只看渲染：它把 prep 的 `out` 步骤也真跑一遍（`git` / `curl` / `python3` 全打桩），断言 **auto 的四个形态开关与 dispatch 默认值逐项一致**、两条路径的矩阵一致、以及两道守卫（`pack_msi` 缺 `pack_jre`、两种包都关）真的会红。
+- `release_inputs_check.py` 不只看渲染：它把 prep 的 `out` 步骤也真跑一遍（`git` / `curl` / `python3` 全打桩），断言 **auto 的五个形态开关与 dispatch 默认值逐项一致**、两条路径的矩阵一致、三个开关的独立性（只勾 `pack_exe` 放行）、以及两道守卫（`pack_msi`/`pack_exe` 缺 `pack_jre`、两种包都关）真的会红。
 - `notes_preview.py` 是给人看的（不做断言）：把真渲染结果转成 HTML 摆在 `notes_preview.html` 里，含「全形态 + 手填说明」「自动 alpha」「只勾 OCI」三个场景 —— 改排版时比读 `--notes` 的字面量快得多。
 - 它比对的是**渲染后的整段说明**，所以动排版时它是唯一能提前发现「表被 markdown 当成延续行」这类问题的地方。
-- 打桩验不到 WiX 那一步（`pack_msi`）：`.wxs` 的验证是把真 WiX 装在本机、拿真 payload 跑 `wix build` + `wix msi validate` + `wix burn extract`，见「Windows 安装包」。
+- 打桩验不到 WiX 那一步（`pack_msi` / `pack_exe`）：`.wxs` 的验证是把真 WiX 装在本机、拿真 payload 跑 `wix build` + `wix msi validate` + `wix burn extract`，见「Windows 安装包」。
 - 平台专属代码路径（Windows 的 PE 分支、macOS 的 Mach-O 分支、Android 的 SDK 安装）在本地根本不会被执行 → 这类问题只能真跑 CI，或本地人为复现条件。
 
 JRE 裁剪那两个脚本（`check_jre_arch.sh` 的宿主探测 + 产物自检、`e2e_host_jmods.sh` 的「宿主自带 jmods 就跳过下载」端到端）**已随 `make-jre.sh` 搬到 Suwayomi-ext-runtime**，在那边 `.workbuddy-ai/verify/` 下跑。

@@ -34,6 +34,8 @@ on:
         type: choice
         options: [alpha, beta, release]
         default: alpha
+      # 平台开关：**同族内一律 x64 在前、arm64 在后**（UI 顺序即下面这段的书写顺序），
+      # 先 Windows/Linux，再 Android，最后 macOS；形态开关排在最末。
       build_windows_x64:
         description: Windows x64
         type: boolean
@@ -50,6 +52,14 @@ on:
         description: Linux arm64
         type: boolean
         default: false
+      build_android_x64:
+        description: Android x64
+        type: boolean
+        default: false
+      build_android_arm64:
+        description: Android arm64
+        type: boolean
+        default: false
       build_macos_x64:
         description: macOS x64
         type: boolean
@@ -58,14 +68,10 @@ on:
         description: macOS arm64
         type: boolean
         default: false
-      build_android_arm64:
-        description: Android arm64
-        type: boolean
-        default: false
-      build_android_x64:
-        description: Android x64
-        type: boolean
-        default: false
+      release_notes:
+        description: 发行说明
+        type: string
+        default: ''
       pack_jre:
         description: 额外产出 +jre 包
         type: boolean
@@ -74,14 +80,6 @@ on:
         description: 额外产出 OCI 包
         type: boolean
         default: false
-      version_count:
-        description: 版本计数
-        type: string
-        default: ''
-      release_notes:
-        description: 发行说明
-        type: string
-        default: ''
 
 env:
   CARGO_TERM_COLOR: always
@@ -137,7 +135,6 @@ jobs:
             FLOW="manual"
             PACK_MODE="channel"
             CHANNEL="${{ github.event.inputs.channel }}"
-            COUNT="${{ github.event.inputs.version_count }}"
             PACK_JRE="${{ github.event.inputs.pack_jre }}"
             PACK_OCI="${{ github.event.inputs.pack_oci }}"
             ANDROID_ARM64="${{ github.event.inputs.build_android_arm64 }}"
@@ -165,7 +162,6 @@ jobs:
             FLOW="auto"
             PACK_MODE="alpha"
             CHANNEL="alpha"
-            COUNT=""
             PACK_JRE="true"
             PACK_OCI="false"
             ANDROID_ARM64="false"
@@ -177,7 +173,10 @@ jobs:
           # 版本名，不区分就会重名；alpha 的 r{code} 本身就带通道含义。
           if [ "$CHANNEL" = "beta" ]; then CH_SUFFIX="-beta"; else CH_SUFFIX=""; fi
 
-          if [ -z "$COUNT" ]; then COUNT="$(git rev-list --count HEAD)"; fi
+          # 版本计数一律取提交总数（+3000 得 versionCode）。原先手动通道还能用
+          # workflow_dispatch 的「版本计数」输入框覆盖它，那个框已移除 —— 手动与自动
+          # 两条路径都只能由提交历史推导，不会再有"手填 100 覆盖成小版本号"的情况。
+          COUNT="$(git rev-list --count HEAD)"
 
           VER_CODE="$((COUNT+3000))"
 
@@ -400,6 +399,10 @@ jobs:
           PRE: ${{ needs.prep.outputs.prerelease }}
           WEBUI_TAG: ${{ needs.prep.outputs.webui_tag }}
           WEBUI_KIND: ${{ needs.prep.outputs.webui_kind }}
+          # 发行说明里那张「捆绑组件」表要用到：三个仓库各自集成的版本
+          # （webui / ext-runtime / tray），三者的版本号在产物名里都看不到。
+          EXT_RUNTIME_VERSION: ${{ needs.prep.outputs.ext_runtime_version }}
+          TRAY_VERSION: ${{ needs.prep.outputs.tray_version }}
           PACK_JRE: ${{ needs.prep.outputs.pack_jre }}
           PACK_OCI: ${{ needs.prep.outputs.pack_oci }}
           ANDROID_ARM64: ${{ needs.prep.outputs.android_arm64 }}
@@ -428,26 +431,43 @@ jobs:
             esac
           done
 
-          # 推送触发的自动构建：标题/说明与手动通道不同（与旧 Auto build 逐字一致）
-          if [ "$FLOW" = "auto" ]; then
-            gh release create "$TAG" "${FILES[@]}" \
-              --title "Suwayomi $VER (alpha)" \
-              --notes "## Suwayomi $VER · alpha
-          - bundled WebUI: \`$WEBUI_TAG\`（最新构建）" \
-              --prerelease \
-              --generate-notes
-            exit 0
-          fi
-
           case "$WEBUI_KIND" in
             stable) WEBUI_DESC="最新正式 release" ;;
             *)      WEBUI_DESC="最新构建（预发布）" ;;
           esac
 
-          # 发布说明只留下载者需要的信息：捆绑的 WebUI 版本（别处看不到）、**实际产出**的
-          # 形态与 Android 目标、以及镜像地址（OCI 不进附件，只能从这里找到）。
+          # 捆绑组件的版本在别处看不到（产物 zip 里只有本仓库的版本号），所以单列一张表：
+          # webui / ext-runtime / tray 三个仓库各自**集成**的版本。三者取制品的通道口径
+          # 一致（release 取最新正式、alpha/beta 取最新构建），但版本号彼此独立，所以
+          # 那段描述只跟在 WebUI 行后面，不重复三遍。
+          # 桌面壳是可选资产（解析不到只告警、不挡发布），缺了就如实标注。
+          TRAY_CELL="${TRAY_VERSION:+\`$TRAY_VERSION\`}"
+          [ -n "$TRAY_CELL" ] || TRAY_CELL="（本次未捆绑）"
+          BUNDLED_TABLE="| 捆绑组件 | 集成的版本 |
+          |---|---|
+          | Suwayomi-WebUI | \`$WEBUI_TAG\` — $WEBUI_DESC |
+          | Suwayomi-ext-runtime | \`$EXT_RUNTIME_VERSION\` |
+          | Suwayomi-tray | $TRAY_CELL |"
+
+          # 推送触发的自动构建：说明只有这张表，标题与手动通道不同。
+          # （本行注：改表格后这里不再与旧 Auto build 逐字一致，是有意为之。）
+          if [ "$FLOW" = "auto" ]; then
+            gh release create "$TAG" "${FILES[@]}" \
+              --title "Suwayomi $VER (alpha)" \
+              --notes "## Suwayomi $VER · alpha
+          $BUNDLED_TABLE" \
+              --prerelease \
+              --generate-notes
+            exit 0
+          fi
+
+          # 发布说明只留下载者需要的信息：上面那张捆绑组件表、**实际产出**的形态与
+          # Android 目标、以及镜像地址（OCI 不进附件，只能从这里找到）。
           # 版本号/提交数在 tag 与 changelog 里，通道在标题里，均不再重复。
-          BODY="- bundled WebUI: \`$WEBUI_TAG\` — $WEBUI_DESC"
+          # 表尾多留一个换行：紧跟的 `- ` 行本就能终止 GFM 表格，但"表格后直接接列表"
+          # 各家渲染器的处理不完全一致，空一行最稳。
+          BODY="$BUNDLED_TABLE
+          "
           if [ "$PACK_JRE" = "true" ]; then
             BODY="$BODY
           - 产物形态：默认包不打包 JRE，\`+jre\` 包额外含对应架构的裁剪 JRE（jlink）"

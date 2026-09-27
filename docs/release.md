@@ -41,7 +41,7 @@
 
 ## 构建目标与 runner
 
-手动 dispatch 的平台开关与对应的 runner（`release.yml` 里的 mapping）：
+手动 dispatch 的平台开关与对应的 runner（`release.yml` 里的 mapping）。**行序 = 触发页面上的输入框顺序**：先 Windows/Linux，再 Android，最后 macOS，形态开关垫底；同族内一律 x64 在前、arm64 在后。
 
 | 开关 | runner | rust target | 取的 JRE 资产 |
 |---|---|---|---|
@@ -49,10 +49,10 @@
 | `build_windows_arm64` | `windows-11-arm` | `aarch64-pc-windows-msvc` | windows/aarch64 |
 | `build_linux_x64` | `ubuntu-latest` | `x86_64-unknown-linux-gnu` | linux/x64 |
 | `build_linux_arm64` | `ubuntu-24.04-arm` | `aarch64-unknown-linux-gnu` | linux/aarch64 |
+| `build_android_x64` | `ubuntu-latest` | `x86_64-linux-android` | —（Android 不打包 JRE） |
+| `build_android_arm64` | `ubuntu-latest` | `aarch64-linux-android` | —（同上） |
 | `build_macos_x64` | `macos-15-intel` | `x86_64-apple-darwin` | mac/x64 |
 | `build_macos_arm64` | `macos-15` | `aarch64-apple-darwin` | mac/aarch64 |
-| `build_android_arm64` | `ubuntu-latest` | `aarch64-linux-android` | —（Android 不打包 JRE） |
-| `build_android_x64` | `ubuntu-latest` | `x86_64-linux-android` | —（同上） |
 | `pack_oci` | 见下 | `linux/amd64` / `linux/arm64` | linux/x64 与 linux/aarch64（镜像里按 `uname -m` 各取对应那份） |
 
 - **每个 target 的 runner 都是原生同架构**：Rust 二进制在本平台原生编译（linux-arm64 用 arm64 runner，顺带不再需要交叉工具链；桌面壳在 Suwayomi-tray 那边同样由原生 runner 出）。以前这里还有第二条理由 —— `+jre` 的 jlink 不能跨平台生成运行时；JRE 搬到 Suwayomi-ext-runtime 后这条约束不再落在本仓库，但"原生编译"本身仍然值得保留。
@@ -95,9 +95,19 @@
 
 ## 发布说明
 
-- 手动 dispatch 的 `release_notes`（**在「版本计数」下一个**）会附加在标准信息之后、`--generate-notes` 的 changelog 之前。
+- 手动 dispatch 的 `release_notes` 会附加在标准信息之后、`--generate-notes` 的 changelog 之前。
 - UI 上是**单行**输入框，要分段就写字面量 `\n`，`publish` 里用 `printf '%b'` 还原成真换行；粘贴进来的 `\r` 会被去掉。
-- 标准行**按实际产出渲染**：`pack_jre` 没勾就不写形态行，Android 行只列真正构建的 ABI，OCI 行只在勾了 `pack_oci` 时出现（镜像不进附件，这行是找到它的唯一入口）。
+- 开头是一张**捆绑组件表**，列出 webui / ext-runtime / tray 三个仓库各自集成的版本（这三个版本号在产物 zip 里都看不到，只有发布说明这一处能查到）：
+
+  | 捆绑组件 | 集成的版本 |
+  |---|---|
+  | Suwayomi-WebUI | `r{code}` — 最新正式 release / 最新构建（预发布） |
+  | Suwayomi-ext-runtime | `{V}` |
+  | Suwayomi-tray | `{V}`，解析不到时写「（本次未捆绑）」 |
+
+  三者取制品的通道口径一致（release 取最新正式、alpha/beta 取最新构建），所以那句描述只跟在 WebUI 行后面；手推自动 alpha 用的是同一张表（因此它不再与旧 `Auto build` 的说明逐字一致）。
+- 表格之后是标准行，**按实际产出渲染**：`pack_jre` 没勾就不写形态行，Android 行只列真正构建的 ABI，OCI 行只在勾了 `pack_oci` 时出现（镜像不进附件，这行是找到它的唯一入口）。
+- **没有「版本计数」输入框**：版本号一律由 `git rev-list --count HEAD` 推导（`versionCode = 计数 + 3000`）。早先那个可以手填覆盖计数的框已移除，避免产物名与真实提交数脱钩。
 
 ## 预发布清理（`clear.yml`）
 
@@ -176,7 +186,7 @@ python .workbuddy/verify/clear_dryrun.py    # gh 打桩 + 假 Release 列表，�
 
 ## 捆绑 WebUI
 
-- 产物 zip 内自带 `version.txt`（server 只读它上报版本），发布说明同时标注 `bundled WebUI: r{code}`。
+- 产物 zip 内自带 `version.txt`（server 只读它上报版本），发布说明的「捆绑组件」表里列出具名版本 `r{code}`（同表还有 ext-runtime 与 tray，见「发布说明」）。
 - 分流：alpha/beta → 最新构建（r{code} 预发布）；release → 最新正式 release。
 - **所有 target 共用一个 URL**：在 prep job 解析一次、job outputs 复用（两次解析间隙 WebUI 推新构建会造成各架构包不一致）。
 

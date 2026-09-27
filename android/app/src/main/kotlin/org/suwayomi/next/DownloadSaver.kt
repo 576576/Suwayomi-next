@@ -8,6 +8,7 @@ import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.util.Log
 import android.webkit.CookieManager
 import android.widget.Toast
@@ -73,7 +74,7 @@ class DownloadSaver(private val activity: Activity) {
         pending = null
     }
 
-    /** 回服务端取文件写进 SAF 给的 URI。失败一律报出来，别留一个 0 字节的假备份。 */
+    /** 回服务端取文件写进 SAF 给的 URI。失败一律报出来，并把空壳删掉。 */
     private fun write(job: Pending, target: Uri) {
         var conn: HttpURLConnection? = null
         try {
@@ -86,12 +87,12 @@ class DownloadSaver(private val activity: Activity) {
                 job.userAgent?.let { setRequestProperty("User-Agent", it) }
             }
             if (conn.responseCode != HttpURLConnection.HTTP_OK) {
-                toast("保存失败：服务端返回 HTTP ${conn.responseCode}")
+                fail(target, "保存失败：服务端返回 HTTP ${conn.responseCode}")
                 return
             }
             val out = activity.contentResolver.openOutputStream(target)
             if (out == null) {
-                toast("保存失败：拿不到写入位置")
+                fail(target, "保存失败：拿不到写入位置")
                 return
             }
             out.use { sink -> conn.inputStream.use { source -> source.copyTo(sink) } }
@@ -99,10 +100,16 @@ class DownloadSaver(private val activity: Activity) {
             toast("备份已保存：${job.filename}")
         } catch (t: Throwable) {
             Log.w(TAG, "cannot save ${job.url} to $target", t)
-            toast("保存失败：${t.message}")
+            fail(target, "保存失败：${t.message}")
         } finally {
             conn?.disconnect()
         }
+    }
+
+    /** 失败时删掉 SAF 建出的空壳：半截的 `.tachibk` 看着像一份真备份。 */
+    private fun fail(target: Uri, message: String) {
+        runCatching { DocumentsContract.deleteDocument(activity.contentResolver, target) }
+        toast(message)
     }
 
     private fun toast(message: String) {

@@ -260,6 +260,10 @@ WebUI 的「恢复备份」是点一个**隐藏的** `<input type="file">`
 - **文件名从 `Content-Disposition` 取。** 服务端发的是
   `attachment; filename="org.suwayomi.next_<日期>_<时刻>.tachibk"`（与 autobackup / Mihon
   命名一致），正好喂给 SAF 的 `EXTRA_TITLE`；取不到才退到 URL 末段。
+- **失败要把 SAF 建出来的空壳删掉。** `ACTION_CREATE_DOCUMENT` 是先建文件再让我们写，
+  写砸了（认证挑战、网络断、存储满）就会留一个半截的 `.tachibk` —— 它**看着像一份真备份**，
+  比"什么都没发生"更坏。所以失败分支统一走 `DocumentsContract.deleteDocument`（删不掉就
+  算了，至少 Toast 要说清）。
 
 与「选文件」的分工值得记一笔：那个把 `content://` 交回 **WebView**，读盘由 WebView 按 URI 做，
 宿主不需要任何存储权限；这个由**宿主自己**读盘再写盘，所以失败模式也不同 —— 必须自己判定

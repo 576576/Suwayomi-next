@@ -405,7 +405,7 @@ jobs:
             printf '<a href="%s/%s"><img src="%s/%s-%s-%s.svg?logo=%s" alt="%s"></a><br>' \
               "$REL_URL" "$5" "$BADGE_HOST" "$1" "$2" "$3" "$4" "$5"
           }
-          # 按「<平台>-<架构>[_JRE]」收进表再按固定顺序取：附件的字典序会把 +jre 排到基线包前、arm64 排到 x64 前。
+          # 按「<平台>-<架构>[_<形态>]」收进表再按固定顺序取：附件的字典序会把 +jre 排到基线包前、arm64 排到 x64 前。
           declare -A DL_BADGE=()
           for f in "${FILES[@]}"; do
             n="$(basename "$f")"
@@ -415,19 +415,27 @@ jobs:
               android-x64.apk)   DL_BADGE[android-x64]="$(badge APK x64 168039 android "$n")"; continue ;;
             esac
             case "$REST" in
-              *.zip)    STEM="${REST%.zip}";    LABEL="ZIP" ;;
-              *.tar.gz) STEM="${REST%.tar.gz}"; LABEL="tar.gz" ;;
+              *.zip)       STEM="${REST%.zip}";       LABEL="ZIP" ;;
+              *.tar.gz)    STEM="${REST%.tar.gz}";    LABEL="tar.gz" ;;
+              *.msi)       STEM="${REST%.msi}";       LABEL="MSI" ;;
+              *-setup.exe) STEM="${REST%-setup.exe}"; LABEL="EXE" ;;
               *) echo "跳过未识别的产物：$n"; continue ;;
             esac
             # 同一架构的基线包与 +jre 包共处一格：键里留 _JRE 区分，徽章右半边写「+JRE」（%2B 才是字面加号）。
             JRE_KEY=""; JRE_FACE=""
             case "$STEM" in *+jre) STEM="${STEM%+jre}"; JRE_KEY="_JRE"; JRE_FACE="_%2BJRE" ;; esac
+            # 安装包（msi / setup.exe）与便携包分区：键尾带 _MSI / _EXE，渲染时排在同架构的 zip 前。
+            KIND=""
+            case "$LABEL" in MSI|EXE) KIND="_$LABEL" ;; esac
             case "${STEM%-*}" in
-              windows) DL_BADGE["windows-${STEM##*-}$JRE_KEY"]="$(badge "$LABEL" "${STEM##*-}$JRE_FACE" 2d7d9a windows "$n")" ;;
-              linux)   DL_BADGE["linux-${STEM##*-}$JRE_KEY"]="$(badge "$LABEL" "${STEM##*-}$JRE_FACE" f84e29 linux "$n")" ;;
-              macos)   DL_BADGE["macos-${STEM##*-}$JRE_KEY"]="$(badge "$LABEL" "${STEM##*-}$JRE_FACE" 333333 apple "$n")" ;;
-              *) echo "跳过未知平台：$n" ;;
+              windows) COLOR="2d7d9a"; ICON="windows" ;;
+              linux)   COLOR="f84e29"; ICON="linux" ;;
+              macos)   COLOR="333333"; ICON="apple" ;;
+              *) echo "跳过未知平台：$n"; continue ;;
             esac
+            # 安装包与便携包同族不同色（靛蓝 vs 青蓝），一眼能看出这两枚是装上去的。
+            [ -z "$KIND" ] || COLOR="4a4e8f"
+            DL_BADGE["${STEM%-*}-${STEM##*-}$KIND$JRE_KEY"]="$(badge "$LABEL" "${STEM##*-}$JRE_FACE" "$COLOR" "$ICON" "$n")"
           done
           # OCI 只推 GHCR、不进 Release 附件，所以单独做枚徽章垫在 Linux 格末尾，点进去是包页面。
           if [ "$PACK_OCI" = "true" ]; then
@@ -436,10 +444,10 @@ jobs:
             DL_BADGE[linux-oci]="$(printf '<a href="%s/pkgs/container/%s"><img src="%s/OCI-%s-2496ed.svg?logo=docker" alt="%s"></a><br>' \
               "https://github.com/${GITHUB_REPOSITORY}" "${GITHUB_REPOSITORY##*/}" "$BADGE_HOST" "$OCI_TAG" "$OCI_REF")"
           fi
-          dl_cell() {   # <平台> <显示名>：先 x64 再 arm64，先基线包再 +jre，Linux 格末尾垫 OCI
+          dl_cell() {   # <平台> <显示名>：每个架构「安装包 → 基线包 → +jre」，Linux 格末尾垫 OCI
             local p="$1" name="$2" arch suf k cell="" oci="$1-oci"
             for arch in x64 arm64; do
-              for suf in "" _JRE; do
+              for suf in _MSI _EXE "" _JRE; do
                 k="$p-$arch$suf"
                 [ -n "${DL_BADGE[$k]:-}" ] || continue
                 cell="$cell${DL_BADGE[$k]}"$'\n'
@@ -449,7 +457,7 @@ jobs:
             [ -n "$cell" ] || return 0
             printf '<tr><td>%s</td><td>\n%s</td></tr>\n' "$name" "$cell"
           }
-          # 行序固定：Windows → Linux → Android → macOS（同族内先 x64 再 arm64）。
+          # 行序固定：Windows → Linux → Android → macOS；格内先 x64 再 arm64，各架构内安装包垫在 zip 前。
           DL_ROWS="$(dl_cell windows Windows)$(dl_cell linux Linux)$(dl_cell android Android)$(dl_cell macos macOS)"
           DOWNLOAD_TABLE=""
           if [ -n "$DL_ROWS" ]; then

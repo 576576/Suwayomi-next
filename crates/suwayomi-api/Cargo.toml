@@ -1,0 +1,16 @@
+[package]
+name = "suwayomi-api"
+description = "Shared HTTP layer: AppState + auth middleware (protocol-agnostic; used by rest/graphql/opds)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+suwayomi-core = { path = "../suwayomi-core" }
+suwayomi-domain = { path = "../suwayomi-domain" }
+axum.workspace = true
+base64.workspace = true

@@ -13,7 +13,7 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 
-use crate::state::AppState;
+use suwayomi_api::AppState;
 
 pub fn router() -> axum::Router<AppState> {
     axum::Router::new().route("/{b64}", axum::routing::get(proxy_image))

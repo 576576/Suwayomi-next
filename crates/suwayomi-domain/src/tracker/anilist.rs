@@ -88,7 +88,7 @@ impl AniList {
             .http
             .post(API_URL)
             .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-            .header(reqwest::header::USER_AGENT, super::USER_AGENT)
+            .header(reqwest::header::USER_AGENT, super::user_agent())
             .json(&json!({ "query": query, "variables": variables }))
             .send()
             .await

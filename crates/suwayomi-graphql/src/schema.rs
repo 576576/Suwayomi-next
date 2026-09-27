@@ -7,6 +7,7 @@
 
 #![allow(clippy::useless_let_if_seq)]
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_graphql::http::ALL_WEBSOCKET_PROTOCOLS;
@@ -282,16 +283,142 @@ pub fn schema_sdl() -> String {
     schema.sdl()
 }
 
-/// Quick compatibility probe: number of schema type definitions.
-pub fn schema_type_count() -> usize {
-    schema_sdl()
-        .lines()
-        .filter(|l| {
-            l.starts_with("type ")
-                || l.starts_with("enum ")
-                || l.starts_with("input ")
-                || l.starts_with("scalar ")
-                || l.starts_with("interface ")
+/// SDL 顶层类型定义的六种前缀（GraphQL 规范里 `union` 也是类型）。
+///
+/// `directive` / `schema` / `extend` 不算：基线文件里正好有 3 个 `directive`、0 个 `extend`，
+/// 把 `directive` 计进来会让总数凭空多 3，与 `docs/graphql/README.md` 的 359 对不上。
+const TYPE_KINDS: [&str; 6] = ["type", "input", "enum", "scalar", "interface", "union"];
+
+/// 把 SDL 拆成「顶层定义名 → 种类」。
+///
+/// 只认**行首**前缀（字段/枚举值都带缩进，不会被误收），首段再按分隔符切出名字：
+/// `type Foo implements Bar {` → `Foo`、`union Filter = A | B` → `Filter`、
+/// `scalar LongString` → `LongString`。
+fn top_level_defs(sdl: &str) -> BTreeMap<String, &'static str> {
+    sdl.lines()
+        .filter_map(|line| {
+            TYPE_KINDS.iter().copied().find_map(|kind| {
+                let rest = line.strip_prefix(kind)?.strip_prefix(' ')?;
+                let name = rest.split([' ', '{', '(', ':', '=']).next().unwrap_or_default();
+                (!name.is_empty()).then_some((name.to_owned(), kind))
+            })
         })
-        .count()
+        .collect()
+}
+
+/// 顶层类型定义数，与 `docs/graphql/README.md` 的「359 个类型定义」**同口径**
+/// （含 `union`、不含 `directive`）。
+///
+/// 这个数字同时进启动日志（`suwayomi-server/src/lib.rs`）。口径能否对齐基线由
+/// `tests::schema_matches_baseline` 断言锁住 —— 改了统计方式而不更新差分，测试会红。
+pub fn schema_type_count() -> usize {
+    top_level_defs(&schema_sdl()).len()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    /// Kotlin 版 introspection 导出的基线 SDL。`include_str!` 在**编译期**把文件内容
+    /// 嵌进测试二进制 → 断言不依赖运行时工作目录，也不会因为 `cargo test` 的 cwd 不同
+    /// 而静默跳过。代价是路径必须相对 crate 目录固定（本仓库不 `cargo publish`，可接受）。
+    const BASELINE_SDL: &str =
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/graphql/schema-baseline.graphql"));
+
+    /// `docs/graphql/README.md` 的对外口径：359 个类型定义 / 3033 行 SDL。
+    const BASELINE_TOTAL: usize = 359;
+
+    /// 基线按种类的构成 —— 359 = 167 + 145 + 34 + 4 + 6 + 3。
+    ///
+    /// 分开断言是为了让失败信息能指出**哪一类**漂了，而不是只报一个总数。
+    const BASELINE_BY_KIND: [(&str, usize); 6] =
+        [("type", 167), ("input", 145), ("enum", 34), ("scalar", 4), ("interface", 6), ("union", 3)];
+
+    /// 基线有、本 fork 尚未实现的 17 个类型。
+    ///
+    /// 集中在四块：① 分页的 `Node`/`Edge` 家族 —— 基线里 `Node`/`Edge`/`NodeList`/`MetaType`
+    /// 四个 `interface` 加各自的实现类型，本 fork 侧**一个 `interface` 都没注册**；
+    /// ② `Settings` 家族；③ 5 个 `WebUIUpdate*`；④ `union Node`（本 fork 只注册了
+    /// `Filter` 与 `Preference` 两个 union，第三个在基线里，这里少了）。
+    const KNOWN_MISSING: [&str; 17] = [
+        "DownloadEdge",
+        "DownloadNodeList",
+        "DownloadUpdate",
+        "DownloadUpdateType",
+        "Edge",
+        "MetaType",
+        "Node",
+        "NodeList",
+        "PartialSettingsType",
+        "Settings",
+        "SettingsDownloadConversion",
+        "SettingsDownloadConversionHeader",
+        "UpdateState",
+        "WebUIUpdateInfo",
+        "WebUIUpdateInput",
+        "WebUIUpdatePayload",
+        "WebUIUpdateStatus",
+    ];
+
+    /// 本 fork 自有、基线里没有的 8 个类型（分页索引重建、tracker OAuth、章节重排）。
+    const KNOWN_EXTRA: [&str; 8] = [
+        "RebuildDownloadIndexInput",
+        "RebuildDownloadIndexPayload",
+        "RefreshTrackerUserInput",
+        "RefreshTrackerUserPayload",
+        "ReorderChapterDownloadsPayload",
+        "TrackerOAuthAppType",
+        "UpdateTrackerOAuthAppInput",
+        "UpdateTrackerOAuthAppPayload",
+    ];
+
+    fn names(defs: &BTreeMap<String, &'static str>) -> BTreeSet<String> {
+        defs.keys().cloned().collect()
+    }
+
+    /// 基线文件自身没被改坏。否则下面的差分断言会给出误导性的结果 ——
+    /// 比如基线被截断时，"缺 16 个"会一路涨上去，看不出是文件的问题。
+    #[test]
+    fn baseline_file_matches_documented_total() {
+        let defs = top_level_defs(BASELINE_SDL);
+        assert_eq!(defs.len(), BASELINE_TOTAL, "基线 SDL 的顶层类型定义总数");
+        for (kind, expected) in BASELINE_BY_KIND {
+            let actual = defs.values().filter(|k| **k == kind).count();
+            assert_eq!(actual, expected, "基线里 {kind} 的个数");
+        }
+    }
+
+    /// 契约断言：本 crate 产出的 schema 与基线的差异必须**恰好**是已知的那些。
+    ///
+    /// 这条把 `docs/graphql/README.md` 的 359 从「文档里的说法」变成「测试钉住的契约」：
+    /// - 实现了 `KNOWN_MISSING` 里的类型 → 从数组里删掉它，并同步 README 的现状描述；
+    /// - 新增/删除了本 fork 的类型 → 更新 `KNOWN_EXTRA`。
+    ///
+    /// 断言的是**集合全量**而不是单个数字：失败时直接看到多了/少了哪几个名字，
+    /// 不用再写一遍探针脚本去比。
+    #[test]
+    fn schema_matches_baseline() {
+        let rust = top_level_defs(&schema_sdl());
+        let baseline = top_level_defs(BASELINE_SDL);
+
+        let rust_names = names(&rust);
+        let baseline_names = names(&baseline);
+
+        let missing: Vec<&str> = baseline_names.difference(&rust_names).map(String::as_str).collect();
+        let extra: Vec<&str> = rust_names.difference(&baseline_names).map(String::as_str).collect();
+
+        assert_eq!(missing, KNOWN_MISSING, "基线有、本 fork 未实现的类型");
+        assert_eq!(extra, KNOWN_EXTRA, "本 fork 自有、基线没有的类型");
+
+        // 总数关系由上面两个数组推出，不写死数字：359 − 17 + 8 = 350。
+        assert_eq!(
+            rust.len(),
+            BASELINE_TOTAL - KNOWN_MISSING.len() + KNOWN_EXTRA.len(),
+            "本 fork 的类型总数应等于「基线 − 未实现 + 自有」"
+        );
+        // 进启动日志的那个数字与这里解析出的结果必须同口径。
+        assert_eq!(schema_type_count(), rust.len(), "schema_type_count() 应与解析结果同口径");
+    }
 }

@@ -9,7 +9,7 @@ use serde::Deserialize;
 use suwayomi_domain::source::SourceFetcher as _;
 
 use crate::error::{ApiError, ApiResult};
-use crate::state::AppState;
+use suwayomi_api::AppState;
 
 #[derive(Deserialize)]
 pub struct SearchParams {

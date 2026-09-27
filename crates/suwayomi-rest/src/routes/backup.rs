@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use serde_json::json;
 
-use crate::state::AppState;
+use suwayomi_api::AppState;
 
 pub fn backup_router() -> Router<AppState> {
     Router::new()

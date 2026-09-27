@@ -6,7 +6,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 
 use crate::error::ApiResult;
-use crate::state::AppState;
+use suwayomi_api::AppState;
 
 #[derive(Deserialize)]
 pub struct CategoryCreate {

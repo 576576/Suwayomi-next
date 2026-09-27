@@ -13,7 +13,7 @@ use suwayomi_domain::manga::manga_row_to_data_class;
 use suwayomi_domain::updater::{CategoryJobStatus, MangaJobStatus};
 
 use crate::error::{ApiError, ApiResult};
-use crate::state::AppState;
+use suwayomi_api::AppState;
 
 /// `categoryId` 既可能在 query 上，也可能在表单 body 里 —— 上游用的是 Javalin
 /// 的 `formParam`，两种都取。

@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 suwayomi-core = { path = "../suwayomi-core" }
 suwayomi-domain = { path = "../suwayomi-domain" }
+suwayomi-api = { path = "../suwayomi-api" }
 async-graphql.workspace = true
 async-graphql-axum.workspace = true
 axum.workspace = true

@@ -6,7 +6,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use serde::Deserialize;
-use suwayomi_rest::state::AppState;
+use suwayomi_api::AppState;
 
 use crate::constants::{MIME_OPDS_CATALOG, MIME_OPENSEARCH};
 use crate::feeds::{self, FeedCtx};

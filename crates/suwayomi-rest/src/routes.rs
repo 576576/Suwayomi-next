@@ -16,7 +16,7 @@ pub mod update;
 
 use axum::Router;
 
-use crate::state::AppState;
+use suwayomi_api::AppState;
 
 /// Builds the `/api/v1/**` router (OPDS & GraphQL mounted separately).
 pub fn api_v1_router() -> Router<AppState> {

@@ -16,7 +16,7 @@ use serde::Deserialize;
 use suwayomi_domain::tracker::{TrackSearch, TrackUpdate};
 
 use crate::error::{ApiError, ApiResult};
-use crate::state::AppState;
+use suwayomi_api::AppState;
 
 /// Mirrors `TrackerDataClass`.
 #[derive(serde::Serialize)]

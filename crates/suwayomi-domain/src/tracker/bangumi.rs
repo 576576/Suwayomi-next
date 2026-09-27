@@ -63,7 +63,7 @@ impl Bangumi {
             .ctx
             .http
             .post(OAUTH_URL)
-            .header(reqwest::header::USER_AGENT, super::USER_AGENT)
+            .header(reqwest::header::USER_AGENT, super::user_agent())
             .form(&[
                 ("grant_type", "refresh_token"),
                 ("client_id", app.client_id(self.name())?),
@@ -111,7 +111,7 @@ impl Bangumi {
             .http
             .post(Self::collection_url(track.remote_id))
             .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-            .header(reqwest::header::USER_AGENT, super::USER_AGENT)
+            .header(reqwest::header::USER_AGENT, super::user_agent())
             .json(&Self::collection_body(track)?)
             .send()
             .await
@@ -128,7 +128,7 @@ impl Bangumi {
             .http
             .patch(Self::collection_url(track.remote_id))
             .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-            .header(reqwest::header::USER_AGENT, super::USER_AGENT)
+            .header(reqwest::header::USER_AGENT, super::user_agent())
             .json(&Self::collection_body(track)?)
             .send()
             .await
@@ -146,7 +146,7 @@ impl Bangumi {
             .http
             .get(format!("{API_URL}/v0/users/{username}/collections/{remote_id}"))
             .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-            .header(reqwest::header::USER_AGENT, super::USER_AGENT)
+            .header(reqwest::header::USER_AGENT, super::user_agent())
             .send()
             .await
             .map_err(|e| DomainError::tracker(format!("Bangumi 读取收藏失败：{e}")))?;
@@ -174,7 +174,7 @@ impl Bangumi {
             .ctx
             .http
             .post(OAUTH_URL)
-            .header(reqwest::header::USER_AGENT, super::USER_AGENT)
+            .header(reqwest::header::USER_AGENT, super::user_agent())
             .form(&[
                 ("grant_type", "authorization_code"),
                 ("client_id", app.client_id(self.name())?),
@@ -324,7 +324,7 @@ impl TrackerService for Bangumi {
             .http
             .post(format!("{API_URL}/v0/search/subjects?limit=20"))
             .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-            .header(reqwest::header::USER_AGENT, super::USER_AGENT)
+            .header(reqwest::header::USER_AGENT, super::user_agent())
             .json(&body)
             .send()
             .await

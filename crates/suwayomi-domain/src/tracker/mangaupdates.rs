@@ -53,7 +53,7 @@ impl MangaUpdates {
             .http
             .request(method, format!("{BASE_URL}{path}"))
             .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-            .header(reqwest::header::USER_AGENT, super::USER_AGENT);
+            .header(reqwest::header::USER_AGENT, super::user_agent());
         if let Some(b) = body {
             req = req.header(reqwest::header::CONTENT_TYPE, CONTENT_TYPE).json(&b);
         }
@@ -116,7 +116,7 @@ impl MangaUpdates {
             .ctx
             .http
             .put(format!("{BASE_URL}/v1/account/login"))
-            .header(reqwest::header::USER_AGENT, super::USER_AGENT)
+            .header(reqwest::header::USER_AGENT, super::user_agent())
             .header(reqwest::header::CONTENT_TYPE, CONTENT_TYPE)
             .json(&json!({ "username": username, "password": password }))
             .send()

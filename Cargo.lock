@@ -2673,6 +2673,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "suwayomi-api"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64",
+ "suwayomi-core",
+ "suwayomi-domain",
+]
+
+[[package]]
 name = "suwayomi-core"
 version = "0.1.0"
 dependencies = [
@@ -2758,6 +2768,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "suwayomi-api",
  "suwayomi-core",
  "suwayomi-db",
  "suwayomi-domain",
@@ -2775,10 +2786,10 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "suwayomi-api",
  "suwayomi-core",
  "suwayomi-db",
  "suwayomi-domain",
- "suwayomi-rest",
  "tokio",
  "tracing",
 ]
@@ -2794,6 +2805,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "suwayomi-api",
  "suwayomi-core",
  "suwayomi-db",
  "suwayomi-domain",
@@ -2813,6 +2825,7 @@ dependencies = [
  "getrandom 0.3.4",
  "serde",
  "serde_json",
+ "suwayomi-api",
  "suwayomi-core",
  "suwayomi-db",
  "suwayomi-domain",

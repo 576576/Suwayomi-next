@@ -17,9 +17,9 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
+use suwayomi_api::AppState;
 use suwayomi_core::config::ServerConfig;
 use suwayomi_core::db::Db;
-use suwayomi_rest::AppState;
 use suwayomi_rest::routes::api_v1_router;
 use tower::ServiceExt;
 

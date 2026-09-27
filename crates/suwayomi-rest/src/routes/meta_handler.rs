@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use suwayomi_domain::error::{DomainError, Result};
 use suwayomi_domain::sql::bind_placeholders;
 
-use crate::state::AppState;
+use suwayomi_api::AppState;
 
 /// GET /api/v1/meta — all global_meta entries.
 pub async fn get_global_meta(s: &AppState) -> Result<HashMap<String, String>> {

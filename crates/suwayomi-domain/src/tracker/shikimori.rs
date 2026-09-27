@@ -66,7 +66,7 @@ impl Shikimori {
             .ctx
             .http
             .post(OAUTH_URL)
-            .header(reqwest::header::USER_AGENT, super::USER_AGENT)
+            .header(reqwest::header::USER_AGENT, super::user_agent())
             .form(&[
                 ("grant_type", "refresh_token"),
                 ("client_id", app.client_id(self.name())?),
@@ -100,7 +100,7 @@ impl Shikimori {
             .ctx
             .http
             .post(OAUTH_URL)
-            .header(reqwest::header::USER_AGENT, super::USER_AGENT)
+            .header(reqwest::header::USER_AGENT, super::user_agent())
             .form(&[
                 ("grant_type", "authorization_code"),
                 ("client_id", app.client_id(self.name())?),
@@ -141,7 +141,7 @@ impl Shikimori {
             .http
             .post(format!("{API_URL}/v2/user_rates"))
             .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-            .header(reqwest::header::USER_AGENT, super::USER_AGENT)
+            .header(reqwest::header::USER_AGENT, super::user_agent())
             .json(&body)
             .send()
             .await
@@ -301,7 +301,7 @@ impl TrackerService for Shikimori {
             .http
             .delete(format!("{API_URL}/v2/user_rates/{library_id}"))
             .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-            .header(reqwest::header::USER_AGENT, super::USER_AGENT)
+            .header(reqwest::header::USER_AGENT, super::user_agent())
             .send()
             .await
             .map_err(|e| DomainError::tracker(format!("Shikimori 删除失败：{e}")))?;

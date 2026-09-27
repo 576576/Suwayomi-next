@@ -5,6 +5,7 @@ members = [
     "crates/suwayomi-db",
     "crates/suwayomi-db-macros",
     "crates/suwayomi-domain",
+    "crates/suwayomi-api",
     "crates/suwayomi-rest",
     "crates/suwayomi-graphql",
     "crates/suwayomi-opds",

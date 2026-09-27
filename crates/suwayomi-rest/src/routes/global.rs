@@ -6,7 +6,7 @@ use axum::{Json, Router};
 
 use super::meta_handler;
 use crate::error::{ApiError, ApiResult};
-use crate::state::AppState;
+use suwayomi_api::AppState;
 
 pub fn meta_router() -> Router<AppState> {
     Router::new().route("/", get(get_meta).patch(modify_meta))
@@ -38,7 +38,12 @@ async fn modify_meta(
 async fn about(State(_s): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
     Ok(Json(serde_json::json!({
         "name": "Suwayomi (next)",
-        "version": env!("CARGO_PKG_VERSION"),
+        // 真实版本（`core/build.rs` 由 commit count 推导，alpha 为 `r{code}`、
+        // release/beta 为 CI 注入的 3.y.z）。**不能写 `env!("CARGO_PKG_VERSION")`**
+        // ——那是本 crate 的 Cargo.toml 版本，恒为 workspace 的 0.1.0，会让同一个
+        // server 在 REST 与 GraphQL（`aboutServer.version` 读的就是这里这个常量）
+        // 报出两个不同的版本号。
+        "version": suwayomi_core::version::VERSION,
         "serverInitialized": true,
     })))
 }

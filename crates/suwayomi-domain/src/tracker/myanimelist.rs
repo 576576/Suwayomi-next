@@ -177,7 +177,7 @@ impl MyAnimeList {
             .http
             .put(self.manga_url(track.remote_id).await)
             .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-            .header(reqwest::header::USER_AGENT, super::USER_AGENT)
+            .header(reqwest::header::USER_AGENT, super::user_agent())
             .form(&form)
             .send()
             .await
@@ -196,7 +196,7 @@ impl MyAnimeList {
             .http
             .delete(self.manga_url(track.remote_id).await)
             .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-            .header(reqwest::header::USER_AGENT, super::USER_AGENT)
+            .header(reqwest::header::USER_AGENT, super::user_agent())
             .send()
             .await
             .map_err(|e| DomainError::tracker(format!("MyAnimeList 删除失败：{e}")))?;

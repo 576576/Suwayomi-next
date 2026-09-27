@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 suwayomi-core = { path = "../suwayomi-core" }
 suwayomi-domain = { path = "../suwayomi-domain" }
+suwayomi-api = { path = "../suwayomi-api" }
 suwayomi-rest = { path = "../suwayomi-rest" }
 suwayomi-graphql = { path = "../suwayomi-graphql" }
 suwayomi-opds = { path = "../suwayomi-opds" }

@@ -29,11 +29,11 @@ use axum::http::StatusCode;
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use suwayomi_api::AppState;
 use suwayomi_core::auth::Principal;
 use suwayomi_core::config::{AppPaths, ServerConfig, default_cache_root, resolve_setting_path};
 use suwayomi_core::db::{Db, DbSettings};
 use suwayomi_domain::source::SourceBackend;
-use suwayomi_rest::AppState;
 
 /// 认证参数的启动期解析（env → 设置 → 默认值）。
 pub mod auth_setup;
@@ -218,10 +218,10 @@ fn build_router(
     // 登录流程：服务端自渲染的最小页面，不依赖 /assets/*（issue #5 的白屏就是
     // 重定向到一个并不存在的登录页，落到 SPA fallback 后又被门禁掐死 assets）。
     let login = Router::new()
-        .route("/login.html", get(suwayomi_rest::auth::login_page).post(suwayomi_rest::auth::login_submit))
-        .route("/logout", get(suwayomi_rest::auth::logout));
+        .route("/login.html", get(suwayomi_api::auth::login_page).post(suwayomi_api::auth::login_submit))
+        .route("/logout", get(suwayomi_api::auth::logout));
 
-    let auth = middleware::from_fn_with_state(state.clone(), suwayomi_rest::auth::require_auth);
+    let auth = middleware::from_fn_with_state(state.clone(), suwayomi_api::auth::require_auth);
     if state.webui_dir.join("index.html").is_file() {
         tracing::info!("webui static hosting from {}", state.webui_dir.display());
         Router::new().merge(api).merge(login).fallback(webui_fallback).layer(auth).with_state(state)
@@ -239,7 +239,7 @@ fn build_router(
 /// 服务本地图源文件（封面/页面/归档内图片），防路径穿越
 async fn local_file(State(state): State<AppState>, path: axum::extract::Path<String>) -> Response {
     let rel = path.replace('\\', "/");
-    if !suwayomi_rest::auth::is_safe_rel(&rel) || rel.contains("://") {
+    if !suwayomi_api::auth::is_safe_rel(&rel) || rel.contains("://") {
         return StatusCode::BAD_REQUEST.into_response();
     }
     let root = state.paths.local_sources();
@@ -329,7 +329,7 @@ fn image_content_type(name: &str) -> &'static str {
 
 /// WebUI 静态托管 fallback：存在则返回文件，否则回退 index.html（SPA 路由）
 ///
-/// 路径一律经 [`suwayomi_rest::auth::safe_join`] 解析——`dir.join(rel)` 允许
+/// 路径一律经 [`suwayomi_api::auth::safe_join`] 解析——`dir.join(rel)` 允许
 /// `..` 与 Windows 盘符绝对路径逃出目录，等于把整个磁盘暴露出去。
 async fn webui_fallback(State(state): State<AppState>, uri: axum::http::Uri) -> Response {
     let dir = &state.webui_dir;
@@ -339,7 +339,7 @@ async fn webui_fallback(State(state): State<AppState>, uri: axum::http::Uri) -> 
     } else {
         // 先解码再判越界（`%2f` 写法必须被识破），且**不要求文件存在**：
         // 深链接要回退到 index.html，用要求文件存在的 safe_join 会让刷新变 404。
-        suwayomi_rest::auth::safe_public_path(dir, rel)
+        suwayomi_api::auth::safe_public_path(dir, rel)
     };
     let file = match resolved {
         Some(path) if path.is_file() => path,
@@ -657,29 +657,15 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
     let download =
         suwayomi_domain::download::DownloadManager::new(db.clone(), fetcher.clone(), paths.clone(), server_base_url);
 
-    let graphql_state = suwayomi_graphql::GraphQLState::new(
-        db.clone(),
-        config.clone(),
-        auth.clone(),
-        fetcher.clone(),
-        update.clone(),
-        tracker.clone(),
-        download.clone(),
-        sandbox_base.clone(),
-        webui_dir.clone(),
-        paths.clone(),
-    );
-    // 持久化设置（`global_meta` 的 settings blob）盖到 env 基线上：KOReader 同步
-    // 策略、SyncYomi 开关这类设置由服务在运行时读取，重启后必须生效。
-    graphql_state.reload_runtime_config().await;
-    // Scheduled auto-backup loop (`autoBackupFrequency`/`backupPath` settings).
-    suwayomi_graphql::autobackup::spawn(graphql_state.clone());
-    let schema = suwayomi_graphql::schema::build_schema(graphql_state);
-    tracing::info!("graphql schema ready ({} type definitions)", suwayomi_graphql::schema::schema_type_count());
+    // 顺序要紧：先建 AppState，再由它派生 GraphQLState。两者的 `config` 必须是
+    // **同一个 RuntimeConfig 句柄** —— 各自 `new` 一份时，下面的
+    // `reload_runtime_config`（启动一次 + `setSettings` 一次）只写得到 GraphQL
+    // 那份，REST / OPDS 读到的永远是 env 基线：设置页改了 `opdsCbzMimetype`，
+    // REST 取页（`suwayomi-rest/src/routes/chapter.rs`）仍按旧值出图。
     let state = AppState::new(
         db.clone(),
         config.clone(),
-        auth.clone(),
+        auth,
         fetcher,
         update,
         tracker,
@@ -688,6 +674,14 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
         webui_dir.clone(),
         paths,
     );
+    let graphql_state = suwayomi_graphql::GraphQLState::new(state.clone(), config.clone());
+    // 持久化设置（`global_meta` 的 settings blob）盖到 env 基线上：KOReader 同步
+    // 策略、SyncYomi 开关这类设置由服务在运行时读取，重启后必须生效。
+    graphql_state.reload_runtime_config().await;
+    // Scheduled auto-backup loop (`autoBackupFrequency`/`backupPath` settings).
+    suwayomi_graphql::autobackup::spawn(graphql_state.clone());
+    let schema = suwayomi_graphql::schema::build_schema(graphql_state);
+    tracing::info!("graphql schema ready ({} type definitions)", suwayomi_graphql::schema::schema_type_count());
     // shutdown 通知通道：POST /api/v1/shutdown（或 Ctrl+C）触发优雅关闭，
     // 干净停掉数据库连接与沙盒子进程而非遗留孤儿
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);

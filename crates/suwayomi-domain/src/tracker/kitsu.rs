@@ -154,7 +154,7 @@ impl Kitsu {
             .ctx
             .http
             .post(LOGIN_URL)
-            .header(reqwest::header::USER_AGENT, super::USER_AGENT)
+            .header(reqwest::header::USER_AGENT, super::user_agent())
             .form(&[
                 ("grant_type", "refresh_token"),
                 ("refresh_token", refresh_token.as_str()),
@@ -188,7 +188,7 @@ impl Kitsu {
             .http
             .request(method, url)
             .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-            .header(reqwest::header::USER_AGENT, super::USER_AGENT)
+            .header(reqwest::header::USER_AGENT, super::user_agent())
             .header(reqwest::header::ACCEPT, VND_API_JSON);
         if let Some(b) = body {
             req = req.header(reqwest::header::CONTENT_TYPE, VND_API_JSON).json(&b);
@@ -388,7 +388,7 @@ impl TrackerService for Kitsu {
             .ctx
             .http
             .post(LOGIN_URL)
-            .header(reqwest::header::USER_AGENT, super::USER_AGENT)
+            .header(reqwest::header::USER_AGENT, super::user_agent())
             .form(&[
                 ("username", username),
                 ("password", password),

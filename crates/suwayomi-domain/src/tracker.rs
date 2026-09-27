@@ -39,8 +39,21 @@ fn filled(value: String, fallback: &str) -> String {
     if trimmed.is_empty() { fallback.to_string() } else { trimmed.to_string() }
 }
 
-/// 桌面端默认 UA。部分站点（MAL）缺 UA 会直接拒请求。
-pub const USER_AGENT: &str = concat!("Suwayomi-next/", env!("CARGO_PKG_VERSION"));
+/// 桌面端默认 UA（`Suwayomi-next/<版本>`）。部分站点（MAL）缺 UA 会直接拒请求。
+///
+/// 版本号取自 `suwayomi_core::version::VERSION`（`core/build.rs` 由 commit count
+/// 推导的真实版本）。**不能写 `env!("CARGO_PKG_VERSION")`** —— 那是本 crate 的
+/// `Cargo.toml` 版本，恒等于 workspace 的 `0.1.0`，于是第三方站点收到的 UA 里
+/// 永远是一个无意义的版本号。
+///
+/// 也不能写成 `concat!` 常量：`concat!` 只吃字面量（`env!` 展开后是字面量，所以
+/// 旧写法能编过），而 `cargo:rustc-env` 注入的变量只对**带该 build script 的那个
+/// 包**可见 —— domain 没有 build.rs，`env!("SUWAYOMI_VERSION_NAME")` 拿不到。
+/// 所以用一次性初始化，返回 `&'static str`，调用点与原常量同形。
+pub fn user_agent() -> &'static str {
+    static UA: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    UA.get_or_init(|| format!("Suwayomi-next/{}", suwayomi_core::version::VERSION))
+}
 
 // 上游 `TrackerManager` 的常量。
 pub const MYANIMELIST: i32 = 1;
@@ -240,7 +253,7 @@ impl TrackerManager {
     fn build(db: Db, oauth: Arc<RwLock<TrackerOAuthApps>>, oauth_config: Option<std::path::PathBuf>) -> Self {
         let store = TrackerStore::new(db.clone());
         let http = reqwest::Client::builder()
-            .user_agent(USER_AGENT)
+            .user_agent(user_agent())
             .timeout(std::time::Duration::from_secs(60))
             .build()
             .unwrap_or_default();

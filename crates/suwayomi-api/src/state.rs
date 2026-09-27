@@ -1,4 +1,9 @@
-//! Shared application state for REST handlers.
+//! 装配层建一次、各协议层共享的应用状态。
+//!
+//! 这里的每个字段都是**句柄**（`Clone` 只共享内部 `Arc`），所以 server 装配一次
+//! 之后可以交给 REST / GraphQL / OPDS 三边用，看到的是同一份队列、同一份配置、
+//! 同一份追踪器登录态。各自 `new` 一份会得到互不可见的副本——REST 的取页与
+//! GraphQL 的订阅都读 `config`，分成两份时改设置只对其中一边生效。
 
 use std::sync::Arc;
 

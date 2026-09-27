@@ -8,7 +8,7 @@ use axum::{Json, Router};
 
 use suwayomi_domain::download::JobState;
 
-use crate::state::AppState;
+use suwayomi_api::AppState;
 
 fn job_json(job: &suwayomi_domain::download::DownloadJob) -> serde_json::Value {
     serde_json::json!({

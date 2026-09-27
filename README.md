@@ -72,12 +72,16 @@ macOS WKWebView），不捆绑浏览器运行时；无 WebView 时回退系统�
 
 ```
 crates/
-  suwayomi-core/     领域模型 + 数据表 + 数据库层
-  suwayomi-domain/   业务逻辑
+  suwayomi-db-macros/ proc-macro（#[derive(FromRow)]）
+  suwayomi-db/       双后端数据库层（默认 SQLite / 可选 PostgreSQL）
+  suwayomi-core/     领域模型 + 数据表行类型 + 构建期版本注入
+  suwayomi-domain/   业务逻辑（唯一对外发 HTTP 的一层）
+  suwayomi-api/      接口层公共部分：AppState + 全站认证中间件
   suwayomi-rest/     REST API v1
   suwayomi-graphql/  GraphQL API
-  suwayomi-opds/     OPDS
-  suwayomi-server/   服务端入口
+  suwayomi-opds/     OPDS（KOReader 等阅读器）
+  suwayomi-server/   服务端入口（装配 + 静态托管 + JVM 沙盒子进程）
+  suwayomi-android/  JNI cdylib（Android 上整份 server 随 APK 分发）
 android/             Android 宿主工程（独立 Gradle/AGP 构建，不并入主工程）
 migrations/          SQL 迁移（含 pg-only/：SyncYomi 触发器）
 scripts/             CI/辅助脚本（resolve-webui.sh / unzip_any.py 等）

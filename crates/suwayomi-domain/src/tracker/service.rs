@@ -47,7 +47,7 @@ impl TrackerCtx {
             .http
             .get(url)
             .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-            .header(reqwest::header::USER_AGENT, super::USER_AGENT)
+            .header(reqwest::header::USER_AGENT, super::user_agent())
             .send()
             .await
             .map_err(|e| DomainError::tracker(format!("{name} 请求失败：{e}")))?;

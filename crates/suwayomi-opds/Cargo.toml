@@ -12,7 +12,8 @@ workspace = true
 [dependencies]
 suwayomi-core = { path = "../suwayomi-core" }
 suwayomi-domain = { path = "../suwayomi-domain" }
-suwayomi-rest = { path = "../suwayomi-rest" }
+# 只为拿 AppState 这个 axum state 类型，所以依赖的是 api 层而不是 rest 层。
+suwayomi-api = { path = "../suwayomi-api" }
 axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true

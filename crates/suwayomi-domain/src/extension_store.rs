@@ -40,8 +40,8 @@ enum RepoEntry {
 impl RepoEntry {
     fn into_v1(self) -> RepoIndexEntry {
         match self {
-            RepoEntry::V1(e) => e,
-            RepoEntry::V2(e) => RepoIndexEntry {
+            Self::V1(e) => e,
+            Self::V2(e) => RepoIndexEntry {
                 name: e.name,
                 pkg: e.package_name,
                 apk: e.resources.apk_url,
@@ -63,8 +63,8 @@ impl RepoIndex {
     /// 拆成条目 + 是不是旧版（裸数组）那支 —— 旧版的 icon 要按约定补。
     fn entries(self) -> (Vec<RepoIndexEntry>, bool) {
         match self {
-            RepoIndex::V1(v) => (v.into_iter().map(RepoEntry::into_v1).collect(), true),
-            RepoIndex::V2 { extension_list } => {
+            Self::V1(v) => (v.into_iter().map(RepoEntry::into_v1).collect(), true),
+            Self::V2 { extension_list } => {
                 (extension_list.extensions.into_iter().map(RepoEntry::into_v1).collect(), false)
             }
         }
@@ -82,8 +82,8 @@ enum StrOrNum {
 impl StrOrNum {
     fn as_i64(&self) -> i64 {
         match self {
-            StrOrNum::N(n) => *n,
-            StrOrNum::S(s) => s.parse().unwrap_or(0),
+            Self::N(n) => *n,
+            Self::S(s) => s.parse().unwrap_or(0),
         }
     }
 }
@@ -122,11 +122,11 @@ impl RawContentWarning {
     /// 与 Mihon `index.pb` 那边同一条判据（`ContentWarning >= 2`）：**MIXED 也算 NSFW**。
     fn is_nsfw(&self) -> bool {
         match self {
-            RawContentWarning::Str(s) => {
+            Self::Str(s) => {
                 let s = s.to_ascii_uppercase();
                 s.ends_with("MIXED") || s.ends_with("NSFW")
             }
-            RawContentWarning::Int(n) => *n >= 2,
+            Self::Int(n) => *n >= 2,
         }
     }
 }
@@ -220,36 +220,34 @@ pub struct ExtensionStoreService {
     /// Directory for dex2jar-converted jars (release layout: `bin/extensions`).
     jar_dir: PathBuf,
     /// 统一缓存根（`<发布根>/cache`），仓库索引缓存落在其 `extensions/index/` 下。
-    /// 单独持有而非每次调 `cache_root()`，测试才能注入独立目录（见 `with_dirs`）。
+    /// 由构造参数注入（`AppPaths::cache`），不读进程全局 —— 测试才能持有独立目录。
     cache_dir: PathBuf,
 }
 
 impl ExtensionStoreService {
-    pub fn new(db: Db, sandbox_base: Option<String>) -> Self {
-        let extensions_dir = std::env::var("SUWAYOMI_EXTENSIONS_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("./extensions"));
-        let jar_dir = std::env::var("SUWAYOMI_JAR_DIR").map(PathBuf::from).unwrap_or_else(|_| {
-            extensions_dir
-                .parent()
-                .map(|p| p.join("bin").join("extensions"))
-                .unwrap_or_else(|| PathBuf::from("bin/extensions"))
-        });
-        Self::with_dirs(db, sandbox_base, extensions_dir, jar_dir)
+    /// `cache_dir` 由调用方显式给出（Android 宿主没有环境变量可读，
+    /// 只能把 `<data>/cache` 传进来）；扩展目录 / jar 目录仍按环境变量解析。
+    pub fn new(db: Db, sandbox_base: Option<String>, cache_dir: PathBuf) -> Self {
+        let extensions_dir =
+            std::env::var("SUWAYOMI_EXTENSIONS_DIR").map_or_else(|_| PathBuf::from("./extensions"), PathBuf::from);
+        let jar_dir = std::env::var("SUWAYOMI_JAR_DIR").map_or_else(
+            |_| {
+                extensions_dir
+                    .parent()
+                    .map_or_else(|| PathBuf::from("bin/extensions"), |p| p.join("bin").join("extensions"))
+            },
+            PathBuf::from,
+        );
+        Self::with_dirs(db, sandbox_base, extensions_dir, jar_dir, cache_dir)
     }
 
     /// 显式指定扩展目录 / jar 目录 / 缓存根的构造器。
     ///
-    /// 测试专用：`new()` 从进程环境变量读取目录，而 `std::env::set_var` 在
-    /// Rust 2024 起是 `unsafe`（且多线程下修改进程环境本身就是数据竞争），
-    /// 并行测试还会互相覆盖 `SUWAYOMI_EXTENSIONS_DIR` / `SUWAYOMI_CACHE_DIR`。
-    /// 改为注入路径后，各测试持有独立临时目录，无需触碰环境变量。
-    pub fn with_dirs(db: Db, sandbox_base: Option<String>, extensions_dir: PathBuf, jar_dir: PathBuf) -> Self {
-        Self::with_cache_dir(db, sandbox_base, extensions_dir, jar_dir, suwayomi_core::config::cache_root())
-    }
-
-    /// 同 [`Self::with_dirs`]，但额外显式指定缓存根（`index_cache_path` 用）。
-    pub fn with_cache_dir(
+    /// 测试专用：`new()` 的扩展目录 / jar 目录来自进程环境变量，而
+    /// `std::env::set_var` 在 Rust 2024 起是 `unsafe`（且多线程下修改进程环境本身
+    /// 就是数据竞争），并行测试还会互相覆盖 `SUWAYOMI_EXTENSIONS_DIR`。改为注入
+    /// 路径后，各测试持有独立临时目录，无需触碰环境变量。
+    pub fn with_dirs(
         db: Db,
         sandbox_base: Option<String>,
         extensions_dir: PathBuf,
@@ -377,7 +375,7 @@ impl ExtensionStoreService {
 
         let mut n = 0usize;
         for e in entries {
-            let content_warning = if e.nsfw { 1 } else { 0 };
+            let content_warning = i32::from(e.nsfw);
             suwayomi_db::query(
                 "INSERT INTO suwayomi.extension \
                  (apk_name, store_index_url, name, pkg_name, apk_url, icon_url, jar_url, version_name, version_code, lang, content_warning, is_installed, has_update, is_obsolete, class_name) \
@@ -694,7 +692,7 @@ impl RepoIndexEntry {
             for f in rd.flatten() {
                 if let Some(fn_) = f.file_name().to_str()
                     && fn_.starts_with(&prefix)
-                    && fn_.ends_with(".apk")
+                    && std::path::Path::new(fn_).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("apk"))
                 {
                     return true;
                 }
@@ -719,7 +717,9 @@ fn remove_matching_apks(dir: &Path, pkg: &str) -> Result<()> {
         // the full package name (eu.kanade.tachiyomi.extension.*), while the
         // file uses the short form (all.nhentaicom).
         let short = pkg.strip_prefix("eu.kanade.tachiyomi.extension.").unwrap_or(pkg);
-        if name.ends_with(".apk") && name.contains(short) {
+        if std::path::Path::new(&name).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("apk"))
+            && name.contains(short)
+        {
             std::fs::remove_file(f.path()).map_err(|e| DomainError::Source(format!("remove {name}: {e}")))?;
         }
     }
@@ -736,7 +736,9 @@ fn remove_matching_jars(dir: &Path, pkg: &str) -> Result<()> {
         let f = f.map_err(|e| DomainError::Source(format!("read dir entry: {e}")))?;
         let name = f.file_name().to_string_lossy().into_owned();
         let short = pkg.strip_prefix("eu.kanade.tachiyomi.extension.").unwrap_or(pkg);
-        if name.ends_with(".jar") && name.contains(short) {
+        if std::path::Path::new(&name).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
+            && name.contains(short)
+        {
             std::fs::remove_file(f.path()).map_err(|e| DomainError::Source(format!("remove {name}: {e}")))?;
         }
     }
@@ -748,7 +750,9 @@ fn remove_matching_jars(dir: &Path, pkg: &str) -> Result<()> {
 /// （后者不能被拼成 `index.min.json/index.json`）。
 fn normalize_index_url(url: &str) -> String {
     let url = url.trim();
-    if url.ends_with(".json") || url.ends_with(".pb") {
+    if std::path::Path::new(url).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+        || std::path::Path::new(url).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("pb"))
+    {
         url.to_string()
     } else {
         format!("{}/index.json", url.trim_end_matches('/'))
@@ -763,7 +767,10 @@ fn normalize_index_url(url: &str) -> String {
 /// `lang`（见 [`lang_from_apk_name`]）、NSFW 藏在 `contentWarning` 里（见
 /// [`RawContentWarning`]），都在这里抹平。
 fn parse_index(bytes: &[u8], url: &str) -> Result<Vec<RepoIndexEntry>> {
-    let (mut entries, legacy) = if url.ends_with(".pb") {
+    let (mut entries, legacy) = if std::path::Path::new(url)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pb"))
+    {
         (parse_mihon_pb_index(bytes).map_err(|e| DomainError::Source(format!("mihon repo index parse: {e}")))?, false)
     } else {
         let index: RepoIndex =
@@ -803,10 +810,7 @@ fn lang_from_apk_name(apk: &str) -> Option<String> {
 
 /// index 所在目录：`…/repo/index.min.json` → `…/repo/`（拼相对 URL 用）。
 fn index_base_url(url: &str) -> String {
-    match url.rfind('/') {
-        Some(i) => url[..=i].to_string(),
-        None => url.to_string(),
-    }
+    url.rfind('/').map_or_else(|| url.to_string(), |i| url[..=i].to_string())
 }
 
 /// 旧版仓库的资源路径补全。布局是 `<index 目录>/{apk,icon,jar}/<文件名>`：条目里
@@ -826,7 +830,7 @@ fn resolve_asset_url(base: &str, subdir: &str, value: &str) -> String {
 
 /// 仓库索引的本地缓存路径：`<cache>/extensions/index/index-<hash>.<ext>`，
 /// hash 取规范化 index URL 的哈希（跨刷新、跨重启稳定），ext 是 `pb` / `json`。
-/// 缓存根在发布根下的统一 `<发布根>/cache`（见 `suwayomi_core::config::cache_root`），
+/// 缓存根在发布根下的统一 `<发布根>/cache`（见 `suwayomi_core::config::AppPaths::cache`），
 /// 不在扩展目录里。
 fn index_cache_path(cache_dir: &Path, index_url: &str) -> PathBuf {
     let url = normalize_index_url(index_url);
@@ -857,7 +861,7 @@ fn prune_legacy_index_dirs(dir: &Path) {
 
 fn decompress_gzip_if_needed(bytes: &[u8]) -> Vec<u8> {
     // gzip magic 1f 8b
-    if bytes.len() > 2 && bytes[0] == 0x1f && bytes[1] == 0x8b {
+    if bytes.starts_with(b"\x1f\x8b") {
         use std::io::Read;
         let mut out = Vec::new();
         let mut decoder = flate2::read::GzDecoder::new(bytes);
@@ -873,6 +877,12 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
+    /// Serialises the database-backed tests — in this binary *and* in the
+    /// other test binaries running alongside it. See `suwayomi_db::test_support`.
+    async fn lock() -> suwayomi_db::test_support::DbLock {
+        suwayomi_db::test_support::db_lock().await
+    }
+
     /// These tests exercise the extension index/install path against external
     /// PostgreSQL via DATABASE_URL; skipped otherwise (same convention as the
     /// version-bump trigger test).
@@ -880,10 +890,7 @@ mod tests {
         let url = std::env::var("DATABASE_URL").ok().filter(|u| !u.is_empty())?;
         let db = suwayomi_core::db::Db::postgres(&url).await.expect("db");
         db.migrate().await.expect("migrate");
-        // clear extension-related tables so tests are repeatable
-        let _ = suwayomi_db::query("TRUNCATE suwayomi.source, suwayomi.extension, suwayomi.extension_store CASCADE")
-            .execute(db.pool())
-            .await;
+        suwayomi_db::test_support::reset_business_tables(&db).await;
         Some(db)
     }
 
@@ -899,7 +906,7 @@ mod tests {
     fn service_in(tmp: &Path, db: Db, sandbox_base: Option<String>) -> ExtensionStoreService {
         let extensions = tmp.join("extensions");
         std::fs::create_dir_all(&extensions).unwrap();
-        ExtensionStoreService::with_cache_dir(
+        ExtensionStoreService::with_dirs(
             db,
             sandbox_base,
             extensions,
@@ -924,6 +931,7 @@ mod tests {
 
     #[tokio::test]
     async fn repo_index_refresh_upserts_extensions() {
+        let _guard = lock().await;
         let Some(db) = setup_db().await else {
             eprintln!("SKIP: requires DATABASE_URL");
             return;
@@ -954,6 +962,7 @@ mod tests {
 
     #[tokio::test]
     async fn install_downloads_apk_and_registers_sources() {
+        let _guard = lock().await;
         let Some(db) = setup_db().await else {
             eprintln!("SKIP: requires DATABASE_URL");
             return;
@@ -1006,7 +1015,8 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert!(
-            files.iter().any(|f| f.contains("tachiyomi-all.nhentaicom") && f.ends_with(".apk")),
+            files.iter().any(|f| f.contains("tachiyomi-all.nhentaicom")
+                && std::path::Path::new(f).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("apk"))),
             "apk persisted: {files:?}"
         );
         let (sid, sname, slang): (i64, String, String) =
@@ -1014,7 +1024,7 @@ mod tests {
                 .fetch_one(db.pool())
                 .await
                 .unwrap();
-        assert_eq!(sid, 5591830863732393712);
+        assert_eq!(sid, 5_591_830_863_732_393_712);
         assert_eq!(sname, "nhentai.com");
         assert_eq!(slang, "en");
         let inst: bool = suwayomi_db::query_scalar(
@@ -1031,6 +1041,7 @@ mod tests {
 
     #[tokio::test]
     async fn uninstall_removes_apk_and_sources() {
+        let _guard = lock().await;
         let Some(db) = setup_db().await else {
             eprintln!("SKIP: requires DATABASE_URL");
             return;
@@ -1093,6 +1104,7 @@ mod tests {
 
     #[tokio::test]
     async fn repo_index_refresh_falls_back_to_cache() {
+        let _guard = lock().await;
         let Some(db) = setup_db().await else {
             eprintln!("SKIP: requires DATABASE_URL");
             return;
@@ -1240,7 +1252,7 @@ mod tests {
         let entries = parse_index(sample.as_bytes(), url).expect("v2 index parses");
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].lang, "all", "lang 从 apk 名里取（源语言里有 27 种，取第一条是错的）");
-        assert_eq!(entries[0].version_code, 106004, "versionCode 是字符串");
+        assert_eq!(entries[0].version_code, 106_004, "versionCode 是字符串");
         assert!(entries[0].nsfw, "CONTENT_WARNING_NSFW 算 NSFW");
         assert_eq!(entries[0].apk.as_deref(), Some("https://h/rel/tachiyomi-all.akuma-v1.4.10.apk"));
         assert_eq!(entries[0].icon.as_deref(), Some("https://h/icon.png"), "v2 给绝对 icon，不按旧版约定补");
@@ -1306,97 +1318,127 @@ mod tests {
 /// protobuf 解析的错误类型（避免与 crate 的单参数 Result 别名冲突）
 type PbResult<T> = std::result::Result<T, String>;
 
-/// 极简 protobuf wire-format 读取器（只读不解码，够用且零依赖）。
-struct PbReader<'a> {
-    d: &'a [u8],
-    i: usize,
+/// wire-format 的原子读取 —— 每个函数都是「输入 → (值, 剩余)」的纯函数。
+///
+/// 没有游标、没有 `&mut self`：进度由返回值携带，调用方用 `?` 把解析串成链。
+mod pb {
+    use super::PbResult;
+
+    /// 读一个 varint。第 10 个字节还没收尾就算溢出。
+    pub fn varint(d: &[u8]) -> PbResult<(u64, &[u8])> {
+        // 终止字节 = 最高位为 0 的那个；`position` 直接把"读到哪"变成返回值。
+        let end = d.iter().position(|b| b & 0x80 == 0).ok_or("protobuf: unexpected eof")?;
+        if end >= 10 {
+            return Err("protobuf: varint overflow".into());
+        }
+        let head = d.get(..=end).ok_or("protobuf: unexpected eof")?;
+        let rest = d.get(end + 1..).ok_or("protobuf: unexpected eof")?;
+        let value = head.iter().enumerate().fold(0u64, |acc, (i, b)| acc | (u64::from(b & 0x7f) << (7 * i)));
+        Ok((value, rest))
+    }
+
+    /// 读字段头，得到 ((field_number, wire_type), 剩余)。
+    pub fn key(d: &[u8]) -> PbResult<((u64, u64), &[u8])> {
+        let (k, rest) = varint(d)?;
+        Ok(((k >> 3, k & 7), rest))
+    }
+
+    /// 读一个 length-delimited 段，得到 (载荷, 剩余)。载荷是原切片的视图，零拷贝。
+    pub fn len_delimited(d: &[u8]) -> PbResult<(&[u8], &[u8])> {
+        let (len, rest) = varint(d)?;
+        let len = usize::try_from(len).map_err(|_| "protobuf: len out of range".to_string())?;
+        let payload = rest.get(..len).ok_or("protobuf: len exceeds data")?;
+        let tail = rest.get(len..).ok_or("protobuf: len exceeds data")?;
+        Ok((payload, tail))
+    }
+
+    /// 按 wire type 跳过字段，返回剩余。
+    pub fn skip(d: &[u8], wire: u64) -> PbResult<&[u8]> {
+        match wire {
+            0 => varint(d).map(|(_, rest)| rest),
+            1 => d.get(8..).ok_or_else(|| "protobuf: unexpected eof".to_string()),
+            2 => len_delimited(d).map(|(_, rest)| rest),
+            5 => d.get(4..).ok_or_else(|| "protobuf: unexpected eof".to_string()),
+            _ => Err(format!("protobuf: unsupported wire type {wire}")),
+        }
+    }
 }
 
-impl<'a> PbReader<'a> {
-    fn varint(&mut self) -> PbResult<u64> {
-        let mut r = 0u64;
-        let mut shift = 0u32;
-        loop {
-            let b = *self.d.get(self.i).ok_or("protobuf: unexpected eof")?;
-            self.i += 1;
-            r |= u64::from(b & 0x7f) << shift;
-            if b & 0x80 == 0 {
-                return Ok(r);
-            }
-            shift += 7;
-            if shift >= 64 {
-                return Err("protobuf: varint overflow".into());
-            }
+/// 一条已解码的字段。只保留解析器真正用得到的三类 wire type：
+/// 变长整数、length-delimited（保留载荷）、以及定长（解析器不关心内容）。
+enum PbField<'a> {
+    Varint {
+        number: u64,
+        value: u64,
+    },
+    Bytes {
+        number: u64,
+        value: &'a [u8],
+    },
+    /// wire type 1 / 5：定长字段，字段号对调用方没用，游标已经跳过。
+    FixedWidth,
+}
+
+/// 把一段 message 变成**惰性的字段流**。
+///
+/// 这是整个解析器唯一的读取循环，用 `iter::from_fn` 而不是一个持有游标的
+/// `&mut self` 对象来表达：字段的推进归迭代器管，业务代码只声明"哪个字段怎么解读"。
+fn pb_fields(mut d: &[u8]) -> impl Iterator<Item = PbResult<PbField<'_>>> + '_ {
+    std::iter::from_fn(move || {
+        if d.is_empty() {
+            return None;
         }
-    }
-
-    /// 返回 (field_number, wire_type)
-    fn key(&mut self) -> PbResult<(u64, u64)> {
-        let k = self.varint()?;
-        Ok((k >> 3, k & 7))
-    }
-
-    fn skip(&mut self, wt: u64) -> PbResult<()> {
-        match wt {
-            0 => {
-                self.varint()?;
+        Some(match pb::key(d) {
+            Ok(((number, wire), body)) => match wire {
+                0 => pb::varint(body).map(|(value, rest)| {
+                    d = rest;
+                    PbField::Varint { number, value }
+                }),
+                2 => pb::len_delimited(body).map(|(value, rest)| {
+                    d = rest;
+                    PbField::Bytes { number, value }
+                }),
+                other => pb::skip(body, other).map(|rest| {
+                    d = rest;
+                    PbField::FixedWidth
+                }),
+            },
+            Err(err) => {
+                // 报错后把流掐断，否则同一位置会反复产出同一个错误。
+                d = &[];
+                Err(err)
             }
-            1 => self.i += 8,
-            2 => {
-                let len = self.varint()? as usize;
-                self.i += len;
-            }
-            5 => self.i += 4,
-            _ => return Err(format!("protobuf: unsupported wire type {wt}")),
-        }
-        Ok(())
-    }
+        })
+    })
+}
 
-    fn len_delimited(&mut self) -> PbResult<&'a [u8]> {
-        let len = self.varint()? as usize;
-        let end = self.i + len;
-        let seg = self.d.get(self.i..end).ok_or("protobuf: len exceeds data")?;
-        self.i = end;
-        Ok(seg)
-    }
-
-    fn string(&mut self) -> PbResult<String> {
-        Ok(String::from_utf8_lossy(self.len_delimited()?).into_owned())
-    }
+/// 载荷按 UTF-8 宽松解码（与旧实现的 `from_utf8_lossy` 一致）。
+fn pb_string(payload: &[u8]) -> String {
+    String::from_utf8_lossy(payload).into_owned()
 }
 
 /// 解析 Mihon index.pb → 复用 Tachiyomi 的 RepoIndexEntry 结构。
 fn parse_mihon_pb_index(bytes: &[u8]) -> PbResult<Vec<RepoIndexEntry>> {
     let bytes = decompress_gzip_if_needed(bytes);
-    let mut p = PbReader { d: &bytes, i: 0 };
+    // 顶层只关心 field 101（extensionList），其余字段由 pb_fields 推进游标丢弃。
     let mut out = Vec::new();
-    while p.i < bytes.len() {
-        let (f, wt) = p.key()?;
-        match f {
-            // extensionList（101）
-            101 if wt == 2 => {
-                let list = p.len_delimited()?;
-                let mut lp = PbReader { d: list, i: 0 };
-                while lp.i < list.len() {
-                    let (lf, lwt) = lp.key()?;
-                    if lf == 1 && lwt == 2 {
-                        if let Some(e) = parse_mihon_extension(&mut lp)? {
-                            out.push(e);
-                        }
-                    } else {
-                        lp.skip(lwt)?;
-                    }
+    for field in pb_fields(&bytes) {
+        if let PbField::Bytes { number: 101, value: list } = field? {
+            // 列表元素里 field 1 才是一条 Extension message。
+            for entry in pb_fields(list) {
+                if let PbField::Bytes { number: 1, value: body } = entry?
+                    && let Some(extension) = parse_mihon_extension(body)?
+                {
+                    out.push(extension);
                 }
             }
-            _ => p.skip(wt)?,
         }
     }
     Ok(out)
 }
 
-fn parse_mihon_extension(p: &mut PbReader<'_>) -> PbResult<Option<RepoIndexEntry>> {
-    let body = p.len_delimited()?;
-    let mut b = PbReader { d: body, i: 0 };
+/// 解析一条 Extension message 的主体。
+fn parse_mihon_extension(body: &[u8]) -> PbResult<Option<RepoIndexEntry>> {
     let mut name = String::new();
     let mut pkg = String::new();
     let mut apk_url: Option<String> = None;
@@ -1406,47 +1448,41 @@ fn parse_mihon_extension(p: &mut PbReader<'_>) -> PbResult<Option<RepoIndexEntry
     let mut nsfw = false;
     let mut langs: Vec<String> = Vec::new();
     let mut sources = Vec::new();
-    while b.i < body.len() {
-        let (f, wt) = b.key()?;
-        match f {
-            1 => name = b.string()?,
-            2 => pkg = b.string()?,
-            3 if wt == 2 => {
-                let res = b.len_delimited()?;
-                let mut rp = PbReader { d: res, i: 0 };
-                while rp.i < res.len() {
-                    let (rf, rwt) = rp.key()?;
-                    match (rf, rwt) {
-                        (1, 2) => apk_url = Some(rp.string()?),
-                        (2, 2) => icon_url = Some(rp.string()?),
-                        _ => rp.skip(rwt)?,
+
+    for field in pb_fields(body) {
+        match field? {
+            PbField::Bytes { number: 1, value } => name = pb_string(value),
+            PbField::Bytes { number: 2, value } => pkg = pb_string(value),
+            // Resources：1=apkUrl 2=iconUrl
+            PbField::Bytes { number: 3, value: resources } => {
+                for resource in pb_fields(resources) {
+                    match resource? {
+                        PbField::Bytes { number: 1, value } => apk_url = Some(pb_string(value)),
+                        PbField::Bytes { number: 2, value } => icon_url = Some(pb_string(value)),
+                        _ => {}
                     }
                 }
             }
-            4 => {
-                let _ = b.len_delimited()?; // extensionLib，忽略
-            }
-            5 => version_code = b.varint()? as i64,
-            6 => version_name = b.string()?,
-            7 => nsfw = b.varint()? >= 2, // ContentWarning: MIXED=2 / NSFW=3
-            8 if wt == 2 => {
-                let src = b.len_delimited()?;
-                let mut sp = PbReader { d: src, i: 0 };
+            PbField::Varint { number: 5, value } => version_code = value as i64,
+            PbField::Bytes { number: 6, value } => version_name = pb_string(value),
+            // ContentWarning：MIXED=2 / NSFW=3
+            PbField::Varint { number: 7, value } => nsfw = value >= 2,
+            // Source：1=id 2=name 3=language 4=homeUrl
+            PbField::Bytes { number: 8, value: source } => {
                 let mut sname = String::new();
                 let mut slang = String::new();
                 let mut sid = 0i64;
                 let mut sbase = String::new();
-                while sp.i < src.len() {
-                    let (sf, swt) = sp.key()?;
-                    match sf {
-                        1 => sid = sp.varint()? as i64,
-                        2 => sname = sp.string()?,
-                        3 => {
-                            slang = sp.string()?;
+                for item in pb_fields(source) {
+                    match item? {
+                        PbField::Varint { number: 1, value } => sid = value as i64,
+                        PbField::Bytes { number: 2, value } => sname = pb_string(value),
+                        PbField::Bytes { number: 3, value } => {
+                            slang = pb_string(value);
                             langs.push(slang.clone());
                         }
-                        4 => sbase = sp.string()?,
-                        _ => sp.skip(swt)?,
+                        PbField::Bytes { number: 4, value } => sbase = pb_string(value),
+                        _ => {}
                     }
                 }
                 sources.push(RepoSource {
@@ -1458,19 +1494,19 @@ fn parse_mihon_extension(p: &mut PbReader<'_>) -> PbResult<Option<RepoIndexEntry
                     obsolete: false,
                 });
             }
-            _ => b.skip(wt)?,
+            // 其余字段（4=extensionLib、badge 之类）到这儿已经被 pb_fields 跳过了。
+            _ => {}
         }
     }
+
     if name.is_empty() || pkg.is_empty() {
         return Ok(None);
     }
     // 语言：单源语言用该语言，多语言扩展归为 "all"（对齐 mihon 客户端）
-    let lang = if langs.len() == 1 {
-        langs.remove(0)
-    } else if !langs.is_empty() {
-        "all".to_string()
-    } else {
-        String::new()
+    let lang = match langs.len() {
+        0 => String::new(),
+        1 => langs.remove(0),
+        _ => "all".to_string(),
     };
     Ok(Some(RepoIndexEntry {
         name,

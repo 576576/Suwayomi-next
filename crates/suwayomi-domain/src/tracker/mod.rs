@@ -77,7 +77,7 @@ impl Track {
 
     /// 对应上游 `copyPersonalFrom`：只搬「用户数据」，不搬 `remote_id` /
     /// `library_id`（那两项由调用方按站点返回单独设）。
-    pub fn copy_personal_from(&mut self, other: &Track, copy_remote_private: bool) {
+    pub fn copy_personal_from(&mut self, other: &Self, copy_remote_private: bool) {
         self.last_chapter_read = other.last_chapter_read;
         self.score = other.score;
         self.status = other.status;
@@ -175,7 +175,7 @@ impl TrackSearch {
 
 fn split_list(v: Option<&str>) -> Vec<String> {
     match v {
-        Some(s) if !s.is_empty() => s.split(',').map(|x| x.to_string()).collect(),
+        Some(s) if !s.is_empty() => s.split(',').map(std::string::ToString::to_string).collect(),
         _ => Vec::new(),
     }
 }
@@ -258,7 +258,7 @@ impl TrackerManager {
 
     /// 某个站点的应用凭据（非 OAuth 站点为 `None`）。
     pub fn oauth_app(&self, tracker_id: i32) -> Option<oauth::AppCredentials> {
-        self.oauth.read().unwrap_or_else(|e| e.into_inner()).app(tracker_id).cloned()
+        self.oauth.read().unwrap_or_else(std::sync::PoisonError::into_inner).app(tracker_id).cloned()
     }
 
     /// 改站点应用凭据：立刻生效（下一次登录/刷新就用新值）并落盘（重启后仍在）。
@@ -269,19 +269,22 @@ impl TrackerManager {
             .cloned()
             .ok_or_else(|| DomainError::tracker("该追踪器不使用应用凭据"))?;
         let app = oauth::AppCredentials {
-            client_id: patch.client_id.map_or(builtin.client_id.clone(), |v| filled(v, &builtin.client_id)),
+            client_id: patch.client_id.map_or_else(|| builtin.client_id.clone(), |v| filled(v, &builtin.client_id)),
             client_secret: patch
                 .client_secret
-                .map_or(builtin.client_secret.clone(), |v| filled(v, &builtin.client_secret)),
-            redirect_uri: patch.redirect_uri.map_or(builtin.redirect_uri.clone(), |v| filled(v, &builtin.redirect_uri)),
+                .map_or_else(|| builtin.client_secret.clone(), |v| filled(v, &builtin.client_secret)),
+            redirect_uri: patch
+                .redirect_uri
+                .map_or_else(|| builtin.redirect_uri.clone(), |v| filled(v, &builtin.redirect_uri)),
         };
 
-        let path = self.oauth_config.as_ref().ok_or_else(|| DomainError::tracker("没有可写的 trackers.json 路径"))?;
-        let mut guard = self.oauth.write().unwrap_or_else(|e| e.into_inner());
+        let config_path =
+            self.oauth_config.as_ref().ok_or_else(|| DomainError::tracker("没有可写的 trackers.json 路径"))?;
+        let mut guard = self.oauth.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.set_app(tracker_id, app);
-        oauth::save(path, &guard).map_err(|e| DomainError::tracker(format!("写入 trackers.json 失败：{e}")))?;
+        oauth::save(config_path, &guard).map_err(|e| DomainError::tracker(format!("写入 trackers.json 失败：{e}")))?;
         drop(guard);
-        tracing::info!("tracker oauth app updated: {} ({})", tracker_id, path.display());
+        tracing::info!("tracker oauth app updated: {} ({})", tracker_id, config_path.display());
         Ok(())
     }
 
@@ -365,21 +368,20 @@ impl TrackerManager {
     pub async fn bind(&self, manga_id: i32, tracker_id: i32, remote_id: i64, private: bool) -> Result<i32> {
         let tracker = self.get(tracker_id)?;
 
-        let mut track = match self.track_from_search(tracker_id, remote_id, manga_id).await? {
-            Some(t) => t,
-            None => {
-                let row = suwayomi_db::query_as::<TrackRecordRow>(
-                    "SELECT * FROM track_record WHERE sync_id = ? AND remote_id = ?",
-                )
-                .bind(tracker_id)
-                .bind(remote_id)
-                .fetch_optional(&self.db)
-                .await?
-                .ok_or_else(|| {
-                    DomainError::not_found(format!("track_record(sync_id={tracker_id}, remote_id={remote_id})"))
-                })?;
-                Track::from_row(&row)
-            }
+        let mut track = if let Some(t) = self.track_from_search(tracker_id, remote_id, manga_id).await? {
+            t
+        } else {
+            let row = suwayomi_db::query_as::<TrackRecordRow>(
+                "SELECT * FROM track_record WHERE sync_id = ? AND remote_id = ?",
+            )
+            .bind(tracker_id)
+            .bind(remote_id)
+            .fetch_optional(&self.db)
+            .await?
+            .ok_or_else(|| {
+                DomainError::not_found(format!("track_record(sync_id={tracker_id}, remote_id={remote_id})"))
+            })?;
+            Track::from_row(&row)
         };
         track.manga_id = manga_id;
         track.private = private;
@@ -392,19 +394,12 @@ impl TrackerManager {
         let record_id = self.upsert_track_record(&track).await?;
 
         // 绑定后本地阅读进度比站点新时，立刻推一次；否则要等下一次翻页才同步。
-        let mut last_chapter_read = None;
-        if let Some(n) = chapter_number
-            && n > 0.0
-            && n > track.last_chapter_read
-        {
-            last_chapter_read = Some(n);
-        }
-        let mut start_date = None;
-        if track.started_reading_date <= 0
-            && let Some(oldest) = self.oldest_read_chapter(manga_id).await?
-        {
-            start_date = Some(oldest.last_read_at * 1000);
-        }
+        let last_chapter_read = chapter_number.filter(|n| *n > 0.0 && *n > track.last_chapter_read);
+        let start_date = if track.started_reading_date <= 0 {
+            self.oldest_read_chapter(manga_id).await?.map(|oldest| oldest.last_read_at * 1000)
+        } else {
+            None
+        };
         if last_chapter_read.is_some() || start_date.is_some() {
             self.update(TrackUpdate { record_id, last_chapter_read, start_date, ..Default::default() }).await?;
         }
@@ -427,23 +422,20 @@ impl TrackerManager {
                 .fetch_optional(&self.db)
                 .await?;
 
-        match existing {
+        // 来源记录一律改指目标漫画；id 视目标是否已有该追踪器的记录而定。
+        let mut moved = source_track;
+        moved.manga_id = manga_id;
+
+        if let Some(target_id) = existing {
             // 目标漫画已有该追踪器的记录：把来源记录的内容并进目标行。来源行**不删** ——
             // 客户端迁移流程的 cleanup 步骤会自己调 `unbindTrack` 收拾它，这里先删会让
             // 那次调用打到已不存在的记录上报错。
-            Some(target_id) => {
-                let mut moved = source_track;
-                moved.id = Some(target_id);
-                moved.manga_id = manga_id;
-                self.update_track_record(&moved).await?;
-                Ok(target_id)
-            }
-            None => {
-                let mut moved = source_track;
-                moved.id = None;
-                moved.manga_id = manga_id;
-                self.insert_track_record(&moved).await
-            }
+            moved.id = Some(target_id);
+            self.update_track_record(&moved).await?;
+            Ok(target_id)
+        } else {
+            moved.id = None;
+            self.insert_track_record(&moved).await
         }
     }
 
@@ -502,7 +494,7 @@ impl TrackerManager {
         }
         if let Some(score_string) = input.score_string {
             let list = tracker.score_list().await?;
-            let index = list.iter().position(|s| s == &score_string).map(|i| i as i32).unwrap_or(-1);
+            let index = list.iter().position(|s| s == &score_string).map_or(-1, |i| i as i32);
             track.score = tracker.index_to_score(index).await?;
         }
         if let Some(v) = input.start_date {

@@ -14,8 +14,8 @@ use suwayomi_core::config::{
 use crate::scalars::{DurationScalar, LongString, parse_iso8601_duration};
 
 /// `ServerConfig` 里 jwt 时长的默认值（与 `config::ServerConfig::default` 一致）。
-const DEFAULT_TOKEN_EXPIRY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
-const DEFAULT_REFRESH_EXPIRY: std::time::Duration = std::time::Duration::from_secs(60 * 24 * 3600);
+const DEFAULT_TOKEN_EXPIRY: std::time::Duration = std::time::Duration::from_mins(5);
+const DEFAULT_REFRESH_EXPIRY: std::time::Duration = std::time::Duration::from_hours(1440);
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 pub enum AuthMode {
@@ -540,7 +540,7 @@ impl SettingsType {
 }
 
 fn ov_str(o: &serde_json::Value, k: &str, d: String) -> String {
-    o.get(k).and_then(serde_json::Value::as_str).map(ToOwned::to_owned).unwrap_or(d)
+    o.get(k).and_then(serde_json::Value::as_str).map_or(d, ToOwned::to_owned)
 }
 
 fn ov_bool(o: &serde_json::Value, k: &str, d: bool) -> bool {
@@ -548,7 +548,7 @@ fn ov_bool(o: &serde_json::Value, k: &str, d: bool) -> bool {
 }
 
 fn ov_i32(o: &serde_json::Value, k: &str, d: i32) -> i32 {
-    o.get(k).and_then(serde_json::Value::as_i64).map(|v| v as i32).unwrap_or(d)
+    o.get(k).and_then(serde_json::Value::as_i64).map_or(d, |v| v as i32)
 }
 
 fn ov_f64(o: &serde_json::Value, k: &str, d: f64) -> f64 {
@@ -556,7 +556,7 @@ fn ov_f64(o: &serde_json::Value, k: &str, d: f64) -> f64 {
 }
 
 fn ov_dur(o: &serde_json::Value, k: &str, d: DurationScalar) -> DurationScalar {
-    o.get(k).and_then(serde_json::Value::as_str).and_then(parse_iso8601_duration).map(DurationScalar).unwrap_or(d)
+    o.get(k).and_then(serde_json::Value::as_str).and_then(parse_iso8601_duration).map_or(d, DurationScalar)
 }
 
 fn ov_conflict(o: &serde_json::Value, k: &str, d: KoreaderSyncConflictStrategy) -> KoreaderSyncConflictStrategy {

@@ -109,7 +109,7 @@ impl AuthContext {
             Arc::from(vec![0u8; 32].into_boxed_slice()),
             String::new(),
             Duration::from_secs(300),
-            Duration::from_secs(60 * 60 * 24 * 60),
+            Duration::from_hours(1440),
             false,
         )
     }
@@ -220,7 +220,7 @@ impl AuthContext {
             return false;
         };
         let str_claim = |key: &str| claims.get(key).and_then(|v| v.as_str()).unwrap_or_default();
-        let num_claim = |key: &str| claims.get(key).and_then(|v| v.as_u64()).unwrap_or_default();
+        let num_claim = |key: &str| claims.get(key).and_then(serde_json::Value::as_u64).unwrap_or_default();
         str_claim("sub") == self.username
             && str_claim("typ") == kind
             && (self.jwt_audience.is_empty() || str_claim("aud") == self.jwt_audience)
@@ -268,7 +268,7 @@ impl AuthContext {
 
 /// 会话有效期。上游是 30 分钟的 Javalin session 默认值。
 fn session_ttl() -> Duration {
-    Duration::from_secs(30 * 60)
+    Duration::from_mins(30)
 }
 
 /// 解析时长配置（`SUWAYOMI_JWT_TOKEN_EXPIRY` / 设置里的 `jwtTokenExpiry` 等）。
@@ -284,13 +284,7 @@ pub fn parse_duration(value: &str) -> Option<Duration> {
     if value.is_empty() {
         return None;
     }
-    let (body, date_section) = match value.strip_prefix("PT").or_else(|| value.strip_prefix("pt")) {
-        Some(rest) => (rest, false),
-        None => match value.strip_prefix('P').or_else(|| value.strip_prefix('p')) {
-            Some(rest) => (rest, true),
-            None => (value, false),
-        },
-    };
+    let (body, date_section) = strip_duration_prefix(value);
 
     let mut total = 0.0f64;
     let mut num = String::new();
@@ -304,10 +298,10 @@ pub fn parse_duration(value: &str) -> Option<Duration> {
         num.clear();
         seen_unit = true;
         match c.to_ascii_uppercase() {
-            'D' => total += n * 86400.0,
-            'H' => total += n * 3600.0,
+            'D' => total = n.mul_add(86400.0, total),
+            'H' => total = n.mul_add(3600.0, total),
             // 日期段里的 M 是月（`P1M`），不是分钟
-            'M' if !date_section => total += n * 60.0,
+            'M' if !date_section => total = n.mul_add(60.0, total),
             'S' if !date_section => total += n,
             _ => return None,
         }
@@ -323,6 +317,17 @@ pub fn parse_duration(value: &str) -> Option<Duration> {
     Some(Duration::from_secs_f64(total.max(1.0)))
 }
 
+/// Splits the ISO-8601 duration prefix off `value`, as `(remaining, is_date_section)`.
+///
+/// `PT…` / `pt…` selects the time section, `P…` / `p…` the date section，and an
+/// unprefixed value is treated as a time section。日期段里的 `M` 是月，靠这个
+/// 标志区分（见 `parse_duration`）。
+fn strip_duration_prefix(value: &str) -> (&str, bool) {
+    let time = value.strip_prefix("PT").or_else(|| value.strip_prefix("pt"));
+    let date = value.strip_prefix('P').or_else(|| value.strip_prefix('p'));
+    time.map_or_else(|| date.map_or((value, false), |rest| (rest, true)), |rest| (rest, false))
+}
+
 /// base64url 解出 JSON 对象；任何一步失败都是 `None`（调用方一律视为无效凭据）。
 fn decode_json(part: &str) -> Option<serde_json::Value> {
     let bytes = B64.decode(part).ok()?;
@@ -330,7 +335,7 @@ fn decode_json(part: &str) -> Option<serde_json::Value> {
 }
 
 pub fn unix_secs(t: SystemTime) -> u64 {
-    t.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 pub fn now() -> SystemTime {
@@ -458,7 +463,7 @@ mod tests {
         // 篡改 payload 不通过
         assert!(!c.verify_session_cookie("v1:admin:9999999999.xxx", now));
         // 过期不通过
-        assert!(!c.verify_session_cookie(&cookie, now + Duration::from_secs(31 * 60)));
+        assert!(!c.verify_session_cookie(&cookie, now + Duration::from_mins(31)));
         // 只判断 cookie 名存在的老写法必须失效
         assert!(!c.verify_session_cookie("x", now));
     }
@@ -506,10 +511,10 @@ mod tests {
     #[test]
     fn duration_forms() {
         assert_eq!(parse_duration("5m"), Some(Duration::from_secs(300)));
-        assert_eq!(parse_duration("60d"), Some(Duration::from_secs(60 * 86400)));
+        assert_eq!(parse_duration("60d"), Some(Duration::from_hours(1440)));
         assert_eq!(parse_duration("PT5M"), Some(Duration::from_secs(300)));
-        assert_eq!(parse_duration("P60D"), Some(Duration::from_secs(60 * 86400)));
-        assert_eq!(parse_duration("PT1H30M"), Some(Duration::from_secs(5400)));
+        assert_eq!(parse_duration("P60D"), Some(Duration::from_hours(1440)));
+        assert_eq!(parse_duration("PT1H30M"), Some(Duration::from_mins(90)));
         assert_eq!(parse_duration("300"), Some(Duration::from_secs(300)));
         // 0 会被抬到 1 秒，避免签出立刻就过期的 token
         assert_eq!(parse_duration("PT0S"), Some(Duration::from_secs(1)));

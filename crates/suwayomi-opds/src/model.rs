@@ -3,8 +3,10 @@
 //! Feed/Entry/Link render to Atom XML with the OPDS namespaces declared on
 //! the root `<feed>` element.
 
-use crate::constants::*;
-use crate::xml::XmlWriter;
+use crate::constants::{
+    NS_ATOM, NS_DUBLIN_CORE, NS_OPDS, NS_OPENSEARCH, NS_PSE, NS_THREAD, NS_XML_SCHEMA, NS_XML_SCHEMA_INSTANCE,
+};
+use crate::xml::{Attrs, XmlNode};
 
 #[derive(Debug, Clone, Default)]
 pub struct Link {
@@ -24,6 +26,24 @@ pub struct Link {
 impl Link {
     pub fn new(rel: impl Into<String>, href: impl Into<String>, link_type: impl Into<String>) -> Self {
         Self { rel: rel.into(), href: href.into(), link_type: Some(link_type.into()), ..Default::default() }
+    }
+
+    /// 转成不可变节点。
+    ///
+    /// 可选属性各自是一个 `Option`，用 `extend` 收进属性表——
+    /// 没有一处 `if let Some(..) { attrs.push(..) }`，顺序也一眼可见。
+    pub fn to_node(&self) -> XmlNode {
+        let mut attrs: Attrs = vec![("rel", self.rel.clone()), ("href", self.href.clone())];
+        attrs.extend(self.link_type.as_ref().map(|v| ("type", v.clone())));
+        attrs.extend(self.title.as_ref().map(|v| ("title", v.clone())));
+        attrs.extend(self.facet_group.as_ref().map(|v| ("opds:facetGroup", v.clone())));
+        attrs.extend(self.active_facet.map(|v| ("opds:activeFacet", v.to_string())));
+        attrs.extend(self.thr_count.map(|v| ("thr:count", v.to_string())));
+        attrs.extend(self.length.map(|v| ("length", v.to_string())));
+        attrs.extend(self.pse_count.map(|v| ("pse:count", v.to_string())));
+        attrs.extend(self.pse_last_read.map(|v| ("pse:lastRead", v.to_string())));
+        attrs.extend(self.pse_last_read_date.as_ref().map(|v| ("pse:lastReadDate", v.clone())));
+        XmlNode::void("link", attrs)
     }
 }
 
@@ -68,87 +88,54 @@ pub struct Entry {
     pub issued: Option<String>,
 }
 
-impl Entry {
-    pub fn render(&self, w: &mut XmlWriter) {
-        w.element("entry", &[], |w| {
-            w.leaf("id", &self.id);
-            w.leaf("title", &self.title);
-            if let Some(s) = &self.summary {
-                w.element("summary", &[("type", "text")], |w| w.raw_text(&s.value));
-            }
-            if let Some(c) = &self.content {
-                w.element("content", &[("type", "text")], |w| w.raw_text(&c.value));
-            }
-            for a in &self.authors {
-                w.element("author", &[], |w| {
-                    w.leaf("name", &a.name);
-                    if let Some(u) = &a.uri {
-                        w.leaf("uri", u);
-                    }
-                });
-            }
-            for c in &self.categories {
-                let mut attrs: Vec<(&str, String)> = vec![("term", c.term.clone()), ("label", c.label.clone())];
-                if let Some(s) = &c.scheme {
-                    attrs.push(("scheme", s.clone()));
-                }
-                let attrs_ref: Vec<(&str, &str)> = attrs.iter().map(|(k, v)| (*k, v.as_str())).collect();
-                w.void("category", &attrs_ref);
-            }
-            for l in &self.links {
-                render_link(w, l);
-            }
-            w.leaf("updated", &self.updated);
-            if let Some(v) = &self.extent {
-                w.leaf("dc:extent", v);
-            }
-            if let Some(v) = &self.format {
-                w.leaf("dc:format", v);
-            }
-            if let Some(v) = &self.language {
-                w.leaf("dc:language", v);
-            }
-            if let Some(v) = &self.publisher {
-                w.leaf("dc:publisher", v);
-            }
-            if let Some(v) = &self.issued {
-                w.leaf("dc:issued", v);
-            }
-        });
+impl Author {
+    pub fn to_node(&self) -> XmlNode {
+        let mut children = vec![XmlNode::leaf("name", &self.name)];
+        children.extend(self.uri.as_ref().map(|uri| XmlNode::leaf("uri", uri)));
+        XmlNode::element("author", Vec::new(), children)
     }
 }
 
-fn render_link(w: &mut XmlWriter, l: &Link) {
-    let mut attrs: Vec<(&str, String)> = vec![("rel", l.rel.clone()), ("href", l.href.clone())];
-    if let Some(t) = &l.link_type {
-        attrs.push(("type", t.clone()));
+impl Category {
+    pub fn to_node(&self) -> XmlNode {
+        let mut attrs: Attrs = vec![("term", self.term.clone()), ("label", self.label.clone())];
+        attrs.extend(self.scheme.as_ref().map(|s| ("scheme", s.clone())));
+        XmlNode::void("category", attrs)
     }
-    if let Some(t) = &l.title {
-        attrs.push(("title", t.clone()));
+}
+
+impl Entry {
+    /// 转成不可变节点。子节点顺序与 Atom/OPDS 期望的一致，全部由 `extend` 拼装。
+    pub fn to_node(&self) -> XmlNode {
+        let mut children = vec![XmlNode::leaf("id", &self.id), XmlNode::leaf("title", &self.title)];
+        children.extend(
+            self.summary.as_ref().map(|s| {
+                XmlNode::element("summary", vec![("type", "text".to_string())], vec![XmlNode::text(&s.value)])
+            }),
+        );
+        children.extend(
+            self.content.as_ref().map(|c| {
+                XmlNode::element("content", vec![("type", "text".to_string())], vec![XmlNode::text(&c.value)])
+            }),
+        );
+        children.extend(self.authors.iter().map(Author::to_node));
+        children.extend(self.categories.iter().map(Category::to_node));
+        children.extend(self.links.iter().map(Link::to_node));
+        children.push(XmlNode::leaf("updated", &self.updated));
+        // Dublin Core 五个字段是一张「名字 → 可选值」的表，`filter_map` 一次收齐。
+        children.extend(
+            [
+                ("dc:extent", self.extent.as_deref()),
+                ("dc:format", self.format.as_deref()),
+                ("dc:language", self.language.as_deref()),
+                ("dc:publisher", self.publisher.as_deref()),
+                ("dc:issued", self.issued.as_deref()),
+            ]
+            .into_iter()
+            .filter_map(|(name, value)| value.map(|v| XmlNode::leaf(name, v))),
+        );
+        XmlNode::element("entry", Vec::new(), children)
     }
-    if let Some(g) = &l.facet_group {
-        attrs.push(("opds:facetGroup", g.clone()));
-    }
-    if let Some(a) = l.active_facet {
-        attrs.push(("opds:activeFacet", a.to_string()));
-    }
-    if let Some(c) = l.thr_count {
-        attrs.push(("thr:count", c.to_string()));
-    }
-    if let Some(n) = l.length {
-        attrs.push(("length", n.to_string()));
-    }
-    if let Some(c) = l.pse_count {
-        attrs.push(("pse:count", c.to_string()));
-    }
-    if let Some(r) = l.pse_last_read {
-        attrs.push(("pse:lastRead", r.to_string()));
-    }
-    if let Some(d) = &l.pse_last_read_date {
-        attrs.push(("pse:lastReadDate", d.clone()));
-    }
-    let attrs_ref: Vec<(&str, &str)> = attrs.iter().map(|(k, v)| (*k, v.as_str())).collect();
-    w.void("link", &attrs_ref);
 }
 
 /// Feed document (root `<feed>` in the Atom namespace with OPDS namespaces).
@@ -166,51 +153,41 @@ pub struct Feed {
 }
 
 impl Feed {
-    pub fn render(&self) -> String {
-        let mut w = XmlWriter::new();
-        w.declaration();
-        w.element(
-            "feed",
-            &[
-                ("xmlns", NS_ATOM),
-                ("xmlns:xsd", NS_XML_SCHEMA),
-                ("xmlns:xsi", NS_XML_SCHEMA_INSTANCE),
-                ("xmlns:opds", NS_OPDS),
-                ("xmlns:dc", NS_DUBLIN_CORE),
-                ("xmlns:pse", NS_PSE),
-                ("xmlns:opensearch", NS_OPENSEARCH),
-                ("xmlns:thr", NS_THREAD),
-            ],
-            |w| {
-                w.leaf("id", &self.id);
-                w.leaf("title", &self.title);
-                if let Some(icon) = &self.icon {
-                    w.leaf("icon", icon);
-                }
-                w.leaf("updated", &self.updated);
-                w.element("author", &[], |w| {
-                    w.leaf("name", &self.author.name);
-                    if let Some(u) = &self.author.uri {
-                        w.leaf("uri", u);
-                    }
-                });
-                for l in &self.links {
-                    render_link(w, l);
-                }
-                if let Some(t) = self.total_results {
-                    w.leaf("opensearch:totalResults", &t.to_string());
-                }
-                if let Some(p) = self.items_per_page {
-                    w.leaf("opensearch:itemsPerPage", &p.to_string());
-                }
-                if let Some(s) = self.start_index {
-                    w.leaf("opensearch:startIndex", &s.to_string());
-                }
-                for e in &self.entries {
-                    e.render(w);
-                }
-            },
+    /// 转成不可变节点：命名空间在根元素上一次声明。
+    pub fn to_node(&self) -> XmlNode {
+        let namespaces: Attrs = [
+            ("xmlns", NS_ATOM),
+            ("xmlns:xsd", NS_XML_SCHEMA),
+            ("xmlns:xsi", NS_XML_SCHEMA_INSTANCE),
+            ("xmlns:opds", NS_OPDS),
+            ("xmlns:dc", NS_DUBLIN_CORE),
+            ("xmlns:pse", NS_PSE),
+            ("xmlns:opensearch", NS_OPENSEARCH),
+            ("xmlns:thr", NS_THREAD),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key, value.to_string()))
+        .collect();
+
+        let mut children = vec![XmlNode::leaf("id", &self.id), XmlNode::leaf("title", &self.title)];
+        children.extend(self.icon.as_ref().map(|icon| XmlNode::leaf("icon", icon)));
+        children.push(XmlNode::leaf("updated", &self.updated));
+        children.push(self.author.to_node());
+        children.extend(self.links.iter().map(Link::to_node));
+        children.extend(
+            [
+                ("opensearch:totalResults", self.total_results.map(|v| v.to_string())),
+                ("opensearch:itemsPerPage", self.items_per_page.map(|v| v.to_string())),
+                ("opensearch:startIndex", self.start_index.map(|v| v.to_string())),
+            ]
+            .into_iter()
+            .filter_map(|(name, value)| value.map(|v| XmlNode::leaf(name, &v))),
         );
-        w.finish()
+        children.extend(self.entries.iter().map(Entry::to_node));
+        XmlNode::element("feed", namespaces, children)
+    }
+
+    pub fn render(&self) -> String {
+        self.to_node().render_document()
     }
 }

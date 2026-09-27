@@ -243,14 +243,16 @@ async fn series_chapters_feed(
     let page = q.page_number.unwrap_or(1).max(1);
     let sort = q.sort.as_deref().unwrap_or("number_asc");
     let filter = q.filter.as_deref().unwrap_or("all");
-    match feeds::series_chapters_feed(&ctx(&state, lang), series_id, page, sort, filter).await {
-        Ok(body) => xml(body),
-        Err(_) => (
-            StatusCode::NOT_FOUND,
-            feeds::not_found_feed(&ctx(&state, lang), &format!("series/{series_id}/chapters"), "Manga not found"),
-        )
-            .into_response(),
-    }
+    feeds::series_chapters_feed(&ctx(&state, lang), series_id, page, sort, filter).await.map_or_else(
+        |_| {
+            (
+                StatusCode::NOT_FOUND,
+                feeds::not_found_feed(&ctx(&state, lang), &format!("series/{series_id}/chapters"), "Manga not found"),
+            )
+                .into_response()
+        },
+        xml,
+    )
 }
 
 async fn chapter_metadata_feed(
@@ -259,16 +261,18 @@ async fn chapter_metadata_feed(
     Query(q): Query<LangQuery>,
 ) -> Response {
     let lang = q.lang.as_deref().unwrap_or("en");
-    match feeds::chapter_metadata_feed(&ctx(&state, lang), series_id, chapter_index).await {
-        Ok(body) => xml(body),
-        Err(_) => (
-            StatusCode::NOT_FOUND,
-            feeds::not_found_feed(
-                &ctx(&state, lang),
-                &format!("series/{series_id}/chapter/{chapter_index}/metadata"),
-                "Chapter not found",
-            ),
-        )
-            .into_response(),
-    }
+    feeds::chapter_metadata_feed(&ctx(&state, lang), series_id, chapter_index).await.map_or_else(
+        |_| {
+            (
+                StatusCode::NOT_FOUND,
+                feeds::not_found_feed(
+                    &ctx(&state, lang),
+                    &format!("series/{series_id}/chapter/{chapter_index}/metadata"),
+                    "Chapter not found",
+                ),
+            )
+                .into_response()
+        },
+        xml,
+    )
 }

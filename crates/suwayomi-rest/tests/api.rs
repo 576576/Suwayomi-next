@@ -2,7 +2,14 @@
 //! Requires `DATABASE_URL`; skipped when absent.
 
 // 集成测试里 panic 就是断言失败的表达方式，不需要改成错误传播。
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::todo,
+    clippy::indexing_slicing
+)]
 
 use std::sync::Arc;
 
@@ -12,13 +19,12 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use suwayomi_core::config::ServerConfig;
 use suwayomi_core::db::Db;
-use suwayomi_domain::source::StubFetcher;
 use suwayomi_rest::AppState;
 use suwayomi_rest::routes::api_v1_router;
 use tower::ServiceExt;
 
-/// Serialises the tests in this binary: they all talk to the same database and
-/// every `setup()` truncates the tables the others are working on.
+/// Serialises the database-backed tests — in this binary *and* in the other
+/// test binaries running alongside it. See `suwayomi_db::test_support`.
 async fn lock() -> suwayomi_db::test_support::DbLock {
     suwayomi_db::test_support::db_lock().await
 }
@@ -27,29 +33,9 @@ async fn setup() -> Option<(Router, suwayomi_db::Db)> {
     let url = std::env::var("DATABASE_URL").or_else(|_| std::env::var("SUWAYOMI_TEST_DB")).ok()?;
     let db = Db::postgres(&url).await.expect("connect postgres");
     db.migrate().await.expect("migrate");
-    for t in [
-        "track_search",
-        "track_record",
-        "extension_store",
-        "global_meta",
-        "source_meta",
-        "manga_meta",
-        "chapter_meta",
-        "category_meta",
-        "category_manga",
-        "page",
-        "chapter",
-        "manga",
-        "category",
-        "source",
-        "extension",
-    ] {
-        let _ = suwayomi_db::query(&format!("TRUNCATE TABLE suwayomi.{t} RESTART IDENTITY CASCADE"))
-            .execute(db.pool())
-            .await;
-    }
+    suwayomi_db::test_support::reset_business_tables(&db).await;
     let pool = db.pool().clone();
-    let fetcher: Arc<dyn suwayomi_domain::source::SourceFetcher> = Arc::new(StubFetcher);
+    let fetcher = suwayomi_domain::source::SourceBackend::Stub;
     let update = suwayomi_domain::updater::UpdateManager::new(db.clone(), fetcher.clone());
     let tracker = suwayomi_domain::tracker::TrackerManager::new(db.clone());
     let state = AppState::new(
@@ -61,7 +47,10 @@ async fn setup() -> Option<(Router, suwayomi_db::Db)> {
         tracker,
         None,
         std::path::PathBuf::new(),
-        std::env::temp_dir(),
+        {
+            let tmp = std::env::temp_dir();
+            suwayomi_core::config::AppPaths::new(tmp.clone(), tmp.join("cache"))
+        },
     );
     Some((api_v1_router().with_state(state), pool))
 }
@@ -102,8 +91,7 @@ async fn category_crud_via_http() {
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     let arr = v.as_array().unwrap();
     assert_eq!(arr.len(), 2, "two categories created: {body}");
-    let names: Vec<&str> = arr.iter().map(|c| c["name"].as_str().unwrap()).collect();
-    assert!(names.contains(&"Action"));
+    assert!(arr.iter().any(|c| c["name"].as_str() == Some("Action")));
 
     // modify category name
     let (status, _) = send(&app, req("PATCH", "/category/1", Some(r#"{"name":"Action2"}"#))).await;

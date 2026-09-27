@@ -8,7 +8,17 @@
 // 测试代码允许 panic：unwrap / expect / panic! 在断言里是常规写法，
 // 逐个改成 `?` 传播只会让失败信息更难读。生产代码不受这条影响
 // （`cfg_attr(test, ...)`）。
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::indexing_slicing
+    )
+)]
 // release 无控制台窗口（隐藏启动在真实系统上可能被安全软件拦截）；日志由父进程重定向
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -59,19 +69,18 @@ async fn main() -> anyhow::Result<()> {
     // 其次本地 ext-runtime.jar（见 resolve_sandbox_jar 的发布布局），都没有则不接扩展。
     let sandbox = match std::env::var("SUWAYOMI_SANDBOX_URL") {
         Ok(url) if !url.trim().is_empty() => SandboxMode::External { base_url: url },
-        _ => match resolve_sandbox_jar() {
-            Some(jar) => SandboxMode::Spawn {
-                // 默认 8091：避开 Windows Hyper-V 动态保留区 4501-4900
-                port: std::env::var("SUWAYOMI_SANDBOX_PORT").unwrap_or_else(|_| "8091".into()),
-                jar,
-            },
-            None => SandboxMode::Disabled,
-        },
+        _ => resolve_sandbox_jar().map_or(SandboxMode::Disabled, |jar| SandboxMode::Spawn {
+            // 默认 8091：避开 Windows Hyper-V 动态保留区 4501-4900
+            port: std::env::var("SUWAYOMI_SANDBOX_PORT").unwrap_or_else(|_| "8091".into()),
+            jar,
+        }),
     };
 
     let options = ServerOptions {
         config: config_from_env(),
         data_dir: resolve_data_dir(),
+        // `None` → SUWAYOMI_CACHE_DIR / 发布布局推导（桌面有环境变量可用）
+        cache_dir: None,
         webui_dir: resolve_webui_dir(),
         // `None` → DbSettings::from_env()（SUWAYOMI_DB_BACKEND / SUWAYOMI_DATABASE_URL /
         // SUWAYOMI_SQLITE_PATH）；Android 宿主显式传 SQLite 路径（App 里没有 env）

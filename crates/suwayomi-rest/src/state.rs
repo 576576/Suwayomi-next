@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use suwayomi_core::auth::AuthContext;
-use suwayomi_core::config::RuntimeConfig;
+use suwayomi_core::config::{AppPaths, RuntimeConfig};
 use suwayomi_core::db::Db;
 use suwayomi_domain::category::CategoryService;
 use suwayomi_domain::category::category_manga::CategoryMangaService;
@@ -14,7 +14,7 @@ use suwayomi_domain::manga::MangaService;
 use suwayomi_domain::manga::library::LibraryService;
 use suwayomi_domain::manga::manga_list::MangaListService;
 use suwayomi_domain::page::PageService;
-use suwayomi_domain::source::SourceFetcher;
+use suwayomi_domain::source::SourceBackend;
 use suwayomi_domain::tracker::TrackerManager;
 use suwayomi_domain::updater::UpdateManager;
 
@@ -27,7 +27,7 @@ pub struct AppState {
     /// 认证参数（模式、凭据、会话/JWT 密钥），启动时解析一次后只读。
     pub auth: Arc<AuthContext>,
     /// Extension source fetcher (stub until the JVM sandbox loads real extensions).
-    pub fetcher: Arc<dyn SourceFetcher>,
+    pub fetcher: SourceBackend,
     pub manga: MangaService,
     pub chapter: ChapterService,
     pub category: CategoryService,
@@ -48,6 +48,8 @@ pub struct AppState {
     pub sandbox_base: Option<String>,
     /// Bundled WebUI static directory (SPA hosting; empty = disabled).
     pub webui_dir: std::path::PathBuf,
+    /// 进程内各根目录（数据 / 缓存 / 下载 / 本地图源），与 GraphQL 侧共享同一句柄。
+    pub paths: AppPaths,
 }
 
 impl AppState {
@@ -56,12 +58,12 @@ impl AppState {
         db: Db,
         config: impl Into<RuntimeConfig>,
         auth: Arc<AuthContext>,
-        fetcher: Arc<dyn SourceFetcher>,
+        fetcher: SourceBackend,
         update: UpdateManager,
         tracker: TrackerManager,
         sandbox_base: Option<String>,
         webui_dir: std::path::PathBuf,
-        data_dir: std::path::PathBuf,
+        paths: AppPaths,
     ) -> Self {
         let manga = MangaService::new(db.clone(), fetcher.clone());
         let chapter = ChapterService::new(db.clone(), fetcher.clone()).with_tracker(tracker.clone());
@@ -70,8 +72,8 @@ impl AppState {
         let library = LibraryService::new(db.clone(), manga.clone());
         let manga_list = MangaListService::new(db.clone(), fetcher.clone());
         let page = PageService::new(db.clone());
-        let download = DownloadManager::new(db.clone(), fetcher.clone(), data_dir);
-        let extension_store = ExtensionStoreService::new(db.clone(), sandbox_base.clone());
+        let download = DownloadManager::new(db.clone(), fetcher.clone(), paths.clone());
+        let extension_store = ExtensionStoreService::new(db.clone(), sandbox_base.clone(), paths.cache());
         Self {
             db,
             config: config.into(),
@@ -90,6 +92,7 @@ impl AppState {
             extension_store,
             sandbox_base,
             webui_dir,
+            paths,
         }
     }
 }

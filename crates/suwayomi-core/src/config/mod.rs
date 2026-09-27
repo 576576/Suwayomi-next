@@ -5,29 +5,33 @@
 
 use serde::{Deserialize, Serialize};
 
-/// 缓存根的显式覆盖（进程级，只认第一次设置）。
-static CACHE_ROOT_OVERRIDE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+mod paths;
 
-/// 钉住缓存根，供没有环境变量可用的宿主（Android）调用。
-pub fn set_cache_root(dir: std::path::PathBuf) {
-    let _ = CACHE_ROOT_OVERRIDE.set(dir);
-}
+/// 进程内各根目录的显式句柄（数据 / 缓存 / 下载 / 本地图源）。
+///
+/// 取代原先的三处进程级单例：路径在启动时解析一次，之后经构造参数注入到
+/// `GraphQLState` / `AppState` / `DownloadManager` / `ExtensionStoreService`，
+/// 不再有 `set_*_root()` 这种隐式全局写入口。
+pub use paths::AppPaths;
 
-/// 统一缓存根：显式覆盖 > `SUWAYOMI_CACHE_DIR` > `<发布根>/cache` > `./cache`。
-/// 内分子目录（extensions/icons、extensions/index、trackers 等）。发布布局
+/// `SUWAYOMI_CACHE_DIR` 环境变量名（缓存根的第二优先级来源）。
+pub const CACHE_DIR_ENV: &str = "SUWAYOMI_CACHE_DIR";
+
+/// 缓存根的默认解析：`SUWAYOMI_CACHE_DIR` > `<发布根>/cache` > `./cache`。
+/// 内分子目录（extensions/icons、extensions/index、thumbnails 等）。发布布局
 /// bin/suwayomi-server.exe 时根 = exe 的上级；否则退回当前工作目录。
-pub fn cache_root() -> std::path::PathBuf {
-    if let Some(dir) = CACHE_ROOT_OVERRIDE.get() {
-        return dir.clone();
-    }
-    if let Ok(dir) = std::env::var("SUWAYOMI_CACHE_DIR")
+///
+/// 最终值由调用方装进 [`AppPaths::new`] 后注入 —— Android 宿主没有环境变量，
+/// 走 [`crate::config::AppPaths`] 时直接把 `<data>/cache` 传进来即可。
+pub fn default_cache_root() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var(CACHE_DIR_ENV)
         && !dir.is_empty()
     {
         return std::path::PathBuf::from(dir);
     }
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
-        && dir.file_name().map(|n| n == "bin").unwrap_or(false)
+        && dir.file_name().is_some_and(|n| n == "bin")
         && let Some(base) = dir.parent()
     {
         return base.join("cache");
@@ -48,7 +52,7 @@ pub fn app_root() -> std::path::PathBuf {
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {
-        if dir.file_name().map(|n| n == "bin").unwrap_or(false)
+        if dir.file_name().is_some_and(|n| n == "bin")
             && let Some(base) = dir.parent()
         {
             return base.to_path_buf();
@@ -232,13 +236,13 @@ impl ServerConfig {
             blob.get(key).and_then(|v| v.as_str()).map(str::to_string)
         }
         fn flag(blob: &serde_json::Value, key: &str) -> Option<bool> {
-            blob.get(key).and_then(|v| v.as_bool())
+            blob.get(key).and_then(serde_json::Value::as_bool)
         }
 
         if let Some(v) = text(blob, "ip") {
             self.ip = v;
         }
-        if let Some(v) = blob.get("port").and_then(|v| v.as_i64()) {
+        if let Some(v) = blob.get("port").and_then(serde_json::Value::as_i64) {
             self.port = v as i32;
         }
         if let Some(v) = text(blob, "databaseType") {
@@ -295,7 +299,7 @@ impl ServerConfig {
         if let Some(v) = text(blob, "koreaderSyncStrategyBackward") {
             self.koreader_sync_strategy_backward = conflict_strategy(&v, self.koreader_sync_strategy_backward);
         }
-        if let Some(v) = blob.get("koreaderSyncPercentageTolerance").and_then(|v| v.as_f64()) {
+        if let Some(v) = blob.get("koreaderSyncPercentageTolerance").and_then(serde_json::Value::as_f64) {
             self.koreader_sync_percentage_tolerance = v as f32;
         }
         if let Some(v) = flag(blob, "syncYomiEnabled") {

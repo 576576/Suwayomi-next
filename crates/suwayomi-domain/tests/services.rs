@@ -6,10 +6,16 @@
 //! skipped when absent.
 
 // 集成测试里 panic 就是断言失败的表达方式，不需要改成错误传播。
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::todo,
+    clippy::indexing_slicing
+)]
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use suwayomi_core::db::Db;
 use suwayomi_core::models::{IncludeOrExclude, MangaStatus, PaginatedList, UpdateStrategy};
@@ -20,30 +26,11 @@ use suwayomi_domain::chapter::ChapterService;
 use suwayomi_domain::manga::MangaService;
 use suwayomi_domain::manga::library::LibraryService;
 use suwayomi_domain::manga::manga_list::MangaListService;
-use suwayomi_domain::source::StubFetcher;
-
-const BUSINESS_TABLES: &[&str] = &[
-    "track_search",
-    "track_record",
-    "extension_store",
-    "global_meta",
-    "source_meta",
-    "manga_meta",
-    "chapter_meta",
-    "category_meta",
-    "category_manga",
-    "page",
-    "chapter",
-    "manga",
-    "category",
-    "source",
-    "extension",
-];
 
 type Services = (Db, MangaService, ChapterService, CategoryService, CategoryMangaService, LibraryService);
 
-/// Serialises the tests in this binary: they all talk to the same database and
-/// every `setup()` truncates the tables the others are working on.
+/// Serialises the database-backed tests — in this binary *and* in the other
+/// test binaries running alongside it. See `suwayomi_db::test_support`.
 async fn lock() -> suwayomi_db::test_support::DbLock {
     suwayomi_db::test_support::db_lock().await
 }
@@ -52,13 +39,9 @@ async fn setup() -> Option<Services> {
     let url = std::env::var("DATABASE_URL").or_else(|_| std::env::var("SUWAYOMI_TEST_DB")).ok()?;
     let db = Db::postgres(&url).await.expect("connect postgres");
     db.migrate().await.expect("migrate");
-    let pool = db.pool();
-    for t in BUSINESS_TABLES {
-        let _ =
-            suwayomi_db::query(&format!("TRUNCATE TABLE suwayomi.{t} RESTART IDENTITY CASCADE")).execute(pool).await;
-    }
+    suwayomi_db::test_support::reset_business_tables(&db).await;
 
-    let fetcher: Arc<dyn suwayomi_domain::source::SourceFetcher> = Arc::new(StubFetcher);
+    let fetcher = suwayomi_domain::source::SourceBackend::Stub;
     let manga = MangaService::new(db.clone(), fetcher.clone());
     let chapter = ChapterService::new(db.clone(), fetcher.clone());
     let category = CategoryService::new(db.clone());
@@ -121,7 +104,7 @@ async fn manga_meta_upsert_matches_kotlin() {
 
     let map = manga.get_meta_map(id).await.unwrap();
     assert_eq!(map.len(), 1, "Manga meta should have one member");
-    assert_eq!(map.get("test").map(|s| s.as_str()), Some("value"));
+    assert_eq!(map.get("test").map(std::string::String::as_str), Some("value"));
 
     // update existing key
     let mut m = HashMap::new();
@@ -129,7 +112,7 @@ async fn manga_meta_upsert_matches_kotlin() {
     manga.modify_metas(&m).await.unwrap();
     let map = manga.get_meta_map(id).await.unwrap();
     assert_eq!(map.len(), 1);
-    assert_eq!(map.get("test").map(|s| s.as_str()), Some("v2"));
+    assert_eq!(map.get("test").map(std::string::String::as_str), Some("v2"));
 }
 
 #[tokio::test]
@@ -347,7 +330,7 @@ async fn manga_list_insert_or_update_dedupes_and_updates() {
         eprintln!("skipped: DATABASE_URL not set");
         return;
     };
-    let fetcher: Arc<dyn suwayomi_domain::source::SourceFetcher> = Arc::new(StubFetcher);
+    let fetcher = suwayomi_domain::source::SourceBackend::Stub;
     let list_svc = MangaListService::new(db.clone(), fetcher);
 
     let s = |url: &str, title: &str| SManga {

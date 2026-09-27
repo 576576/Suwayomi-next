@@ -17,7 +17,13 @@ members = [
 #   阶段 1（本次）——先 warn，把门禁立起来，CI 跑 `-D warnings` 卡住存量；
 #   阶段 2（本次）——生产代码里的 unwrap/expect/panic 逐个清零，只留测试里的例外
 #                    （测试允许 panic，见各 crate 根部的 `#![cfg_attr(test, allow(...))]`）。
-# `indexing_slicing`（209 处）属于阶段 3「控制流函数式化」，暂不开启。
+#   阶段 3（本次）——控制流函数式化。下面这组 lint 是这一阶段的实际交付：每一条都
+#                    已经全 workspace 归零，所以可以直接进 CI 的 `-D warnings`。
+#                    仍旧没开的（属于后续 P2 盘子，不属于"控制流"）：
+#                    `cast_possible_truncation`/`cast_possible_wrap`/`cast_sign_loss`、
+#                    `cast_precision_loss`、`doc_markdown`、`must_use_candidate`、
+#                    `missing_errors_doc`、`unused_async`/`unused_async_trait_impl`、
+#                    `too_many_lines` —— 数量与处置见 docs/migration/RUST_STYLE_AUDIT.md §7。
 [workspace.lints.rust]
 unsafe_code = "warn"
 rust_2018_idioms = "warn"
@@ -29,10 +35,39 @@ expect_used = "warn"
 panic = "warn"
 unreachable = "warn"
 todo = "warn"
-# 未检查的数值转换（`cast_possible_truncation` / `cast_possible_wrap` / `cast_sign_loss`
-# 合计 182 处）留在阶段 3 —— 每一处都要判断真实取值范围，属于语义改动，不是机械替换。
 # 异步正确性：持锁跨 await 是死锁温床
 await_holding_lock = "warn"
+
+# ---- 阶段 3：控制流函数式化（全部已归零）----
+# P1-2 索引循环与下标访问：越界 panic 的根源，改用 `.get()` / 迭代器 / 切片。
+indexing_slicing = "warn"
+# P1-1 本可用组合子却写了 match / if-let。
+manual_let_else = "warn"
+map_unwrap_or = "warn"
+option_if_let_else = "warn"
+# 其余控制流形状：冗余 continue / 赋值式 if / 分支重复 / 单臂 match 等。
+needless_continue = "warn"
+useless_let_if_seq = "warn"
+match_same_arms = "warn"
+single_match_else = "warn"
+branches_sharing_code = "warn"
+if_same_then_else = "warn"
+# 累积器与容器用法：`.drain(..)` 只为消费、多余的 collect、
+# 只做 map 的单参函数。
+iter_with_drain = "warn"
+needless_collect = "warn"
+single_option_map = "warn"
+unnecessary_wraps = "warn"
+# 表达式化细节。
+semicolon_if_nothing_returned = "warn"
+items_after_statements = "warn"
+ignored_unit_patterns = "warn"
+# 命名与签名整洁度：能省掉的 `&self`、能省的闭包、能省的显式生命周期、`Self`。
+unused_self = "warn"
+redundant_closure_for_method_calls = "warn"
+elidable_lifetime_names = "warn"
+use_self = "warn"
+similar_names = "warn"
 
 [workspace.package]
 version = "0.1.0"

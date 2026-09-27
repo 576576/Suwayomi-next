@@ -10,7 +10,14 @@
 //! `is_installed` 必须回写为未安装，但本地 APK 文件仍在的桌面行不能被误清。
 
 // 集成测试里 panic 就是断言失败的表达方式，不需要改成错误传播。
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::todo,
+    clippy::indexing_slicing
+)]
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -22,7 +29,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 const PKG: &str = "eu.kanade.tachiyomi.extension.all.nhentaicom";
-const SOURCE_ID: i64 = 5591830863732393712;
+const SOURCE_ID: i64 = 5_591_830_863_732_393_712;
 
 const EXT_JSON: &str = r#"[{"pkgName":"eu.kanade.tachiyomi.extension.all.nhentaicom","name":"nhentai.com","lang":"all","versionName":"1.4.10","className":"keiyoushi.source.Generated","versionCode":14,"contentWarning":1,"sources":[{"id":5591830863732393712,"name":"nhentai.com","lang":"en"}]}]"#;
 const SRC_JSON: &str = r#"[{"id":5591830863732393712,"name":"nhentai.com","lang":"en","extension":1}]"#;
@@ -87,7 +94,7 @@ fn tmp_root() -> PathBuf {
 fn service_in(tmp: &Path, db: Db, base: String) -> ExtensionStoreService {
     let extensions = tmp.join("extensions");
     std::fs::create_dir_all(&extensions).expect("create extensions dir");
-    ExtensionStoreService::with_cache_dir(db, Some(base), extensions, tmp.join("bin/extensions"), tmp.join("cache"))
+    ExtensionStoreService::with_dirs(db, Some(base), extensions, tmp.join("bin/extensions"), tmp.join("cache"))
 }
 
 /// 建表 —— 走与生产一致的迁移，顺带保证 SQL 在 SQLite 方言下可用。

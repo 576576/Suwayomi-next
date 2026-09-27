@@ -68,10 +68,10 @@ impl MangaUpdates {
         )
         .map_err(|e| DomainError::tracker(format!("MangaUpdates 列表项无法解析：{e}")))?;
 
-        let rating = match self.request(reqwest::Method::GET, &format!("/v1/series/{remote_id}/rating"), None).await {
-            Ok(value) => serde_json::from_value::<MuRating>(value).ok().and_then(|r| r.rating),
-            Err(_) => None,
-        };
+        let rating = self
+            .request(reqwest::Method::GET, &format!("/v1/series/{remote_id}/rating"), None)
+            .await
+            .map_or(None, |value| serde_json::from_value::<MuRating>(value).ok().and_then(|r| r.rating));
         Ok((item, rating))
     }
 
@@ -101,11 +101,11 @@ impl MangaUpdates {
             return Ok(());
         }
         let path = format!("/v1/series/{}/rating", track.remote_id);
-        if track.score != 0.0 {
+        if track.score == 0.0 {
+            self.request(reqwest::Method::DELETE, &path, None).await?;
+        } else {
             let body = json!({ "rating": track.score });
             self.request(reqwest::Method::PUT, &path, Some(body)).await?;
-        } else {
-            self.request(reqwest::Method::DELETE, &path, None).await?;
         }
         Ok(())
     }
@@ -193,18 +193,15 @@ impl TrackerService for MangaUpdates {
     }
 
     async fn bind(&self, track: &mut Track, has_read_chapters: bool) -> Result<()> {
-        match self.get_series_list_item(track.remote_id).await {
-            Ok((item, rating)) => {
-                track.status = item.list_id.unwrap_or(READING_LIST);
-                track.last_chapter_read = item.status.and_then(|s| s.chapter).map(|c| c as f64).unwrap_or(0.0);
-                track.score = rating.unwrap_or(0.0);
-                Ok(())
-            }
-            Err(_) => {
-                // 站点上没有这条 series，或用户列表里还没有：新建。
-                track.score = 0.0;
-                self.add_series_to_list(track, has_read_chapters).await
-            }
+        if let Ok((item, rating)) = self.get_series_list_item(track.remote_id).await {
+            track.status = item.list_id.unwrap_or(READING_LIST);
+            track.last_chapter_read = item.status.and_then(|s| s.chapter).map_or(0.0, |c| c as f64);
+            track.score = rating.unwrap_or(0.0);
+            Ok(())
+        } else {
+            // 站点上没有这条 series，或用户列表里还没有：新建。
+            track.score = 0.0;
+            self.add_series_to_list(track, has_read_chapters).await
         }
     }
 
@@ -218,7 +215,7 @@ impl TrackerService for MangaUpdates {
     async fn refresh(&self, track: &mut Track) -> Result<()> {
         let (item, rating) = self.get_series_list_item(track.remote_id).await?;
         track.status = item.list_id.unwrap_or(READING_LIST);
-        track.last_chapter_read = item.status.and_then(|s| s.chapter).map(|c| c as f64).unwrap_or(0.0);
+        track.last_chapter_read = item.status.and_then(|s| s.chapter).map_or(0.0, |c| c as f64);
         track.score = rating.unwrap_or(0.0);
         Ok(())
     }

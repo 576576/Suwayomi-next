@@ -2,7 +2,6 @@
 //! (DB-backed parts).
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use suwayomi_core::db::Db;
 use suwayomi_core::models::{ChapterDataClass, MangaChapterDataClass, PaginatedList, now_epoch_secs};
@@ -11,7 +10,7 @@ use suwayomi_core::schema::{ChapterRow, MangaRow};
 use crate::error::{DomainError, Result};
 use crate::manga::{chapter_row_to_data_class, manga_row_to_data_class};
 use crate::meta::{MetaService, MetaTable};
-use crate::source::SourceFetcher;
+use crate::source::{SourceBackend, SourceFetcher};
 use crate::sql::bind_placeholders;
 
 /// Mirrors `removeDuplicates(currentChapter)` — dedupe by chapter number,
@@ -42,8 +41,10 @@ pub fn remove_duplicates_kotlin(current: &ChapterDataClass, chapters: &[ChapterD
             .iter()
             .find(|c| c.id == current.id)
             .or_else(|| group.iter().find(|c| c.scanlator == current.scanlator))
-            .unwrap_or(&group[0]);
-        out.push(chosen.clone());
+            .or_else(|| group.first());
+        if let Some(chosen) = chosen {
+            out.push(chosen.clone());
+        }
     }
     out
 }
@@ -51,13 +52,13 @@ pub fn remove_duplicates_kotlin(current: &ChapterDataClass, chapters: &[ChapterD
 #[derive(Clone)]
 pub struct ChapterService {
     pub db: Db,
-    pub fetcher: Arc<dyn SourceFetcher>,
+    pub fetcher: SourceBackend,
     /// 追踪器句柄。没设时「标记已读后自动推进站点进度」这条规则不生效。
     tracker: Option<crate::tracker::TrackerManager>,
 }
 
 impl ChapterService {
-    pub fn new(db: Db, fetcher: Arc<dyn SourceFetcher>) -> Self {
+    pub fn new(db: Db, fetcher: SourceBackend) -> Self {
         Self { db, fetcher, tracker: None }
     }
 
@@ -132,40 +133,37 @@ impl ChapterService {
             let sql = bind_placeholders("SELECT id FROM chapter WHERE manga = ? AND url = ?");
             let existing: Option<(i32,)> =
                 suwayomi_db::query_as(&sql).bind(manga_id).bind(&c.url).fetch_optional(self.db.pool()).await?;
-            match existing {
-                Some((id,)) => {
-                    let sql = bind_placeholders(
-                        "UPDATE chapter SET name = ?, chapter_number = ?, source_order = ?, fetched_at = ?, last_modified_at = ?, date_upload = ?, scanlator = ? WHERE id = ?",
-                    );
-                    suwayomi_db::query(&sql)
-                        .bind(&c.name)
-                        .bind(c.chapter_number)
-                        .bind(source_order)
-                        .bind(now)
-                        .bind(now)
-                        .bind(c.date_upload)
-                        .bind(&c.scanlator)
-                        .bind(id)
-                        .execute(self.db.pool())
-                        .await?;
-                }
-                None => {
-                    let sql = bind_placeholders(
-                        "INSERT INTO chapter (url, name, chapter_number, source_order, manga, fetched_at, last_modified_at, date_upload, scanlator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    );
-                    suwayomi_db::query(&sql)
-                        .bind(&c.url)
-                        .bind(&c.name)
-                        .bind(c.chapter_number)
-                        .bind(source_order)
-                        .bind(manga_id)
-                        .bind(now)
-                        .bind(now)
-                        .bind(c.date_upload)
-                        .bind(&c.scanlator)
-                        .execute(self.db.pool())
-                        .await?;
-                }
+            if let Some((id,)) = existing {
+                let sql = bind_placeholders(
+                    "UPDATE chapter SET name = ?, chapter_number = ?, source_order = ?, fetched_at = ?, last_modified_at = ?, date_upload = ?, scanlator = ? WHERE id = ?",
+                );
+                suwayomi_db::query(&sql)
+                    .bind(&c.name)
+                    .bind(c.chapter_number)
+                    .bind(source_order)
+                    .bind(now)
+                    .bind(now)
+                    .bind(c.date_upload)
+                    .bind(&c.scanlator)
+                    .bind(id)
+                    .execute(self.db.pool())
+                    .await?;
+            } else {
+                let sql = bind_placeholders(
+                    "INSERT INTO chapter (url, name, chapter_number, source_order, manga, fetched_at, last_modified_at, date_upload, scanlator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                );
+                suwayomi_db::query(&sql)
+                    .bind(&c.url)
+                    .bind(&c.name)
+                    .bind(c.chapter_number)
+                    .bind(source_order)
+                    .bind(manga_id)
+                    .bind(now)
+                    .bind(now)
+                    .bind(c.date_upload)
+                    .bind(&c.scanlator)
+                    .execute(self.db.pool())
+                    .await?;
             }
         }
         // also stamp the manga's chapters-fetched time

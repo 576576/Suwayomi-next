@@ -49,7 +49,12 @@ async fn category_create(
     Json(body): Json<CategoryCreate>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let ids = s.category.create_categories(&[body.name]).await?;
-    Ok(Json(serde_json::json!({ "id": ids[0] })))
+    // 传一个名字就必然回一个 id；真拿不到时按 500 报错，而不是让下标 panic。
+    let id = ids
+        .first()
+        .copied()
+        .ok_or_else(|| crate::error::ApiError::Internal("create_categories returned no id".to_string()))?;
+    Ok(Json(serde_json::json!({ "id": id })))
 }
 
 async fn category_reorder(

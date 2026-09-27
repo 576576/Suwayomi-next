@@ -196,9 +196,10 @@ REST 侧的 `/api/v1/extension/icon/{pkg}` 按 **磁盘缓存 → 沙盒 → 仓
 请求"命中缓存"再喂一遍。注意 WebUI 的 Service Worker 对 `/extension/icon/` 配了
 **1 年**的 `CacheFirst` —— 改图标逻辑前要先清掉 CacheStorage，否则会误判成没修好。
 
-配套修的一个静默失败：`cache_root()` 在 Android 上会退化成相对路径 `cache`，
+配套修的一个静默失败：缓存根的默认推导在 Android 上会退化成相对路径 `cache`，
 而进程 CWD 是 `/`，`create_dir_all("/cache/…")` 一律权限失败（调用方普遍 `let _ =`）。
-现在 JNI 入口用 `suwayomi_core::config::set_cache_root(data_dir/cache)` 显式钉住。
+现在 JNI 入口经 `ServerOptions::cache_dir = Some(data_dir/cache)` 显式钉住，
+由 `AppPaths` 注入到各服务（没有进程级单例，见 RUST_STYLE_AUDIT.md §7 阶段 4-1）。
 
 ### 工具链版本（本地实测）
 

@@ -4,6 +4,7 @@
 use async_graphql::{Context, Enum, InputObject, Object, SimpleObject};
 use std::collections::HashMap;
 
+use suwayomi_core::config::resolve_setting_path;
 use suwayomi_core::schema::TrackRecordRow;
 use suwayomi_domain::meta::{MetaService, MetaTable};
 use suwayomi_domain::sql::bind_placeholders;
@@ -1272,12 +1273,13 @@ impl MutationRootB4 {
         ctx: &Context<'_>,
         input: RestoreBackupInput,
     ) -> async_graphql::Result<RestoreBackupPayload> {
+        use std::io::Read as _;
+
         let state = ctx.data::<crate::state::GraphQLState>()?;
         // Read the uploaded .tachibk payload and restore it (upserts manga/
         // chapters/categories idempotently; sources are matched by name).
         let mut upload = input.backup.value(ctx)?;
         let mut bytes = Vec::new();
-        use std::io::Read as _;
         upload.content.read_to_end(&mut bytes).map_err(|e| async_graphql::Error::new(format!("read upload: {e}")))?;
 
         let id = format!("restore-{}", chrono::Utc::now().timestamp_millis());
@@ -1657,10 +1659,11 @@ impl MutationRootB4 {
         ctx: &Context<'_>,
         input: InstallExternalExtensionInput,
     ) -> async_graphql::Result<InstallExternalExtensionPayload> {
+        use std::io::Read as _;
+
         let state = ctx.data::<GraphQLState>()?;
         let mut upload = input.extension_file.value(ctx)?;
         let mut bytes = Vec::new();
-        use std::io::Read as _;
         upload.content.read_to_end(&mut bytes).map_err(|e| async_graphql::Error::new(format!("read upload: {e}")))?;
         if bytes.is_empty() {
             return Err(async_graphql::Error::new("empty apk upload"));
@@ -1832,7 +1835,7 @@ impl MutationRootB4 {
         input: RebuildDownloadIndexInput,
     ) -> async_graphql::Result<RebuildDownloadIndexPayload> {
         let state = ctx.data::<GraphQLState>()?;
-        let chapters = suwayomi_domain::download::reconcile_downloads(&state.db, &state.data_dir)
+        let chapters = suwayomi_domain::download::reconcile_downloads(&state.db, &state.paths.downloads())
             .await
             .map_err(async_graphql::Error::from)?;
         tracing::info!("download index rebuilt: {chapters} chapter(s)");
@@ -1900,12 +1903,12 @@ impl MutationRootB4 {
         // 本地图源 / 下载目录保存后立即生效（不用重启）。`%APPDIR%` / `%DATADIR%`
         // 占位符以当前数据目录为基准展开；留空 = 回到各自的默认位置。
         if let Some(p) = input.settings.local_source_path.clone() {
-            let path = suwayomi_core::config::resolve_setting_path(&p, &state.data_dir);
-            suwayomi_domain::source::local::set_local_source_root(Some(path));
+            let path = resolve_setting_path(&p, &state.paths.data());
+            state.paths.set_local_sources(Some(path));
         }
         if let Some(p) = input.settings.downloads_path.clone() {
-            let path = suwayomi_core::config::resolve_setting_path(&p, &state.data_dir);
-            suwayomi_domain::download::set_downloads_root(Some(path));
+            let path = resolve_setting_path(&p, &state.paths.data());
+            state.paths.set_downloads(Some(path));
         }
         // 重算运行时配置：KOReader 冲突策略 / SyncYomi 开关由服务从 `state.config`
         // 读取，不刷新的话保存完只有设置页显示变了。

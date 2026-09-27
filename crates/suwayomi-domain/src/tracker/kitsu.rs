@@ -19,6 +19,7 @@ use crate::error::{DomainError, Result};
 
 use super::service::{TrackerCtx, TrackerService, check, expires_soon};
 use super::{KITSU, Track, TrackSearch};
+use suwayomi_core::text::urlencode;
 
 /// 内置默认值 = 上游 Suwayomi 在 Kitsu 注册的应用；`trackers.json` 缺键时用它。
 pub(super) const DEFAULT_CLIENT_ID: &str = "dd031b32d2f56c990b1425efe6c42ad847e7fe3ab46bf1299f05ecd856bdb7dd";
@@ -74,7 +75,9 @@ impl RatingSystem {
     fn display_score(&self, score: f64) -> String {
         let native = score * 2.0;
         let idx = self.twenty_scale.iter().rposition(|v| *v as f64 <= native);
-        self.score_list[idx.map_or(0, |i| i + 1)].clone()
+        let slot = idx.map_or(0, |i| i + 1);
+        // 选项表理论上够长；真短了也退回首个档位而不是 panic。
+        self.score_list.get(slot).or(self.score_list.first()).cloned().unwrap_or_default()
     }
 }
 
@@ -83,7 +86,7 @@ fn rating_system_for(name: &str) -> RatingSystem {
     match name.to_ascii_lowercase().as_str() {
         RATING_SIMPLE => RatingSystem {
             name: RATING_SIMPLE,
-            score_list: ["-", "😡", "😐", "😊", "😀"].iter().map(|s| s.to_string()).collect(),
+            score_list: ["-", "😡", "😐", "😊", "😀"].iter().map(std::string::ToString::to_string).collect(),
             twenty_scale: (2..=20).step_by(6).collect(),
         },
         RATING_REGULAR => RatingSystem {
@@ -124,10 +127,7 @@ impl Kitsu {
     }
 
     async fn save_token(&self, oauth: Option<&KitsuOAuth>) -> Result<()> {
-        let token = match oauth {
-            Some(o) => serde_json::to_string(o).unwrap_or_default(),
-            None => String::new(),
-        };
+        let token = oauth.map_or_else(String::new, |o| serde_json::to_string(o).unwrap_or_default());
         self.ctx.store.set_token(KITSU, &token).await
     }
 
@@ -421,21 +421,18 @@ impl TrackerService for Kitsu {
 
     async fn bind(&self, track: &mut Track, has_read_chapters: bool) -> Result<()> {
         let user_id = self.user_id().await?;
-        match self.find_lib_manga(track.remote_id, &user_id).await? {
-            Some(remote) => {
-                track.copy_personal_from(&remote, false);
-                track.remote_id = remote.remote_id;
-                track.library_id = remote.library_id;
-                if track.status != COMPLETED {
-                    track.status = if has_read_chapters { READING } else { track.status };
-                }
-                self.update(track, false).await
+        if let Some(remote) = self.find_lib_manga(track.remote_id, &user_id).await? {
+            track.copy_personal_from(&remote, false);
+            track.remote_id = remote.remote_id;
+            track.library_id = remote.library_id;
+            if track.status != COMPLETED {
+                track.status = if has_read_chapters { READING } else { track.status };
             }
-            None => {
-                track.status = if has_read_chapters { READING } else { PLAN_TO_READ };
-                track.score = 0.0;
-                self.add_lib_manga(track).await
-            }
+            self.update(track, false).await
+        } else {
+            track.status = if has_read_chapters { READING } else { PLAN_TO_READ };
+            track.score = 0.0;
+            self.add_lib_manga(track).await
         }
     }
 
@@ -528,18 +525,7 @@ fn parse_kitsu_date(s: Option<&str>) -> i64 {
     let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.3fZ") else {
         return 0;
     };
-    chrono::Local.from_local_datetime(&naive).single().map(|dt| dt.timestamp_millis()).unwrap_or(0)
-}
-
-fn urlencode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
+    chrono::Local.from_local_datetime(&naive).single().map_or(0, |dt| dt.timestamp_millis())
 }
 
 // ---- DTO ----
@@ -618,11 +604,11 @@ impl KitsuListSearchResult {
         let mut track = Track::create(KITSU);
         track.remote_id = json_api_id(&manga.id)?;
         track.library_id = Some(json_api_id(&entry.id)?);
-        track.title = m.canonical_title.clone();
+        track.title.clone_from(&m.canonical_title);
         track.total_chapters = m.chapter_count.unwrap_or(0);
         track.tracking_url = format!("{BASE_MANGA_URL}{}", track.remote_id);
         track.status = from_api_status(&attrs.status).unwrap_or(READING);
-        track.score = attrs.rating_twenty.map(|v| v as f64 / 2.0).unwrap_or(0.0);
+        track.score = attrs.rating_twenty.map_or(0.0, |v| v as f64 / 2.0);
         track.last_chapter_read = attrs.progress as f64;
         track.started_reading_date = parse_kitsu_date(attrs.started_at.as_deref());
         track.finished_reading_date = parse_kitsu_date(attrs.finished_at.as_deref());

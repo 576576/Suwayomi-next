@@ -144,10 +144,7 @@ impl<O: FromRow> QueryAs<'_, O> {
     /// Fetches zero or one mapped row.
     pub async fn fetch_optional<E: Executor>(self, executor: E) -> Result<Option<O>> {
         let rows = executor.db().fetch_sql(self.sql, &self.params).await?;
-        match rows.into_iter().next() {
-            Some(row) => O::from_row(&row).map(Some),
-            None => Ok(None),
-        }
+        rows.into_iter().next().map_or_else(|| Ok(None), |row| O::from_row(&row).map(Some))
     }
 }
 
@@ -179,9 +176,6 @@ impl<O: Decode> QueryScalar<'_, O> {
     /// Fetches the first column of the first row, if any.
     pub async fn fetch_optional<E: Executor>(self, executor: E) -> Result<Option<O>> {
         let rows = executor.db().fetch_sql(self.sql, &self.params).await?;
-        match rows.into_iter().next() {
-            Some(row) => row.try_get::<O, _>(0usize).map(Some),
-            None => Ok(None),
-        }
+        rows.into_iter().next().map_or_else(|| Ok(None), |row| row.try_get::<O, _>(0usize).map(Some))
     }
 }

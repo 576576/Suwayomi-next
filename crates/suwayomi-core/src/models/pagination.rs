@@ -29,7 +29,7 @@ where
     }
 
     let upper = (higher_index as isize).min(last_index) as usize;
-    let sliced = list[lower_index..=upper].to_vec();
+    let sliced = list.get(lower_index..=upper).unwrap_or_default().to_vec();
     let has_next = (higher_index as isize) < last_index;
 
     PaginatedList { page: sliced, has_next_page: has_next }

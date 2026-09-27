@@ -6,6 +6,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde::Deserialize;
 
+use suwayomi_domain::source::SourceFetcher as _;
+
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 

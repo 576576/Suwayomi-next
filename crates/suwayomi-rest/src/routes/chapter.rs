@@ -71,8 +71,7 @@ async fn download(
 
     let file_name = std::path::Path::new(&archive)
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| format!("{}.cbz", chapter.name));
+        .map_or_else(|| format!("{}.cbz", chapter.name), |n| n.to_string_lossy().into_owned());
     let mime = s.config.snapshot().opds_cbz_mimetype.media_type();
 
     let body = if method == Method::HEAD {

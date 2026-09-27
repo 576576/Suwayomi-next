@@ -78,7 +78,7 @@ async fn get_thumbnail(
         .filter(|u| !u.trim().is_empty())
         .ok_or_else(|| ApiError::NotFound(format!("manga {manga_id} has no thumbnail")))?;
 
-    let (bytes, ctype) = load_thumbnail(manga_id, &url)
+    let (bytes, ctype) = load_thumbnail(manga_id, &url, &s.paths.cache())
         .await
         .ok_or_else(|| ApiError::NotFound(format!("manga {manga_id} thumbnail unavailable")))?;
 
@@ -95,8 +95,8 @@ async fn get_thumbnail(
 }
 
 /// 封面字节：本地路径直接读，否则查缓存、再退到抓取。
-async fn load_thumbnail(manga_id: i32, url: &str) -> Option<(Vec<u8>, String)> {
-    let dir = suwayomi_core::config::cache_root().join("thumbnails");
+async fn load_thumbnail(manga_id: i32, url: &str, cache_root: &std::path::Path) -> Option<(Vec<u8>, String)> {
+    let dir = cache_root.join("thumbnails");
     let img_path = dir.join(format!("{manga_id}.img"));
     let mime_path = dir.join(format!("{manga_id}.mime"));
 
@@ -125,8 +125,7 @@ async fn load_thumbnail(manga_id: i32, url: &str) -> Option<(Vec<u8>, String)> {
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .map(str::to_string)
-        .unwrap_or_else(|| "image/png".into());
+        .map_or_else(|| "image/png".into(), str::to_string);
     let bytes = resp.bytes().await.ok()?.to_vec();
     let _ = tokio::fs::create_dir_all(&dir).await;
     let _ = tokio::fs::write(&img_path, &bytes).await;
@@ -135,11 +134,11 @@ async fn load_thumbnail(manga_id: i32, url: &str) -> Option<(Vec<u8>, String)> {
 }
 
 fn sniff_image_mime(b: &[u8]) -> &'static str {
-    if b.len() > 3 && &b[0..4] == b"RIFF" {
+    if b.starts_with(b"RIFF") {
         "image/webp"
-    } else if b.len() > 2 && b[0] == 0xff && b[1] == 0xd8 {
+    } else if b.starts_with(b"\xff\xd8") {
         "image/jpeg"
-    } else if b.len() > 7 && &b[0..8] == b"\x89PNG\r\n\x1a\n" {
+    } else if b.starts_with(b"\x89PNG\r\n\x1a\n") {
         "image/png"
     } else {
         "application/octet-stream"

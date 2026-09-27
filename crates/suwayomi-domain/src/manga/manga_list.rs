@@ -1,8 +1,6 @@
 //! Manga list service — mirrors `suwayomi.manga.impl.MangaList`
 //! (DB-backed insert-or-update of browsed source manga).
 
-use std::sync::Arc;
-
 use suwayomi_core::db::Db;
 use suwayomi_core::models::PagedMangaListDataClass;
 use suwayomi_core::schema::MangaRow;
@@ -10,22 +8,22 @@ use suwayomi_core::source::{MangasPage, SManga};
 
 use crate::error::{DomainError, Result};
 use crate::manga::manga_row_to_data_class;
-use crate::source::{LOCAL_SOURCE_ID, SourceFetcher};
+use crate::source::{LOCAL_SOURCE_ID, SourceBackend, SourceFetcher};
 use crate::sql::bind_placeholders;
 
 #[derive(Clone)]
 pub struct MangaListService {
     pub db: Db,
-    pub fetcher: Arc<dyn SourceFetcher>,
+    pub fetcher: SourceBackend,
 }
 
 impl MangaListService {
-    pub fn new(db: Db, fetcher: Arc<dyn SourceFetcher>) -> Self {
+    pub fn new(db: Db, fetcher: SourceBackend) -> Self {
         Self { db, fetcher }
     }
 
     /// Expose the underlying fetcher (search needs to bypass get_manga_list).
-    pub fn fetcher(&self) -> &Arc<dyn SourceFetcher> {
+    pub fn fetcher(&self) -> &SourceBackend {
         &self.fetcher
     }
 

@@ -260,10 +260,10 @@ impl<'p> OpdsRepository<'p> {
         }
         match filter {
             LibraryFilter::Unread => {
-                params.push("EXISTS (SELECT 1 FROM chapter c WHERE c.manga = m.id AND c.read = FALSE)".into())
+                params.push("EXISTS (SELECT 1 FROM chapter c WHERE c.manga = m.id AND c.read = FALSE)".into());
             }
             LibraryFilter::Downloaded => {
-                params.push("EXISTS (SELECT 1 FROM chapter c WHERE c.manga = m.id AND c.is_downloaded = TRUE)".into())
+                params.push("EXISTS (SELECT 1 FROM chapter c WHERE c.manga = m.id AND c.is_downloaded = TRUE)".into());
             }
             LibraryFilter::Ongoing => params.push("m.status = 1".into()),
             LibraryFilter::Completed => params.push("m.status = 2".into()),

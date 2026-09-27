@@ -13,7 +13,7 @@ use super::track::MangaTrackerDataClass;
 
 /// Current epoch seconds, equivalent to Kotlin `Instant.now().epochSecond`.
 pub fn now_epoch_secs() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
 /// Mirrors `eu.kanade.tachiyomi.source.model.UpdateStrategy`.
@@ -134,10 +134,7 @@ impl MangaDataClass {
     /// `age = if (lastFetchedAt == null) 0 else now - lastFetchedAt`
     /// `chaptersAge = if (chaptersLastFetchedAt == null) null else now - chaptersLastFetchedAt`
     pub fn with_computed_ages(mut self) -> Self {
-        self.age = Some(match self.last_fetched_at {
-            None => 0,
-            Some(last) => now_epoch_secs() - last,
-        });
+        self.age = Some(self.last_fetched_at.map_or(0, |last| now_epoch_secs() - last));
         self.chapters_age = self.chapters_last_fetched_at.map(|last| now_epoch_secs() - last);
         self
     }

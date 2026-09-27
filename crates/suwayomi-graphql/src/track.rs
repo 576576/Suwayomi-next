@@ -15,7 +15,7 @@ use suwayomi_domain::tracker::{Track, TrackSearch, TrackerService};
 
 use crate::scalars::{Cursor, LongString};
 use crate::state::GraphQLState;
-use crate::types::{MangaType, PageInfo};
+use crate::types::{MangaType, PageInfo, cursor_edges};
 
 /// 一个追踪器（对应上游 `TrackerType`）。
 #[derive(Clone)]
@@ -167,12 +167,12 @@ impl TrackRecordType {
         track.manga_id = self.manga_id;
         track.remote_id = self.remote_id;
         track.library_id = self.library_id;
-        track.title = self.title.clone();
+        track.title.clone_from(&self.title);
         track.last_chapter_read = self.last_chapter_read;
         track.total_chapters = self.total_chapters;
         track.status = self.status;
         track.score = self.score;
-        track.tracking_url = self.remote_url.clone();
+        track.tracking_url.clone_from(&self.remote_url);
         track.started_reading_date = self.start_date;
         track.finished_reading_date = self.finish_date;
         track.private = self.private;
@@ -325,27 +325,8 @@ pub struct TrackerNodeList {
 impl TrackerNodeList {
     pub fn from_nodes(nodes: Vec<TrackerType>) -> Self {
         let total = nodes.len() as i32;
-        let edges = if nodes.is_empty() {
-            vec![]
-        } else if nodes.len() == 1 {
-            vec![TrackerEdge { cursor: Cursor("0".into()), node: nodes[0].clone() }]
-        } else {
-            vec![
-                TrackerEdge { cursor: Cursor("0".into()), node: nodes[0].clone() },
-                TrackerEdge { cursor: Cursor((nodes.len() - 1).to_string()), node: nodes[nodes.len() - 1].clone() },
-            ]
-        };
-        Self {
-            page_info: PageInfo {
-                start_cursor: Some(Cursor("0".into())),
-                end_cursor: Some(Cursor(total.saturating_sub(1).to_string())),
-                has_next_page: false,
-                has_previous_page: false,
-            },
-            nodes,
-            edges,
-            total_count: total,
-        }
+        let edges = cursor_edges(&nodes, |cursor, node| TrackerEdge { cursor, node });
+        Self { page_info: PageInfo::for_total(total), nodes, edges, total_count: total }
     }
 }
 
@@ -366,27 +347,8 @@ pub struct TrackRecordNodeList {
 impl TrackRecordNodeList {
     pub fn from_nodes(nodes: Vec<TrackRecordType>) -> Self {
         let total = nodes.len() as i32;
-        let edges = if nodes.is_empty() {
-            vec![]
-        } else if nodes.len() == 1 {
-            vec![TrackRecordEdge { cursor: Cursor("0".into()), node: nodes[0].clone() }]
-        } else {
-            vec![
-                TrackRecordEdge { cursor: Cursor("0".into()), node: nodes[0].clone() },
-                TrackRecordEdge { cursor: Cursor((nodes.len() - 1).to_string()), node: nodes[nodes.len() - 1].clone() },
-            ]
-        };
-        Self {
-            page_info: PageInfo {
-                start_cursor: Some(Cursor("0".into())),
-                end_cursor: Some(Cursor(total.saturating_sub(1).to_string())),
-                has_next_page: false,
-                has_previous_page: false,
-            },
-            nodes,
-            edges,
-            total_count: total,
-        }
+        let edges = cursor_edges(&nodes, |cursor, node| TrackRecordEdge { cursor, node });
+        Self { page_info: PageInfo::for_total(total), nodes, edges, total_count: total }
     }
 
     pub fn empty() -> Self {

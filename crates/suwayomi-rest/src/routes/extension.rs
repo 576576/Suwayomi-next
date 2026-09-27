@@ -72,7 +72,7 @@ async fn list(State(s): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
 async fn icon(State(s): State<AppState>, Path(pkg): Path<String>) -> ApiResult<axum::response::Response> {
     let pkg = checked_pkg_name(&pkg)?.to_string();
     // 磁盘缓存：<cache>/extensions/icons/{pkg}.{png|jpg|webp}（按内容类型定扩展名）
-    let cache_dir = crate::routes::cache_root().join("extensions").join("icons");
+    let cache_dir = s.paths.cache().join("extensions").join("icons");
 
     // 缓存命中同样要过魔数，否则写坏的文件会一直命中。
     let mut bytes: Option<Vec<u8>> = None;
@@ -162,11 +162,11 @@ async fn refresh(State(s): State<AppState>) -> ApiResult<Json<serde_json::Value>
 }
 
 fn guess_content_type(bytes: &[u8]) -> &'static str {
-    if bytes.len() > 3 && bytes[0] == 0x89 && bytes[1] == b'P' && bytes[2] == b'N' && bytes[3] == b'G' {
+    if bytes.starts_with(b"\x89PNG") {
         "image/png"
-    } else if bytes.len() > 2 && bytes[0] == 0xff && bytes[1] == 0xd8 {
+    } else if bytes.starts_with(b"\xff\xd8") {
         "image/jpeg"
-    } else if bytes.len() > 3 && &bytes[0..4] == b"RIFF" {
+    } else if bytes.starts_with(b"RIFF") {
         "image/webp"
     } else {
         "image/*"

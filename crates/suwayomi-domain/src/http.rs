@@ -8,7 +8,7 @@ use reqwest::Client;
 /// 而 `Client::new()` 走同一套后端但有兜底。以前这里一律写 `.expect("reqwest client")`：
 /// 一旦 TLS 后端起不来，整个服务（含不联网的那部分）直接起不来。改成降级后，
 /// 只是"发不出去请求"，其余功能照常可用，日志里也留得下原因。
-pub(crate) fn build_client(builder: reqwest::ClientBuilder) -> Client {
+pub fn build_client(builder: reqwest::ClientBuilder) -> Client {
     match builder.build() {
         Ok(c) => c,
         Err(e) => {

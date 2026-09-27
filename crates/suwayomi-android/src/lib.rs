@@ -24,7 +24,17 @@
 // 测试代码允许 panic：unwrap / expect / panic! 在断言里是常规写法，
 // 逐个改成 `?` 传播只会让失败信息更难读。生产代码不受这条影响
 // （`cfg_attr(test, ...)`）。
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::indexing_slicing
+    )
+)]
 // JNI 边界本身就是 unsafe 的：入口函数必须 `#[no_mangle]` + `extern "system"`
 // 才能被 `System.loadLibrary` 解析到，没有任何 safe 封装可用。整个 crate 就是
 // 这一层边界（194 行，不含业务逻辑），所以在 crate 级放行 unsafe。
@@ -59,15 +69,13 @@ pub extern "system" fn Java_org_suwayomi_next_NativeServer_start<'local>(
     sandbox_url: JString<'local>,
 ) -> jint {
     // Rust panic 不能穿过 FFI 边界：默认会 unwind 到 Kotlin，Abort —— 整个 App 挂掉
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         start_inner(&mut env, data_dir, webui_dir, ip, port, sandbox_url)
-    })) {
-        Ok(code) => code,
-        Err(_) => {
-            tracing::error!("panic while starting the server (see the Rust backtrace above)");
-            9
-        }
-    }
+    }))
+    .unwrap_or_else(|_| {
+        tracing::error!("panic while starting the server (see the Rust backtrace above)");
+        9
+    })
 }
 
 /// `Java_org_suwayomi_next_NativeServer_stop` —— 请求优雅关闭。
@@ -80,15 +88,11 @@ pub extern "system" fn Java_org_suwayomi_next_NativeServer_stop<'local>(
         Ok(g) => g,
         Err(poisoned) => poisoned.into_inner(),
     };
-    match guard.as_ref() {
-        Some(tx) => {
-            // 没人在等（run 已结束）时 send 会失败，忽略即可
-            let _ = tx.send(true);
-            0
-        }
-        // 还没 start 过
-        None => 1,
-    }
+    guard.as_ref().map_or(1, |tx| {
+        // 没人在等（run 已结束）时 send 会失败，忽略即可
+        let _ = tx.send(true);
+        0
+    })
 }
 
 /// `Java_org_suwayomi_next_NativeServer_version` —— `r{versionCode}`，给宿主显示用。
@@ -97,10 +101,7 @@ pub extern "system" fn Java_org_suwayomi_next_NativeServer_version<'local>(
     env: JNIEnv<'local>,
     _this: JObject<'local>,
 ) -> jstring {
-    match env.new_string(suwayomi_server::VERSION) {
-        Ok(s) => s.into_raw(),
-        Err(_) => std::ptr::null_mut(),
-    }
+    env.new_string(suwayomi_server::VERSION).map_or(std::ptr::null_mut(), jni::objects::JString::into_raw)
 }
 
 fn start_inner(
@@ -134,9 +135,9 @@ fn start_inner(
         return 4;
     }
 
-    // Android 没有环境变量可设，缓存根必须显式钉住：否则 `cache_root()` 退化成
-    // 相对路径 `cache`，而进程 CWD 是 `/`，写 `/cache/…` 恒失败。
-    suwayomi_core::config::set_cache_root(data_dir.join("cache"));
+    // Android 没有环境变量可设，缓存根必须显式钉住：否则默认推导会退化成相对路径
+    // `cache`，而进程 CWD 是 `/`，写 `/cache/…` 恒失败。
+    let cache_dir = data_dir.join("cache");
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     {
@@ -161,6 +162,8 @@ fn start_inner(
             ..ServerConfig::default()
         },
         data_dir: data_dir.clone(),
+        // 宿主没有环境变量：缓存根直接给出（`data/cache`）
+        cache_dir: Some(cache_dir),
         webui_dir,
         // Android 上没有环境变量可用，数据库设置显式给出：固定在**启动时传入的**应用私有
         // 目录下（不走 suwayomi-db 的目录解析，因此不会随 WebUI「存储位置」设置漂移）。

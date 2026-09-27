@@ -16,7 +16,12 @@ use crate::state::GraphQLState;
 use crate::track::{
     SearchTrackerPayload, TrackRecordNodeList, TrackRecordType, TrackSearchType, TrackerNodeList, TrackerType,
 };
-use crate::types::*;
+use crate::types::{
+    CategoryNodeList, CategoryType, ChapterNodeList, ChapterType, ContentWarning, ExtensionNodeList,
+    ExtensionStoreNodeList, ExtensionStoreType, ExtensionType, GlobalMetaNodeList, GlobalMetaType, MangaNodeList,
+    MangaStatus, MangaType, SourceNodeList, SourceType,
+};
+use std::fmt::Write as _;
 
 enum BindVal {
     I32(i32),
@@ -223,7 +228,7 @@ string_filter_input!(StringFilterInput);
 
 #[derive(InputObject, Default)]
 pub struct MangaFilterInput {
-    pub and: Option<Vec<MangaFilterInput>>,
+    pub and: Option<Vec<Self>>,
     pub artist: Option<StringFilterInput>,
     pub author: Option<StringFilterInput>,
     pub category_id: Option<IntFilterInput>,
@@ -235,8 +240,8 @@ pub struct MangaFilterInput {
     pub in_library_at: Option<LongFilterInput>,
     pub initialized: Option<BooleanFilterInput>,
     pub last_fetched_at: Option<LongFilterInput>,
-    pub not: Option<Box<MangaFilterInput>>,
-    pub or: Option<Vec<MangaFilterInput>>,
+    pub not: Option<Box<Self>>,
+    pub or: Option<Vec<Self>>,
     pub real_url: Option<StringFilterInput>,
     pub source_id: Option<LongFilterInput>,
     pub status: Option<MangaStatusFilterInput>,
@@ -247,18 +252,18 @@ pub struct MangaFilterInput {
 
 #[derive(InputObject, Default)]
 pub struct CategoryFilterInput {
-    pub and: Option<Vec<CategoryFilterInput>>,
+    pub and: Option<Vec<Self>>,
     pub default: Option<BooleanFilterInput>,
     pub id: Option<IntFilterInput>,
     pub name: Option<StringFilterInput>,
-    pub not: Option<Box<CategoryFilterInput>>,
-    pub or: Option<Vec<CategoryFilterInput>>,
+    pub not: Option<Box<Self>>,
+    pub or: Option<Vec<Self>>,
     pub order: Option<IntFilterInput>,
 }
 
 #[derive(InputObject, Default)]
 pub struct ChapterFilterInput {
-    pub and: Option<Vec<ChapterFilterInput>>,
+    pub and: Option<Vec<Self>>,
     pub chapter_number: Option<DoubleFilterInput>,
     pub fetched_at: Option<LongFilterInput>,
     pub id: Option<IntFilterInput>,
@@ -270,8 +275,8 @@ pub struct ChapterFilterInput {
     pub last_read_at: Option<LongFilterInput>,
     pub manga_id: Option<IntFilterInput>,
     pub name: Option<StringFilterInput>,
-    pub not: Option<Box<ChapterFilterInput>>,
-    pub or: Option<Vec<ChapterFilterInput>>,
+    pub not: Option<Box<Self>>,
+    pub or: Option<Vec<Self>>,
     pub page_count: Option<IntFilterInput>,
     pub real_url: Option<StringFilterInput>,
     pub scanlator: Option<StringFilterInput>,
@@ -282,10 +287,10 @@ pub struct ChapterFilterInput {
 
 #[derive(InputObject, Default)]
 pub struct MetaFilterInput {
-    pub and: Option<Vec<MetaFilterInput>>,
+    pub and: Option<Vec<Self>>,
     pub key: Option<StringFilterInput>,
-    pub not: Option<Box<MetaFilterInput>>,
-    pub or: Option<Vec<MetaFilterInput>>,
+    pub not: Option<Box<Self>>,
+    pub or: Option<Vec<Self>>,
     pub value: Option<StringFilterInput>,
 }
 
@@ -315,13 +320,13 @@ pub struct SourceOrder {
 
 #[derive(InputObject, Default)]
 pub struct SourceFilterInput {
-    pub and: Option<Vec<SourceFilterInput>>,
+    pub and: Option<Vec<Self>>,
     pub content_warning: Option<ContentWarningFilterInput>,
     pub id: Option<LongFilterInput>,
     pub lang: Option<StringFilterInput>,
     pub name: Option<StringFilterInput>,
-    pub not: Option<Box<SourceFilterInput>>,
-    pub or: Option<Vec<SourceFilterInput>>,
+    pub not: Option<Box<Self>>,
+    pub or: Option<Vec<Self>>,
 }
 
 #[derive(InputObject, Default)]
@@ -351,11 +356,11 @@ pub struct ExtensionOrder {
 
 #[derive(InputObject, Default)]
 pub struct ExtensionFilterInput {
-    pub and: Option<Vec<ExtensionFilterInput>>,
+    pub and: Option<Vec<Self>>,
     pub lang: Option<StringFilterInput>,
     pub name: Option<StringFilterInput>,
-    pub not: Option<Box<ExtensionFilterInput>>,
-    pub or: Option<Vec<ExtensionFilterInput>>,
+    pub not: Option<Box<Self>>,
+    pub or: Option<Vec<Self>>,
     pub pkg_name: Option<StringFilterInput>,
 }
 
@@ -382,11 +387,11 @@ pub struct ExtensionStoreOrder {
 
 #[derive(InputObject, Default)]
 pub struct ExtensionStoreFilterInput {
-    pub and: Option<Vec<ExtensionStoreFilterInput>>,
+    pub and: Option<Vec<Self>>,
     pub index_url: Option<StringFilterInput>,
     pub name: Option<StringFilterInput>,
-    pub not: Option<Box<ExtensionStoreFilterInput>>,
-    pub or: Option<Vec<ExtensionStoreFilterInput>>,
+    pub not: Option<Box<Self>>,
+    pub or: Option<Vec<Self>>,
 }
 
 #[derive(InputObject, Default)]
@@ -447,10 +452,10 @@ pub struct TrackRecordOrder {
 
 #[derive(InputObject, Default)]
 pub struct TrackRecordFilterInput {
-    pub and: Option<Vec<TrackRecordFilterInput>>,
+    pub and: Option<Vec<Self>>,
     pub manga_id: Option<IntFilterInput>,
-    pub not: Option<Box<TrackRecordFilterInput>>,
-    pub or: Option<Vec<TrackRecordFilterInput>>,
+    pub not: Option<Box<Self>>,
+    pub or: Option<Vec<Self>>,
     pub title: Option<StringFilterInput>,
     pub tracker_id: Option<IntFilterInput>,
 }
@@ -631,18 +636,15 @@ impl QueryRoot {
         let state = ctx.data::<GraphQLState>()?;
         // 上游 categories resolver 直接读全表（不过滤默认分类），WebUI 的分类
         // 计数与「编辑分类」页都依赖默认分类恒在。
-        let list = state.category.list_categories_for_graphql().await.map_err(async_graphql::Error::from)?;
-        let nodes: Vec<CategoryType> = list
+        let rows = state.category.list_categories_for_graphql().await.map_err(async_graphql::Error::from)?;
+        let nodes: Vec<CategoryType> = rows
             .iter()
             .filter(|c| {
-                condition
-                    .as_ref()
-                    .map(|cond| {
-                        cond.id.map(|v| v == c.id).unwrap_or(true)
-                            && cond.name.as_ref().map(|v| &c.name == v).unwrap_or(true)
-                            && cond.default.map(|v| v == c.default).unwrap_or(true)
-                    })
-                    .unwrap_or(true)
+                condition.as_ref().is_none_or(|cond| {
+                    cond.id.is_none_or(|v| v == c.id)
+                        && cond.name.as_ref().is_none_or(|v| &c.name == v)
+                        && cond.default.is_none_or(|v| v == c.default)
+                })
             })
             .map(|c| CategoryType {
                 id: c.id,
@@ -751,13 +753,13 @@ impl QueryRoot {
                     Some(SortOrder::Asc) => "ASC",
                     _ => "DESC",
                 };
-                sql.push_str(&format!(" ORDER BY {col} {dir}"));
+                let _ = write!(sql, " ORDER BY {col} {dir}");
             }
         } else {
             sql.push_str(" ORDER BY meta_key ASC");
         }
         if let Some(limit) = first {
-            sql.push_str(&format!(" LIMIT {}", limit.clamp(1, 500)));
+            let _ = write!(sql, " LIMIT {}", limit.clamp(1, 500));
         }
         let sql = bind_placeholders(&sql);
         let mut q = suwayomi_db::query(&sql);
@@ -850,13 +852,13 @@ impl QueryRoot {
                     Some(SortOrder::Asc) => "ASC",
                     _ => "DESC",
                 };
-                sql.push_str(&format!(" ORDER BY {col} {dir}"));
+                let _ = write!(sql, " ORDER BY {col} {dir}");
             }
         } else {
             sql.push_str(" ORDER BY name ASC");
         }
         if let Some(limit) = first {
-            sql.push_str(&format!(" LIMIT {}", limit.clamp(1, 500)));
+            let _ = write!(sql, " LIMIT {}", limit.clamp(1, 500));
         }
         let sql = bind_placeholders(&sql);
         let mut q = suwayomi_db::query_as::<suwayomi_core::schema::SourceRow>(&sql);
@@ -917,14 +919,11 @@ impl QueryRoot {
             .collect();
         // Inject the local source (id=0, lang=OTHER — WebUI "Other" group)
         // unless an explicit condition rules it out.
-        let include_local = match &condition {
-            None => true,
-            Some(c) => {
-                c.id.map(|v| v.0 == suwayomi_domain::source::LOCAL_SOURCE_ID).unwrap_or(true)
-                    && c.lang.as_deref().map(|l| l == "OTHER").unwrap_or(true)
-                    && c.name.as_deref().map(|n| n.to_lowercase().contains("local")).unwrap_or(true)
-            }
-        };
+        let include_local = condition.as_ref().is_none_or(|c| {
+            c.id.is_none_or(|v| v.0 == suwayomi_domain::source::LOCAL_SOURCE_ID)
+                && c.lang.as_deref().is_none_or(|l| l == "OTHER")
+                && c.name.as_deref().is_none_or(|n| n.to_lowercase().contains("local"))
+        });
         if include_local {
             nodes.push(SourceType::local_source());
         }
@@ -1007,13 +1006,13 @@ impl QueryRoot {
                     Some(SortOrder::Asc) => "ASC",
                     _ => "DESC",
                 };
-                sql.push_str(&format!(" ORDER BY {col} {dir}"));
+                let _ = write!(sql, " ORDER BY {col} {dir}");
             }
         } else {
             sql.push_str(" ORDER BY name ASC");
         }
         if let Some(limit) = first {
-            sql.push_str(&format!(" LIMIT {}", limit.clamp(1, 500)));
+            let _ = write!(sql, " LIMIT {}", limit.clamp(1, 500));
         }
         let sql = bind_placeholders(&sql);
         let mut q = suwayomi_db::query_as::<suwayomi_core::schema::ExtensionRow>(&sql);
@@ -1078,7 +1077,7 @@ impl QueryRoot {
             sql.push_str(&where_clauses.join(" AND "));
         }
         if let Some(limit) = first {
-            sql.push_str(&format!(" LIMIT {}", limit.clamp(1, 500)));
+            let _ = write!(sql, " LIMIT {}", limit.clamp(1, 500));
         }
         let sql = bind_placeholders(&sql);
         let mut q = suwayomi_db::query_as::<suwayomi_core::schema::ExtensionStoreRow>(&sql);
@@ -1226,13 +1225,13 @@ impl QueryRoot {
                     Some(SortOrder::Asc) => "ASC",
                     _ => "DESC",
                 };
-                sql.push_str(&format!(" ORDER BY {col} {dir}"));
+                let _ = write!(sql, " ORDER BY {col} {dir}");
             }
         } else {
             sql.push_str(" ORDER BY id ASC");
         }
         if let Some(limit) = first {
-            sql.push_str(&format!(" LIMIT {}", limit.clamp(1, 500)));
+            let _ = write!(sql, " LIMIT {}", limit.clamp(1, 500));
         }
         let sql = bind_placeholders(&sql);
         let mut q = suwayomi_db::query_as::<suwayomi_core::schema::TrackRecordRow>(&sql);
@@ -1305,16 +1304,18 @@ impl QueryRoot {
     /// Mirrors `lastSyncStatus()` — SyncYomi status.
     async fn last_sync_status(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<SyncStatus>> {
         let state = ctx.data::<crate::state::GraphQLState>()?;
-        match state.sync_yomi.last_sync_status().await? {
-            Some(st) => Ok(Some(SyncStatus {
-                backup_restore_id: None,
-                end_date: None,
-                error_message: None,
-                start_date: LongString(st.synced_at * 1000),
-                state: SyncState::Success,
-            })),
-            None => Ok(None),
-        }
+        state.sync_yomi.last_sync_status().await?.map_or_else(
+            || Ok(None),
+            |st| {
+                Ok(Some(SyncStatus {
+                    backup_restore_id: None,
+                    end_date: None,
+                    error_message: None,
+                    start_date: LongString(st.synced_at * 1000),
+                    state: SyncState::Success,
+                }))
+            },
+        )
     }
 
     /// Mirrors `aboutWebUI()` — version from `<webui_dir>/version.txt`
@@ -1384,10 +1385,11 @@ impl QueryRoot {
         ctx: &Context<'_>,
         input: ValidateBackupInput,
     ) -> async_graphql::Result<ValidateBackupResult> {
+        use std::io::Read as _;
+
         let state = ctx.data::<GraphQLState>()?;
         let mut upload = input.backup.value(ctx)?;
         let mut bytes = Vec::new();
-        use std::io::Read as _;
         upload.content.read_to_end(&mut bytes).map_err(|e| async_graphql::Error::new(format!("read upload: {e}")))?;
         let summary = suwayomi_core::backup::validate_backup(&bytes).await.map_err(async_graphql::Error::from)?;
         // 上游 `ProtoBackupValidator`：备份里出现过、但本机没登录的追踪器才算「缺」，
@@ -1429,7 +1431,7 @@ impl QueryRoot {
     /// Mirrors `aboutServer()` — full payload.
     async fn about_server(&self, ctx: &Context<'_>) -> AboutServerPayload {
         let state = ctx.data::<GraphQLState>();
-        let data_dir = state.as_ref().map(|s| s.data_dir.to_string_lossy().to_string()).unwrap_or_default();
+        let data_dir = state.as_ref().map(|s| s.paths.data().to_string_lossy().to_string()).unwrap_or_default();
         let sandbox_base = state.as_ref().ok().and_then(|s| s.sandbox_base.clone());
         let jvm = fetch_sandbox_jvm_info(sandbox_base.as_deref()).await;
         // 「上次自动备份时间」——由 autobackup 任务写入 global_meta；从未跑过为 0。
@@ -1563,14 +1565,14 @@ async fn query_mangas(
                 Some(SortOrder::Asc) => "ASC",
                 _ => "DESC",
             };
-            sql.push_str(&format!(" ORDER BY {col} {dir}"));
+            let _ = write!(sql, " ORDER BY {col} {dir}");
         }
     } else {
         sql.push_str(" ORDER BY title ASC");
     }
     if let Some(limit) = first {
         let limit = limit.clamp(1, 500);
-        sql.push_str(&format!(" LIMIT {limit}"));
+        let _ = write!(sql, " LIMIT {limit}");
     }
     let sql = bind_placeholders(&sql);
 
@@ -1662,19 +1664,19 @@ async fn query_chapters(
                     format!("{col} {dir}")
                 })
                 .collect();
-            sql.push_str(&format!(" ORDER BY {}", parts.join(", ")));
+            let _ = write!(sql, " ORDER BY {}", parts.join(", "));
         }
     } else {
         sql.push_str(" ORDER BY source_order DESC");
     }
     if let Some(limit) = first {
         let limit = limit.clamp(1, 500);
-        sql.push_str(&format!(" LIMIT {limit}"));
+        let _ = write!(sql, " LIMIT {limit}");
     }
     if let Some(off) = offset
         && off > 0
     {
-        sql.push_str(&format!(" OFFSET {off}"));
+        let _ = write!(sql, " OFFSET {off}");
     }
     let sql = bind_placeholders(&sql);
     fetch_chapters(state, &sql, &binds).await
@@ -2468,7 +2470,7 @@ fn local_webui_build_time(dir: &std::path::Path) -> LongString {
 /// 跨格式正确；依赖 release 点式补零公式（3.{c/100}.{c%100 补零}），改动该
 /// 公式须保持补零，否则 3.2.05→325 会小于 r3205。
 fn tag_to_num(tag: &str) -> i64 {
-    tag.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or(0)
+    tag.chars().filter(char::is_ascii_digit).collect::<String>().parse().unwrap_or(0)
 }
 
 /// Proxy candidates for GitHub API calls (api.github.com often 403s on direct
@@ -2540,11 +2542,13 @@ pub(crate) async fn fetch_latest_webui_release() -> Result<(String, String), Str
     // 2) API fallback
     let resp = github_get_with_fallback("https://api.github.com/repos/576576/Suwayomi-WebUI/releases/latest").await?;
     let j: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    let tag = j["tag_name"].as_str().unwrap_or("").to_string();
-    let url = j["assets"]
-        .as_array()
+    let tag = j.get("tag_name").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+    let url = j
+        .get("assets")
+        .and_then(serde_json::Value::as_array)
         .and_then(|a| a.first())
-        .and_then(|a| a["browser_download_url"].as_str())
+        .and_then(|a| a.get("browser_download_url"))
+        .and_then(serde_json::Value::as_str)
         .unwrap_or("")
         .to_string();
     if tag.is_empty() || url.is_empty() {
@@ -2564,7 +2568,7 @@ pub(crate) async fn fetch_latest_server_release() -> Result<(String, String), St
         let marker = "/576576/Suwayomi-next/releases/tag/r";
         if let Some(i) = html.find(marker) {
             let rest = &html[i + marker.len()..];
-            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
             if !digits.is_empty() {
                 let tag = format!("r{digits}");
                 let url = format!("https://github.com/576576/Suwayomi-next/releases/tag/{tag}");
@@ -2576,12 +2580,28 @@ pub(crate) async fn fetch_latest_server_release() -> Result<(String, String), St
     let resp =
         github_get_with_fallback("https://api.github.com/repos/576576/Suwayomi-next/releases?per_page=1").await?;
     let j: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    let tag = j[0]["tag_name"].as_str().unwrap_or("").to_string();
-    let url = j[0]["html_url"].as_str().unwrap_or("").to_string();
+    let release = j.get(0);
+    let tag = release.and_then(|r| r.get("tag_name")).and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+    let url = release.and_then(|r| r.get("html_url")).and_then(serde_json::Value::as_str).unwrap_or("").to_string();
     if tag.is_empty() {
         return Err("no release".into());
     }
     Ok((tag, url))
+}
+
+/// `JvmInfo` 的"未知"取值：沙盒缺席、字段缺失或请求失败时都用它。
+fn jvm_unknown() -> crate::settings::JvmInfo {
+    crate::settings::JvmInfo {
+        java_version: "n/a".into(),
+        vm_name: "n/a".into(),
+        vm_vendor: "n/a".into(),
+        vm_version: "n/a".into(),
+    }
+}
+
+/// 取沙盒 `/jvm` 响应里的一个字符串字段；缺失或类型不对回落 `"n/a"`。
+fn jvm_field(j: &serde_json::Value, key: &str) -> String {
+    j.get(key).and_then(serde_json::Value::as_str).unwrap_or("n/a").to_string()
 }
 
 /// JVM info reported by the ext-runtime sandbox (`GET /jvm`), cached 60s; falls back
@@ -2590,44 +2610,28 @@ static JVM_CACHE: std::sync::OnceLock<std::sync::Mutex<(i64, crate::settings::Jv
 
 async fn fetch_sandbox_jvm_info(sandbox_base: Option<&str>) -> crate::settings::JvmInfo {
     let now = chrono::Utc::now().timestamp();
-    let cache = JVM_CACHE.get_or_init(|| {
-        std::sync::Mutex::new((
-            0,
-            crate::settings::JvmInfo {
-                java_version: "n/a".into(),
-                vm_name: "n/a".into(),
-                vm_vendor: "n/a".into(),
-                vm_version: "n/a".into(),
-            },
-        ))
-    });
+    let cache = JVM_CACHE.get_or_init(|| std::sync::Mutex::new((0, jvm_unknown())));
     if let Ok(guard) = cache.lock()
         && guard.0 > now - 60
     {
         return guard.1.clone();
     }
-    let fallback = || crate::settings::JvmInfo {
-        java_version: "n/a".into(),
-        vm_name: "n/a".into(),
-        vm_vendor: "n/a".into(),
-        vm_version: "n/a".into(),
-    };
+    let fallback = jvm_unknown;
     let Some(base) = sandbox_base else { return fallback() };
-    let client = match reqwest::Client::builder().user_agent("Suwayomi-next/1.0").build() {
-        Ok(c) => c,
-        Err(_) => return fallback(),
+    let Ok(client) = reqwest::Client::builder().user_agent("Suwayomi-next/1.0").build() else {
+        return fallback();
     };
     let resp = client.get(format!("{base}/jvm")).timeout(std::time::Duration::from_millis(2000)).send().await;
     let info = match resp {
-        Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
-            Ok(j) => crate::settings::JvmInfo {
-                java_version: j["javaVersion"].as_str().unwrap_or("n/a").to_string(),
-                vm_name: j["vmName"].as_str().unwrap_or("n/a").to_string(),
-                vm_vendor: j["vmVendor"].as_str().unwrap_or("n/a").to_string(),
-                vm_version: j["vmVersion"].as_str().unwrap_or("n/a").to_string(),
+        Ok(r) if r.status().is_success() => r.json::<serde_json::Value>().await.map_or_else(
+            |_| fallback(),
+            |j| crate::settings::JvmInfo {
+                java_version: jvm_field(&j, "javaVersion"),
+                vm_name: jvm_field(&j, "vmName"),
+                vm_vendor: jvm_field(&j, "vmVendor"),
+                vm_version: jvm_field(&j, "vmVersion"),
             },
-            Err(_) => fallback(),
-        },
+        ),
         _ => fallback(),
     };
     if let Ok(mut guard) = cache.lock() {

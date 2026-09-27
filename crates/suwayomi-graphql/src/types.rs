@@ -256,7 +256,7 @@ impl MangaType {
             title: row.title.clone(),
             // external covers go through the same-origin image proxy (CORS-safe,
             // disk-cached); the DB keeps the raw URL for refreshes.
-            thumbnail_url: proxied_cover_url(row.thumbnail_url.clone()),
+            thumbnail_url: row.thumbnail_url.clone().map(proxied_cover_url),
             thumbnail_url_last_fetched: row.thumbnail_url_last_fetched,
             initialized: row.initialized,
             artist: row.artist.clone(),
@@ -707,6 +707,40 @@ pub struct PageInfo {
     pub has_previous_page: bool,
 }
 
+impl PageInfo {
+    /// `PageInfo` for a list that was materialized in full.
+    ///
+    /// Kotlin 的 `PageInfo` 只有首尾游标有意义（分页由客户端做），所以这里按
+    /// 列表长度推出 `0 .. total - 1`；空列表的 `end_cursor` 落在 `0`（`saturating_sub`），
+    /// 与上游行为一致。
+    pub(crate) fn for_total(total: i32) -> Self {
+        Self {
+            start_cursor: Some(Cursor("0".into())),
+            end_cursor: Some(Cursor(total.saturating_sub(1).to_string())),
+            has_next_page: false,
+            has_previous_page: false,
+        }
+    }
+}
+
+/// Kotlin `getEdges`：只实体化首尾两条边。
+///
+/// 单元素列表只出一条边（首即尾），空列表不出边。调用方给出 `wrap`，把
+/// `(cursor, node)` 组装成各自的具体边类型——省掉 8 份同构的 `if/else if/else`。
+pub(crate) fn cursor_edges<T, E>(nodes: &[T], wrap: impl Fn(Cursor, T) -> E) -> Vec<E>
+where
+    T: Clone,
+{
+    let (Some(first), Some(last)) = (nodes.first(), nodes.last()) else {
+        return Vec::new();
+    };
+    let mut edges = vec![wrap(Cursor("0".into()), first.clone())];
+    if nodes.len() > 1 {
+        edges.push(wrap(Cursor((nodes.len() - 1).to_string()), last.clone()));
+    }
+    edges
+}
+
 #[derive(SimpleObject, Clone)]
 pub struct MangaEdge {
     pub cursor: Cursor,
@@ -724,28 +758,8 @@ pub struct MangaNodeList {
 impl MangaNodeList {
     pub fn from_nodes(nodes: Vec<MangaType>) -> Self {
         let total = nodes.len() as i32;
-        // Kotlin getEdges: only first & last edges
-        let edges = if nodes.is_empty() {
-            vec![]
-        } else if nodes.len() == 1 {
-            vec![MangaEdge { cursor: Cursor("0".into()), node: nodes[0].clone() }]
-        } else {
-            vec![
-                MangaEdge { cursor: Cursor("0".into()), node: nodes[0].clone() },
-                MangaEdge { cursor: Cursor((nodes.len() - 1).to_string()), node: nodes[nodes.len() - 1].clone() },
-            ]
-        };
-        Self {
-            page_info: PageInfo {
-                start_cursor: Some(Cursor("0".into())),
-                end_cursor: Some(Cursor((total.saturating_sub(1)).to_string())),
-                has_next_page: false,
-                has_previous_page: false,
-            },
-            nodes,
-            edges,
-            total_count: total,
-        }
+        let edges = cursor_edges(&nodes, |cursor, node| MangaEdge { cursor, node });
+        Self { page_info: PageInfo::for_total(total), nodes, edges, total_count: total }
     }
 }
 
@@ -766,27 +780,8 @@ pub struct ChapterEdge {
 impl ChapterNodeList {
     pub fn from_nodes(nodes: Vec<ChapterType>) -> Self {
         let total = nodes.len() as i32;
-        let edges = if nodes.is_empty() {
-            vec![]
-        } else if nodes.len() == 1 {
-            vec![ChapterEdge { cursor: Cursor("0".into()), node: nodes[0].clone() }]
-        } else {
-            vec![
-                ChapterEdge { cursor: Cursor("0".into()), node: nodes[0].clone() },
-                ChapterEdge { cursor: Cursor((nodes.len() - 1).to_string()), node: nodes[nodes.len() - 1].clone() },
-            ]
-        };
-        Self {
-            page_info: PageInfo {
-                start_cursor: Some(Cursor("0".into())),
-                end_cursor: Some(Cursor((total.saturating_sub(1)).to_string())),
-                has_next_page: false,
-                has_previous_page: false,
-            },
-            nodes,
-            edges,
-            total_count: total,
-        }
+        let edges = cursor_edges(&nodes, |cursor, node| ChapterEdge { cursor, node });
+        Self { page_info: PageInfo::for_total(total), nodes, edges, total_count: total }
     }
 }
 
@@ -812,17 +807,7 @@ impl CategoryNodeList {
             .enumerate()
             .map(|(i, n)| CategoryEdge { cursor: Cursor(i.to_string()), node: n.clone() })
             .collect();
-        Self {
-            page_info: PageInfo {
-                start_cursor: Some(Cursor("0".into())),
-                end_cursor: Some(Cursor(total.saturating_sub(1).to_string())),
-                has_next_page: false,
-                has_previous_page: false,
-            },
-            nodes,
-            edges,
-            total_count: total,
-        }
+        Self { page_info: PageInfo::for_total(total), nodes, edges, total_count: total }
     }
 }
 
@@ -847,27 +832,8 @@ pub struct GlobalMetaNodeList {
 impl GlobalMetaNodeList {
     pub fn from_nodes(nodes: Vec<GlobalMetaType>) -> Self {
         let total = nodes.len() as i32;
-        let edges = if nodes.is_empty() {
-            vec![]
-        } else if nodes.len() == 1 {
-            vec![MetaEdge { cursor: Cursor("0".into()), node: nodes[0].clone() }]
-        } else {
-            vec![
-                MetaEdge { cursor: Cursor("0".into()), node: nodes[0].clone() },
-                MetaEdge { cursor: Cursor((nodes.len() - 1).to_string()), node: nodes[nodes.len() - 1].clone() },
-            ]
-        };
-        Self {
-            page_info: PageInfo {
-                start_cursor: Some(Cursor("0".into())),
-                end_cursor: Some(Cursor(total.saturating_sub(1).to_string())),
-                has_next_page: false,
-                has_previous_page: false,
-            },
-            nodes,
-            edges,
-            total_count: total,
-        }
+        let edges = cursor_edges(&nodes, |cursor, node| MetaEdge { cursor, node });
+        Self { page_info: PageInfo::for_total(total), nodes, edges, total_count: total }
     }
 }
 
@@ -1040,7 +1006,7 @@ fn preference_from_json(v: &serde_json::Value) -> Option<Preference> {
         v.get(key).and_then(|x| x.as_str()).map(str::to_string)
     }
     fn flag(v: &serde_json::Value, key: &str) -> bool {
-        v.get(key).and_then(|x| x.as_bool()).unwrap_or(false)
+        v.get(key).and_then(serde_json::Value::as_bool).unwrap_or(false)
     }
     fn strings(v: &serde_json::Value, key: &str) -> Vec<String> {
         v.get(key)
@@ -1060,7 +1026,7 @@ fn preference_from_json(v: &serde_json::Value) -> Option<Preference> {
 
     Some(match text(v, "type")?.as_str() {
         "CheckBoxPreference" => Preference::CheckBox(CheckBoxPreference {
-            current_value: v.get("currentValue").and_then(|x| x.as_bool()),
+            current_value: v.get("currentValue").and_then(serde_json::Value::as_bool),
             default: flag(v, "default"),
             enabled,
             key,
@@ -1069,7 +1035,7 @@ fn preference_from_json(v: &serde_json::Value) -> Option<Preference> {
             visible,
         }),
         "SwitchPreference" => Preference::Switch(SwitchPreference {
-            current_value: v.get("currentValue").and_then(|x| x.as_bool()),
+            current_value: v.get("currentValue").and_then(serde_json::Value::as_bool),
             default: flag(v, "default"),
             enabled,
             key,
@@ -1496,27 +1462,8 @@ pub struct SourceNodeList {
 impl SourceNodeList {
     pub fn from_nodes(nodes: Vec<SourceType>) -> Self {
         let total = nodes.len() as i32;
-        let edges = if nodes.is_empty() {
-            vec![]
-        } else if nodes.len() == 1 {
-            vec![SourceEdge { cursor: Cursor("0".into()), node: nodes[0].clone() }]
-        } else {
-            vec![
-                SourceEdge { cursor: Cursor("0".into()), node: nodes[0].clone() },
-                SourceEdge { cursor: Cursor((nodes.len() - 1).to_string()), node: nodes[nodes.len() - 1].clone() },
-            ]
-        };
-        Self {
-            page_info: PageInfo {
-                start_cursor: Some(Cursor("0".into())),
-                end_cursor: Some(Cursor(total.saturating_sub(1).to_string())),
-                has_next_page: false,
-                has_previous_page: false,
-            },
-            nodes,
-            edges,
-            total_count: total,
-        }
+        let edges = cursor_edges(&nodes, |cursor, node| SourceEdge { cursor, node });
+        Self { page_info: PageInfo::for_total(total), nodes, edges, total_count: total }
     }
 }
 
@@ -1537,27 +1484,8 @@ pub struct ExtensionNodeList {
 impl ExtensionNodeList {
     pub fn from_nodes(nodes: Vec<ExtensionType>) -> Self {
         let total = nodes.len() as i32;
-        let edges = if nodes.is_empty() {
-            vec![]
-        } else if nodes.len() == 1 {
-            vec![ExtensionEdge { cursor: Cursor("0".into()), node: nodes[0].clone() }]
-        } else {
-            vec![
-                ExtensionEdge { cursor: Cursor("0".into()), node: nodes[0].clone() },
-                ExtensionEdge { cursor: Cursor((nodes.len() - 1).to_string()), node: nodes[nodes.len() - 1].clone() },
-            ]
-        };
-        Self {
-            page_info: PageInfo {
-                start_cursor: Some(Cursor("0".into())),
-                end_cursor: Some(Cursor(total.saturating_sub(1).to_string())),
-                has_next_page: false,
-                has_previous_page: false,
-            },
-            nodes,
-            edges,
-            total_count: total,
-        }
+        let edges = cursor_edges(&nodes, |cursor, node| ExtensionEdge { cursor, node });
+        Self { page_info: PageInfo::for_total(total), nodes, edges, total_count: total }
     }
 }
 
@@ -1578,30 +1506,8 @@ pub struct ExtensionStoreNodeList {
 impl ExtensionStoreNodeList {
     pub fn from_nodes(nodes: Vec<ExtensionStoreType>) -> Self {
         let total = nodes.len() as i32;
-        let edges = if nodes.is_empty() {
-            vec![]
-        } else if nodes.len() == 1 {
-            vec![ExtensionStoreEdge { cursor: Cursor("0".into()), node: nodes[0].clone() }]
-        } else {
-            vec![
-                ExtensionStoreEdge { cursor: Cursor("0".into()), node: nodes[0].clone() },
-                ExtensionStoreEdge {
-                    cursor: Cursor((nodes.len() - 1).to_string()),
-                    node: nodes[nodes.len() - 1].clone(),
-                },
-            ]
-        };
-        Self {
-            page_info: PageInfo {
-                start_cursor: Some(Cursor("0".into())),
-                end_cursor: Some(Cursor(total.saturating_sub(1).to_string())),
-                has_next_page: false,
-                has_previous_page: false,
-            },
-            nodes,
-            edges,
-            total_count: total,
-        }
+        let edges = cursor_edges(&nodes, |cursor, node| ExtensionStoreEdge { cursor, node });
+        Self { page_info: PageInfo::for_total(total), nodes, edges, total_count: total }
     }
 }
 
@@ -1610,13 +1516,11 @@ impl ExtensionStoreNodeList {
 /// failures (extension CDNs usually omit CORS headers and the WebUI sets
 /// `crossOrigin='anonymous'`) and repeated requests hit the local disk cache
 /// instead of the upstream CDN. Non-http URLs pass through unchanged.
-pub fn proxied_cover_url(url: Option<String>) -> Option<String> {
-    url.map(|u| {
-        if u.starts_with("http://") || u.starts_with("https://") {
-            let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(u.as_bytes());
-            format!("/api/v1/image/{b64}")
-        } else {
-            u
-        }
-    })
+pub fn proxied_cover_url(url: String) -> String {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(url.as_bytes());
+        format!("/api/v1/image/{b64}")
+    } else {
+        url
+    }
 }

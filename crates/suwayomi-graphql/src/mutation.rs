@@ -7,6 +7,7 @@ use std::sync::Mutex;
 
 use suwayomi_core::schema::{CategoryRow, ChapterRow, MangaRow};
 use suwayomi_domain::meta::{MetaService, MetaTable};
+use suwayomi_domain::source::SourceFetcher as _;
 use suwayomi_domain::source::image_proxy_url;
 use suwayomi_domain::sql::bind_placeholders;
 
@@ -21,16 +22,16 @@ static LOCAL_SCAN_CACHE: Mutex<Option<(String, Vec<suwayomi_core::source::SManga
 
 fn local_scan_signature(root: &std::path::Path) -> Option<String> {
     let mut entries: Vec<_> = std::fs::read_dir(root).ok()?.flatten().collect();
-    entries.sort_by_key(|e| e.file_name());
+    entries.sort_by_key(std::fs::DirEntry::file_name);
     let mut sig = String::new();
     for e in entries {
         let mt = e.metadata().ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
-        sig.push_str(&format!("{}:{mt};", e.file_name().to_string_lossy()));
+        let _ = write!(sig, "{}:{mt};", e.file_name().to_string_lossy());
     }
     Some(sig)
 }
 
-fn cached_local_scan(root: &std::path::Path) -> Vec<suwayomi_core::source::SManga> {
+fn cached_local_scan(root: &std::path::Path, cache_root: &std::path::Path) -> Vec<suwayomi_core::source::SManga> {
     let sig = local_scan_signature(root);
     if let Some(sig) = &sig
         && let Ok(mut guard) = LOCAL_SCAN_CACHE.lock()
@@ -40,13 +41,17 @@ fn cached_local_scan(root: &std::path::Path) -> Vec<suwayomi_core::source::SMang
         {
             return list.clone();
         }
-        let list = suwayomi_domain::source::local::scan_local_source(root);
+        let list = suwayomi_domain::source::local::scan_local_source(root, cache_root);
         *guard = Some((sig.clone(), list.clone()));
         return list;
     }
-    suwayomi_domain::source::local::scan_local_source(root)
+    suwayomi_domain::source::local::scan_local_source(root, cache_root)
 }
-use crate::types::*;
+use crate::types::{
+    CategoryMetaType, CategoryType, ChapterMetaType, ChapterType, GlobalMetaType, IncludeOrExclude, MangaMetaType,
+    MangaType, SourceMetaType, SourceType, TriState,
+};
+use std::fmt::Write as _;
 
 // ---------------------------------------------------------------------------
 // Inputs
@@ -738,8 +743,8 @@ impl MutationRoot {
         .bind(&name)
         .bind(input.order.unwrap_or(i32::MAX))
         .bind(input.default.unwrap_or(false))
-        .bind(input.include_in_update.map(|v| v as i32).unwrap_or(0))
-        .bind(input.include_in_download.map(|v| v as i32).unwrap_or(0))
+        .bind(input.include_in_update.map_or(0, |v| v as i32))
+        .bind(input.include_in_download.map_or(0, |v| v as i32))
         .fetch_one(pool)
         .await
         .map_err(async_graphql::Error::from)?;
@@ -1387,7 +1392,7 @@ impl MutationRoot {
         // here (idempotent; a plain DB read once rows exist) so opening a
         // freshly-browsed manga shows chapters without a manual refresh,
         // without triggering per-chapter fetches from list/library queries.
-        if state.chapter.get_chapter_list(dc.id, false).await.map(|l| l.is_empty()).unwrap_or(false) {
+        if state.chapter.get_chapter_list(dc.id, false).await.is_ok_and(|l| l.is_empty()) {
             let _ = state.chapter.get_chapter_list(dc.id, true).await;
         }
         let manga = MangaType::from_row(&fetch_manga_row(state, dc.id).await?);
@@ -1443,7 +1448,7 @@ impl MutationRoot {
             && let Ok(row) = fetch_manga_row(state, input.id).await
             && row.source == suwayomi_domain::source::LOCAL_SOURCE_ID
         {
-            let root = suwayomi_domain::source::local::local_source_root();
+            let root = state.paths.local_sources();
             if let Some(dir) = suwayomi_domain::source::local::local_manga_dir(&root, &row.url) {
                 let chapters = suwayomi_domain::source::local::scan_local_chapters(&dir);
                 upsert_local_chapters(state, row.id, &chapters, Some(&dir)).await?;
@@ -1526,10 +1531,10 @@ impl MutationRoot {
                     pages = source_pages.into_iter().map(|p| p.image_url.unwrap_or(p.url)).collect();
                 }
                 Ok(_) => {
-                    tracing::debug!("fetchChapterPages: source returned no pages for chapter {}", input.chapter_id)
+                    tracing::debug!("fetchChapterPages: source returned no pages for chapter {}", input.chapter_id);
                 }
                 Err(e) => {
-                    tracing::warn!("fetchChapterPages: source fetch failed for chapter {}: {e}", input.chapter_id)
+                    tracing::warn!("fetchChapterPages: source fetch failed for chapter {}: {e}", input.chapter_id);
                 }
             }
         }
@@ -1563,23 +1568,20 @@ impl MutationRoot {
         let page_num = input.page.max(1) as u32;
 
         // Resolve the manga rows for this page, then map to GraphQL types.
-        let ids: Vec<i32>;
-        let has_next_page: bool;
-        if source_id == suwayomi_domain::source::LOCAL_SOURCE_ID {
+        // 本地源只有一页（`hasNextPage` 恒为 false），远端源的分页由上游决定。
+        let (ids, has_next_page) = if source_id == suwayomi_domain::source::LOCAL_SOURCE_ID {
             // Local source: scan `data/local/` (folders -> manga). Search
             // filters by title client-side; pagination is a single page.
             // The scan is mtime-indexed — nothing to rescan/upsert when the
             // directory hasn't changed (library/browse open this on every
             // visit).
-            let root = suwayomi_domain::source::local::local_source_root();
+            let root = state.paths.local_sources();
+            let cache_root = state.paths.cache();
             let sig = local_scan_signature(&root);
-            let cache_hit = match &sig {
-                Some(s) => {
-                    LOCAL_SCAN_CACHE.lock().map(|g| g.as_ref().map(|(cs, _)| cs == s).unwrap_or(false)).unwrap_or(false)
-                }
-                None => false,
-            };
-            let mut mangas = cached_local_scan(&root);
+            let cache_hit = sig
+                .as_ref()
+                .is_some_and(|s| LOCAL_SCAN_CACHE.lock().is_ok_and(|g| g.as_ref().is_some_and(|(cs, _)| cs == s)));
+            let mut mangas = cached_local_scan(&root, &cache_root);
             if let Some(q) = input.query.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
                 let needle = q.to_lowercase();
                 mangas.retain(|m| m.title.to_lowercase().contains(&needle));
@@ -1591,62 +1593,31 @@ impl MutationRoot {
                     std::cmp::Reverse(suwayomi_domain::source::local::local_latest_update_epoch(&root.join(&m.url)))
                 });
             }
-            if cache_hit {
+            let ids: Vec<i32> = if cache_hit {
                 // rows already exist from a previous scan — resolve ids by
                 // url; any miss falls back to the full upsert path below.
                 let mut resolved = Vec::with_capacity(mangas.len());
                 let mut complete = true;
                 for m in &mangas {
                     let sql = bind_placeholders("SELECT id FROM manga WHERE source = ? AND url = ?");
-                    match suwayomi_db::query_scalar::<i32>(&sql)
+                    if let Ok(Some(id)) = suwayomi_db::query_scalar::<i32>(&sql)
                         .bind(suwayomi_domain::source::LOCAL_SOURCE_ID)
                         .bind(&m.url)
                         .fetch_optional(state.db.pool())
                         .await
                     {
-                        Ok(Some(id)) => resolved.push(id),
-                        _ => {
-                            complete = false;
-                            break;
-                        }
+                        resolved.push(id);
+                    } else {
+                        complete = false;
+                        break;
                     }
                 }
-                if complete {
-                    ids = resolved;
-                    has_next_page = false;
-                } else {
-                    ids = state
-                        .manga_list
-                        .insert_or_update(suwayomi_domain::source::LOCAL_SOURCE_ID, &mangas)
-                        .await
-                        .map_err(async_graphql::Error::from)?;
-                    // Seed chapters from disk (idempotent upsert by (manga,
-                    // url)), applying archive metadata (meta.json /
-                    // ComicInfo.xml).
-                    for (m, id) in mangas.iter().zip(ids.iter()) {
-                        if let Some(dir) = suwayomi_domain::source::local::local_manga_dir(&root, &m.url) {
-                            let chapters = suwayomi_domain::source::local::scan_local_chapters(&dir);
-                            upsert_local_chapters(state, *id, &chapters, Some(&dir)).await?;
-                        }
-                    }
-                    has_next_page = false;
-                }
+                if complete { resolved } else { upsert_local_mangas(state, &root, &mangas).await? }
             } else {
-                ids = state
-                    .manga_list
-                    .insert_or_update(suwayomi_domain::source::LOCAL_SOURCE_ID, &mangas)
-                    .await
-                    .map_err(async_graphql::Error::from)?;
-                // Seed chapters from disk (idempotent upsert by (manga, url)),
-                // applying archive metadata (meta.json / ComicInfo.xml).
-                for (m, id) in mangas.iter().zip(ids.iter()) {
-                    if let Some(dir) = suwayomi_domain::source::local::local_manga_dir(&root, &m.url) {
-                        let chapters = suwayomi_domain::source::local::scan_local_chapters(&dir);
-                        upsert_local_chapters(state, *id, &chapters, Some(&dir)).await?;
-                    }
-                }
-                has_next_page = false;
-            }
+                upsert_local_mangas(state, &root, &mangas).await?
+            };
+            // 本地源不分页：命中缓存与全量 upsert 两条路径都只出这一页。
+            (ids, false)
         } else {
             let paged = match input.r#type {
                 FetchSourceMangaType::Popular => state
@@ -1670,9 +1641,9 @@ impl MutationRoot {
                     state.manga_list.process_entries(source_id, &page).await.map_err(async_graphql::Error::from)?
                 }
             };
-            ids = paged.manga_list.iter().map(|m| m.id).collect();
-            has_next_page = paged.has_next_page;
-        }
+            let ids: Vec<i32> = paged.manga_list.iter().map(|m| m.id).collect();
+            (ids, paged.has_next_page)
+        };
 
         let mut mangas = Vec::with_capacity(ids.len());
         for id in ids {
@@ -1753,6 +1724,29 @@ async fn fetch_chapter_row(state: &GraphQLState, id: i32) -> async_graphql::Resu
 }
 
 /// Idempotent upsert of local-source chapters by (manga, url).
+/// Upserts the scanned `data/local/` mangas and seeds their chapters from disk.
+///
+/// Both steps are idempotent (upsert by `(source, url)`, chapters by
+/// `(manga, url)`), so calling this on every local browse is safe.
+async fn upsert_local_mangas(
+    state: &GraphQLState,
+    root: &std::path::Path,
+    mangas: &[suwayomi_core::source::SManga],
+) -> async_graphql::Result<Vec<i32>> {
+    let ids = state
+        .manga_list
+        .insert_or_update(suwayomi_domain::source::LOCAL_SOURCE_ID, mangas)
+        .await
+        .map_err(async_graphql::Error::from)?;
+    for (m, id) in mangas.iter().zip(ids.iter()) {
+        if let Some(dir) = suwayomi_domain::source::local::local_manga_dir(root, &m.url) {
+            let chapters = suwayomi_domain::source::local::scan_local_chapters(&dir);
+            upsert_local_chapters(state, *id, &chapters, Some(&dir)).await?;
+        }
+    }
+    Ok(ids)
+}
+
 async fn upsert_local_chapters(
     state: &GraphQLState,
     manga_id: i32,
@@ -1787,42 +1781,39 @@ async fn upsert_local_chapters(
             .fetch_optional(state.db.pool())
             .await
             .map_err(async_graphql::Error::from)?;
-        match existing {
-            Some((id,)) => {
-                let sql = bind_placeholders(
-                    "UPDATE chapter SET name = ?, chapter_number = ?, source_order = ?, fetched_at = ?, last_modified_at = ?, date_upload = ?, scanlator = ? WHERE id = ?",
-                );
-                suwayomi_db::query(&sql)
-                    .bind(&name)
-                    .bind(chapter_number)
-                    .bind(source_order)
-                    .bind(now)
-                    .bind(now)
-                    .bind(date_upload)
-                    .bind(&scanlator)
-                    .bind(id)
-                    .execute(state.db.pool())
-                    .await
-                    .map_err(async_graphql::Error::from)?;
-            }
-            None => {
-                let sql = bind_placeholders(
-                    "INSERT INTO chapter (url, name, chapter_number, source_order, manga, fetched_at, last_modified_at, date_upload, scanlator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                );
-                suwayomi_db::query(&sql)
-                    .bind(&c.url)
-                    .bind(&name)
-                    .bind(chapter_number)
-                    .bind(source_order)
-                    .bind(manga_id)
-                    .bind(now)
-                    .bind(now)
-                    .bind(date_upload)
-                    .bind(&scanlator)
-                    .execute(state.db.pool())
-                    .await
-                    .map_err(async_graphql::Error::from)?;
-            }
+        if let Some((id,)) = existing {
+            let sql = bind_placeholders(
+                "UPDATE chapter SET name = ?, chapter_number = ?, source_order = ?, fetched_at = ?, last_modified_at = ?, date_upload = ?, scanlator = ? WHERE id = ?",
+            );
+            suwayomi_db::query(&sql)
+                .bind(&name)
+                .bind(chapter_number)
+                .bind(source_order)
+                .bind(now)
+                .bind(now)
+                .bind(date_upload)
+                .bind(&scanlator)
+                .bind(id)
+                .execute(state.db.pool())
+                .await
+                .map_err(async_graphql::Error::from)?;
+        } else {
+            let sql = bind_placeholders(
+                "INSERT INTO chapter (url, name, chapter_number, source_order, manga, fetched_at, last_modified_at, date_upload, scanlator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            );
+            suwayomi_db::query(&sql)
+                .bind(&c.url)
+                .bind(&name)
+                .bind(chapter_number)
+                .bind(source_order)
+                .bind(manga_id)
+                .bind(now)
+                .bind(now)
+                .bind(date_upload)
+                .bind(&scanlator)
+                .execute(state.db.pool())
+                .await
+                .map_err(async_graphql::Error::from)?;
         }
     }
     Ok(())
@@ -1836,7 +1827,7 @@ async fn seed_local_pages(
     chapter: &ChapterType,
 ) -> async_graphql::Result<()> {
     use suwayomi_domain::source::local as local_src;
-    let root = local_src::local_source_root();
+    let root = state.paths.local_sources();
     let Some(manga_dir) = local_src::local_manga_dir(&root, &manga_row.url) else {
         return Ok(());
     };

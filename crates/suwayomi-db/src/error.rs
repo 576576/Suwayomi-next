@@ -49,10 +49,10 @@ impl From<tokio_postgres::Error> for Error {
     fn from(value: tokio_postgres::Error) -> Self {
         // `tokio_postgres::Error`'s own `Display` is just "db error"; the
         // SQLSTATE and the server message only live on `as_db_error()`.
-        match value.as_db_error() {
-            Some(db) => Self::Postgres(format!("[{}] {db}", db.code().code())),
-            None => Self::Postgres(value.to_string()),
-        }
+        value.as_db_error().map_or_else(
+            || Self::Postgres(value.to_string()),
+            |db| Self::Postgres(format!("[{}] {db}", db.code().code())),
+        )
     }
 }
 

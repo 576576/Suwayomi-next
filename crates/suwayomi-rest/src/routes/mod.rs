@@ -18,9 +18,6 @@ use axum::Router;
 
 use crate::state::AppState;
 
-/// 统一缓存根（实现见 suwayomi-core）：`<发布根>/cache`，`SUWAYOMI_CACHE_DIR` 可覆盖。
-pub use suwayomi_core::config::cache_root;
-
 /// Builds the `/api/v1/**` router (OPDS & GraphQL mounted separately).
 pub fn api_v1_router() -> Router<AppState> {
     Router::new()

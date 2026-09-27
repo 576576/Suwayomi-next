@@ -2,25 +2,31 @@
 //! `FeedBuilderInternal.kt`. Produces Atom XML strings for every feed type.
 
 use std::pin::Pin;
-use std::sync::Arc;
 
 use chrono::{SecondsFormat, Utc};
 use suwayomi_core::db::Db;
-use suwayomi_domain::source::SourceFetcher;
+use suwayomi_domain::source::{SourceBackend, SourceFetcher};
 
-use crate::constants::*;
+use crate::constants::{
+    ITEMS_PER_PAGE, REL_ACQUISITION_OPEN_ACCESS, REL_ALTERNATE, REL_FACET, REL_FIRST, REL_IMAGE, REL_IMAGE_THUMBNAIL,
+    REL_LAST, REL_NEXT, REL_PREV, REL_PSE_STREAM, REL_SEARCH, REL_SELF, REL_START, REL_SUBSECTION,
+    TYPE_ATOM_ENTRY_OPDS, TYPE_ATOM_FEED_ACQUISITION, TYPE_ATOM_FEED_NAVIGATION, TYPE_CBZ, TYPE_IMAGE_JPEG,
+    TYPE_OPENSEARCH_DESCRIPTION, TYPE_TEXT_HTML,
+};
 use crate::model::{Author, Category, Content, Entry, Feed, Link, Summary};
 use crate::repository::{
     ChapterListEntry, ChapterMetadataEntry, LibraryFilter, MangaAcqEntry, MangaDetails, NavEntry, OpdsRepository,
     SortKey,
 };
+use std::fmt::Write as _;
+use suwayomi_core::text::urlencode;
 
 /// Opaque feed context: database + upstream prefix + optional source fetcher.
 pub struct FeedCtx<'a> {
     pub db: &'a Db,
     pub base_url: &'a str,
     pub lang: &'a str,
-    pub fetcher: Option<Arc<dyn SourceFetcher>>,
+    pub fetcher: Option<SourceBackend>,
 }
 
 fn now_opds() -> String {
@@ -28,10 +34,8 @@ fn now_opds() -> String {
 }
 
 fn epoch_opds(epoch_millis: i64) -> String {
-    match chrono::DateTime::from_timestamp_millis(epoch_millis) {
-        Some(dt) => dt.to_rfc3339_opts(SecondsFormat::Secs, true),
-        None => now_opds(),
-    }
+    chrono::DateTime::from_timestamp_millis(epoch_millis)
+        .map_or_else(now_opds, |dt| dt.to_rfc3339_opts(SecondsFormat::Secs, true))
 }
 
 struct FeedBuilder<'a> {
@@ -330,10 +334,10 @@ fn chapter_list_entry(
     if let Some(s) = &chapter.scanlator
         && !s.is_empty()
     {
-        details.push_str(&format!(" (Scanlator: {s})"));
+        let _ = write!(details, " (Scanlator: {s})");
     }
     if chapter.page_count > 0 {
-        details.push_str(&format!(" — {} of {} pages read", chapter.last_page_read, chapter.page_count));
+        let _ = write!(details, " — {} of {} pages read", chapter.last_page_read, chapter.page_count);
     }
 
     let mut links = Vec::new();
@@ -400,7 +404,7 @@ fn chapter_list_entry(
 
 fn status_name(status: i32) -> &'static str {
     match status {
-        0 => "Unknown",
+        // 0 = Unknown，与未知取值一起走兜底
         1 => "Ongoing",
         2 => "Completed",
         3 => "Licensed",
@@ -512,7 +516,7 @@ pub fn search_description(lang: &str) -> String {
 /// Recently read chapters feed.
 pub async fn history_feed(ctx: &FeedCtx<'_>, page_num: usize) -> String {
     let repo = OpdsRepository::new(ctx.db.pool());
-    let result = repo.history(page_num).await.unwrap_or(Page::empty());
+    let result = repo.history(page_num).await.unwrap_or_else(|_| Page::empty());
     let mut builder = FeedBuilder::new(ctx, "history", "Reading History".into(), TYPE_ATOM_FEED_ACQUISITION)
         .with_page(Some(page_num));
     builder.total_results = Some(result.total as u64);
@@ -529,7 +533,7 @@ pub async fn search_feed(
     page_num: usize,
 ) -> String {
     let repo = OpdsRepository::new(ctx.db.pool());
-    let result = repo.search_manga(query, author, title, page_num).await.unwrap_or(Page::empty());
+    let result = repo.search_manga(query, author, title, page_num).await.unwrap_or_else(|_| Page::empty());
     let query_params = query.filter(|q| !q.is_empty()).map(|q| format!("query={}", urlencode(q)));
     let mut builder = FeedBuilder::new(ctx, "library/series", "Search Results".into(), TYPE_ATOM_FEED_ACQUISITION)
         .with_page(Some(page_num))
@@ -567,7 +571,7 @@ pub async fn library_series_feed(
             LibraryFilter::parse(filter),
         )
         .await
-        .unwrap_or(Page::empty());
+        .unwrap_or_else(|_| Page::empty());
 
     let title = match (source_id, category_id, genre, status_id, lang_code) {
         (Some(id), _, _, _, _) => format!("Source: {id}"),
@@ -746,7 +750,7 @@ pub async fn languages_feed(ctx: &FeedCtx<'_>) -> String {
 /// Library updates feed (recent chapter additions).
 pub async fn library_updates_feed(ctx: &FeedCtx<'_>, page_num: usize) -> String {
     let repo = OpdsRepository::new(ctx.db.pool());
-    let result = repo.library_updates(page_num).await.unwrap_or(Page::empty());
+    let result = repo.library_updates(page_num).await.unwrap_or_else(|_| Page::empty());
     let mut builder = FeedBuilder::new(ctx, "library-updates", "Library Updates".into(), TYPE_ATOM_FEED_ACQUISITION)
         .with_page(Some(page_num));
     builder.total_results = Some(result.total as u64);
@@ -998,19 +1002,6 @@ pub fn not_found_feed(ctx: &FeedCtx<'_>, id_path: &str, message: &str) -> String
     FeedBuilder::new(ctx, id_path, message.to_string(), TYPE_ATOM_FEED_ACQUISITION).build().render()
 }
 
-fn urlencode(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
-            _ => {
-                let mut b = [0u8; 4];
-                let bytes = c.encode_utf8(&mut b).as_bytes();
-                bytes.iter().map(|x| format!("%{x:02X}")).collect()
-            }
-        })
-        .collect()
-}
-
 // --- small helpers ----------------------------------------------------------
 
 pub(crate) use crate::repository::Page;
@@ -1019,9 +1010,9 @@ trait PageEmpty<T> {
     fn empty() -> Self;
 }
 
-impl<T> PageEmpty<Page<T>> for Page<T> {
+impl<T> PageEmpty<Self> for Page<T> {
     fn empty() -> Self {
-        Page { items: vec![], total: 0 }
+        Self { items: vec![], total: 0 }
     }
 }
 

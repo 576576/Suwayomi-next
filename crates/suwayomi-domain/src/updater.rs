@@ -16,7 +16,7 @@ use suwayomi_core::schema::{CategoryRow, ChapterRow, MangaRow};
 use suwayomi_core::source::{SChapter, SManga};
 
 use crate::meta::{MetaService, MetaTable};
-use crate::source::SourceFetcher;
+use crate::source::{SourceBackend, SourceFetcher};
 
 /// `global_meta` 里保存「上一次全库更新完成时刻」（epoch 毫秒）的键。
 pub const LAST_GLOBAL_UPDATE_AT: &str = "last_global_update_at";
@@ -89,7 +89,7 @@ struct UpdaterState {
 #[derive(Clone)]
 pub struct UpdateManager {
     db: Db,
-    fetcher: Arc<dyn SourceFetcher>,
+    fetcher: SourceBackend,
     tx: broadcast::Sender<LibraryUpdateStatus>,
     state: Arc<Mutex<UpdaterState>>,
     /// 最近一次广播的快照，供 `libraryUpdateStatus` 这类轮询解析器直接取。
@@ -97,7 +97,7 @@ pub struct UpdateManager {
 }
 
 impl UpdateManager {
-    pub fn new(db: Db, fetcher: Arc<dyn SourceFetcher>) -> Self {
+    pub fn new(db: Db, fetcher: SourceBackend) -> Self {
         let (tx, _) = broadcast::channel(64);
         Self {
             db,
@@ -206,13 +206,11 @@ impl UpdateManager {
         &self,
         requested: Option<&[i32]>,
     ) -> Result<HashMap<CategoryJobStatus, Vec<CategoryRow>>, suwayomi_db::Error> {
-        let mut all: Vec<CategoryRow> =
+        let all: Vec<CategoryRow> =
             suwayomi_db::query_as("SELECT * FROM category ORDER BY id").fetch_all(self.db.pool()).await?;
         let mut out: HashMap<CategoryJobStatus, Vec<CategoryRow>> = HashMap::new();
-        let (updating, skipped): (Vec<CategoryRow>, Vec<CategoryRow>) = all.drain(..).partition(|c| match requested {
-            Some(ids) => ids.contains(&c.id),
-            None => c.include_in_update != 0,
-        });
+        let (updating, skipped): (Vec<CategoryRow>, Vec<CategoryRow>) =
+            all.into_iter().partition(|c| requested.map_or(c.include_in_update != 0, |ids| ids.contains(&c.id)));
         out.insert(CategoryJobStatus::Updating, updating);
         out.insert(CategoryJobStatus::Skipped, skipped);
         Ok(out)
@@ -523,7 +521,7 @@ mod tests {
     #[tokio::test]
     async fn updater_inserts_chapters_and_emits_events() {
         let db = setup().await;
-        let update = UpdateManager::new(db.clone(), Arc::new(FakeFetcher::default()));
+        let update = UpdateManager::new(db.clone(), SourceBackend::Test(Arc::new(FakeFetcher::default())));
         let mut rx = update.subscribe();
 
         update.start(None).await;
@@ -547,9 +545,8 @@ mod tests {
                         break;
                     }
                 }
-                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
-                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
-                Err(_) => break,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) | Err(_) => break,
             }
         }
         assert!(saw_running, "必须出现 is_running=true 的事件");
@@ -573,7 +570,7 @@ mod tests {
     #[tokio::test]
     async fn updater_marks_manga_failed_when_source_errors() {
         let db = setup().await;
-        let update = UpdateManager::new(db, Arc::new(crate::source::StubFetcher));
+        let update = UpdateManager::new(db, SourceBackend::Stub);
         let mut rx = update.subscribe();
         update.start(None).await;
 
@@ -590,7 +587,7 @@ mod tests {
                         break;
                     }
                 }
-                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
                 _ => break,
             }
         }
@@ -600,7 +597,7 @@ mod tests {
     #[tokio::test]
     async fn reset_clears_jobs_and_clears_running_flag() {
         let db = setup().await;
-        let update = UpdateManager::new(db, Arc::new(crate::source::StubFetcher));
+        let update = UpdateManager::new(db, SourceBackend::Stub);
         update.start(None).await;
         update.reset().await;
         assert!(!update.is_running().await, "reset 之后不该再是运行中");

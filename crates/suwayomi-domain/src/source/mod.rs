@@ -90,6 +90,129 @@ impl SourceFetcher for StubFetcher {
     }
 }
 
+/// 生产环境的源抓取后端。
+///
+/// `SourceFetcher` 是**契约**（各方法的语义在这里定义），但生产代码不再用它做
+/// 动态派发：全树只有两种后端——没有沙箱时的 stub、以及 JVM 沙箱——把它们写成
+/// 一个封闭枚举之后，(a) 调用点不再为"以后可能出现的第三种后端"付 `dyn` 的
+/// 间接跳转，(b) 编译器能把 `match` 展开、把热路径（更新器每章一次抓取、
+/// 下载器每页一次抓取）内联，(c) `match` 的穷尽性检查会拦住漏掉的分支。
+///
+/// `HttpSandboxFetcher` 本身是 `Clone` 且内部只有 `String` + `reqwest::Client`
+/// （后者内部已是 `Arc`），所以这个枚举可以按值到处传，不必再包一层 `Arc`。
+#[derive(Clone, Default)]
+pub enum SourceBackend {
+    /// 没接扩展：一切抓取都以描述性错误失败（`StubSource` 的语义）。
+    #[default]
+    Stub,
+    /// ext-runtime JVM 沙箱（内嵌进程或外部主机）。
+    Sandbox(sandbox::HttpSandboxFetcher),
+    /// 测试注入点。
+    ///
+    /// 只在 `cfg(test)` 下存在，因此生产构建里这个枚举仍然是封闭的两态，
+    /// 派发也仍然是静态的；集成测试（`tests/*.rs`）走的是 `Stub`。
+    #[cfg(test)]
+    Test(std::sync::Arc<dyn SourceFetcher>),
+}
+
+impl SourceBackend {
+    /// 沙箱的 base url，没接沙箱时为 `None`。
+    pub fn sandbox_base(&self) -> Option<&str> {
+        match self {
+            Self::Sandbox(f) => Some(f.base_url()),
+            Self::Stub => None,
+            #[cfg(test)]
+            Self::Test(_) => None,
+        }
+    }
+}
+
+impl From<sandbox::HttpSandboxFetcher> for SourceBackend {
+    fn from(fetcher: sandbox::HttpSandboxFetcher) -> Self {
+        Self::Sandbox(fetcher)
+    }
+}
+
+#[async_trait]
+impl SourceFetcher for SourceBackend {
+    async fn fetch_manga_update(
+        &self,
+        source_id: i64,
+        manga: &SManga,
+        chapters: &[SChapter],
+        fetch_details: bool,
+        fetch_chapters: bool,
+    ) -> crate::error::Result<(SManga, Vec<SChapter>)> {
+        match self {
+            Self::Stub => {
+                StubFetcher.fetch_manga_update(source_id, manga, chapters, fetch_details, fetch_chapters).await
+            }
+            Self::Sandbox(f) => f.fetch_manga_update(source_id, manga, chapters, fetch_details, fetch_chapters).await,
+            #[cfg(test)]
+            Self::Test(f) => f.fetch_manga_update(source_id, manga, chapters, fetch_details, fetch_chapters).await,
+        }
+    }
+
+    async fn get_popular_manga(&self, source_id: i64, page: u32) -> crate::error::Result<MangasPage> {
+        match self {
+            Self::Stub => StubFetcher.get_popular_manga(source_id, page).await,
+            Self::Sandbox(f) => f.get_popular_manga(source_id, page).await,
+            #[cfg(test)]
+            Self::Test(f) => f.get_popular_manga(source_id, page).await,
+        }
+    }
+
+    async fn get_latest_updates(&self, source_id: i64, page: u32) -> crate::error::Result<MangasPage> {
+        match self {
+            Self::Stub => StubFetcher.get_latest_updates(source_id, page).await,
+            Self::Sandbox(f) => f.get_latest_updates(source_id, page).await,
+            #[cfg(test)]
+            Self::Test(f) => f.get_latest_updates(source_id, page).await,
+        }
+    }
+
+    async fn search_manga(&self, source_id: i64, query: &str, page: u32) -> crate::error::Result<MangasPage> {
+        match self {
+            Self::Stub => StubFetcher.search_manga(source_id, query, page).await,
+            Self::Sandbox(f) => f.search_manga(source_id, query, page).await,
+            #[cfg(test)]
+            Self::Test(f) => f.search_manga(source_id, query, page).await,
+        }
+    }
+
+    async fn fetch_pages(
+        &self,
+        source_id: i64,
+        manga_url: &str,
+        chapter_url: &str,
+    ) -> crate::error::Result<Vec<suwayomi_core::source::SourcePage>> {
+        match self {
+            Self::Stub => StubFetcher.fetch_pages(source_id, manga_url, chapter_url).await,
+            Self::Sandbox(f) => f.fetch_pages(source_id, manga_url, chapter_url).await,
+            #[cfg(test)]
+            Self::Test(f) => f.fetch_pages(source_id, manga_url, chapter_url).await,
+        }
+    }
+
+    fn supports_latest(&self, source_id: i64) -> bool {
+        match self {
+            Self::Stub => StubFetcher.supports_latest(source_id),
+            Self::Sandbox(f) => f.supports_latest(source_id),
+            #[cfg(test)]
+            Self::Test(f) => f.supports_latest(source_id),
+        }
+    }
+
+    async fn get_filters(&self, source_id: i64) -> crate::error::Result<serde_json::Value> {
+        match self {
+            Self::Stub => StubFetcher.get_filters(source_id).await,
+            Self::Sandbox(f) => f.get_filters(source_id).await,
+            #[cfg(test)]
+            Self::Test(f) => f.get_filters(source_id).await,
+        }
+    }
+}
+
 /// Convert an external http(s) image URL into the server's same-origin
 /// proxy path `/api/v1/image/{b64}` (handled by `suwayomi-rest::routes::image`).
 /// Non-http values pass through unchanged so already-proxied paths and local

@@ -55,17 +55,17 @@ impl DbSettings {
     pub fn from_env() -> Self {
         let backend = std::env::var(ENV_BACKEND).ok().map(|v| v.trim().to_ascii_lowercase());
         let url = std::env::var(ENV_DATABASE_URL).unwrap_or_default();
-        let path = match std::env::var(ENV_SQLITE_PATH) {
-            Ok(p) => PathBuf::from(p),
-            Err(_) => {
+        let path = std::env::var(ENV_SQLITE_PATH).map_or_else(
+            |_| {
                 let p = default_sqlite_path();
                 migrate_legacy_sqlite(&p);
                 p
-            }
-        };
+            },
+            PathBuf::from,
+        );
 
         let kind = match backend.as_deref() {
-            Some("postgres") | Some("postgresql") => BackendKind::Postgres,
+            Some("postgres" | "postgresql") => BackendKind::Postgres,
             Some("sqlite") => BackendKind::Sqlite,
             _ if !url.is_empty() => BackendKind::Postgres,
             _ => BackendKind::Sqlite,
@@ -109,7 +109,7 @@ fn db_dir_from(env: Option<&str>, exe: Option<&Path>) -> PathBuf {
         return PathBuf::from(dir);
     }
     if let Some(dir) = exe.and_then(Path::parent)
-        && dir.file_name().map(|n| n == "bin").unwrap_or(false)
+        && dir.file_name().is_some_and(|n| n == "bin")
         && let Some(base) = dir.parent()
     {
         return base.join("db");
@@ -180,7 +180,7 @@ fn legacy_sqlite_candidates(data_dir_env: Option<&str>, exe: Option<&Path>) -> V
     }
     if let Some(dir) = exe.and_then(Path::parent) {
         // 发布布局 exe 在 bin/ 下，数据目录是上一级的 data/
-        let base = if dir.file_name().map(|n| n == "bin").unwrap_or(false) { dir.parent().unwrap_or(dir) } else { dir };
+        let base = if dir.file_name().is_some_and(|n| n == "bin") { dir.parent().unwrap_or(dir) } else { dir };
         dirs.push(base.join("data"));
     }
     dirs.push(PathBuf::from("data"));

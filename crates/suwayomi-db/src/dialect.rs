@@ -51,13 +51,16 @@ pub fn plan(dialect: Dialect, sql: &str, params: &[Value]) -> Result<Planned> {
     let mut next = 0usize;
     let mut i = 0usize;
 
-    while i < chars.len() {
-        match chars[i] {
+    while let Some(&c) = chars.get(i) {
+        match c {
             '\'' => copy_quoted(&chars, &mut i, &mut out, '\''),
             '"' => copy_quoted(&chars, &mut i, &mut out, '"'),
             '-' if chars.get(i + 1) == Some(&'-') => {
-                while i < chars.len() && chars[i] != '\n' {
-                    out.push(chars[i]);
+                while let Some(&c) = chars.get(i) {
+                    if c == '\n' {
+                        break;
+                    }
+                    out.push(c);
                     i += 1;
                 }
             }
@@ -65,8 +68,11 @@ pub fn plan(dialect: Dialect, sql: &str, params: &[Value]) -> Result<Planned> {
                 out.push('/');
                 out.push('*');
                 i += 2;
-                while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
-                    out.push(chars[i]);
+                while let Some(&c) = chars.get(i) {
+                    if c == '*' && chars.get(i + 1) == Some(&'/') {
+                        break;
+                    }
+                    out.push(c);
                     i += 1;
                 }
                 if i < chars.len() {
@@ -79,19 +85,9 @@ pub fn plan(dialect: Dialect, sql: &str, params: &[Value]) -> Result<Planned> {
                 // A dollar-quoted body (`$$…$$` / `$tag$…$tag$`) is opaque: the
                 // `?` inside a PL/pgSQL function body is not a placeholder.
                 if c == '$'
-                    && let Some(tag_len) = dollar_quote_tag(&chars, i)
+                    && let Some((_, stop)) = dollar_quoted(&chars, i)
                 {
-                    let tag: Vec<char> = chars[i..i + tag_len].to_vec();
-                    let mut j = i + tag_len;
-                    let mut stop = chars.len();
-                    while j + tag_len <= chars.len() {
-                        if chars[j..j + tag_len] == tag[..] {
-                            stop = j + tag_len;
-                            break;
-                        }
-                        j += 1;
-                    }
-                    for ch in &chars[i..stop] {
+                    for ch in chars.iter().take(stop).skip(i) {
                         out.push(*ch);
                     }
                     i = stop;
@@ -100,8 +96,11 @@ pub fn plan(dialect: Dialect, sql: &str, params: &[Value]) -> Result<Planned> {
 
                 let mut j = i + 1;
                 let mut digits = String::new();
-                while j < chars.len() && chars[j].is_ascii_digit() {
-                    digits.push(chars[j]);
+                while let Some(&c) = chars.get(j) {
+                    if !c.is_ascii_digit() {
+                        break;
+                    }
+                    digits.push(c);
                     j += 1;
                 }
                 // A bare `$` is not a placeholder.
@@ -114,7 +113,10 @@ pub fn plan(dialect: Dialect, sql: &str, params: &[Value]) -> Result<Planned> {
                 let key = if digits.is_empty() { None } else { Some(format!("{c}{digits}")) };
                 let reuse = key.as_ref().and_then(|k| explicit.get(k).copied());
                 let value = match reuse {
-                    Some(slot) => bound[slot].clone(),
+                    Some(slot) => bound
+                        .get(slot)
+                        .cloned()
+                        .ok_or_else(|| Error::Other("placeholder reuses a slot with no binding".to_owned()))?,
                     None => take(params, &mut next)?.clone(),
                 };
 
@@ -145,22 +147,21 @@ pub fn plan(dialect: Dialect, sql: &str, params: &[Value]) -> Result<Planned> {
                     continue;
                 }
 
-                match reuse {
-                    Some(slot) => emit(dialect, &mut out, slot),
-                    None => {
-                        // A dynamic NULL has no type for PostgreSQL to infer, so
-                        // inline the literal instead of sending a parameter.
-                        if dialect == Dialect::Postgres && value.is_null() {
-                            out.push_str("NULL");
-                            continue;
-                        }
-                        let slot = bound.len();
-                        bound.push(value);
-                        if let Some(key) = key {
-                            explicit.insert(key, slot);
-                        }
-                        emit(dialect, &mut out, slot);
+                if let Some(slot) = reuse {
+                    emit(dialect, &mut out, slot);
+                } else {
+                    // A dynamic NULL has no type for PostgreSQL to infer, so
+                    // inline the literal instead of sending a parameter.
+                    if dialect == Dialect::Postgres && value.is_null() {
+                        out.push_str("NULL");
+                        continue;
                     }
+                    let slot = bound.len();
+                    bound.push(value);
+                    if let Some(key) = key {
+                        explicit.insert(key, slot);
+                    }
+                    emit(dialect, &mut out, slot);
                 }
             }
             c => {
@@ -180,8 +181,7 @@ pub fn plan(dialect: Dialect, sql: &str, params: &[Value]) -> Result<Planned> {
 fn copy_quoted(chars: &[char], i: &mut usize, out: &mut String, quote: char) {
     out.push(quote);
     *i += 1;
-    while *i < chars.len() {
-        let c = chars[*i];
+    while let Some(&c) = chars.get(*i) {
         out.push(c);
         *i += 1;
         if c == quote {
@@ -223,10 +223,27 @@ fn dollar_quote_tag(chars: &[char], i: usize) -> Option<usize> {
         return None;
     }
     let mut j = i + 1;
-    while j < chars.len() && (chars[j].is_ascii_alphanumeric() || chars[j] == '_') {
+    while chars.get(j).is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_') {
         j += 1;
     }
     (chars.get(j) == Some(&'$')).then_some(j - i + 1)
+}
+
+/// A dollar-quoted body starting at `i`, as `(tag, index just past the closer)`.
+///
+/// An unterminated body runs to the end of the input, matching how the backends
+/// themselves treat a truncated script.
+fn dollar_quoted(chars: &[char], i: usize) -> Option<(&[char], usize)> {
+    let tag_len = dollar_quote_tag(chars, i)?;
+    let tag = chars.get(i..i + tag_len)?;
+    let mut j = i + tag_len;
+    while j + tag_len <= chars.len() {
+        if chars.get(j..j + tag_len) == Some(tag) {
+            return Some((tag, j + tag_len));
+        }
+        j += 1;
+    }
+    Some((tag, chars.len()))
 }
 
 /// Byte offset where a trailing `= ANY(` (or bare `ANY(`) call starts.
@@ -236,16 +253,16 @@ fn dollar_quote_tag(chars: &[char], i: usize) -> Option<usize> {
 fn trailing_any_start(out: &str) -> Option<usize> {
     let trimmed = out.trim_end();
     let open = trimmed.len().checked_sub(1)?;
-    if !trimmed.is_char_boundary(open) || trimmed.as_bytes()[open] != b'(' {
+    if !trimmed.is_char_boundary(open) || trimmed.as_bytes().get(open) != Some(&b'(') {
         return None;
     }
-    let head = trimmed[..open].trim_end();
+    let head = trimmed.get(..open)?.trim_end();
     let any_at = head.len().checked_sub(3)?;
-    if !head.is_char_boundary(any_at) || !head[any_at..].eq_ignore_ascii_case("ANY") {
+    if !head.is_char_boundary(any_at) || !head.get(any_at..)?.eq_ignore_ascii_case("ANY") {
         return None;
     }
     // `someANY(...)` is a different function — require a word boundary.
-    let before = head[..any_at].trim_end();
+    let before = head.get(..any_at)?.trim_end();
     if before.chars().last().is_some_and(|c| c.is_alphanumeric() || c == '_') {
         return None;
     }
@@ -254,11 +271,11 @@ fn trailing_any_start(out: &str) -> Option<usize> {
     // leave the SQL alone and let the backend report the syntax error rather
     // than emit something that means something else.
     let eq = before.len().checked_sub(1)?;
-    if !before.is_char_boundary(eq) || before.as_bytes()[eq] != b'=' {
+    if !before.is_char_boundary(eq) || before.as_bytes().get(eq) != Some(&b'=') {
         return None;
     }
-    let prev = before[..eq].trim_end().as_bytes().last().copied();
-    if matches!(prev, Some(b'>') | Some(b'<') | Some(b'!')) {
+    let prev = before.get(..eq)?.trim_end().as_bytes().last().copied();
+    if matches!(prev, Some(b'>' | b'<' | b'!')) {
         return None;
     }
     // `eq` keeps the whitespace that separated the column from `=`.
@@ -267,10 +284,10 @@ fn trailing_any_start(out: &str) -> Option<usize> {
 
 /// Index of the `)` that closes the call, skipping whitespace.
 fn closing_paren(chars: &[char], mut i: usize) -> Option<usize> {
-    while i < chars.len() && chars[i].is_whitespace() {
+    while chars.get(i)?.is_whitespace() {
         i += 1;
     }
-    (i < chars.len() && chars[i] == ')').then_some(i)
+    (chars.get(i) == Some(&')')).then_some(i)
 }
 
 /// SQLite has no schemas, no `ILIKE` and no PostgreSQL cast syntax; strip them
@@ -279,8 +296,8 @@ fn rewrite_sqlite(sql: &str) -> String {
     let chars: Vec<char> = sql.chars().collect();
     let mut out = String::with_capacity(sql.len());
     let mut i = 0usize;
-    while i < chars.len() {
-        match chars[i] {
+    while let Some(&c) = chars.get(i) {
+        match c {
             '\'' => copy_quoted(&chars, &mut i, &mut out, '\''),
             '"' => copy_quoted(&chars, &mut i, &mut out, '"'),
             // `suwayomi.manga` -> `manga`
@@ -288,14 +305,14 @@ fn rewrite_sqlite(sql: &str) -> String {
             // `chapter_number::float4` -> `chapter_number`
             ':' if chars.get(i + 1) == Some(&':') => {
                 let mut j = i + 2;
-                while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '_') {
+                while chars.get(j).is_some_and(|c| c.is_alphanumeric() || *c == '_') {
                     j += 1;
                 }
                 // `::float4[]`, `::numeric(10, 2)`
                 if chars.get(j) == Some(&'[') && chars.get(j + 1) == Some(&']') {
                     j += 2;
                 } else if chars.get(j) == Some(&'(') {
-                    while j < chars.len() && chars[j] != ')' {
+                    while chars.get(j).is_some_and(|c| *c != ')') {
                         j += 1;
                     }
                     j += 1;
@@ -318,10 +335,7 @@ fn rewrite_sqlite(sql: &str) -> String {
 /// Case-insensitive `needle` match at `i`.
 fn starts_with_ci(chars: &[char], i: usize, needle: &str) -> bool {
     let n: Vec<char> = needle.chars().collect();
-    if i + n.len() > chars.len() {
-        return false;
-    }
-    chars[i..i + n.len()].iter().zip(n.iter()).all(|(a, b)| a.eq_ignore_ascii_case(b))
+    chars.get(i..i + n.len()).is_some_and(|window| window.iter().zip(n.iter()).all(|(a, b)| a.eq_ignore_ascii_case(b)))
 }
 
 /// `true` when the option is an identifier character (so `ILIKE` in `ILIKES`

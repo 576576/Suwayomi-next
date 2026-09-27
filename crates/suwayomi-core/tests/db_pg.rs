@@ -6,7 +6,14 @@
 //! Tests are skipped when the env var is absent.
 
 // 集成测试里 panic 就是断言失败的表达方式，不需要改成错误传播。
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::todo,
+    clippy::indexing_slicing
+)]
 
 use suwayomi_core::db::{BackendKind, Db};
 use suwayomi_core::schema::{ChapterRow, MangaRow, PageRow};
@@ -15,8 +22,8 @@ fn db_url() -> Option<String> {
     std::env::var("DATABASE_URL").or_else(|_| std::env::var("SUWAYOMI_TEST_DB")).ok()
 }
 
-/// Serialises the tests in this binary: they all talk to the same database and
-/// every `setup()` truncates the tables the others are working on.
+/// Serialises the database-backed tests — in this binary *and* in the other
+/// test binaries running alongside it. See `suwayomi_db::test_support`.
 async fn lock() -> suwayomi_db::test_support::DbLock {
     suwayomi_db::test_support::db_lock().await
 }
@@ -26,26 +33,7 @@ async fn setup() -> Option<Db> {
     let db = Db::postgres(&url).await.expect("connect postgres");
     db.migrate().await.expect("migrate");
     assert_eq!(db.kind(), BackendKind::Postgres);
-    // clear business tables to keep tests independent
-    for t in [
-        "track_search",
-        "track_record",
-        "extension_store",
-        "global_meta",
-        "source_meta",
-        "manga_meta",
-        "chapter_meta",
-        "category_meta",
-        "category_manga",
-        "page",
-        "chapter",
-        "manga",
-        "category",
-        "source",
-        "extension",
-    ] {
-        let _ = suwayomi_db::query(&format!("TRUNCATE TABLE suwayomi.{t} RESTART IDENTITY CASCADE")).execute(&db).await;
-    }
+    suwayomi_db::test_support::reset_business_tables(&db).await;
     Some(db)
 }
 

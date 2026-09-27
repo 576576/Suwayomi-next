@@ -9,8 +9,12 @@ name: Lint
 #             lint 级别由根 Cargo.toml 的 `[workspace.lints]` 统一定义，各 crate 继承。
 #             存量已清零，所以这里可以 -D（含 unwrap_used / expect_used / panic，
 #             测试代码通过各 crate 根部的 `#![cfg_attr(test, allow(...))]` 豁免）
-#   test   —— `cargo test --workspace`；需要 PostgreSQL 的那批用例在没有
-#             DATABASE_URL / SUWAYOMI_TEST_DB 时自己跳过，所以纯净 runner 也能跑
+#   test   —— `cargo test --workspace`。其中 20 个用例需要真的 PostgreSQL
+#             （core/tests/db_pg.rs、domain/tests/services.rs、domain 内联的
+#             extension_store / sync_yomi、rest/tests/api.rs），它们只在
+#             DATABASE_URL / SUWAYOMI_TEST_DB 存在时才执行，缺了会打印一行
+#             "skipped" 就当通过 —— 所以这里必须起一个一次性 PG，
+#             否则这批用例等于永远不跑（见 PR #10 的说明）。
 on:
   push:
     branches-ignore:
@@ -50,10 +54,34 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-latest
+    # 一次性 PostgreSQL：让依赖真库的用例真正执行。没有它，那 20 个用例会
+    # 静默 return，`cargo test` 依然"全绿"——门禁看起来在守，其实没守。
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        # 等 PG 真的接受连接再开始跑测试（默认的 TCP 就绪探测会误判）
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # 两个名字都设：多数用例读 `DATABASE_URL`，另一部分认 `SUWAYOMI_TEST_DB`
+      # （db_pg / services / api 两个都读；extension_store / sync_yomi 只读
+      # `DATABASE_URL`）。密码/库名与 postgres:16 镜像的默认值一致。
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      SUWAYOMI_TEST_DB: postgres://postgres:postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v7
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: 测试
-        run: cargo test --workspace
+        # --no-fail-fast：默认 cargo test 在第一个失败的测试二进制处就收工，
+        # 后面的 target 一律不跑。这 20 个 DB 用例都是"从没真跑过"的状态，
+        # 一次只想拿到全部失败清单，而不是解一个冒一个。
+        run: cargo test --workspace --no-fail-fast

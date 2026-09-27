@@ -96,14 +96,11 @@ impl SyncYomiService {
                     .headers()
                     .get("ETag")
                     .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
                     .filter(|s| !s.is_empty())
                     .ok_or_else(|| DomainError::Source("sync: missing ETag".into()))?;
                 let bytes = resp.bytes().await.map_err(DomainError::from)?;
-                match Backup::decode(bytes.as_ref()) {
-                    Ok(b) => Ok((Some(b), new_etag)),
-                    Err(_) => Ok((None, String::new())), // bad body -> overwrite later
-                }
+                Backup::decode(bytes.as_ref()).map_or_else(|_| Ok((None, String::new())), |b| Ok((Some(b), new_etag)))
             }
             code => Err(DomainError::Source(format!("sync pull failed: {code}"))),
         }
@@ -127,7 +124,9 @@ impl SyncYomiService {
         }
         let resp = req.send().await.map_err(|e| DomainError::Source(format!("sync push: {e}")))?;
         if resp.status().is_success() {
-            if let Some(e) = resp.headers().get("ETag").and_then(|v| v.to_str().ok()).map(|s| s.to_string()) {
+            if let Some(e) =
+                resp.headers().get("ETag").and_then(|v| v.to_str().ok()).map(std::string::ToString::to_string)
+            {
                 self.set_etag(&e).await?;
             }
             Ok(true)
@@ -214,6 +213,13 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
+    /// Serialises the PostgreSQL-backed tests — in this binary *and* in the
+    /// other test binaries running alongside it. See `suwayomi_db::test_support`.
+    /// (The rest of this module runs on in-memory SQLite and needs no lock.)
+    async fn lock() -> suwayomi_db::test_support::DbLock {
+        suwayomi_db::test_support::db_lock().await
+    }
+
     async fn setup(enabled: bool) -> (SyncYomiService, ServerConfig) {
         let db = suwayomi_core::db::Db::sqlite_in_memory().await.expect("db");
         db.migrate().await.expect("migrate");
@@ -237,7 +243,7 @@ mod tests {
         assert!(svc2.enabled(), "enabled with all fields");
 
         cfg.sync_yomi_api_key.clear();
-        let svc3 = SyncYomiService::new(svc.db.clone(), cfg);
+        let svc3 = SyncYomiService::new(svc.db, cfg);
         assert!(!svc3.enabled(), "disabled without api key");
     }
 
@@ -267,9 +273,8 @@ mod tests {
         let server = tokio::spawn(async move {
             let mut reads = 0;
             loop {
-                let (mut sock, _) = match listener.accept().await {
-                    Ok(v) => v,
-                    Err(_) => break,
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
                 };
                 let mut buf = vec![0u8; 65536];
                 let n = sock.read(&mut buf).await.unwrap_or(0);
@@ -310,6 +315,7 @@ mod tests {
     /// on manga changes and respect the `is_syncing` opt-out.
     #[tokio::test]
     async fn version_bump_trigger_semantics() {
+        let _guard = lock().await;
         // Asserts the PL/pgSQL flavour of the sync triggers (the SQLite port
         // is covered by `suwayomi-db`'s own migration tests). Requires
         // DATABASE_URL pointing at a real PostgreSQL instance.
@@ -319,6 +325,7 @@ mod tests {
         };
         let db = suwayomi_core::db::Db::postgres(&url).await.expect("db");
         db.migrate().await.expect("migrate");
+        suwayomi_db::test_support::reset_business_tables(&db).await;
         let pool = db.pool();
         suwayomi_db::query(
             "INSERT INTO suwayomi.manga (url, title, source, initialized) VALUES ('/m/t', 'T', 1, FALSE)",

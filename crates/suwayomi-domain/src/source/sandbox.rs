@@ -11,6 +11,7 @@ use suwayomi_core::source::{MangasPage, SChapter, SManga};
 
 use crate::error::{DomainError, Result};
 use crate::source::SourceFetcher;
+use suwayomi_core::text::urlencode;
 
 /// A source described by the sandbox (used for registration/debug).
 #[derive(Debug, Clone, Deserialize)]
@@ -177,8 +178,7 @@ impl HttpSandboxFetcher {
             .timeout(std::time::Duration::from_secs(3))
             .send()
             .await
-            .map(|r| r.status().is_success())
-            .unwrap_or(false)
+            .is_ok_and(|r| r.status().is_success())
     }
 
     /// Lists extensions known to the sandbox.
@@ -236,7 +236,7 @@ impl HttpSandboxFetcher {
             return Err(sandbox_error(r).await);
         }
         let v: serde_json::Value = r.json().await.map_err(DomainError::from)?;
-        Ok(Some(v.get("preferences").map(|p| p.to_string()).unwrap_or_else(|| "[]".to_string())))
+        Ok(Some(v.get("preferences").map_or_else(|| "[]".to_string(), std::string::ToString::to_string)))
     }
 
     /// Parses an uploaded APK (raw bytes) and returns its extension metadata.
@@ -258,6 +258,8 @@ impl HttpSandboxFetcher {
     ///
     /// 端不认这个路由（旧沙盒）、包没装、取不出来 —— 一律 `None`，调用方自己兜底。
     pub async fn icon(&self, pkg_name: &str) -> Option<Vec<u8>> {
+        use base64::Engine as _;
+
         #[derive(serde::Deserialize)]
         struct SandboxIcon {
             #[serde(default)]
@@ -272,7 +274,7 @@ impl HttpSandboxFetcher {
         if payload.data.is_empty() {
             return None;
         }
-        use base64::Engine as _;
+
         let bytes = base64::engine::general_purpose::STANDARD.decode(payload.data).ok()?;
         // 回环另一端回 200 却带着一段正文（比如上游 404 页面）并不罕见，认一下魔数。
         is_image(&bytes).then_some(bytes)
@@ -439,7 +441,7 @@ fn kill_port_listener(port: u16) {
                 && l.contains("listening")
                 && let Some(pid) = line.split_whitespace().last()
             {
-                let _ = Command::new("taskkill").args(["/F", "/PID", pid]).creation_flags(0x08000000).output();
+                let _ = Command::new("taskkill").args(["/F", "/PID", pid]).creation_flags(0x0800_0000).output();
             }
         }
     }
@@ -534,8 +536,7 @@ fn spawn_java(jar_path: &str, port: &str) -> std::io::Result<std::process::Child
         let ext = std::path::Path::new(&ext_dir);
         let jar_dir = ext
             .parent()
-            .map(|p| p.join("bin").join("extensions"))
-            .unwrap_or_else(|| std::path::PathBuf::from("bin/extensions"));
+            .map_or_else(|| std::path::PathBuf::from("bin/extensions"), |p| p.join("bin").join("extensions"));
         cmd.env("SUWAYOMI_JAR_DIR", jar_dir);
     }
     if let Ok(proxy) = std::env::var("SUWAYOMI_SANDBOX_PROXY") {
@@ -552,16 +553,16 @@ fn spawn_java(jar_path: &str, port: &str) -> std::io::Result<std::process::Child
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    let stdio = match std::env::var("SUWAYOMI_LOGS_DIR") {
-        Ok(dir) => {
+    let stdio = std::env::var("SUWAYOMI_LOGS_DIR").map_or_else(
+        |_| None,
+        |dir| {
             let dir = std::path::PathBuf::from(dir);
             let _ = std::fs::create_dir_all(&dir);
             std::fs::OpenOptions::new().create(true).append(true).open(dir.join("sandbox.log")).ok()
-        }
-        Err(_) => None,
-    };
+        },
+    );
     match stdio {
         Some(f) => {
             let clone = f.try_clone().ok();
@@ -692,14 +693,13 @@ impl SandboxProcess {
 }
 
 fn fetch_child_kill(child: &mut Option<std::process::Child>) -> std::io::Result<()> {
-    if let Some(c) = child.as_mut() {
+    // `take()` 一次拿到所有权并把槽位清空：比"先 as_mut 借用、再回头写槽位"
+    // 少一次借用协商，也让 `None` 分支变成 `map_or` 的默认值。
+    child.take().map_or(Ok(()), |mut c| {
         let r = c.kill();
         let _ = c.wait();
-        *child = None;
         r
-    } else {
-        Ok(())
-    }
+    })
 }
 
 impl Drop for SandboxProcess {
@@ -730,19 +730,8 @@ async fn sandbox_error(resp: reqwest::Response) -> DomainError {
 
 /// 按魔数认 PNG / JPEG / WebP。
 fn is_image(bytes: &[u8]) -> bool {
-    let png = bytes.len() > 3 && bytes[0] == 0x89 && &bytes[1..4] == b"PNG";
-    let jpeg = bytes.len() > 2 && bytes[0] == 0xff && bytes[1] == 0xd8;
-    let webp = bytes.len() > 3 && &bytes[0..4] == b"RIFF";
+    let png = bytes.starts_with(b"\x89PNG");
+    let jpeg = bytes.starts_with(b"\xff\xd8");
+    let webp = bytes.starts_with(b"RIFF");
     png || jpeg || webp
-}
-
-fn urlencode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.as_bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(*b as char),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }

@@ -38,6 +38,17 @@ async fn setup() -> Option<(Router, suwayomi_db::Db)> {
     let fetcher = suwayomi_domain::source::SourceBackend::Stub;
     let update = suwayomi_domain::updater::UpdateManager::new(db.clone(), fetcher.clone());
     let tracker = suwayomi_domain::tracker::TrackerManager::new(db.clone());
+    let paths = {
+        let tmp = std::env::temp_dir();
+        suwayomi_core::config::AppPaths::new(tmp.clone(), tmp.join("cache"))
+    };
+    // 装配层那份下载管理器，这里替它造一个（基址不参与本套用例的断言）。
+    let download = suwayomi_domain::download::DownloadManager::new(
+        db.clone(),
+        fetcher.clone(),
+        paths.clone(),
+        "http://127.0.0.1:1",
+    );
     let state = AppState::new(
         db,
         ServerConfig::default(),
@@ -45,13 +56,10 @@ async fn setup() -> Option<(Router, suwayomi_db::Db)> {
         fetcher,
         update,
         tracker,
+        download,
         None,
-        "http://127.0.0.1:1".to_owned(),
         std::path::PathBuf::new(),
-        {
-            let tmp = std::env::temp_dir();
-            suwayomi_core::config::AppPaths::new(tmp.clone(), tmp.join("cache"))
-        },
+        paths,
     );
     Some((api_v1_router().with_state(state), pool))
 }

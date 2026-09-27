@@ -39,7 +39,9 @@ pub struct AppState {
     pub update: UpdateManager,
     /// 追踪器（登录态、搜索、绑定、推送），与 GraphQL 侧共用同一个句柄。
     pub tracker: TrackerManager,
-    /// Chapter download manager (queue + worker + event bus).
+    /// Chapter download manager (queue + worker + event bus) — 装配层建好后注入，
+    /// 与 GraphQL 侧是**同一个句柄**：队列与 worker 都藏在它内部，各自 new 会
+    /// 变成两条互不可见的队列（在一个入口排的队，另一个入口既看不到也没人跑）。
     pub download: DownloadManager,
     /// Extension store: repo refresh + online install.
     pub extension_store: ExtensionStoreService,
@@ -61,8 +63,8 @@ impl AppState {
         fetcher: SourceBackend,
         update: UpdateManager,
         tracker: TrackerManager,
+        download: DownloadManager,
         sandbox_base: Option<String>,
-        server_base_url: String,
         webui_dir: std::path::PathBuf,
         paths: AppPaths,
     ) -> Self {
@@ -73,7 +75,6 @@ impl AppState {
         let library = LibraryService::new(db.clone(), manga.clone());
         let manga_list = MangaListService::new(db.clone(), fetcher.clone());
         let page = PageService::new(db.clone());
-        let download = DownloadManager::new(db.clone(), fetcher.clone(), paths.clone(), server_base_url);
         let extension_store = ExtensionStoreService::new(db.clone(), sandbox_base.clone(), paths.cache());
         Self {
             db,

@@ -651,6 +651,11 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
     // 而自顺延后，配置值指向的是没人监听的端口（下载会整章失败）。
     let server_base_url = suwayomi_core::config::server_base_url(addr);
     tracing::info!("same-origin proxy base url {server_base_url}");
+    // 下载管理器在装配层建**一次**，REST 与 GraphQL 共用同一个句柄：队列状态与
+    // worker 都在它内部（`Clone` 只是共享 `Arc`），各自 new 会得到两条互不可见的
+    // 队列 —— 在 WebUI 排的队，GraphQL 订阅收不到事件，也没有 worker 去跑。
+    let download =
+        suwayomi_domain::download::DownloadManager::new(db.clone(), fetcher.clone(), paths.clone(), server_base_url);
 
     let graphql_state = suwayomi_graphql::GraphQLState::new(
         db.clone(),
@@ -659,8 +664,8 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
         fetcher.clone(),
         update.clone(),
         tracker.clone(),
+        download.clone(),
         sandbox_base.clone(),
-        server_base_url.clone(),
         webui_dir.clone(),
         paths.clone(),
     );
@@ -678,8 +683,8 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
         fetcher,
         update,
         tracker,
+        download,
         sandbox_base,
-        server_base_url,
         webui_dir.clone(),
         paths,
     );

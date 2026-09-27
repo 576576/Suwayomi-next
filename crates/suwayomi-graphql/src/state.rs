@@ -42,7 +42,9 @@ pub struct GraphQLState {
     pub update: UpdateManager,
     /// 追踪器（登录态、搜索、绑定、推送），与 REST 侧共用同一个句柄。
     pub tracker: TrackerManager,
-    /// Chapter download manager (queue + worker + event bus).
+    /// Chapter download manager (queue + worker + event bus) — 装配层建好后注入，
+    /// 与 REST 侧是**同一个句柄**：队列与 worker 都藏在它内部，各自 new 会变成
+    /// 两条互不可见的队列（订阅事件也收不到另一个入口入的队）。
     pub download: DownloadManager,
     /// KOReader progress sync.
     pub koreader: KoreaderSyncService,
@@ -71,8 +73,8 @@ impl GraphQLState {
         fetcher: SourceBackend,
         update: UpdateManager,
         tracker: TrackerManager,
+        download: DownloadManager,
         sandbox_base: Option<String>,
-        server_base_url: String,
         webui_dir: std::path::PathBuf,
         paths: AppPaths,
     ) -> Self {
@@ -83,7 +85,6 @@ impl GraphQLState {
         let library = LibraryService::new(db.clone(), manga.clone());
         let manga_list = MangaListService::new(db.clone(), fetcher.clone());
         let page = PageService::new(db.clone());
-        let download = DownloadManager::new(db.clone(), fetcher, paths.clone(), server_base_url);
         let runtime = RuntimeConfig::new(config.clone());
         let koreader = KoreaderSyncService::new(db.clone(), runtime.clone());
         let sync_yomi = SyncYomiService::new(db.clone(), runtime.clone());

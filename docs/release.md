@@ -144,6 +144,10 @@ python .workbuddy/verify/clear_dryrun.py      # gh 打桩 + 假 Release 列表�
 python .workbuddy/verify/release_inputs_check.py  # 输入顺序 + 发行说明渲染（同样用 gh 打桩真跑）
 ```
 
+三个脚本都要 `pyyaml`（没装会直接 `ImportError`）。`release_inputs_check.py` 比对的是
+渲染后的整段说明，所以动发行说明排版时它是唯一能提前发现「表被 markdown 当成延续行」
+这类问题的地方。
+
 ## JRE 裁剪（`+jre` 用）
 
 **裁剪已搬到 Suwayomi-ext-runtime 执行**（`scripts/make-jre.sh` 随沙盒一起搬走了）。本仓库只按 `<V>-<os>-<arch>` 下载 `ext-runtime-jre-<V>-<os>-<arch>.tar.gz` 资产、解开即用；`build.yml` 里给 jlink 用的「安装 JDK」步骤与矩阵的 `jdk` 列都已删除。

@@ -436,7 +436,8 @@ jobs:
           REL_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
           BADGE_HOST="https://img.shields.io/badge"   # 表格里每个格子都走 shields.io，提出来免得下面几行太长
           # simple-icons 因商标下架了 windows 图标（logo=windows 静默失效），只能自绘内嵌（四格非倾斜 = Win11 形状）；base64 里的 + 要写 %2B。
-          WIN_LOGO="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iI2ZmZiI%2BPHBhdGggZD0iTTAgMGgxMS4zNzd2MTEuMzcySDB6bTEyLjYyMyAwSDI0djExLjM3MkgxMi42MjN6TTAgMTIuNjIzaDExLjM3N1YyNEgwem0xMi42MjMgMEgyNFYyNEgxMi42MjN6Ii8%2BPC9zdmc%2B"
+          # viewBox 留出 4 单位内边距：四格是实心块，满幅（0..24）在 14px 下比其他图标显大，收到 75%。
+          WIN_LOGO="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9Ii00IC00IDMyIDMyIiBmaWxsPSIjZmZmIj48cGF0aCBkPSJNMCAwaDExLjM3N3YxMS4zNzJIMHptMTIuNjIzIDBIMjR2MTEuMzcySDEyLjYyM3pNMCAxMi42MjNoMTEuMzc3VjI0SDB6bTEyLjYyMyAwSDI0VjI0SDEyLjYyM3oiLz48L3N2Zz4="
           badge() {   # <形态> <架构> <底色> <图标> <文件名>
             printf '<a href="%s/%s"><img src="%s/%s-%s-%s.svg?logo=%s" alt="%s"></a><br>' \
               "$REL_URL" "$5" "$BADGE_HOST" "$1" "$2" "$3" "$4" "$5"

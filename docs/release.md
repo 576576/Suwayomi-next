@@ -160,6 +160,7 @@
   - 格内顺序是**显式固定**的：附件的字典序恰好把 `+jre` 排在核心包前、`arm64` 排在 `x64` 前，照遍历顺序渲染格子会乱。安装包（`.msi` / `-setup.exe`）进表的时机也在这里 —— 它们不被当成「另一种后缀的便携包」，而是按 `_MSI` / `_EXE` 单独占键、插在同架构核心包之前。
   - `MSI` / `Installer EXE` 两枚统一用**靛蓝**（`4a4e8f`）与青蓝的 `ZIP` 区分，一眼能看出这两枚是「装上去的」而不是解压即用。`EXE` 单看太含糊（zip 里也有 exe），所以徽章上写全 `Installer EXE`（shields 的下划线渲染成空格）；它指的是 `-setup.exe`（Burn bundle）而不是裸 exe。
   - **Windows 徽章的图标是内嵌的**：simple-icons 因商标下架了 `windows`（`logo=windows` 静默失效，徽章只是少个图标，不报错），所以 `WIN_LOGO` 里塞了一份 base64 的自绘图标 —— **Win11 形状的等宽四格**（轴对齐正方形，无透视；早先那版是带透视的倾斜四格）。同样的原因，别把 Windows 徽章改回 `logo=windows`；Linux / macOS / Android / Docker 的 `logo=linux|apple|android|docker` 都还在。
+  - **图标的 viewBox 留了 4 单位内边距**（`-4 -4 32 32`，字形占 75%）：shields.io 给所有 logo 的图标位恒为 14px，所以字形多大**只由它自己占 viewBox 的比例决定**。四格是实心块，满幅（`0 0 24 24`，100%）在 14px 里比线描图标显重，收一圈才与 `linux` / `apple` 那几枚齐平。改 `WIN_LOGO` 时别把 viewBox 改回满幅，`release_inputs_check.py` 有占比断言拦着。
   - `+JRE` 里的加号在 shields.io 的 URL 里要写 `%2B`（`_` 渲染成空格，所以徽章文字是 `x64 +JRE`）。徽章的 `alt` 是文件名 / 镜像地址，图挂了也能看出该下哪个。
 - **没有「版本计数」输入框**：版本号一律由 `git rev-list --count HEAD` 推导（`versionCode = 计数 + 3000`）。早先那个可以手填覆盖计数的框已移除，避免产物名与真实提交数脱钩。
 
@@ -284,7 +285,7 @@ python .workbuddy/verify/notes_preview.py           # 拿真渲染结果生成 G
 ```
 
 - `release_inputs_check.py` 不只看渲染：它把 prep 的 `out` 步骤与**三个解析步骤**（`bash scripts/resolve-*.sh` 打成同名桩脚本交给真 bash 跑）都真跑一遍，断言 **auto 的五个形态开关与 dispatch 默认值逐项一致**、两条路径的矩阵一致、三个开关的独立性（只勾 `pack_exe` 放行）、两道守卫（`pack_msi`/`pack_exe` 缺 `pack_jre`、两种包都关）真的会红、以及捆绑组件表那三个 release 链接地址确实是从资产 URL 反推的。
-- `notes_preview.py` 是给人看的（不做断言）：把真渲染结果转成 HTML 摆在 `notes_preview.html` 里，含「全形态 + 手填说明」「自动 alpha」「只勾 OCI」三个场景 —— 改排版时比读 `--notes` 的字面量快得多。它开头还会把 `WIN_LOGO` 解出来内联一份，这样机器没网时也能看图标形状（徽章本身是 shields.io 的远程图片）。
+- `notes_preview.py` 是给人看的（不做断言）：把真渲染结果转成 HTML 摆在 `notes_preview.html` 里，含「全形态 + 手填说明」「自动 alpha」「只勾 OCI」三个场景 —— 改排版时比读 `--notes` 的字面量快得多。它开头还会把 `WIN_LOGO` 解出来内联：**14px 真实尺寸三格（新 / 新 / 满幅旧版当尺子）+ 56px 放大两格**，这样机器没网时也能看图标形状与大小（徽章本身是 shields.io 的远程图片）。
 - 它比对的是**渲染后的整段说明**，所以动排版时它是唯一能提前发现「表被 markdown 当成延续行」这类问题的地方。
 - 打桩验不到 WiX 那一步（`pack_msi` / `pack_exe`）：`.wxs` 的验证是把真 WiX 装在本机、拿真 payload 跑 `wix build` + `wix msi validate` + `wix burn extract`，见「Windows 安装包」。
 - 平台专属代码路径（Windows 的 PE 分支、macOS 的 Mach-O 分支、Android 的 SDK 安装）在本地根本不会被执行 → 这类问题只能真跑 CI，或本地人为复现条件。

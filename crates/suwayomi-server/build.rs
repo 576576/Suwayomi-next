@@ -4,7 +4,7 @@
 //! - version name, two modes:
 //!   1. `SUWAYOMI_VERSION_NAME` env (release.yml injects `3.y.z` for the
 //!      release/beta channels, `r{versionCode}` for alpha)
-//!   2. default `r{versionCode}` (Auto build / local, 38 -> r3038)
+//!   2. default `r{versionCode}` (local builds only, 38 -> r3038)
 //!
 //! The count comes from, in priority order:
 //!   1. `SUWAYOMI_VERSION_COUNT` (injected by CI — matches `git rev-list --count HEAD`)
@@ -33,7 +33,7 @@ fn main() {
         .unwrap_or(38);
 
     let version_code = count + 3000;
-    // release.yml 注入（release/beta: 3.y.z；alpha: r{code}）；Auto build / 本地默认 r{versionCode}
+    // release.yml 注入（release/beta: 3.y.z；alpha: r{code}）；本地构建默认 r{versionCode}
     let version_name = std::env::var("SUWAYOMI_VERSION_NAME")
         .ok()
         .filter(|s| !s.is_empty())

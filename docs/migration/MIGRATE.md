@@ -32,9 +32,3 @@ SQLite（`<数据库目录>/suwayomi.db`，目录默认是 exe 上级的 `db/`�
 
 旧版本把库放在 `<数据目录>/suwayomi.db`；升级后第一次启动会自动把它搬到数据库目录
 （新位置已有库时不覆盖）。
-
-## 更多迁移背景
-
-- `MIGRATION_PLAN.md` — 分阶段迁移计划与决策记录（R1–R8）
-- `MIGRATION_STATUS.md` — 逐文件迁移追踪
-- `rust-migrate-guide-0.md` — 迁移初始盘点（源仓库目录对照）

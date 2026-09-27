@@ -1,30 +1,14 @@
 name: Release
 
-# 发布 CI（唯一入口，合并了旧的 release.yml 与 release-alpha.yml）：
-#   - 推送 main   → 自动构建 alpha（windows-x64 + linux-x64，均捆绑 JRE），行为同旧 Auto build
-#                   （纯文档改动除外，见下方 push 的 paths-ignore）
-#   - 手动 dispatch → alpha / beta / release（通道 + 目标复选 + 可选 +jre）
-# 所有编译与打包委托给可复用工作流 .github/workflows/build.yml；本文件只负责
-# 算版本号、解析 WebUI 制品、把构建结果发布成 Release。
-# 通道语义 / 版本规则 / 产物命名 / WebUI 分流等背景见 docs/release.md。
+# 发布 CI（唯一入口）：推送 main 出自动 alpha，手动 dispatch 出 alpha / beta / release。语义见 docs/release.md。
 
 on:
   push:
     branches: [main]
-    # 纯文档改动不出包：一次桌面构建约 12 分钟，还会多出一个 alpha Release，
-    # 而文档改动对产物没有任何影响。**只要改动里还有一个非文档文件就照跑** ——
-    # paths-ignore 只在"全部改动都命中"时才跳过。
-    # 前提已核对：`docs/` 下 10 个文件里 9 个是 .md、另一个是兼容对照物
-    # `graphql/schema-baseline.graphql`（只被源码注释 / 迁移文档 / 一次性导出脚本引用，
-    # 没有 CI 步骤消费）；仓库里也没有任何构建脚本或 Rust 源码把 `.md` 当输入读，
-    # 打包步骤也不收 md。校验脚本对这两条前提都做了断言，失效会红。
-    # 本文件自身不在忽略范围，所以改 CI 一定会触发。
+    # 纯文档改动不出包（paths-ignore 只在改动全部命中时才跳过）；本文件自身不在忽略范围。
     paths-ignore:
       - 'docs/**'
-      # `*.md` 与 `**/*.md` 两条都给：`**/` 能否匹配"零级目录"（即命中根目录的
-      # README.md）在 glob 实现之间有歧义，GitHub 官方 cheat sheet 给的是
-      # `'**.js'` 而不是 `'**/*.js'`。两条并置后无论哪种语义都覆盖到根目录与嵌套，
-      # 校验脚本会**同时按两种语义判定并要求结论一致**（不一致就报错，不许含糊）。
+      # 两条都给：`**/` 能否匹配零级目录（根目录 README.md）在 glob 实现之间有歧义。
       - '*.md'
       - '**/*.md'
   workflow_dispatch:
@@ -34,8 +18,7 @@ on:
         type: choice
         options: [alpha, beta, release]
         default: alpha
-      # 平台开关：**同族内一律 x64 在前、arm64 在后**（UI 顺序即下面这段的书写顺序），
-      # 先 Windows/Linux，再 Android，最后 macOS；形态开关排在最末。
+      # 平台开关：先 Windows/Linux，再 Android，最后 macOS；同族内一律 x64 在前、arm64 在后。
       build_windows_x64:
         description: Windows x64
         type: boolean
@@ -89,9 +72,7 @@ jobs:
     name: 准备构建参数
     runs-on: ubuntu-latest
     permissions:
-      # actions: write 供下面那段 run 标题 PATCH 用（当前是空 token 的死代码，见该步骤注释）；
-      # contents: read 是 checkout 所需：合并前推送流程的 prep 走仓库默认权限，这里显式补上，
-      # 避免显式 permissions 块把它压成 none（只读权限，不会改变任何步骤的行为）。
+      # actions: write 供下面那段恒 401 的 run 标题 PATCH 用；contents: read 是 checkout 所需。
       actions: write
       contents: read
     outputs:
@@ -116,11 +97,9 @@ jobs:
       webui_kind: ${{ steps.webui.outputs.kind }}
       ext_runtime_url: ${{ steps.ext_runtime.outputs.url }}
       ext_runtime_version: ${{ steps.ext_runtime.outputs.version }}
-      # 裁剪 JRE 是同一个 Release 里的资产，按 <base>/ext-runtime-jre-<V>-<os>-<arch>.tar.gz
-      # 拼出来即可，不必每种 (os, arch) 再探测一遍（见 docs/release.md）。
+      # 裁剪 JRE 按 <base>/ext-runtime-jre-<V>-<os>-<arch>.tar.gz 拼，不必逐个探测。
       ext_runtime_jre_base: ${{ steps.ext_runtime.outputs.jre_base }}
-      # 桌面壳（Suwayomi-tray）同理：解析一次，各 target 按
-      # <base>/suwayomi-tray-<V>-<target>[.exe] 取。解析不到时这两个为空串。
+      # 托盘壳同理：解析一次，各 target 按 <base>/suwayomi-tray-<V>-<target>[.exe] 取。
       tray_version: ${{ steps.tray.outputs.version }}
       tray_base: ${{ steps.tray.outputs.base }}
     steps:
@@ -148,17 +127,13 @@ jobs:
             [ "${{ github.event.inputs.build_macos_x64 }}" = "true" ] && SEL="$SEL macos-x64"
             [ "${{ github.event.inputs.build_macos_arm64 }}" = "true" ] && SEL="$SEL macos-arm64"
 
-            # 防御：input 缺失时 github.event.inputs.X 渲染成**空串**（不是 "false"），
-            # 统一兜成 false —— 下游都只跟字符串 'true' 比较，但输出里留个明确的
-            # false 比留空串好排查。
+            # input 缺失时渲染成空串（不是 "false"），统一兜成 false。
             PACK_JRE="${PACK_JRE:-false}"
             PACK_OCI="${PACK_OCI:-false}"
             ANDROID_ARM64="${ANDROID_ARM64:-false}"
             ANDROID_X64="${ANDROID_X64:-false}"
           else
-            # 推送 main：自动 alpha，固定 windows-x64 + linux-x64（均捆绑 JRE）。
-            # 自动构建没有交互界面，所以形态固定为 jre=true —— 与旧 Auto build 的
-            # 产物名 Suwayomi-{VER}-{TGT}+jre 逐字一致。
+            # 推送 main：自动 alpha，固定 windows-x64 + linux-x64，形态固定为 +jre。
             FLOW="auto"
             PACK_MODE="alpha"
             CHANNEL="alpha"
@@ -169,13 +144,10 @@ jobs:
             SEL="windows-x64 linux-x64"
           fi
 
-          # 产物名 / 镜像标签里的通道段：只有 beta 非空。beta 与 release 共用 3.y.z
-          # 版本名，不区分就会重名；alpha 的 r{code} 本身就带通道含义。
+          # 通道段只有 beta 非空（beta 与 release 共用 3.y.z 版本名，不区分会重名）。
           if [ "$CHANNEL" = "beta" ]; then CH_SUFFIX="-beta"; else CH_SUFFIX=""; fi
 
-          # 版本计数一律取提交总数（+3000 得 versionCode）。原先手动通道还能用
-          # workflow_dispatch 的「版本计数」输入框覆盖它，那个框已移除 —— 手动与自动
-          # 两条路径都只能由提交历史推导，不会再有"手填 100 覆盖成小版本号"的情况。
+          # 版本计数只能由提交历史推导（versionCode = 计数 + 3000），没有手填输入框。
           COUNT="$(git rev-list --count HEAD)"
 
           VER_CODE="$((COUNT+3000))"
@@ -194,11 +166,7 @@ jobs:
             *)       echo "::error::未知通道 $CHANNEL"; exit 1 ;;
           esac
 
-          # 桌面/服务端矩阵。第 3、4 列是**裁剪 JRE 资产**的 (os, arch) 标签：+jre 包
-          # 按 ext-runtime-jre-<V>-<jre_os>-<jre_arch>.tar.gz 去 Release 里取，见
-          # Suwayomi-ext-runtime 的 .github/workflows/publish.yml（那边用原生 runner 出
-          # 六份资产，因为 jlink 不能跨平台）。
-          # （macos-13 已被 GitHub 下线，x64 macOS 现为 macos-15-intel。）
+          # 桌面/服务端矩阵；第 3、4 列是裁剪 JRE 资产的 (os, arch) 标签。macos-13 已下线，x64 用 macos-15-intel。
           INCLUDE="$(python3 - "$SEL" <<'PY'
           import json, sys
           mapping = {
@@ -217,12 +185,10 @@ jobs:
           PY
           )"
 
-          # Android 矩阵（同 build.yml 的桌面矩阵写法）：被勾上的架构各是一个 job。
-          # ABI 用 build-rust.sh 的取值（arm64 / x86_64），目录名与 APK 名由它自己映射。
+          # Android 矩阵：被勾上的架构各是一个 job（ABI 取值见 build-rust.sh）。
           ANDROID_INCLUDE="$(python3 - "$ANDROID_ARM64" "$ANDROID_X64" <<'PY'
           import json, sys
-          # 与开关一一对应（顺序即 sys.argv 顺序）：target 名决定产物名与 job 名，
-          # abi 是 build-rust.sh 的取值，rust_target 是 cargo 的三元组
+          # 顺序即 sys.argv 顺序，与上面的开关一一对应。
           mapping = [
               ("android-arm64", "arm64",  "aarch64-linux-android"),
               ("android-x64",   "x86_64", "x86_64-linux-android"),
@@ -236,8 +202,7 @@ jobs:
             echo "::error::未选择任何构建目标"
             exit 1
           fi
-          # 只勾 Android 时 SEL 为空、只勾 OCI 时两者都空 —— build.yml 里对应的矩阵
-          # job 会跳过，这是合法的
+          # 只勾 Android 时 SEL 为空、只勾 OCI 时两者都空，对应的矩阵 job 会跳过，合法。
           {
             echo "flow=$FLOW"
             echo "channel=$CHANNEL"
@@ -258,10 +223,7 @@ jobs:
           echo "$FLOW 发布: $CHANNEL $VER_NAME (code $VER_CODE, commits $COUNT) -> $TAG"
           echo "   targets=[$SEL] android=[$ANDROID_ARM64 $ANDROID_X64] oci=$PACK_OCI jre=$PACK_JRE pack_mode=$PACK_MODE"
 
-          # 动态更新 workflow run 标题（版本号在 shell 内算出，run-name 拿不到）。
-          # 注：这里没有把 GITHUB_TOKEN 注入 env，${GITHUB_TOKEN} 恒为空 → 请求 401 被 || true 吞掉，
-          # run 标题实际一直是默认值。合并 CI 时原样保留（不改行为）；若要生效，补 env: GH_TOKEN: <github.token>。
-          # （这里刻意不写成美元双花括号形式：run: 里的表达式是**文本替换**，注释行一样会被求值。）
+          # 未注入 GITHUB_TOKEN，此请求恒 401 被吞掉，run 标题一直是默认值（要生效补 env: GH_TOKEN）。
           if [ "$FLOW" = "manual" ]; then
             curl -s -X PATCH "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
               -H "Authorization: Bearer ${GITHUB_TOKEN}" \
@@ -292,9 +254,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # ext-runtime 是纯 JVM 字节码，六个桌面 target 产出的是同一个 jar ——
-          # 所以和 WebUI 一样在这里解析一次、所有 target 复用（见本仓 docs/release.md）。
-          # 那个仓推 main 会自动出 alpha 预发布，必须按通道挑：正式发布不能吃到这些。
+          # ext-runtime 六个桌面 target 共用同一个 jar，解析一次即可；该仓推 main 会出 alpha 预发布，必须按通道挑。
           case "${{ steps.out.outputs.channel }}" in
             release) ER_KIND="--stable" ;;
             *)       ER_KIND="--build"  ;;
@@ -317,10 +277,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # 桌面壳由独立仓库 Suwayomi-tray 发布，六个 target 的资产都在同一个 release 里，
-          # 这里只解析出版本与前缀，各 target 在打包步自己拼资产名。
-          # 解析不到只告警（--optional）：包里没有托盘壳，不该挡住 server 发布。
-          # 同 WebUI / ext-runtime：release 通道只认非预发布，alpha/beta 跟最新构建。
+          # 托盘壳六个 target 的资产在同一个 release 里，只解析版本与前缀；解析不到只告警（--optional）。
           case "${{ steps.out.outputs.channel }}" in
             release) TRAY_KIND="--stable" ;;
             *)       TRAY_KIND="--build"  ;;
@@ -339,8 +296,7 @@ jobs:
   build:
     name: 构建（复用 build.yml）
     needs: prep
-    # 被调工作流的权限**不能超过调用方**：OCI 那步要推 GHCR，所以这里必须显式
-    # 授予 packages: write（不给就是 build 时 push 403，且只在勾了 OCI 时才暴露）。
+    # 被调工作流的权限不能超过调用方；OCI 要推 GHCR，所以这里必须给 packages: write。
     permissions:
       contents: read
       packages: write
@@ -361,10 +317,7 @@ jobs:
       android_targets: ${{ needs.prep.outputs.android_targets }}
       pack_jre: ${{ needs.prep.outputs.pack_jre == 'true' }}
       pack_oci: ${{ needs.prep.outputs.pack_oci == 'true' }}
-    # **必须显式继承**：`workflow_call` 的被调工作流默认**拿不到**调用方的 secret，
-    # 不写这行时 build.yml 里的 `secrets.ANDROID_KEYSTORE_BASE64` 恒为空 ——
-    # 表现为「仓库里 secret 明明配了，APK 却仍用 debug key 签名」并只留一条
-    # ::warning::（已实际踩到，见 r3217）。同一仓库内 inherit 即可，无需逐个列。
+    # 必须显式继承：被调工作流默认拿不到调用方 secret，漏了会静默回退 debug key 签名。
     secrets: inherit
 
   publish:
@@ -381,8 +334,7 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
-        # 只勾 OCI 时没有任何包产物（镜像直接进 GHCR，不进附件），下载步骤会报
-        # "no artifacts found" —— 允许为空；真正的失败会被下面的 gh release create 暴露。
+        # 只勾 OCI 时没有任何附件，下载步骤会报 "no artifacts found"，允许为空。
         continue-on-error: true
       - name: 收到的构建产物
         run: |
@@ -399,8 +351,7 @@ jobs:
           PRE: ${{ needs.prep.outputs.prerelease }}
           WEBUI_TAG: ${{ needs.prep.outputs.webui_tag }}
           WEBUI_KIND: ${{ needs.prep.outputs.webui_kind }}
-          # 发行说明里那张「捆绑组件」表要用到：三个仓库各自集成的版本
-          # （webui / ext-runtime / tray），三者的版本号在产物名里都看不到。
+          # 「捆绑组件」表要用：三个仓库集成的版本在产物名里都看不到。
           EXT_RUNTIME_VERSION: ${{ needs.prep.outputs.ext_runtime_version }}
           TRAY_VERSION: ${{ needs.prep.outputs.tray_version }}
           PACK_JRE: ${{ needs.prep.outputs.pack_jre }}
@@ -415,13 +366,7 @@ jobs:
             gh release delete "$TAG" --yes --cleanup-tag || true
           fi
 
-          # 附件列表有两条注意：
-          #  1. **不能**写成裸 `artifacts/*` —— 只勾 OCI 时目录是空的，glob 不展开会把
-          #     那个字面量当文件名传给 gh；
-          #  2. run 里还有 CI 内部的 artifact —— 实测 buildx 的 `cache-to: type=gha`
-          #     会以 `~<owner>~<repo>~<hash>.dockerbuild` 形式上传缓存，`download-artifact`
-          #     会一并拉下来（r3226 的两个 .dockerbuild 就是这么混进 Release 的）。
-          #     所以只收发布产物：命名一律 `Suwayomi-*`。
+          # 附件只按正向白名单收 Suwayomi-*，且不能写成裸 artifacts/*（空目录时 glob 不展开）。
           FILES=()
           for f in artifacts/*; do
             [ -f "$f" ] || continue
@@ -436,11 +381,7 @@ jobs:
             *)      WEBUI_DESC="最新构建（预发布）" ;;
           esac
 
-          # 捆绑组件的版本在别处看不到（产物 zip 里只有本仓库的版本号），所以单列一张表：
-          # webui / ext-runtime / tray 三个仓库各自**集成**的版本。三者取制品的通道口径
-          # 一致（release 取最新正式、alpha/beta 取最新构建），但版本号彼此独立，所以
-          # 那段描述只跟在 WebUI 行后面，不重复三遍。
-          # 桌面壳是可选资产（解析不到只告警、不挡发布），缺了就如实标注。
+          # 三个捆绑仓库的版本号在产物 zip 里都看不到，单列一张表；托盘壳缺失时如实标注。
           TRAY_CELL="${TRAY_VERSION:+\`$TRAY_VERSION\`}"
           [ -n "$TRAY_CELL" ] || TRAY_CELL="（本次未捆绑）"
           BUNDLED_TABLE="| 捆绑组件 | 集成的版本 |
@@ -449,8 +390,7 @@ jobs:
           | Suwayomi-ext-runtime | \`$EXT_RUNTIME_VERSION\` |
           | Suwayomi-tray | $TRAY_CELL |"
 
-          # 推送触发的自动构建：说明只有这张表，标题与手动通道不同。
-          # （本行注：改表格后这里不再与旧 Auto build 逐字一致，是有意为之。）
+          # 自动构建的说明只有这张表，标题与手动通道不同。
           if [ "$FLOW" = "auto" ]; then
             gh release create "$TAG" "${FILES[@]}" \
               --title "Suwayomi $VER (alpha)" \
@@ -461,11 +401,7 @@ jobs:
             exit 0
           fi
 
-          # 发布说明只留下载者需要的信息：上面那张捆绑组件表、**实际产出**的形态与
-          # Android 目标、以及镜像地址（OCI 不进附件，只能从这里找到）。
-          # 版本号/提交数在 tag 与 changelog 里，通道在标题里，均不再重复。
-          # 表尾多留一个换行：紧跟的 `- ` 行本就能终止 GFM 表格，但"表格后直接接列表"
-          # 各家渲染器的处理不完全一致，空一行最稳。
+          # 标准行按实际产出渲染；表尾留一个空行，避免各家渲染器对「表格后直接接列表」处理不一致。
           BODY="$BUNDLED_TABLE
           "
           if [ "$PACK_JRE" = "true" ]; then
@@ -484,8 +420,7 @@ jobs:
           - OCI 镜像：\`ghcr.io/${GITHUB_REPOSITORY,,}:${VER}${CH_SUFFIX}\`（linux/amd64 与 linux/arm64）"
           fi
 
-          # 维护者手填的发行说明附在标准信息之后、changelog 之前。UI 上是**单行**输入框，
-          # 要分段就写字面量 \n（这里还原成真换行）；粘贴进来的 \r 一并去掉。
+          # 手填的发行说明附在标准信息之后、changelog 之前；UI 是单行框，字面量 \n 在这里还原。
           NOTES="${NOTES//$'\r'/}"
           if [ -n "$NOTES" ]; then
             BODY="$BODY

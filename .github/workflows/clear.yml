@@ -1,23 +1,6 @@
 name: Clear Release
 
-# 预发布清理 CI（**只手动触发**）：推 main 的自动 alpha 每次提交都会多出一个
-# Release，列表很快被 r{code}-alpha.{run_id} 淹没。本工作流按「每 24 小时
-# （dispatch 里 window_hours 可改）的窗口内只留最新的 1 个预发布」的原则清理，
-# 其余一律删掉（默认连关联 tag 一起删，可用 cleanup_tag 关掉）。
-#
-# - **只动 prerelease=true 的 Release**：正式版（v3.y.z）不在范围内；beta 在
-#   release.yml 里是 prerelease=false，同样天然不会被选中 —— 所以这里清理的
-#   实际就是 alpha。通道 / tag 规则见 docs/release.md。
-# - **窗口从最新那条往回推**，不是按自然日或整点切分：保留最新的一条，它是当前
-#   窗口的锚点；往回凡是距锚点不足 window_hours 的都删，遇到早于锚点一个窗口的
-#   那条就保留并成为新锚点，如此往旧推进。绝对时刻切分会把"同一天里推了 5 次"
-#   切成两个窗口各留一条，这里不会。
-# - **删除顺序从最旧的往回删**（"从后往前"）：中途失败时留下的是最新的那批，
-#   而不是把最近的一次构建先删掉。
-# - 最新的一条永远是锚点、不会被删 —— 即便它同时是 GitHub 标为 Latest 的那个
-#   也安全（仓库里全是预发布时，Latest 会落在它身上）。
-# - **默认 dry_run=true**：第一次跑先看列表，确认无误后取消勾选再跑一次才真删。
-#   删除不可撤销（Release 连同资产一起没），所以默认值选保守。
+# 预发布清理（只手动触发）：每个 window_hours 窗口内只留最新的 1 个预发布，其余删掉。语义见 docs/release.md。
 
 on:
   workflow_dispatch:
@@ -43,10 +26,7 @@ jobs:
     name: 清理预发布
     runs-on: ubuntu-latest
     steps:
-      # gh release delete 要跑在 git 仓库里：--cleanup-tag 会用 git 删本地 tag，
-      # 没有仓库时报 "failed to run git: fatal: not a git repository"（**每一条都失败**，
-      # 一个都删不掉）。fetch-depth: 0 是为了把 tag 一起拉下来 —— 浅克隆里没有
-      # 本地 tag，`git tag -d` 同样会失败。
+      # gh release delete --cleanup-tag 内部要跑 git 删本地 tag，所以必须有仓库且 tag 已拉全。
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -83,9 +63,7 @@ jobs:
           if not raw:
               die("拉取 Release 列表为空")
 
-          # gh api --paginate 对数组响应会合并成一个数组；万一逐页原样拼接
-          # （[...][...]）就不是一个合法的 JSON —— 这里用 raw_decode 逐个吃掉，
-          # 两种形态都能读。
+          # gh api --paginate 可能给合并后的数组、也可能给 [...][...]，逐个 raw_decode 两种都能读。
           dec, items, i = json.JSONDecoder(), [], 0
           while i < len(raw):
               obj, i = dec.raw_decode(raw, i)
@@ -149,7 +127,7 @@ jobs:
           print(plan)
           print("dry run" if dry else "将执行删除")
 
-          # newline 显式给 "\n"：不让文本模式做换行转换（tag 里混进 \r 会让 gh 找不到）
+          # newline 显式给 "\n"，避免文本模式转换换行（tag 里混进 \r 会让 gh 找不到）。
           open("/tmp/delete.txt", "w", encoding="utf-8", newline="\n").write(
               "".join(f"{pick(r, 'tag_name', 'tagName')}\n" for r in reversed(drop)))
 
@@ -175,8 +153,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # gh release delete 会在内部跑 git（--cleanup-tag 要删本地 tag），不在 git
-          # 仓库里每条都会失败且原因难懂 —— 先自查，缺 checkout 时直接红在这一步。
+          # 先自查仓库：缺 checkout 时 gh release delete 每条都失败，且报错难懂。
           git rev-parse --git-dir >/dev/null 2>&1 || {
             echo "::error::当前目录不是 git 仓库，gh release delete 无法工作（actions/checkout 丢了？）"
             exit 1

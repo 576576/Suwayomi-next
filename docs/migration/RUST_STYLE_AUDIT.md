@@ -518,8 +518,8 @@ CI（`build.yml`）里加两个 job：`fmt`（`cargo fmt --all --check`）、
 
 ## 七、落地记录
 
-> 阶段 1–2：分支 `refactor/guard-enhance`（87 文件，+1,732 / −1,423）
-> 阶段 3–4：分支 `refactor/oop2fp-1`（`ef0ee9a` / `b9832d1` / `f254e9a` / `6a4de5d`）
+> 阶段 1–2：PR #9（87 文件，+1,732 / −1,423）
+> 阶段 3–4：PR #10（`ef0ee9a` / `b9832d1` / `f254e9a` / `6a4de5d`）
 > 之后的测试门修补：`51d42a8`（CI 起 PostgreSQL）/ `c7f1df4` / `1b2534e` / `7155d19`，见「门禁现状」
 > 每个阶段结束时 `cargo fmt --check` / `clippy -D warnings` / `cargo test` 三道门全绿
 

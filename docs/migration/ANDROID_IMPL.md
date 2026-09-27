@@ -1,7 +1,7 @@
-# Android arm64 实现（android_impl 分支）
+# Android arm64 实现
 
-> 状态：进行中。本文是该分支的决策与施工记录，随实现推进更新。
-> 前置：数据库双后端（`84b8f3a`）已完成并合并进 `main`，本分支从 `main` 起。
+> 状态：进行中。本文是这套实现的决策与施工记录，随实现推进更新。
+> 前置：数据库双后端（`84b8f3a`）已完成并合并进 `main`。
 >
 > ⚠️ **后记（剥离后）**：文中提到的 `jvm-sandbox/` 与 `extension-runtime/` 两个目录
 > 已合并为独立仓库 [576576/Suwayomi-ext-runtime](https://github.com/576576/Suwayomi-ext-runtime)
@@ -16,7 +16,7 @@
 
 与桌面端的根本差别：
 
-| | 桌面（现状） | Android（本分支） |
+| | 桌面（现状） | Android |
 |---|---|---|
 | server 进程 | 独立可执行文件 | 与宿主 App **同进程**（Rust 以 cdylib + JNI 嵌入） |
 | 扩展来源 | 服务器下载 APK 落盘 `extensions/` | **系统已安装的扩展应用**（`PackageManager` 发现） |
@@ -126,7 +126,7 @@ crates/suwayomi-server/      lib.rs 抽出启动逻辑；android 模块提供 JN
 
 | # | 内容 | 状态 |
 |---|---|---|
-| A1 | 分支与文档（本文） | ✅ |
+| A1 | 文档（本文） | ✅ |
 | A2 | Rust：抽出 `lib::run`、`SUWAYOMI_SANDBOX_URL`、`cfg(target_os="android")` 下不 spawn JVM | ✅ |
 | A3 | Rust：cdylib + JNI 入口（start/stop），`aarch64-linux-android` 交叉编译通过 | ✅ |
 | A4 | `extension-runtime/` 抽取（jvm-sandbox 改为引用共享源码树，桌面行为不变）；后已随 jvm-sandbox 一并迁出到 ext-runtime 仓库 | ✅ |

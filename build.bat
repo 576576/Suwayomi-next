@@ -3,7 +3,7 @@ REM ============================================================
 REM  Suwayomi (next) - manual build producing the base artifact
 REM  (no bundled JRE) — naming matches the CI suffix convention:
 REM  an un-suffixed name means no JRE bundle.
-REM  CI variants: ...+jre via release.yml / release-alpha.yml.
+REM  CI builds the ...+jre variant via release.yml (see docs/release.md).
 REM
 REM  Output: target\artifacts\  (cleared on every run)
 REM    Suwayomi-r{code}-windows-x64\           unpacked stage

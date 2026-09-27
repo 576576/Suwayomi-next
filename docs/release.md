@@ -16,12 +16,12 @@
 - 产物名统一是 `Suwayomi-{VER}{通道段}-{TGT}[+jre]`，**通道段只有 beta 非空**（`-beta`）：beta 与 release 共用 3.y.z 版本名，不区分就会重名；alpha 的 `r{code}` 本身已表明通道。规则在 prep 里算一次（`channel_suffix`），`build.yml` 只负责拼 —— 别在 `build.yml` 里重新推导一遍。
 - Android 的 ABI 矩阵同理由 prep 拼好（`android_targets`），`build.yml` 的 `android` job 直接吃 `include`。
 - 手动触发的 run 标题本应由 prep 里那段 `curl PATCH` 改成 `Release {VER}`，但该请求没有注入 `GITHUB_TOKEN`（恒 401 被 `|| true` 吞掉），实际一直是默认标题。合并 CI 时原样保留以求行为一致；要修就补 `env: GH_TOKEN: <github.token>`（会让 run 标题开始变化，属于行为变更）。
-- 合并前是 `release.yml`（手动）+ `release-alpha.yml`（推送自动，workflow 名 `Auto build`）；合并后 Actions 侧边栏里两者的 workflow 名统一显示为 `Release`，推送触发的 run 标题仍是提交信息（默认行为，未变）。
-- **`on: push` 只跟 main**：`dev` 分支已删除，原来那里只有 main/dev 两个分支在跑同一条自动构建。
+- Actions 侧边栏里手动与推送两个触发源共用 `Release` 这个名字；推送触发的 run 标题仍是提交信息。
+- **`on: push` 只跟 main**（`dev` 是集成分支，不作为发布触发源）。
 - **纯文档改动不出包**：`push` 上配了 `paths-ignore: ['docs/**', '*.md', '**/*.md']`。一次桌面构建约 12 分钟、还会多出一个 alpha Release，而文档改动对产物没有影响。**只要改动里还有一个非文档文件就照跑**（paths-ignore 只在"全部改动都命中"时才跳过），所以"文档 + 代码"混在一起提交不会漏发布。手动 dispatch 不受影响。
   - 写成 `paths-ignore` 而**不是**顶层 `paths:` —— 后者是白名单语义，会把所有代码改动的 push 一起挡掉，而且完全静默。
   - `*.md` 与 `**/*.md` 两条都给：`**/` 能否匹配"零级目录"（即命中根目录的 `README.md`）在 glob 实现之间有歧义，两条并置后两种语义下都覆盖。
-  - **前提**（校验脚本有断言，失效即红）：`docs/` 下除 9 个 `.md` 外只有 `graphql/schema-baseline.graphql`（GraphQL 兼容对照物，只被源码注释 / 迁移文档 / 一次性导出脚本引用，没有 CI 步骤消费）；两个 workflow 的 `run` 块（剥掉注释后）都不引用 `docs/`；没有构建脚本或 Rust 源码把 `.md` 当输入读，打包步骤也不收 md。
+  - **前提**：`docs/` 下除 9 个 `.md` 外只有 `graphql/schema-baseline.graphql`（GraphQL 兼容对照物，没有 CI 步骤消费）；没有任何构建脚本或 Rust 源码把 `.md` 当输入读，打包步骤也不收 md。
 - `run:` 里的 `${{ }}` 是**文本替换**，`#` 注释行一样会被求值 —— 注释里想提到表达式就写成普通文字（否则会被替换，还可能把 token 之类带进日志）。
 
 ## 通道与版本
@@ -105,7 +105,7 @@
   | Suwayomi-ext-runtime | `{V}` |
   | Suwayomi-tray | `{V}`，解析不到时写「（本次未捆绑）」 |
 
-  三者取制品的通道口径一致（release 取最新正式、alpha/beta 取最新构建），所以那句描述只跟在 WebUI 行后面；手推自动 alpha 用的是同一张表（因此它不再与旧 `Auto build` 的说明逐字一致）。
+  三者取制品的通道口径一致（release 取最新正式、alpha/beta 取最新构建），所以那句描述只跟在 WebUI 行后面；推送触发的自动 alpha 用的是同一张表。
 - 表格之后是标准行，**按实际产出渲染**：`pack_jre` 没勾就不写形态行，Android 行只列真正构建的 ABI，OCI 行只在勾了 `pack_oci` 时出现（镜像不进附件，这行是找到它的唯一入口）。
 - **没有「版本计数」输入框**：版本号一律由 `git rev-list --count HEAD` 推导（`versionCode = 计数 + 3000`）。早先那个可以手填覆盖计数的框已移除，避免产物名与真实提交数脱钩。
 
@@ -129,7 +129,9 @@
 本地验证（不打线上 Release 的主意）：
 
 ```bash
-python .workbuddy/verify/clear_dryrun.py    # gh 打桩 + 假 Release 列表，真跑两个 run 块（6 个场景）
+python .workbuddy/verify/workflows_check.py   # 四个 workflow：YAML 可解析 + 每个 run 块过 bash -n
+python .workbuddy/verify/clear_dryrun.py      # gh 打桩 + 假 Release 列表，真跑两个 run 块（9 个场景）
+python .workbuddy/verify/release_inputs_check.py  # 输入顺序 + 发行说明渲染（同样用 gh 打桩真跑）
 ```
 
 ## JRE 裁剪（`+jre` 用）

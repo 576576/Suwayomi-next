@@ -1,6 +1,6 @@
 //! WebView 里触发的下载由宿主代劳 —— 「创建备份」走的就是这条路。
 //! 没设 `DownloadListener` 时点击是**静默无响应**（不报错、不回调、没有日志）。
-//! 细节与两个坑见 `docs/migration/ANDROID_IMPL.md` §「创建备份」。
+//! cookie、二次请求、空壳清理等细节见 `docs/migration/ANDROID_IMPL.md` §「创建备份」。
 
 package org.suwayomi.next
 
@@ -79,8 +79,8 @@ class DownloadSaver(private val activity: Activity) {
         var conn: HttpURLConnection? = null
         try {
             conn = (URL(job.url).openConnection() as HttpURLConnection).apply {
-                connectTimeout = TIMEOUT_MS
-                readTimeout = TIMEOUT_MS
+                connectTimeout = CONNECT_TIMEOUT_MS
+                readTimeout = READ_TIMEOUT_MS
                 // 302 是认证挑战（设置页开了密码），跟着跳会把登录页写成备份文件
                 instanceFollowRedirects = false
                 job.cookie?.let { setRequestProperty("Cookie", it) }
@@ -130,8 +130,11 @@ class DownloadSaver(private val activity: Activity) {
         /** 与 [FileChooser] 的 `0x5201` 同属 `0x52xx` 段，各占一个码。 */
         private const val REQUEST_CREATE_FILE = 0x5202
 
-        /** 备份要现打包，比一般下载慢，给宽一点。 */
-        private const val TIMEOUT_MS = 120_000
+        /** 本机回环，连不上就是立刻 ECONNREFUSED；不跟它耗。 */
+        private const val CONNECT_TIMEOUT_MS = 15_000
+
+        /** 读超时得宽：备份是现打包的，几十 MB 的库也不算小。 */
+        private const val READ_TIMEOUT_MS = 120_000
 
         private const val FALLBACK_MIME = "application/octet-stream"
         private const val FALLBACK_NAME = "suwayomi-backup.tachibk"

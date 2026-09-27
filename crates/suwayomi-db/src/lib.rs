@@ -60,10 +60,10 @@ pub use value::{Decode, Encode, Value};
 /// the public API.
 ///
 /// The integration tests point at *one* external PostgreSQL database and each
-/// starts by truncating the tables it owns. Without agreement two of them
-/// deadlock (one truncating while another migrates, taking `AccessExclusiveLock`
-/// on the same relations in a different order) or wipe each other's fixtures
-/// mid-test. Both directions have to be covered:
+/// starts by calling [`test_support::reset_business_tables`]. Without agreement
+/// two of them deadlock (one truncating while another migrates, taking
+/// `AccessExclusiveLock` on the same relations in a different order) or wipe
+/// each other's fixtures mid-test. Both directions have to be covered:
 ///
 /// * **within a binary** — `#[tokio::test]` runs a binary's tests on parallel
 ///   threads, so a `tokio` mutex serialises them;
@@ -109,5 +109,42 @@ pub mod test_support {
         .await
         .expect("lock task panicked");
         DbLock { _file: file, _thread: thread }
+    }
+
+    /// Every business table of the application schema.
+    ///
+    /// Kept in one place because the *set* is what matters: a fixture that
+    /// clears only "its own" tables still leaves the rest of the database in
+    /// whatever shape the previous test process left it, and the next test to
+    /// rely on a fresh sequence or an empty table fails depending on which
+    /// binaries happened to run in which order.
+    pub const BUSINESS_TABLES: &[&str] = &[
+        "track_search",
+        "track_record",
+        "extension_store",
+        "global_meta",
+        "source_meta",
+        "manga_meta",
+        "chapter_meta",
+        "category_meta",
+        "category_manga",
+        "page",
+        "chapter",
+        "manga",
+        "category",
+        "source",
+        "extension",
+    ];
+
+    /// Empties [`BUSINESS_TABLES`] and restarts their identity sequences, so
+    /// the caller starts from the same state as a freshly migrated database.
+    ///
+    /// Hold the [`db_lock`] guard while calling this — see the module docs.
+    pub async fn reset_business_tables(db: &crate::Db) {
+        let list = BUSINESS_TABLES.iter().map(|t| format!("suwayomi.{t}")).collect::<Vec<_>>().join(", ");
+        crate::query(&format!("TRUNCATE TABLE {list} RESTART IDENTITY CASCADE"))
+            .execute(db)
+            .await
+            .expect("truncate business tables");
     }
 }

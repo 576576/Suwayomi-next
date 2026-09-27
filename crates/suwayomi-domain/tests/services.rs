@@ -27,28 +27,10 @@ use suwayomi_domain::manga::MangaService;
 use suwayomi_domain::manga::library::LibraryService;
 use suwayomi_domain::manga::manga_list::MangaListService;
 
-const BUSINESS_TABLES: &[&str] = &[
-    "track_search",
-    "track_record",
-    "extension_store",
-    "global_meta",
-    "source_meta",
-    "manga_meta",
-    "chapter_meta",
-    "category_meta",
-    "category_manga",
-    "page",
-    "chapter",
-    "manga",
-    "category",
-    "source",
-    "extension",
-];
-
 type Services = (Db, MangaService, ChapterService, CategoryService, CategoryMangaService, LibraryService);
 
-/// Serialises the tests in this binary: they all talk to the same database and
-/// every `setup()` truncates the tables the others are working on.
+/// Serialises the database-backed tests — in this binary *and* in the other
+/// test binaries running alongside it. See `suwayomi_db::test_support`.
 async fn lock() -> suwayomi_db::test_support::DbLock {
     suwayomi_db::test_support::db_lock().await
 }
@@ -57,11 +39,7 @@ async fn setup() -> Option<Services> {
     let url = std::env::var("DATABASE_URL").or_else(|_| std::env::var("SUWAYOMI_TEST_DB")).ok()?;
     let db = Db::postgres(&url).await.expect("connect postgres");
     db.migrate().await.expect("migrate");
-    let pool = db.pool();
-    for t in BUSINESS_TABLES {
-        let _ =
-            suwayomi_db::query(&format!("TRUNCATE TABLE suwayomi.{t} RESTART IDENTITY CASCADE")).execute(pool).await;
-    }
+    suwayomi_db::test_support::reset_business_tables(&db).await;
 
     let fetcher = suwayomi_domain::source::SourceBackend::Stub;
     let manga = MangaService::new(db.clone(), fetcher.clone());

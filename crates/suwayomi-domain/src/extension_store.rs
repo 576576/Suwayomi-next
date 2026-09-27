@@ -877,9 +877,8 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    /// Serialises the database-backed tests in this binary: they all talk to
-    /// the same database and every `setup_db()` truncates the very tables the
-    /// others are working on.
+    /// Serialises the database-backed tests — in this binary *and* in the
+    /// other test binaries running alongside it. See `suwayomi_db::test_support`.
     async fn lock() -> suwayomi_db::test_support::DbLock {
         suwayomi_db::test_support::db_lock().await
     }
@@ -891,10 +890,7 @@ mod tests {
         let url = std::env::var("DATABASE_URL").ok().filter(|u| !u.is_empty())?;
         let db = suwayomi_core::db::Db::postgres(&url).await.expect("db");
         db.migrate().await.expect("migrate");
-        // clear extension-related tables so tests are repeatable
-        let _ = suwayomi_db::query("TRUNCATE suwayomi.source, suwayomi.extension, suwayomi.extension_store CASCADE")
-            .execute(db.pool())
-            .await;
+        suwayomi_db::test_support::reset_business_tables(&db).await;
         Some(db)
     }
 

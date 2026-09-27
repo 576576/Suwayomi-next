@@ -213,9 +213,9 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    /// Serialises the PostgreSQL-backed tests in this binary: they share one
-    /// database and truncate each other's tables. (The rest of this module runs
-    /// on in-memory SQLite and needs no lock.)
+    /// Serialises the PostgreSQL-backed tests — in this binary *and* in the
+    /// other test binaries running alongside it. See `suwayomi_db::test_support`.
+    /// (The rest of this module runs on in-memory SQLite and needs no lock.)
     async fn lock() -> suwayomi_db::test_support::DbLock {
         suwayomi_db::test_support::db_lock().await
     }
@@ -325,6 +325,7 @@ mod tests {
         };
         let db = suwayomi_core::db::Db::postgres(&url).await.expect("db");
         db.migrate().await.expect("migrate");
+        suwayomi_db::test_support::reset_business_tables(&db).await;
         let pool = db.pool();
         suwayomi_db::query(
             "INSERT INTO suwayomi.manga (url, title, source, initialized) VALUES ('/m/t', 'T', 1, FALSE)",

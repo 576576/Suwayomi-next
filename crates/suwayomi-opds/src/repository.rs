@@ -3,8 +3,8 @@
 //! All queries run against the `suwayomi` schema (search_path is set by the
 //! connection hook); unqualified names resolve via search_path.
 
-use suwayomi_db::FromRow;
 use suwayomi_db::Db;
+use suwayomi_db::FromRow;
 
 use crate::constants::ITEMS_PER_PAGE;
 
@@ -201,11 +201,7 @@ impl LibraryFilter {
 }
 
 fn split_genres(g: Option<&str>) -> Vec<String> {
-    g.unwrap_or("")
-        .split(',')
-        .map(|x| x.trim().to_string())
-        .filter(|x| !x.is_empty())
-        .collect()
+    g.unwrap_or("").split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
 }
 
 impl<'p> OpdsRepository<'p> {
@@ -249,7 +245,9 @@ impl<'p> OpdsRepository<'p> {
             params.push(format!("m.source = {id}"));
         }
         if let Some(cid) = category_id {
-            params.push(format!("EXISTS (SELECT 1 FROM category_manga cm WHERE cm.manga = m.id AND cm.category = {cid})"));
+            params.push(format!(
+                "EXISTS (SELECT 1 FROM category_manga cm WHERE cm.manga = m.id AND cm.category = {cid})"
+            ));
         }
         if let Some(sid) = status_id {
             params.push(format!("m.status = {sid}"));
@@ -275,15 +273,25 @@ impl<'p> OpdsRepository<'p> {
         let order = match sort {
             SortKey::Title => "m.title ASC",
             SortKey::DateAdded => "m.in_library_at DESC, m.id DESC",
-            SortKey::LastReadAt => "(SELECT MAX(c.last_read_at) FROM chapter c WHERE c.manga = m.id) DESC NULLS LAST, m.id DESC",
+            SortKey::LastReadAt => {
+                "(SELECT MAX(c.last_read_at) FROM chapter c WHERE c.manga = m.id) DESC NULLS LAST, m.id DESC"
+            }
             SortKey::LastModifiedAt => "m.last_modified_at DESC, m.id DESC",
-            SortKey::LatestUpload => "(SELECT MAX(c.date_upload) FROM chapter c WHERE c.manga = m.id) DESC NULLS LAST, m.id DESC",
+            SortKey::LatestUpload => {
+                "(SELECT MAX(c.date_upload) FROM chapter c WHERE c.manga = m.id) DESC NULLS LAST, m.id DESC"
+            }
             SortKey::TotalChapters => "(SELECT COUNT(*) FROM chapter c WHERE c.manga = m.id) DESC, m.id DESC",
-            SortKey::Unread => "(SELECT COUNT(*) FROM chapter c WHERE c.manga = m.id AND c.read = FALSE) DESC, m.id DESC",
+            SortKey::Unread => {
+                "(SELECT COUNT(*) FROM chapter c WHERE c.manga = m.id AND c.read = FALSE) DESC, m.id DESC"
+            }
         };
 
         let offset = (page_num.saturating_sub(1)) * ITEMS_PER_PAGE;
-        let base = if params.is_empty() { "WHERE m.in_library = TRUE".to_string() } else { format!("WHERE m.in_library = TRUE AND {}", params.join(" AND ")) };
+        let base = if params.is_empty() {
+            "WHERE m.in_library = TRUE".to_string()
+        } else {
+            format!("WHERE m.in_library = TRUE AND {}", params.join(" AND "))
+        };
         let sql = format!("{MANGA_SELECT} {base} ORDER BY {order} LIMIT {ITEMS_PER_PAGE} OFFSET {offset}");
         let count_sql = format!("SELECT COUNT(*) FROM manga m LEFT JOIN source s ON s.id = m.source {base}");
 
@@ -342,8 +350,10 @@ impl<'p> OpdsRepository<'p> {
 
     /// Manga details + total chapter count.
     pub async fn manga_details(&self, manga_id: i32) -> Result<Option<MangaDetails>, suwayomi_db::Error> {
-        let row: Option<MangaJoinedRow> =
-            suwayomi_db::query_as(&format!("{MANGA_SELECT} WHERE m.id = $1")).bind(manga_id).fetch_optional(self.pool).await?;
+        let row: Option<MangaJoinedRow> = suwayomi_db::query_as(&format!("{MANGA_SELECT} WHERE m.id = $1"))
+            .bind(manga_id)
+            .fetch_optional(self.pool)
+            .await?;
         let Some(r) = row else { return Ok(None) };
         let count: i64 = suwayomi_db::query_scalar("SELECT COUNT(*) FROM chapter WHERE manga = $1")
             .bind(manga_id)
@@ -445,14 +455,15 @@ impl<'p> OpdsRepository<'p> {
         manga_id: i32,
         source_order: i32,
     ) -> Result<Option<ChapterMetadataEntry>, suwayomi_db::Error> {
-        let row: Option<(i32, String, f32, i32, Option<String>, i32, i64, i32, bool, bool, bool, i64)> = suwayomi_db::query_as(
-            "SELECT id, name, chapter_number, source_order, scanlator, last_page_read, last_read_at, page_count, \
+        let row: Option<(i32, String, f32, i32, Option<String>, i32, i64, i32, bool, bool, bool, i64)> =
+            suwayomi_db::query_as(
+                "SELECT id, name, chapter_number, source_order, scanlator, last_page_read, last_read_at, page_count, \
              is_downloaded, read, bookmark, date_upload FROM chapter WHERE manga = $1 AND source_order = $2",
-        )
-        .bind(manga_id)
-        .bind(source_order)
-        .fetch_optional(self.pool)
-        .await?;
+            )
+            .bind(manga_id)
+            .bind(source_order)
+            .fetch_optional(self.pool)
+            .await?;
         Ok(row.map(|(id, name, chapter_number, so, scanlator, lpr, lra, pc, dl, rd, bm, du)| ChapterMetadataEntry {
             id,
             name,
@@ -479,7 +490,12 @@ impl<'p> OpdsRepository<'p> {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(id, name, cnt)| NavEntry { id: id.to_string(), title: name, manga_count: Some(cnt as usize), description: None })
+            .map(|(id, name, cnt)| NavEntry {
+                id: id.to_string(),
+                title: name,
+                manga_count: Some(cnt as usize),
+                description: None,
+            })
             .collect())
     }
 
@@ -519,7 +535,9 @@ impl<'p> OpdsRepository<'p> {
     /// Status navigation entries (MangaStatus enum, counts from library).
     pub async fn statuses(&self) -> Result<Vec<NavEntry>, suwayomi_db::Error> {
         let rows: Vec<(i32, i64)> =
-            suwayomi_db::query_as("SELECT status, COUNT(*) FROM manga WHERE in_library = TRUE GROUP BY status").fetch_all(self.pool).await?;
+            suwayomi_db::query_as("SELECT status, COUNT(*) FROM manga WHERE in_library = TRUE GROUP BY status")
+                .fetch_all(self.pool)
+                .await?;
         let counts: std::collections::HashMap<i32, usize> = rows.into_iter().map(|(s, c)| (s, c as usize)).collect();
         let defs: &[(i32, &str)] = &[
             (0, "Unknown"),
@@ -532,7 +550,12 @@ impl<'p> OpdsRepository<'p> {
         ];
         Ok(defs
             .iter()
-            .map(|(id, title)| NavEntry { id: id.to_string(), title: title.to_string(), manga_count: counts.get(id).copied(), description: None })
+            .map(|(id, title)| NavEntry {
+                id: id.to_string(),
+                title: title.to_string(),
+                manga_count: counts.get(id).copied(),
+                description: None,
+            })
             .collect())
     }
 
@@ -546,7 +569,12 @@ impl<'p> OpdsRepository<'p> {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(lang, cnt)| NavEntry { id: lang.clone(), title: display_language(&lang), manga_count: Some(cnt as usize), description: None })
+            .map(|(lang, cnt)| NavEntry {
+                id: lang.clone(),
+                title: display_language(&lang),
+                manga_count: Some(cnt as usize),
+                description: None,
+            })
             .collect())
     }
 
@@ -560,19 +588,31 @@ impl<'p> OpdsRepository<'p> {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(id, name, cnt)| NavEntry { id: id.to_string(), title: name, manga_count: Some(cnt as usize), description: None })
+            .map(|(id, name, cnt)| NavEntry {
+                id: id.to_string(),
+                title: name,
+                manga_count: Some(cnt as usize),
+                description: None,
+            })
             .collect())
     }
 
     /// All installed sources (explore feed).
     pub async fn explore_sources(&self) -> Result<Vec<NavEntry>, suwayomi_db::Error> {
-        let rows: Vec<(i64, String)> = suwayomi_db::query_as("SELECT id, name FROM source ORDER BY name").fetch_all(self.pool).await?;
-        Ok(rows.into_iter().map(|(id, name)| NavEntry { id: id.to_string(), title: name, manga_count: None, description: None }).collect())
+        let rows: Vec<(i64, String)> =
+            suwayomi_db::query_as("SELECT id, name FROM source ORDER BY name").fetch_all(self.pool).await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, name)| NavEntry { id: id.to_string(), title: name, manga_count: None, description: None })
+            .collect())
     }
 
     /// Source display name for a source id.
     pub async fn source_name(&self, source_id: i64) -> Result<Option<String>, suwayomi_db::Error> {
-        suwayomi_db::query_scalar("SELECT name FROM source WHERE id = $1").bind(source_id).fetch_optional(self.pool).await
+        suwayomi_db::query_scalar("SELECT name FROM source WHERE id = $1")
+            .bind(source_id)
+            .fetch_optional(self.pool)
+            .await
     }
 }
 

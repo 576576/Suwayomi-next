@@ -11,7 +11,8 @@ use suwayomi_domain::source::SourceFetcher;
 use crate::constants::*;
 use crate::model::{Author, Category, Content, Entry, Feed, Link, Summary};
 use crate::repository::{
-    ChapterListEntry, ChapterMetadataEntry, LibraryFilter, MangaAcqEntry, MangaDetails, NavEntry, OpdsRepository, SortKey,
+    ChapterListEntry, ChapterMetadataEntry, LibraryFilter, MangaAcqEntry, MangaDetails, NavEntry, OpdsRepository,
+    SortKey,
 };
 
 /// Opaque feed context: database + upstream prefix + optional source fetcher.
@@ -124,7 +125,8 @@ impl<'a> FeedBuilder<'a> {
         .into_iter()
         .flatten()
         .collect();
-        let urn_suffix = if urn_suffix_parts.is_empty() { String::new() } else { format!(":{}", urn_suffix_parts.join(":")) };
+        let urn_suffix =
+            if urn_suffix_parts.is_empty() { String::new() } else { format!(":{}", urn_suffix_parts.join(":")) };
         let id = format!("urn:suwayomi:feed:{}:{}{urn_suffix}", self.id_path.replace('/', ":"), self.feed_type);
 
         let mut links = self.extra_links.clone();
@@ -206,7 +208,7 @@ impl<'a> FeedBuilder<'a> {
     }
 }
 
-fn nav_entry_to_entry(_ctx: &FeedCtx, entry: &NavEntry, href: &str) -> Entry {
+fn nav_entry_to_entry(_ctx: &FeedCtx<'_>, entry: &NavEntry, href: &str) -> Entry {
     let mut link = Link::new(REL_SUBSECTION, href, TYPE_ATOM_FEED_ACQUISITION);
     link.title = Some(entry.title.clone());
     link.thr_count = entry.manga_count;
@@ -220,13 +222,11 @@ fn nav_entry_to_entry(_ctx: &FeedCtx, entry: &NavEntry, href: &str) -> Entry {
     }
 }
 
-fn manga_entry_to_entry(ctx: &FeedCtx, entry: &MangaAcqEntry) -> Entry {
-    let display_thumbnail = entry.thumbnail_url.as_deref().map(|_| suwayomi_domain::manga::proxy_thumbnail_url(entry.id));
-    let category_scheme = if entry.in_library {
-        format!("{}/library/genres", ctx.base_url)
-    } else {
-        format!("{}/genres", ctx.base_url)
-    };
+fn manga_entry_to_entry(ctx: &FeedCtx<'_>, entry: &MangaAcqEntry) -> Entry {
+    let display_thumbnail =
+        entry.thumbnail_url.as_deref().map(|_| suwayomi_domain::manga::proxy_thumbnail_url(entry.id));
+    let category_scheme =
+        if entry.in_library { format!("{}/library/genres", ctx.base_url) } else { format!("{}/genres", ctx.base_url) };
 
     let mut links = vec![Link {
         rel: REL_SUBSECTION.into(),
@@ -245,11 +245,26 @@ fn manga_entry_to_entry(ctx: &FeedCtx, entry: &MangaAcqEntry) -> Entry {
         });
     }
     if let Some(t) = display_thumbnail {
-        links.push(Link { rel: REL_IMAGE.into(), href: t.clone(), link_type: Some(TYPE_IMAGE_JPEG.into()), ..Default::default() });
-        links.push(Link { rel: REL_IMAGE_THUMBNAIL.into(), href: t, link_type: Some(TYPE_IMAGE_JPEG.into()), ..Default::default() });
+        links.push(Link {
+            rel: REL_IMAGE.into(),
+            href: t.clone(),
+            link_type: Some(TYPE_IMAGE_JPEG.into()),
+            ..Default::default()
+        });
+        links.push(Link {
+            rel: REL_IMAGE_THUMBNAIL.into(),
+            href: t,
+            link_type: Some(TYPE_IMAGE_JPEG.into()),
+            ..Default::default()
+        });
     }
 
-    let summary_text = format!("Status: {} | Source: {} | Language: {}", status_name(entry.status), entry.source_name, entry.source_lang);
+    let summary_text = format!(
+        "Status: {} | Source: {} | Language: {}",
+        status_name(entry.status),
+        entry.source_name,
+        entry.source_lang
+    );
     Entry {
         id: format!("urn:suwayomi:manga:{}", entry.id),
         title: entry.title.clone(),
@@ -301,7 +316,12 @@ fn chapter_status(ch: &ChapterListEntry) -> &'static str {
     }
 }
 
-fn chapter_list_entry(ctx: &FeedCtx, chapter: &ChapterListEntry, add_manga_title: bool, skip_metadata: bool) -> Entry {
+fn chapter_list_entry(
+    ctx: &FeedCtx<'_>,
+    chapter: &ChapterListEntry,
+    add_manga_title: bool,
+    skip_metadata: bool,
+) -> Entry {
     let title_prefix = chapter_status(chapter);
     let chapter_name = chapter_title(chapter);
     let manga_part = if add_manga_title { format!(" {}:", chapter.manga_title) } else { String::new() };
@@ -336,7 +356,11 @@ fn chapter_list_entry(ctx: &FeedCtx, chapter: &ChapterListEntry, add_manga_title
                 rel: REL_PSE_STREAM.into(),
                 href: base_page,
                 link_type: Some(TYPE_IMAGE_JPEG.into()),
-                title: Some(if chapter.last_page_read > 0 { "Continue Reading".into() } else { "Start Reading".into() }),
+                title: Some(if chapter.last_page_read > 0 {
+                    "Continue Reading".into()
+                } else {
+                    "Start Reading".into()
+                }),
                 pse_count: Some(chapter.page_count as usize),
                 pse_last_read: (chapter.last_page_read > 0).then_some(chapter.last_page_read as usize),
                 pse_last_read_date: (chapter.last_read_at > 0).then(|| epoch_opds(chapter.last_read_at * 1000)),
@@ -353,7 +377,10 @@ fn chapter_list_entry(ctx: &FeedCtx, chapter: &ChapterListEntry, add_manga_title
     } else {
         links.push(Link {
             rel: REL_SUBSECTION.into(),
-            href: format!("{}/series/{}/chapter/{}/metadata?lang={}", ctx.base_url, chapter.manga_id, chapter.source_order, ctx.lang),
+            href: format!(
+                "{}/series/{}/chapter/{}/metadata?lang={}",
+                ctx.base_url, chapter.manga_id, chapter.source_order, ctx.lang
+            ),
             link_type: Some(TYPE_ATOM_ENTRY_OPDS.into()),
             title: Some("Chapter Details".into()),
             ..Default::default()
@@ -366,11 +393,7 @@ fn chapter_list_entry(ctx: &FeedCtx, chapter: &ChapterListEntry, add_manga_title
         updated: epoch_opds(chapter.upload_date),
         summary: Some(Summary { value: details }),
         links,
-        authors: chapter
-            .manga_author
-            .as_ref()
-            .map(|a| vec![Author { name: a.clone(), uri: None }])
-            .unwrap_or_default(),
+        authors: chapter.manga_author.as_ref().map(|a| vec![Author { name: a.clone(), uri: None }]).unwrap_or_default(),
         ..Default::default()
     }
 }
@@ -392,21 +415,70 @@ fn status_name(status: i32) -> &'static str {
 pub async fn root_feed(ctx: &FeedCtx<'_>) -> String {
     let mut builder = FeedBuilder::new(ctx, "", "OPDS Catalog".into(), TYPE_ATOM_FEED_NAVIGATION);
     let items: Vec<NavEntry> = vec![
-        NavEntry { id: "library/series".into(), title: "Library".into(), manga_count: None, description: Some("All series in your library".into()) },
-        NavEntry { id: "library/sources".into(), title: "Library Sources".into(), manga_count: None, description: Some("Sources of series in your library".into()) },
-        NavEntry { id: "library/categories".into(), title: "Categories".into(), manga_count: None, description: Some("Browse library by category".into()) },
-        NavEntry { id: "library/genres".into(), title: "Genres".into(), manga_count: None, description: Some("Browse library by genre".into()) },
-        NavEntry { id: "library/statuses".into(), title: "Statuses".into(), manga_count: None, description: Some("Browse library by publication status".into()) },
-        NavEntry { id: "library/languages".into(), title: "Languages".into(), manga_count: None, description: Some("Browse library by content language".into()) },
-        NavEntry { id: "explore".into(), title: "Explore Sources".into(), manga_count: None, description: Some("Browse online sources".into()) },
-        NavEntry { id: "history".into(), title: "Reading History".into(), manga_count: None, description: Some("Recently read chapters".into()) },
-        NavEntry { id: "library-updates".into(), title: "Library Updates".into(), manga_count: None, description: Some("Recent chapter updates".into()) },
+        NavEntry {
+            id: "library/series".into(),
+            title: "Library".into(),
+            manga_count: None,
+            description: Some("All series in your library".into()),
+        },
+        NavEntry {
+            id: "library/sources".into(),
+            title: "Library Sources".into(),
+            manga_count: None,
+            description: Some("Sources of series in your library".into()),
+        },
+        NavEntry {
+            id: "library/categories".into(),
+            title: "Categories".into(),
+            manga_count: None,
+            description: Some("Browse library by category".into()),
+        },
+        NavEntry {
+            id: "library/genres".into(),
+            title: "Genres".into(),
+            manga_count: None,
+            description: Some("Browse library by genre".into()),
+        },
+        NavEntry {
+            id: "library/statuses".into(),
+            title: "Statuses".into(),
+            manga_count: None,
+            description: Some("Browse library by publication status".into()),
+        },
+        NavEntry {
+            id: "library/languages".into(),
+            title: "Languages".into(),
+            manga_count: None,
+            description: Some("Browse library by content language".into()),
+        },
+        NavEntry {
+            id: "explore".into(),
+            title: "Explore Sources".into(),
+            manga_count: None,
+            description: Some("Browse online sources".into()),
+        },
+        NavEntry {
+            id: "history".into(),
+            title: "Reading History".into(),
+            manga_count: None,
+            description: Some("Recently read chapters".into()),
+        },
+        NavEntry {
+            id: "library-updates".into(),
+            title: "Library Updates".into(),
+            manga_count: None,
+            description: Some("Recent chapter updates".into()),
+        },
     ];
     builder.total_results = Some(items.len() as u64);
     builder.entries = items
         .into_iter()
         .map(|item| {
-            let mut link = Link::new(REL_SUBSECTION, format!("{}/{}?lang={}", ctx.base_url, item.id, ctx.lang), TYPE_ATOM_FEED_NAVIGATION);
+            let mut link = Link::new(
+                REL_SUBSECTION,
+                format!("{}/{}?lang={}", ctx.base_url, item.id, ctx.lang),
+                TYPE_ATOM_FEED_NAVIGATION,
+            );
             link.title = Some(item.title.clone());
             Entry {
                 id: format!("urn:suwayomi:navigation:root:{}", item.id.replace('/', ":")),
@@ -441,14 +513,21 @@ pub fn search_description(lang: &str) -> String {
 pub async fn history_feed(ctx: &FeedCtx<'_>, page_num: usize) -> String {
     let repo = OpdsRepository::new(ctx.db.pool());
     let result = repo.history(page_num).await.unwrap_or(Page::empty());
-    let mut builder = FeedBuilder::new(ctx, "history", "Reading History".into(), TYPE_ATOM_FEED_ACQUISITION).with_page(Some(page_num));
+    let mut builder = FeedBuilder::new(ctx, "history", "Reading History".into(), TYPE_ATOM_FEED_ACQUISITION)
+        .with_page(Some(page_num));
     builder.total_results = Some(result.total as u64);
     builder.entries = result.items.iter().map(|c| chapter_list_entry(ctx, c, true, true)).collect();
     builder.build().render()
 }
 
 /// Search results feed.
-pub async fn search_feed(ctx: &FeedCtx<'_>, query: Option<&str>, author: Option<&str>, title: Option<&str>, page_num: usize) -> String {
+pub async fn search_feed(
+    ctx: &FeedCtx<'_>,
+    query: Option<&str>,
+    author: Option<&str>,
+    title: Option<&str>,
+    page_num: usize,
+) -> String {
     let repo = OpdsRepository::new(ctx.db.pool());
     let result = repo.search_manga(query, author, title, page_num).await.unwrap_or(Page::empty());
     let query_params = query.filter(|q| !q.is_empty()).map(|q| format!("query={}", urlencode(q)));
@@ -477,7 +556,16 @@ pub async fn library_series_feed(
 ) -> String {
     let repo = OpdsRepository::new(ctx.db.pool());
     let result = repo
-        .library_manga(source_id, category_id, status_id, lang_code, genre, page_num, SortKey::parse(sort), LibraryFilter::parse(filter))
+        .library_manga(
+            source_id,
+            category_id,
+            status_id,
+            lang_code,
+            genre,
+            page_num,
+            SortKey::parse(sort),
+            LibraryFilter::parse(filter),
+        )
         .await
         .unwrap_or(Page::empty());
 
@@ -536,7 +624,7 @@ fn build_cross_params(
     if parts.is_empty() { None } else { Some(parts.join("&")) }
 }
 
-fn add_sort_facets(builder: &mut FeedBuilder, ctx: &FeedCtx, feed_path: &str, active_sort: &str) {
+fn add_sort_facets(builder: &mut FeedBuilder<'_>, ctx: &FeedCtx<'_>, feed_path: &str, active_sort: &str) {
     let sorts: &[(&str, &str)] = &[
         ("title", "Title"),
         ("date_added", "Date Added"),
@@ -659,7 +747,8 @@ pub async fn languages_feed(ctx: &FeedCtx<'_>) -> String {
 pub async fn library_updates_feed(ctx: &FeedCtx<'_>, page_num: usize) -> String {
     let repo = OpdsRepository::new(ctx.db.pool());
     let result = repo.library_updates(page_num).await.unwrap_or(Page::empty());
-    let mut builder = FeedBuilder::new(ctx, "library-updates", "Library Updates".into(), TYPE_ATOM_FEED_ACQUISITION).with_page(Some(page_num));
+    let mut builder = FeedBuilder::new(ctx, "library-updates", "Library Updates".into(), TYPE_ATOM_FEED_ACQUISITION)
+        .with_page(Some(page_num));
     builder.total_results = Some(result.total as u64);
     builder.entries = result.items.iter().map(|c| chapter_list_entry(ctx, c, true, true)).collect();
     builder.build().render()
@@ -669,7 +758,8 @@ pub async fn library_updates_feed(ctx: &FeedCtx<'_>, page_num: usize) -> String 
 pub async fn explore_source_feed(ctx: &FeedCtx<'_>, source_id: i64, page_num: usize, sort: &str) -> String {
     let repo = OpdsRepository::new(ctx.db.pool());
     let source_name = repo.source_name(source_id).await.ok().flatten().unwrap_or_else(|| source_id.to_string());
-    let title = if sort == "latest" { format!("Latest from {source_name}") } else { format!("Popular from {source_name}") };
+    let title =
+        if sort == "latest" { format!("Latest from {source_name}") } else { format!("Popular from {source_name}") };
     let mut builder = FeedBuilder::new(ctx, &format!("explore/source/{source_id}"), title, TYPE_ATOM_FEED_ACQUISITION)
         .with_page(Some(page_num))
         .with_sort_filter(Some(sort.to_string()), None);
@@ -685,23 +775,24 @@ pub async fn explore_source_feed(ctx: &FeedCtx<'_>, source_id: i64, page_num: us
     builder.build().render()
 }
 
-async fn fetch_popular(ctx: &FeedCtx<'_>, source_id: i64, page_num: usize, sort: &str) -> suwayomi_core::source::MangasPage {
+async fn fetch_popular(
+    ctx: &FeedCtx<'_>,
+    source_id: i64,
+    page_num: usize,
+    sort: &str,
+) -> suwayomi_core::source::MangasPage {
     match &ctx.fetcher {
-        Some(f) if sort == "latest" && f.supports_latest(source_id) => f.get_latest_updates(source_id, page_num as u32).await.unwrap_or_default(),
+        Some(f) if sort == "latest" && f.supports_latest(source_id) => {
+            f.get_latest_updates(source_id, page_num as u32).await.unwrap_or_default()
+        }
         Some(f) => f.get_popular_manga(source_id, page_num as u32).await.unwrap_or_default(),
         None => suwayomi_core::source::MangasPage::default(),
     }
 }
 
-fn smanga_to_entry(_ctx: &FeedCtx, m: &suwayomi_core::source::SManga, source_name: &str) -> Entry {
-    let genres: Vec<String> = m
-        .genre
-        .as_deref()
-        .unwrap_or("")
-        .split(',')
-        .map(|g| g.trim().to_string())
-        .filter(|g| !g.is_empty())
-        .collect();
+fn smanga_to_entry(_ctx: &FeedCtx<'_>, m: &suwayomi_core::source::SManga, source_name: &str) -> Entry {
+    let genres: Vec<String> =
+        m.genre.as_deref().unwrap_or("").split(',').map(|g| g.trim().to_string()).filter(|g| !g.is_empty()).collect();
     let mut links = vec![Link {
         rel: REL_SUBSECTION.into(),
         href: String::new(), // remote manga: no library id; readers rely on source browse only
@@ -710,8 +801,18 @@ fn smanga_to_entry(_ctx: &FeedCtx, m: &suwayomi_core::source::SManga, source_nam
         ..Default::default()
     }];
     if let Some(t) = &m.thumbnail_url {
-        links.push(Link { rel: REL_IMAGE.into(), href: t.clone(), link_type: Some(TYPE_IMAGE_JPEG.into()), ..Default::default() });
-        links.push(Link { rel: REL_IMAGE_THUMBNAIL.into(), href: t.clone(), link_type: Some(TYPE_IMAGE_JPEG.into()), ..Default::default() });
+        links.push(Link {
+            rel: REL_IMAGE.into(),
+            href: t.clone(),
+            link_type: Some(TYPE_IMAGE_JPEG.into()),
+            ..Default::default()
+        });
+        links.push(Link {
+            rel: REL_IMAGE_THUMBNAIL.into(),
+            href: t.clone(),
+            link_type: Some(TYPE_IMAGE_JPEG.into()),
+            ..Default::default()
+        });
     }
     Entry {
         id: format!("urn:suwayomi:remote:{}", m.url),
@@ -720,14 +821,23 @@ fn smanga_to_entry(_ctx: &FeedCtx, m: &suwayomi_core::source::SManga, source_nam
         summary: m.description.as_ref().map(|d| Summary { value: d.clone() }),
         links,
         authors: m.author.as_ref().map(|a| vec![Author { name: a.clone(), uri: None }]).unwrap_or_default(),
-        categories: genres.iter().map(|g| Category { scheme: None, term: g.to_lowercase().replace(' ', "_"), label: g.clone() }).collect(),
+        categories: genres
+            .iter()
+            .map(|g| Category { scheme: None, term: g.to_lowercase().replace(' ', "_"), label: g.clone() })
+            .collect(),
         publisher: Some(source_name.to_string()),
         ..Default::default()
     }
 }
 
 /// Series chapters feed.
-pub async fn series_chapters_feed(ctx: &FeedCtx<'_>, manga_id: i32, page_num: usize, sort: &str, filter: &str) -> Result<String, String> {
+pub async fn series_chapters_feed(
+    ctx: &FeedCtx<'_>,
+    manga_id: i32,
+    page_num: usize,
+    sort: &str,
+    filter: &str,
+) -> Result<String, String> {
     let repo = OpdsRepository::new(ctx.db.pool());
     let details = repo.manga_details(manga_id).await.map_err(|e| e.to_string())?.ok_or("manga not found")?;
     let result = repo.chapters_for_manga(manga_id, sort, filter, page_num).await.map_err(|e| e.to_string())?;
@@ -743,17 +853,35 @@ pub async fn series_chapters_feed(ctx: &FeedCtx<'_>, manga_id: i32, page_num: us
     if details.thumbnail_url.is_some() {
         let proxied = suwayomi_domain::manga::proxy_thumbnail_url(details.id);
         builder.icon = Some(proxied.clone());
-        builder.extra_links.push(Link { rel: REL_IMAGE.into(), href: proxied.clone(), link_type: Some(TYPE_IMAGE_JPEG.into()), ..Default::default() });
-        builder.extra_links.push(Link { rel: REL_IMAGE_THUMBNAIL.into(), href: proxied, link_type: Some(TYPE_IMAGE_JPEG.into()), ..Default::default() });
+        builder.extra_links.push(Link {
+            rel: REL_IMAGE.into(),
+            href: proxied.clone(),
+            link_type: Some(TYPE_IMAGE_JPEG.into()),
+            ..Default::default()
+        });
+        builder.extra_links.push(Link {
+            rel: REL_IMAGE_THUMBNAIL.into(),
+            href: proxied,
+            link_type: Some(TYPE_IMAGE_JPEG.into()),
+            ..Default::default()
+        });
     }
     add_chapter_facets(&mut builder, ctx, manga_id, sort, filter);
     builder.entries = result.items.iter().map(|c| chapter_list_entry(ctx, c, false, false)).collect();
     Ok(builder.build().render())
 }
 
-fn add_chapter_facets(builder: &mut FeedBuilder, ctx: &FeedCtx, manga_id: i32, active_sort: &str, active_filter: &str) {
+fn add_chapter_facets(
+    builder: &mut FeedBuilder<'_>,
+    ctx: &FeedCtx<'_>,
+    manga_id: i32,
+    active_sort: &str,
+    active_filter: &str,
+) {
     let base = format!("{}/series/{manga_id}/chapters", ctx.base_url);
-    for (key, label) in [("number_asc", "Number ↑"), ("number_desc", "Number ↓"), ("date_asc", "Date ↑"), ("date_desc", "Date ↓")] {
+    for (key, label) in
+        [("number_asc", "Number ↑"), ("number_desc", "Number ↓"), ("date_asc", "Date ↑"), ("date_desc", "Date ↓")]
+    {
         builder.extra_links.push(Link {
             rel: REL_FACET.into(),
             href: format!("{base}?lang={}&sort={key}&filter={active_filter}", ctx.lang),
@@ -781,7 +909,8 @@ fn add_chapter_facets(builder: &mut FeedBuilder, ctx: &FeedCtx, manga_id: i32, a
 pub async fn chapter_metadata_feed(ctx: &FeedCtx<'_>, manga_id: i32, source_order: i32) -> Result<String, String> {
     let repo = OpdsRepository::new(ctx.db.pool());
     let details = repo.manga_details(manga_id).await.map_err(|e| e.to_string())?.ok_or("manga not found")?;
-    let chapter = repo.chapter_metadata(manga_id, source_order).await.map_err(|e| e.to_string())?.ok_or("chapter not found")?;
+    let chapter =
+        repo.chapter_metadata(manga_id, source_order).await.map_err(|e| e.to_string())?.ok_or("chapter not found")?;
 
     let mut builder = FeedBuilder::new(
         ctx,
@@ -792,8 +921,18 @@ pub async fn chapter_metadata_feed(ctx: &FeedCtx<'_>, manga_id: i32, source_orde
     if details.thumbnail_url.is_some() {
         let proxied = suwayomi_domain::manga::proxy_thumbnail_url(details.id);
         builder.icon = Some(proxied.clone());
-        builder.extra_links.push(Link { rel: REL_IMAGE.into(), href: proxied.clone(), link_type: Some(TYPE_IMAGE_JPEG.into()), ..Default::default() });
-        builder.extra_links.push(Link { rel: REL_IMAGE_THUMBNAIL.into(), href: proxied, link_type: Some(TYPE_IMAGE_JPEG.into()), ..Default::default() });
+        builder.extra_links.push(Link {
+            rel: REL_IMAGE.into(),
+            href: proxied.clone(),
+            link_type: Some(TYPE_IMAGE_JPEG.into()),
+            ..Default::default()
+        });
+        builder.extra_links.push(Link {
+            rel: REL_IMAGE_THUMBNAIL.into(),
+            href: proxied,
+            link_type: Some(TYPE_IMAGE_JPEG.into()),
+            ..Default::default()
+        });
     }
     builder.total_results = Some(1);
     builder.entries = vec![chapter_metadata_entry(&details, &chapter)];
@@ -814,7 +953,10 @@ fn chapter_metadata_entry(manga: &MangaDetails, chapter: &ChapterMetadataEntry) 
     if chapter.page_count > 0 {
         links.push(Link {
             rel: REL_PSE_STREAM.into(),
-            href: format!("/api/v1/manga/{}/chapter/{}/page/{{pageNumber}}?updateProgress=true&opds=true", manga.id, chapter.source_order),
+            href: format!(
+                "/api/v1/manga/{}/chapter/{}/page/{{pageNumber}}?updateProgress=true&opds=true",
+                manga.id, chapter.source_order
+            ),
             link_type: Some(TYPE_IMAGE_JPEG.into()),
             title: Some(if chapter.last_page_read > 0 { "Continue Reading".into() } else { "Start Reading".into() }),
             pse_count: Some(chapter.page_count as usize),
@@ -843,7 +985,9 @@ fn chapter_metadata_entry(manga: &MangaDetails, chapter: &ChapterMetadataEntry) 
         id: format!("urn:suwayomi:chapter:{}", chapter.id),
         title: format!("{status} {}", chapter.name),
         updated: epoch_opds(chapter.upload_date),
-        summary: Some(Summary { value: format!("{} pages, {} of {} read", chapter.page_count, chapter.last_page_read, chapter.page_count) }),
+        summary: Some(Summary {
+            value: format!("{} pages, {} of {} read", chapter.page_count, chapter.last_page_read, chapter.page_count),
+        }),
         links,
         ..Default::default()
     }

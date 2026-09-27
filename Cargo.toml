@@ -12,6 +12,28 @@ members = [
     "crates/suwayomi-android",
 ]
 
+# 全 workspace 统一的 lint 配置。各 crate 用 `[lints] workspace = true` 继承
+# （Rust 1.74+）。分两个阶段收紧：
+#   阶段 1（本次）——先 warn，把门禁立起来，CI 跑 `-D warnings` 卡住存量；
+#   阶段 2（本次）——生产代码里的 unwrap/expect/panic 逐个清零，只留测试里的例外
+#                    （测试允许 panic，见各 crate 根部的 `#![cfg_attr(test, allow(...))]`）。
+# `indexing_slicing`（209 处）属于阶段 3「控制流函数式化」，暂不开启。
+[workspace.lints.rust]
+unsafe_code = "warn"
+rust_2018_idioms = "warn"
+
+[workspace.lints.clippy]
+# panic 三件套：生产代码一律 warn，清零后由 CI 的 `-D warnings` 兜底
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+unreachable = "warn"
+todo = "warn"
+# 未检查的数值转换（`cast_possible_truncation` / `cast_possible_wrap` / `cast_sign_loss`
+# 合计 182 处）留在阶段 3 —— 每一处都要判断真实取值范围，属于语义改动，不是机械替换。
+# 异步正确性：持锁跨 await 是死锁温床
+await_holding_lock = "warn"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"

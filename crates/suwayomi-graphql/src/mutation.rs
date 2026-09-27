@@ -24,14 +24,7 @@ fn local_scan_signature(root: &std::path::Path) -> Option<String> {
     entries.sort_by_key(|e| e.file_name());
     let mut sig = String::new();
     for e in entries {
-        let mt = e
-            .metadata()
-            .ok()?
-            .modified()
-            .ok()?
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?
-            .as_secs();
+        let mt = e.metadata().ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
         sig.push_str(&format!("{}:{mt};", e.file_name().to_string_lossy()));
     }
     Some(sig)
@@ -938,12 +931,14 @@ impl MutationRoot {
     ) -> async_graphql::Result<DeleteCategoryMetaPayload> {
         let state = ctx.data::<GraphQLState>()?;
         let old = fetch_category_meta(state, input.category_id, &input.key).await?;
-        suwayomi_db::query(bind_placeholders("DELETE FROM category_meta WHERE category_ref = ? AND meta_key = ?").as_str())
-            .bind(input.category_id)
-            .bind(&input.key)
-            .execute(state.db.pool())
-            .await
-            .map_err(async_graphql::Error::from)?;
+        suwayomi_db::query(
+            bind_placeholders("DELETE FROM category_meta WHERE category_ref = ? AND meta_key = ?").as_str(),
+        )
+        .bind(input.category_id)
+        .bind(&input.key)
+        .execute(state.db.pool())
+        .await
+        .map_err(async_graphql::Error::from)?;
         let category = CategoryType::from(&fetch_category_row(state, input.category_id).await?);
         Ok(DeleteCategoryMetaPayload { category, client_mutation_id: input.client_mutation_id, meta: old })
     }
@@ -1207,12 +1202,14 @@ impl MutationRoot {
     ) -> async_graphql::Result<DeleteChapterMetaPayload> {
         let state = ctx.data::<GraphQLState>()?;
         let old = fetch_chapter_meta(state, input.chapter_id, &input.key).await?;
-        suwayomi_db::query(bind_placeholders("DELETE FROM chapter_meta WHERE chapter_ref = ? AND meta_key = ?").as_str())
-            .bind(input.chapter_id)
-            .bind(&input.key)
-            .execute(state.db.pool())
-            .await
-            .map_err(async_graphql::Error::from)?;
+        suwayomi_db::query(
+            bind_placeholders("DELETE FROM chapter_meta WHERE chapter_ref = ? AND meta_key = ?").as_str(),
+        )
+        .bind(input.chapter_id)
+        .bind(&input.key)
+        .execute(state.db.pool())
+        .await
+        .map_err(async_graphql::Error::from)?;
         let chapter = ChapterType::from_row(&fetch_chapter_row(state, input.chapter_id).await?);
         Ok(DeleteChapterMetaPayload { chapter, client_mutation_id: input.client_mutation_id, meta: old })
     }
@@ -1508,16 +1505,16 @@ impl MutationRoot {
         // Remote source with no cached pages yet: fetch the page list from
         // the extension (through the sandbox) and persist it, so online
         // reading works on the first open instead of showing "no content".
-        if pages.is_empty() && !chapter_row.is_downloaded && manga_row.source != suwayomi_domain::source::LOCAL_SOURCE_ID
+        if pages.is_empty()
+            && !chapter_row.is_downloaded
+            && manga_row.source != suwayomi_domain::source::LOCAL_SOURCE_ID
         {
-            match state
-                .download
-                .fetch_pages_from_source(manga_row.source, &manga_row.url, &chapter_row.url)
-                .await
-            {
+            match state.download.fetch_pages_from_source(manga_row.source, &manga_row.url, &chapter_row.url).await {
                 Ok(source_pages) if !source_pages.is_empty() => {
                     for p in &source_pages {
-                        let sql = bind_placeholders("INSERT INTO page (\"index\", url, image_url, chapter) VALUES (?, ?, ?, ?)");
+                        let sql = bind_placeholders(
+                            "INSERT INTO page (\"index\", url, image_url, chapter) VALUES (?, ?, ?, ?)",
+                        );
                         let _ = suwayomi_db::query(&sql)
                             .bind(p.index)
                             .bind(&p.url)
@@ -1526,24 +1523,22 @@ impl MutationRoot {
                             .execute(state.db.pool())
                             .await;
                     }
-                    pages = source_pages
-                        .into_iter()
-                        .map(|p| p.image_url.unwrap_or(p.url))
-                        .collect();
+                    pages = source_pages.into_iter().map(|p| p.image_url.unwrap_or(p.url)).collect();
                 }
-                Ok(_) => tracing::debug!("fetchChapterPages: source returned no pages for chapter {}", input.chapter_id),
-                Err(e) => tracing::warn!("fetchChapterPages: source fetch failed for chapter {}: {e}", input.chapter_id),
+                Ok(_) => {
+                    tracing::debug!("fetchChapterPages: source returned no pages for chapter {}", input.chapter_id)
+                }
+                Err(e) => {
+                    tracing::warn!("fetchChapterPages: source fetch failed for chapter {}: {e}", input.chapter_id)
+                }
             }
         }
         // 同步 chapter.page_count 与真实页数（阅读器按它夹住页码，旧构建的
         // 坏 -1 会让翻页冻结）；fetched_at 刻意不动（表示发现章节的 epoch 秒）
         if !pages.is_empty() {
             let sql = bind_placeholders("UPDATE chapter SET page_count = ? WHERE id = ?");
-            let _ = suwayomi_db::query(&sql)
-                .bind(pages.len() as i32)
-                .bind(input.chapter_id)
-                .execute(state.db.pool())
-                .await;
+            let _ =
+                suwayomi_db::query(&sql).bind(pages.len() as i32).bind(input.chapter_id).execute(state.db.pool()).await;
         }
         // 外部页面统一走同源图片代理：阅读器以 crossOrigin='anonymous' 加载，
         // 对无 CORS 头的 CDN（zrocdn/i2.nhentaimg 等）会失败；代理顺带复用磁盘缓存
@@ -1579,10 +1574,9 @@ impl MutationRoot {
             let root = suwayomi_domain::source::local::local_source_root();
             let sig = local_scan_signature(&root);
             let cache_hit = match &sig {
-                Some(s) => LOCAL_SCAN_CACHE
-                    .lock()
-                    .map(|g| g.as_ref().map(|(cs, _)| cs == s).unwrap_or(false))
-                    .unwrap_or(false),
+                Some(s) => {
+                    LOCAL_SCAN_CACHE.lock().map(|g| g.as_ref().map(|(cs, _)| cs == s).unwrap_or(false)).unwrap_or(false)
+                }
                 None => false,
             };
             let mut mangas = cached_local_scan(&root);
@@ -1655,12 +1649,16 @@ impl MutationRoot {
             }
         } else {
             let paged = match input.r#type {
-                FetchSourceMangaType::Popular => {
-                    state.manga_list.get_manga_list(source_id, page_num, true).await.map_err(async_graphql::Error::from)?
-                }
-                FetchSourceMangaType::Latest => {
-                    state.manga_list.get_manga_list(source_id, page_num, false).await.map_err(async_graphql::Error::from)?
-                }
+                FetchSourceMangaType::Popular => state
+                    .manga_list
+                    .get_manga_list(source_id, page_num, true)
+                    .await
+                    .map_err(async_graphql::Error::from)?,
+                FetchSourceMangaType::Latest => state
+                    .manga_list
+                    .get_manga_list(source_id, page_num, false)
+                    .await
+                    .map_err(async_graphql::Error::from)?,
                 FetchSourceMangaType::Search => {
                     let query = input.query.as_deref().unwrap_or("").to_string();
                     let page = state
@@ -1688,11 +1686,7 @@ impl MutationRoot {
                 mangas.push(MangaType::from_row(&r));
             }
         }
-        Ok(FetchSourceMangaPayload {
-            client_mutation_id: input.client_mutation_id,
-            has_next_page,
-            mangas,
-        })
+        Ok(FetchSourceMangaPayload { client_mutation_id: input.client_mutation_id, has_next_page, mangas })
     }
 
     async fn delete_source_metas(
@@ -1742,14 +1736,21 @@ async fn fetch_category_row_opt(state: &GraphQLState, id: i32) -> async_graphql:
 
 async fn fetch_manga_row(state: &GraphQLState, id: i32) -> async_graphql::Result<MangaRow> {
     let sql = bind_placeholders("SELECT * FROM manga WHERE id = ?");
-    suwayomi_db::query_as::<MangaRow>(&sql).bind(id).fetch_one(state.db.pool()).await.map_err(async_graphql::Error::from)
+    suwayomi_db::query_as::<MangaRow>(&sql)
+        .bind(id)
+        .fetch_one(state.db.pool())
+        .await
+        .map_err(async_graphql::Error::from)
 }
 
 async fn fetch_chapter_row(state: &GraphQLState, id: i32) -> async_graphql::Result<ChapterRow> {
     let sql = bind_placeholders("SELECT * FROM chapter WHERE id = ?");
-    suwayomi_db::query_as::<ChapterRow>(&sql).bind(id).fetch_one(state.db.pool()).await.map_err(async_graphql::Error::from)
+    suwayomi_db::query_as::<ChapterRow>(&sql)
+        .bind(id)
+        .fetch_one(state.db.pool())
+        .await
+        .map_err(async_graphql::Error::from)
 }
-
 
 /// Idempotent upsert of local-source chapters by (manga, url).
 async fn upsert_local_chapters(
@@ -1847,11 +1848,7 @@ async fn seed_local_pages(
     // page list depends on zip contents) and any legacy placeholder rows in
     // sync with the actual files.
     let sql = bind_placeholders("DELETE FROM page WHERE chapter = ?");
-    suwayomi_db::query(&sql)
-        .bind(chapter.id)
-        .execute(state.db.pool())
-        .await
-        .map_err(async_graphql::Error::from)?;
+    suwayomi_db::query(&sql).bind(chapter.id).execute(state.db.pool()).await.map_err(async_graphql::Error::from)?;
     // Root-relative prefix: the WebUI reader embeds page URLs directly in
     // <img src> (no base-url rewrite, unlike thumbnails), so a plain
     // relative `local/...` would resolve against the SPA route (e.g.
@@ -1976,7 +1973,8 @@ async fn fetch_category_meta(
 
 async fn fetch_global_meta(state: &GraphQLState, key: &str) -> async_graphql::Result<Option<GlobalMetaType>> {
     let sql = bind_placeholders("SELECT meta_key, value FROM global_meta WHERE meta_key = ?");
-    let row = suwayomi_db::query(&sql).bind(key).fetch_optional(state.db.pool()).await.map_err(async_graphql::Error::from)?;
+    let row =
+        suwayomi_db::query(&sql).bind(key).fetch_optional(state.db.pool()).await.map_err(async_graphql::Error::from)?;
     Ok(row.map(|r| GlobalMetaType {
         key: r.try_get("meta_key").unwrap_or_default(),
         value: r.try_get("value").unwrap_or_default(),

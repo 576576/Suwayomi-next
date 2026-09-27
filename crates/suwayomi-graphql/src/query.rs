@@ -6,8 +6,8 @@ use suwayomi_core::schema::{CategoryRow, ChapterRow, MangaRow};
 use suwayomi_domain::sql::bind_placeholders;
 
 use crate::mutation_b4::{
-    BackupRestoreStatus, DownloadStatus, KoSyncStatusPayloadType, LibraryUpdateStatus,
-    ValidateBackupInput, ValidateBackupResult, ValidateBackupSource, ValidateBackupTracker,
+    BackupRestoreStatus, DownloadStatus, KoSyncStatusPayloadType, LibraryUpdateStatus, ValidateBackupInput,
+    ValidateBackupResult, ValidateBackupSource, ValidateBackupTracker,
 };
 use crate::scalars::{Cursor, LongString};
 use crate::settings::WebUIChannel;
@@ -596,7 +596,8 @@ impl QueryRoot {
     ) -> async_graphql::Result<MangaNodeList> {
         let _ = (before, last, offset); // cursor/offset pagination applied incrementally
         let state = ctx.data::<GraphQLState>()?;
-        let rows = query_mangas(state, condition.as_ref(), filter.as_ref(), order.as_ref(), first, after.as_ref()).await?;
+        let rows =
+            query_mangas(state, condition.as_ref(), filter.as_ref(), order.as_ref(), first, after.as_ref()).await?;
         let nodes: Vec<MangaType> = rows.iter().map(MangaType::from_row).collect();
         Ok(MangaNodeList::from_nodes(nodes))
     }
@@ -872,15 +873,14 @@ impl QueryRoot {
         // 批量预取扩展 pkg_name 与 source meta，注入 SourceType 缓存字段——
         // 避免 iconUrl/meta 每个源一次 DB 查询（N+1 并发把连接池打满导致
         // "pool timed out"，DebugInformation 的 sources 查询会触发）。
-        let pkg_by_ext: std::collections::HashMap<i64, String> = suwayomi_db::query_as::<(i32, String)>(
-            bind_placeholders("SELECT id, pkg_name FROM extension").as_str(),
-        )
-        .fetch_all(state.db.pool())
-        .await
-        .map_err(async_graphql::Error::from)?
-        .into_iter()
-        .map(|(id, pkg)| (i64::from(id), pkg))
-        .collect();
+        let pkg_by_ext: std::collections::HashMap<i64, String> =
+            suwayomi_db::query_as::<(i32, String)>(bind_placeholders("SELECT id, pkg_name FROM extension").as_str())
+                .fetch_all(state.db.pool())
+                .await
+                .map_err(async_graphql::Error::from)?
+                .into_iter()
+                .map(|(id, pkg)| (i64::from(id), pkg))
+                .collect();
         let mut meta_by_source: std::collections::HashMap<i64, Vec<crate::types::SourceMetaType>> =
             std::collections::HashMap::new();
         // Batch-load extension rows so SourceType.extension (and therefore
@@ -894,10 +894,8 @@ impl QueryRoot {
             .fetch_all(state.db.pool())
             .await
             .map_err(async_graphql::Error::from)?;
-        let ext_by_id: std::collections::HashMap<i64, suwayomi_core::schema::ExtensionRow> = ext_rows
-            .into_iter()
-            .map(|r| (i64::from(r.id), r))
-            .collect();
+        let ext_by_id: std::collections::HashMap<i64, suwayomi_core::schema::ExtensionRow> =
+            ext_rows.into_iter().map(|r| (i64::from(r.id), r)).collect();
         let meta_rows = suwayomi_db::query_as::<(i64, String, String)>(
             bind_placeholders("SELECT source_ref, meta_key, value FROM source_meta").as_str(),
         )
@@ -905,10 +903,7 @@ impl QueryRoot {
         .await
         .map_err(async_graphql::Error::from)?;
         for (sid, key, value) in meta_rows {
-            meta_by_source
-                .entry(sid)
-                .or_default()
-                .push(crate::types::SourceMetaType { key, value, source_id: sid });
+            meta_by_source.entry(sid).or_default().push(crate::types::SourceMetaType { key, value, source_id: sid });
         }
         let mut nodes: Vec<SourceType> = rows
             .iter()
@@ -1090,7 +1085,11 @@ impl QueryRoot {
         for b in &binds {
             q = match b {
                 BindVal::Str(x) => q.bind(x),
-                _ => unreachable!("extension_store has only string conditions"),
+                // extension_store 的条件只有字符串；走到这里说明上面拼 SQL 时漏了分支。
+                // 让这一个查询返回错误，比 `unreachable!` 把整个进程打挂好。
+                BindVal::I32(_) | BindVal::I64(_) | BindVal::Bool(_) | BindVal::F64(_) => {
+                    return Err(async_graphql::Error::new("extension_store: only string conditions are supported"));
+                }
             };
         }
         let rows = q.fetch_all(state.db.pool()).await.map_err(async_graphql::Error::from)?;
@@ -1338,11 +1337,7 @@ impl QueryRoot {
                 let current = suwayomi_core::version::VERSION;
                 tracing::info!("checkForServerUpdates: local={current} latest={tag}");
                 if !tag.is_empty() && tag_to_num(&tag) > tag_to_num(current) {
-                    vec![CheckForServerUpdatesPayload {
-                        channel: "release".to_string(),
-                        tag,
-                        url,
-                    }]
+                    vec![CheckForServerUpdatesPayload { channel: "release".to_string(), tag, url }]
                 } else {
                     vec![]
                 }
@@ -1359,10 +1354,7 @@ impl QueryRoot {
     /// (the WebUI then shows "unable to check for updates").
     #[graphql(name = "checkForWebUIUpdate")]
     async fn check_for_web_ui_update(&self, ctx: &Context<'_>) -> WebUIUpdateCheck {
-        let current = ctx
-            .data::<GraphQLState>()
-            .map(|s| local_webui_version(&s.webui_dir))
-            .unwrap_or_default();
+        let current = ctx.data::<GraphQLState>().map(|s| local_webui_version(&s.webui_dir)).unwrap_or_default();
         match fetch_latest_webui_release().await {
             Ok((latest, _)) => WebUIUpdateCheck {
                 channel: WebUIChannel::Stable,
@@ -1377,16 +1369,13 @@ impl QueryRoot {
     }
 
     /// Mirrors `restoreStatus(id:)` — result of the last restore with that id.
-    async fn restore_status(
-        &self,
-        ctx: &Context<'_>,
-        id: String,
-    ) -> async_graphql::Result<BackupRestoreStatus> {
+    async fn restore_status(&self, ctx: &Context<'_>, id: String) -> async_graphql::Result<BackupRestoreStatus> {
         let state = ctx.data::<crate::state::GraphQLState>()?;
-        Ok(state
-            .get_backup_restore_status(&id)
-            .await
-            .unwrap_or(BackupRestoreStatus { manga_progress: 0, state: crate::mutation_b4::BackupRestoreState::Idle, total_manga: 0 }))
+        Ok(state.get_backup_restore_status(&id).await.unwrap_or(BackupRestoreStatus {
+            manga_progress: 0,
+            state: crate::mutation_b4::BackupRestoreState::Idle,
+            total_manga: 0,
+        }))
     }
 
     /// Mirrors `validateBackup(input:)` — reports missing sources without restoring.
@@ -1399,13 +1388,8 @@ impl QueryRoot {
         let mut upload = input.backup.value(ctx)?;
         let mut bytes = Vec::new();
         use std::io::Read as _;
-        upload
-            .content
-            .read_to_end(&mut bytes)
-            .map_err(|e| async_graphql::Error::new(format!("read upload: {e}")))?;
-        let summary = suwayomi_core::backup::validate_backup(&bytes)
-            .await
-            .map_err(async_graphql::Error::from)?;
+        upload.content.read_to_end(&mut bytes).map_err(|e| async_graphql::Error::new(format!("read upload: {e}")))?;
+        let summary = suwayomi_core::backup::validate_backup(&bytes).await.map_err(async_graphql::Error::from)?;
         // 上游 `ProtoBackupValidator`：备份里出现过、但本机没登录的追踪器才算「缺」，
         // 按名字母序去重（同一追踪器可能挂了很多部漫画）。
         let backup = suwayomi_core::backup::decode_gz_backup(&bytes).map_err(async_graphql::Error::from)?;
@@ -1862,11 +1846,7 @@ fn build_numeric_filter<T: NumericFilterOps>(
         binds.push(v);
     }
     if let Some(null) = f.is_null() {
-        where_clauses.push(if null {
-            format!("{col} IS NULL")
-        } else {
-            format!("{col} IS NOT NULL")
-        });
+        where_clauses.push(if null { format!("{col} IS NULL") } else { format!("{col} IS NOT NULL") });
     }
 }
 
@@ -1880,11 +1860,7 @@ fn build_bool_filter(where_clauses: &mut Vec<String>, binds: &mut Vec<BindVal>, 
         binds.push(BindVal::Bool(v));
     }
     if let Some(null) = f.is_null {
-        where_clauses.push(if null {
-            format!("{col} IS NULL")
-        } else {
-            format!("{col} IS NOT NULL")
-        });
+        where_clauses.push(if null { format!("{col} IS NULL") } else { format!("{col} IS NOT NULL") });
     }
 }
 
@@ -1905,7 +1881,16 @@ fn push_str_cmp_insensitive(w: &mut Vec<String>, b: &mut Vec<BindVal>, col: &str
 /// 8 个参数是刻意的：调用点由「字段 × 匹配模式」笛卡尔积批量生成（48 处），
 /// 全部传字面量；改成参数结构体只会让调用点膨胀且不增可读性。
 #[allow(clippy::too_many_arguments)]
-fn push_like(w: &mut Vec<String>, b: &mut Vec<BindVal>, col: &str, v: &str, not: bool, insensitive: bool, left: &str, right: &str) {
+fn push_like(
+    w: &mut Vec<String>,
+    b: &mut Vec<BindVal>,
+    col: &str,
+    v: &str,
+    not: bool,
+    insensitive: bool,
+    left: &str,
+    right: &str,
+) {
     let kw = if insensitive { "ILIKE" } else { "LIKE" };
     let neg = if not { "NOT " } else { "" };
     w.push(format!("{col} {neg}{kw} ?"));
@@ -1914,7 +1899,16 @@ fn push_like(w: &mut Vec<String>, b: &mut Vec<BindVal>, col: &str, v: &str, not:
 
 /// 多值 ALL：每个值一条 clause（调用方 AND 连接）。
 #[allow(clippy::too_many_arguments)] // 见 `push_like`
-fn push_like_all(w: &mut Vec<String>, b: &mut Vec<BindVal>, col: &str, vs: &[String], not: bool, insensitive: bool, left: &str, right: &str) {
+fn push_like_all(
+    w: &mut Vec<String>,
+    b: &mut Vec<BindVal>,
+    col: &str,
+    vs: &[String],
+    not: bool,
+    insensitive: bool,
+    left: &str,
+    right: &str,
+) {
     for v in vs {
         push_like(w, b, col, v, not, insensitive, left, right);
     }
@@ -1922,7 +1916,16 @@ fn push_like_all(w: &mut Vec<String>, b: &mut Vec<BindVal>, col: &str, vs: &[Str
 
 /// 多值 ANY：OR 组合成单条 clause。
 #[allow(clippy::too_many_arguments)] // 见 `push_like`
-fn push_like_any(w: &mut Vec<String>, b: &mut Vec<BindVal>, col: &str, vs: &[String], not: bool, insensitive: bool, left: &str, right: &str) {
+fn push_like_any(
+    w: &mut Vec<String>,
+    b: &mut Vec<BindVal>,
+    col: &str,
+    vs: &[String],
+    not: bool,
+    insensitive: bool,
+    left: &str,
+    right: &str,
+) {
     if vs.is_empty() {
         return;
     }
@@ -2194,11 +2197,7 @@ fn build_string_filter(where_clauses: &mut Vec<String>, binds: &mut Vec<BindVal>
     }
     // is null
     if let Some(null) = f.is_null {
-        where_clauses.push(if null {
-            format!("{col} IS NULL")
-        } else {
-            format!("{col} IS NOT NULL")
-        });
+        where_clauses.push(if null { format!("{col} IS NULL") } else { format!("{col} IS NOT NULL") });
     }
 }
 
@@ -2357,11 +2356,7 @@ fn build_manga_filter(where_clauses: &mut Vec<String>, binds: &mut Vec<BindVal>,
             binds.push(BindVal::I32(s.to_i32()));
         }
         if let Some(null) = v.is_null {
-            where_clauses.push(if null {
-                "status IS NULL".into()
-            } else {
-                "status IS NOT NULL".into()
-            });
+            where_clauses.push(if null { "status IS NULL".into() } else { "status IS NOT NULL".into() });
         }
     }
     if let Some(v) = &f.thumbnail_url {
@@ -2473,11 +2468,7 @@ fn local_webui_build_time(dir: &std::path::Path) -> LongString {
 /// 跨格式正确；依赖 release 点式补零公式（3.{c/100}.{c%100 补零}），改动该
 /// 公式须保持补零，否则 3.2.05→325 会小于 r3205。
 fn tag_to_num(tag: &str) -> i64 {
-    tag.chars()
-        .filter(|c| c.is_ascii_digit())
-        .collect::<String>()
-        .parse()
-        .unwrap_or(0)
+    tag.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or(0)
 }
 
 /// Proxy candidates for GitHub API calls (api.github.com often 403s on direct
@@ -2541,7 +2532,8 @@ pub(crate) async fn fetch_latest_webui_release() -> Result<(String, String), Str
     {
         let tag = tag.to_string();
         if !tag.is_empty() && tag != "latest" {
-            let url = format!("https://github.com/576576/Suwayomi-WebUI/releases/download/{tag}/Suwayomi-WebUI-{tag}.zip");
+            let url =
+                format!("https://github.com/576576/Suwayomi-WebUI/releases/download/{tag}/Suwayomi-WebUI-{tag}.zip");
             return Ok((tag, url));
         }
     }
@@ -2581,7 +2573,8 @@ pub(crate) async fn fetch_latest_server_release() -> Result<(String, String), St
         }
     }
     // 2) API fallback
-    let resp = github_get_with_fallback("https://api.github.com/repos/576576/Suwayomi-next/releases?per_page=1").await?;
+    let resp =
+        github_get_with_fallback("https://api.github.com/repos/576576/Suwayomi-next/releases?per_page=1").await?;
     let j: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
     let tag = j[0]["tag_name"].as_str().unwrap_or("").to_string();
     let url = j[0]["html_url"].as_str().unwrap_or("").to_string();
@@ -2593,17 +2586,21 @@ pub(crate) async fn fetch_latest_server_release() -> Result<(String, String), St
 
 /// JVM info reported by the ext-runtime sandbox (`GET /jvm`), cached 60s; falls back
 /// to "n/a" when the sandbox is absent or unreachable.
-static JVM_CACHE: std::sync::OnceLock<std::sync::Mutex<(i64, crate::settings::JvmInfo)>> =
-    std::sync::OnceLock::new();
+static JVM_CACHE: std::sync::OnceLock<std::sync::Mutex<(i64, crate::settings::JvmInfo)>> = std::sync::OnceLock::new();
 
 async fn fetch_sandbox_jvm_info(sandbox_base: Option<&str>) -> crate::settings::JvmInfo {
     let now = chrono::Utc::now().timestamp();
-    let cache = JVM_CACHE.get_or_init(|| std::sync::Mutex::new((0, crate::settings::JvmInfo {
-        java_version: "n/a".into(),
-        vm_name: "n/a".into(),
-        vm_vendor: "n/a".into(),
-        vm_version: "n/a".into(),
-    })));
+    let cache = JVM_CACHE.get_or_init(|| {
+        std::sync::Mutex::new((
+            0,
+            crate::settings::JvmInfo {
+                java_version: "n/a".into(),
+                vm_name: "n/a".into(),
+                vm_vendor: "n/a".into(),
+                vm_version: "n/a".into(),
+            },
+        ))
+    });
     if let Ok(guard) = cache.lock()
         && guard.0 > now - 60
     {
@@ -2620,11 +2617,7 @@ async fn fetch_sandbox_jvm_info(sandbox_base: Option<&str>) -> crate::settings::
         Ok(c) => c,
         Err(_) => return fallback(),
     };
-    let resp = client
-        .get(format!("{base}/jvm"))
-        .timeout(std::time::Duration::from_millis(2000))
-        .send()
-        .await;
+    let resp = client.get(format!("{base}/jvm")).timeout(std::time::Duration::from_millis(2000)).send().await;
     let info = match resp {
         Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
             Ok(j) => crate::settings::JvmInfo {

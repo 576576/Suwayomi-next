@@ -90,8 +90,7 @@ impl DbSettings {
 
 /// Default SQLite file: `<db dir>/suwayomi.db`.
 fn default_sqlite_path() -> PathBuf {
-    db_dir_from(std::env::var(ENV_DB_DIR).ok().as_deref(), std::env::current_exe().ok().as_deref())
-        .join("suwayomi.db")
+    db_dir_from(std::env::var(ENV_DB_DIR).ok().as_deref(), std::env::current_exe().ok().as_deref()).join("suwayomi.db")
 }
 
 /// 数据库目录：`SUWAYOMI_DB_DIR` → exe 在 `bin/` 下的上一级 `db/` → `./db`。
@@ -129,11 +128,7 @@ fn migrate_legacy_sqlite(new_path: &Path) {
         std::env::current_exe().ok().as_deref(),
     );
     if let Some(legacy) = migrate_legacy_sqlite_from(new_path, &candidates) {
-        tracing::info!(
-            "db: moved legacy SQLite database {} → {}",
-            legacy.display(),
-            new_path.display()
-        );
+        tracing::info!("db: moved legacy SQLite database {} → {}", legacy.display(), new_path.display());
     }
 }
 
@@ -152,11 +147,7 @@ fn migrate_legacy_sqlite_from(new_path: &Path, candidates: &[PathBuf]) -> Option
         return None;
     }
     if let Err(e) = std::fs::rename(legacy, new_path) {
-        tracing::warn!(
-            "db: cannot move legacy database {} to {}: {e}",
-            legacy.display(),
-            new_path.display()
-        );
+        tracing::warn!("db: cannot move legacy database {} to {}: {e}", legacy.display(), new_path.display());
         return None;
     }
     // WAL / 回滚日志是库的一部分，不是临时文件：只搬主文件会把日志里**已提交但还没
@@ -189,11 +180,7 @@ fn legacy_sqlite_candidates(data_dir_env: Option<&str>, exe: Option<&Path>) -> V
     }
     if let Some(dir) = exe.and_then(Path::parent) {
         // 发布布局 exe 在 bin/ 下，数据目录是上一级的 data/
-        let base = if dir.file_name().map(|n| n == "bin").unwrap_or(false) {
-            dir.parent().unwrap_or(dir)
-        } else {
-            dir
-        };
+        let base = if dir.file_name().map(|n| n == "bin").unwrap_or(false) { dir.parent().unwrap_or(dir) } else { dir };
         dirs.push(base.join("data"));
     }
     dirs.push(PathBuf::from("data"));

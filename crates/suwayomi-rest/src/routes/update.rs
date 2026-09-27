@@ -71,11 +71,8 @@ async fn summary(State(s): State<AppState>) -> Json<serde_json::Value> {
         ("COMPLETE", MangaJobStatus::Complete),
         ("FAILED", MangaJobStatus::Failed),
     ] {
-        let list: Vec<MangaDataClass> = jobs
-            .iter()
-            .filter(|j| j.status == st)
-            .map(|j| manga_row_to_data_class(&j.manga))
-            .collect();
+        let list: Vec<MangaDataClass> =
+            jobs.iter().filter(|j| j.status == st).map(|j| manga_row_to_data_class(&j.manga)).collect();
         if !list.is_empty() {
             manga_map.insert(key.to_string(), serde_json::json!(list));
         }

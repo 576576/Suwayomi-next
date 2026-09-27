@@ -64,10 +64,9 @@ impl RepoIndex {
     fn entries(self) -> (Vec<RepoIndexEntry>, bool) {
         match self {
             RepoIndex::V1(v) => (v.into_iter().map(RepoEntry::into_v1).collect(), true),
-            RepoIndex::V2 { extension_list } => (
-                extension_list.extensions.into_iter().map(RepoEntry::into_v1).collect(),
-                false,
-            ),
+            RepoIndex::V2 { extension_list } => {
+                (extension_list.extensions.into_iter().map(RepoEntry::into_v1).collect(), false)
+            }
         }
     }
 }
@@ -230,14 +229,12 @@ impl ExtensionStoreService {
         let extensions_dir = std::env::var("SUWAYOMI_EXTENSIONS_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("./extensions"));
-        let jar_dir = std::env::var("SUWAYOMI_JAR_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                extensions_dir
-                    .parent()
-                    .map(|p| p.join("bin").join("extensions"))
-                    .unwrap_or_else(|| PathBuf::from("bin/extensions"))
-            });
+        let jar_dir = std::env::var("SUWAYOMI_JAR_DIR").map(PathBuf::from).unwrap_or_else(|_| {
+            extensions_dir
+                .parent()
+                .map(|p| p.join("bin").join("extensions"))
+                .unwrap_or_else(|| PathBuf::from("bin/extensions"))
+        });
         Self::with_dirs(db, sandbox_base, extensions_dir, jar_dir)
     }
 
@@ -247,12 +244,7 @@ impl ExtensionStoreService {
     /// Rust 2024 起是 `unsafe`（且多线程下修改进程环境本身就是数据竞争），
     /// 并行测试还会互相覆盖 `SUWAYOMI_EXTENSIONS_DIR` / `SUWAYOMI_CACHE_DIR`。
     /// 改为注入路径后，各测试持有独立临时目录，无需触碰环境变量。
-    pub fn with_dirs(
-        db: Db,
-        sandbox_base: Option<String>,
-        extensions_dir: PathBuf,
-        jar_dir: PathBuf,
-    ) -> Self {
+    pub fn with_dirs(db: Db, sandbox_base: Option<String>, extensions_dir: PathBuf, jar_dir: PathBuf) -> Self {
         Self::with_cache_dir(db, sandbox_base, extensions_dir, jar_dir, suwayomi_core::config::cache_root())
     }
 
@@ -276,7 +268,7 @@ impl ExtensionStoreService {
         }
         Self {
             db,
-            http: builder.build().expect("reqwest client"),
+            http: crate::http::build_client(builder),
             sandbox: sandbox_base.map(HttpSandboxFetcher::new),
             extensions_dir,
             jar_dir,
@@ -303,11 +295,10 @@ impl ExtensionStoreService {
     /// Fetches `index.json` from every configured store and upserts the
     /// extension table. Returns the number of extensions now known.
     pub async fn refresh_stores(&self) -> Result<usize> {
-        let stores: Vec<(String, String)> = suwayomi_db::query_as(
-            "SELECT index_url, name FROM suwayomi.extension_store ORDER BY id",
-        )
-        .fetch_all(self.db.pool())
-        .await?;
+        let stores: Vec<(String, String)> =
+            suwayomi_db::query_as("SELECT index_url, name FROM suwayomi.extension_store ORDER BY id")
+                .fetch_all(self.db.pool())
+                .await?;
         let mut total = 0usize;
         for (index_url, store_name) in stores {
             total += self.refresh_one(&index_url, &store_name).await?;
@@ -353,8 +344,8 @@ impl ExtensionStoreService {
             }
         }
         if cache_file.exists() {
-            let cached = std::fs::read(&cache_file)
-                .map_err(|e| DomainError::Source(format!("read cached index: {e}")))?;
+            let cached =
+                std::fs::read(&cache_file).map_err(|e| DomainError::Source(format!("read cached index: {e}")))?;
             return self.upsert_index(&cached, &url, index_url).await;
         }
         // nothing usable at all — surface the original error if we had one
@@ -378,11 +369,9 @@ impl ExtensionStoreService {
         // 仓库就会把所有已安装扩展冲成"未安装"—— 把沙盒的加载结果并进来。
         // 沙盒不可用/查询失败时退化为纯文件判定（桌面原有语义）。
         let loaded: std::collections::HashSet<String> = match &self.sandbox {
-            Some(f) => f
-                .list_extensions()
-                .await
-                .map(|v| v.into_iter().map(|e| e.pkg_name).collect())
-                .unwrap_or_default(),
+            Some(f) => {
+                f.list_extensions().await.map(|v| v.into_iter().map(|e| e.pkg_name).collect()).unwrap_or_default()
+            }
             None => std::collections::HashSet::new(),
         };
 
@@ -426,7 +415,6 @@ impl ExtensionStoreService {
         Ok(n)
     }
 
-
     // ------------------------------------------------------------------
     // Install / update / uninstall
     // ------------------------------------------------------------------
@@ -440,8 +428,8 @@ impl ExtensionStoreService {
         .bind(pkg)
         .fetch_optional(self.db.pool())
         .await?;
-        let (apk_url, pkg_name, version_name, version_code, lang, apk_name) = row
-            .ok_or_else(|| DomainError::Source(format!("extension {pkg} not found in store (run refresh first)")))?;
+        let (apk_url, pkg_name, version_name, version_code, lang, apk_name) =
+            row.ok_or_else(|| DomainError::Source(format!("extension {pkg} not found in store (run refresh first)")))?;
         let apk_url = apk_url.ok_or_else(|| DomainError::Source(format!("extension {pkg} has no apk url")))?;
 
         std::fs::create_dir_all(&self.extensions_dir)
@@ -469,8 +457,7 @@ impl ExtensionStoreService {
             .bytes()
             .await
             .map_err(DomainError::from)?;
-        std::fs::write(&target, &bytes)
-            .map_err(|e| DomainError::Source(format!("write {file_name}: {e}")))?;
+        std::fs::write(&target, &bytes).map_err(|e| DomainError::Source(format!("write {file_name}: {e}")))?;
 
         fetcher.reload().await?;
         self.sync_sources().await?;
@@ -500,10 +487,12 @@ impl ExtensionStoreService {
         remove_matching_apks(&self.extensions_dir, pkg)?;
         remove_matching_jars(&self.jar_dir, pkg)?;
         fetcher.reload().await?;
-        suwayomi_db::query("UPDATE suwayomi.extension SET is_installed = FALSE, has_update = FALSE WHERE pkg_name = $1")
-            .bind(pkg)
-            .execute(self.db.pool())
-            .await?;
+        suwayomi_db::query(
+            "UPDATE suwayomi.extension SET is_installed = FALSE, has_update = FALSE WHERE pkg_name = $1",
+        )
+        .bind(pkg)
+        .execute(self.db.pool())
+        .await?;
         Ok(())
     }
 
@@ -613,14 +602,11 @@ impl ExtensionStoreService {
         // 列表是沙盒的真话（"空"= 确实一个都没有，不是查询失败）。
         let loaded: std::collections::HashSet<&str> = exts.iter().map(|e| e.pkg_name.as_str()).collect();
         let rows: Vec<(i32, String, Option<String>)> =
-            suwayomi_db::query_as("SELECT id, pkg_name, apk_name FROM suwayomi.extension")
-                .fetch_all(pool)
-                .await?;
+            suwayomi_db::query_as("SELECT id, pkg_name, apk_name FROM suwayomi.extension").fetch_all(pool).await?;
         let stale: Vec<i32> = rows
             .into_iter()
             .filter(|(_, pkg, apk)| {
-                !loaded.contains(pkg.as_str())
-                    && !apk.as_deref().is_some_and(|n| self.extensions_dir.join(n).exists())
+                !loaded.contains(pkg.as_str()) && !apk.as_deref().is_some_and(|n| self.extensions_dir.join(n).exists())
             })
             .map(|(id, _, _)| id)
             .collect();
@@ -685,9 +671,9 @@ impl ExtensionStoreService {
     // ------------------------------------------------------------------
 
     fn require_sandbox(&self) -> Result<HttpSandboxFetcher> {
-        self.sandbox
-            .clone()
-            .ok_or_else(|| DomainError::Sandbox("extension install requires the JVM sandbox (SUWAYOMI_SANDBOX_JAR)".into()))
+        self.sandbox.clone().ok_or_else(|| {
+            DomainError::Sandbox("extension install requires the JVM sandbox (SUWAYOMI_SANDBOX_JAR)".into())
+        })
     }
 }
 
@@ -778,10 +764,7 @@ fn normalize_index_url(url: &str) -> String {
 /// [`RawContentWarning`]），都在这里抹平。
 fn parse_index(bytes: &[u8], url: &str) -> Result<Vec<RepoIndexEntry>> {
     let (mut entries, legacy) = if url.ends_with(".pb") {
-        (
-            parse_mihon_pb_index(bytes).map_err(|e| DomainError::Source(format!("mihon repo index parse: {e}")))?,
-            false,
-        )
+        (parse_mihon_pb_index(bytes).map_err(|e| DomainError::Source(format!("mihon repo index parse: {e}")))?, false)
     } else {
         let index: RepoIndex =
             serde_json::from_slice(bytes).map_err(|e| DomainError::Source(format!("repo index parse: {e}")))?;
@@ -848,10 +831,7 @@ fn resolve_asset_url(base: &str, subdir: &str, value: &str) -> String {
 fn index_cache_path(cache_dir: &Path, index_url: &str) -> PathBuf {
     let url = normalize_index_url(index_url);
     let ext = if url.ends_with("index.pb") { "pb" } else { "json" };
-    cache_dir
-        .join("extensions")
-        .join("index")
-        .join(format!("index-{:016x}.{ext}", url_hash(&url)))
+    cache_dir.join("extensions").join("index").join(format!("index-{:016x}.{ext}", url_hash(&url)))
 }
 
 /// 同一个 URL 跨进程稳定的哈希（缓存文件名用）。
@@ -902,7 +882,8 @@ mod tests {
         db.migrate().await.expect("migrate");
         // clear extension-related tables so tests are repeatable
         let _ = suwayomi_db::query("TRUNCATE suwayomi.source, suwayomi.extension, suwayomi.extension_store CASCADE")
-            .execute(db.pool()).await;
+            .execute(db.pool())
+            .await;
         Some(db)
     }
 
@@ -943,7 +924,10 @@ mod tests {
 
     #[tokio::test]
     async fn repo_index_refresh_upserts_extensions() {
-        let Some(db) = setup_db().await else { eprintln!("SKIP: requires DATABASE_URL"); return };
+        let Some(db) = setup_db().await else {
+            eprintln!("SKIP: requires DATABASE_URL");
+            return;
+        };
         suwayomi_db::query("INSERT INTO suwayomi.extension_store (index_url, name, badge_label, signing_key, contact_website) VALUES ('http://127.0.0.1:1/repo-1', 't', '', '', '')")
             .execute(db.pool()).await.unwrap();
 
@@ -970,7 +954,10 @@ mod tests {
 
     #[tokio::test]
     async fn install_downloads_apk_and_registers_sources() {
-        let Some(db) = setup_db().await else { eprintln!("SKIP: requires DATABASE_URL"); return };
+        let Some(db) = setup_db().await else {
+            eprintln!("SKIP: requires DATABASE_URL");
+            return;
+        };
         let tmp = tmp_root();
         let extensions_dir = tmp.join("extensions");
 
@@ -1022,15 +1009,20 @@ mod tests {
             files.iter().any(|f| f.contains("tachiyomi-all.nhentaicom") && f.ends_with(".apk")),
             "apk persisted: {files:?}"
         );
-        let (sid, sname, slang): (i64, String, String) = suwayomi_db::query_as(
-            "SELECT id, name, lang FROM suwayomi.source WHERE id = 5591830863732393712",
-        )
-        .fetch_one(db.pool()).await.unwrap();
+        let (sid, sname, slang): (i64, String, String) =
+            suwayomi_db::query_as("SELECT id, name, lang FROM suwayomi.source WHERE id = 5591830863732393712")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
         assert_eq!(sid, 5591830863732393712);
         assert_eq!(sname, "nhentai.com");
         assert_eq!(slang, "en");
-        let inst: bool = suwayomi_db::query_scalar("SELECT is_installed FROM suwayomi.extension WHERE pkg_name = 'tachiyomi-all.nhentaicom'")
-            .fetch_one(db.pool()).await.unwrap();
+        let inst: bool = suwayomi_db::query_scalar(
+            "SELECT is_installed FROM suwayomi.extension WHERE pkg_name = 'tachiyomi-all.nhentaicom'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
         assert!(inst, "extension marked installed");
 
         sb_srv.await.unwrap();
@@ -1039,7 +1031,10 @@ mod tests {
 
     #[tokio::test]
     async fn uninstall_removes_apk_and_sources() {
-        let Some(db) = setup_db().await else { eprintln!("SKIP: requires DATABASE_URL"); return };
+        let Some(db) = setup_db().await else {
+            eprintln!("SKIP: requires DATABASE_URL");
+            return;
+        };
         let tmp = tmp_root();
         let extensions_dir = tmp.join("extensions");
         std::fs::create_dir_all(&extensions_dir).unwrap();
@@ -1048,8 +1043,11 @@ mod tests {
         suwayomi_db::query("INSERT INTO suwayomi.extension (name, pkg_name, version_name, version_code, lang, content_warning, is_installed) \
                      VALUES ('mangadex.org', 'tachiyomi-all.mangadex', '1.2.3', 9, 'all', 0, TRUE)")
             .execute(db.pool()).await.unwrap();
-        let eid: i32 = suwayomi_db::query_scalar("SELECT id FROM suwayomi.extension WHERE pkg_name = 'tachiyomi-all.mangadex'")
-            .fetch_one(db.pool()).await.unwrap();
+        let eid: i32 =
+            suwayomi_db::query_scalar("SELECT id FROM suwayomi.extension WHERE pkg_name = 'tachiyomi-all.mangadex'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
         suwayomi_db::query("INSERT INTO suwayomi.source (id, name, lang, extension) VALUES (4422762036021677666, 'mangadex.org', 'en', $1)")
             .bind(eid).execute(db.pool()).await.unwrap();
 
@@ -1075,11 +1073,18 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert!(remaining.is_empty(), "apk removed: {remaining:?}");
-        let src_count: i64 = suwayomi_db::query_scalar("SELECT COUNT(*) FROM suwayomi.source WHERE id = 4422762036021677666")
-            .fetch_one(db.pool()).await.unwrap();
+        let src_count: i64 =
+            suwayomi_db::query_scalar("SELECT COUNT(*) FROM suwayomi.source WHERE id = 4422762036021677666")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
         assert_eq!(src_count, 0);
-        let inst: bool = suwayomi_db::query_scalar("SELECT is_installed FROM suwayomi.extension WHERE pkg_name = 'tachiyomi-all.mangadex'")
-            .fetch_one(db.pool()).await.unwrap();
+        let inst: bool = suwayomi_db::query_scalar(
+            "SELECT is_installed FROM suwayomi.extension WHERE pkg_name = 'tachiyomi-all.mangadex'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
         assert!(!inst, "marked uninstalled");
 
         sb_srv.await.unwrap();
@@ -1088,7 +1093,10 @@ mod tests {
 
     #[tokio::test]
     async fn repo_index_refresh_falls_back_to_cache() {
-        let Some(db) = setup_db().await else { eprintln!("SKIP: requires DATABASE_URL"); return };
+        let Some(db) = setup_db().await else {
+            eprintln!("SKIP: requires DATABASE_URL");
+            return;
+        };
         let tmp = tmp_root();
 
         let index = br#"[{"name":"nhentai.com","pkg":"tachiyomi-all.nhentaicom","apk":"http://127.0.0.1:1/dl.apk","icon":"http://127.0.0.1:1/icon.png","lang":"all","versionName":"1.4.10","versionCode":14,"nsfw":true}]"#;
@@ -1097,10 +1105,7 @@ mod tests {
         let _srv = serve_once(listener, index, "HTTP/1.1 200 OK");
 
         let svc = service_in(&tmp, db.clone(), None);
-        let n = svc
-            .refresh_one(&format!("http://{addr}/repo-1/index.json"), "t")
-            .await
-            .expect("first refresh");
+        let n = svc.refresh_one(&format!("http://{addr}/repo-1/index.json"), "t").await.expect("first refresh");
         assert_eq!(n, 1);
 
         // write-through cache exists after the first successful refresh：
@@ -1114,17 +1119,11 @@ mod tests {
             "缓存文件名形如 index-<hash>.<ext>：{}",
             cache_file.file_name().unwrap().to_string_lossy()
         );
-        assert!(
-            !tmp.join("cache").join("extensions").join("index").join("repo-1").exists(),
-            "不该再按仓库建目录"
-        );
+        assert!(!tmp.join("cache").join("extensions").join("index").join("repo-1").exists(), "不该再按仓库建目录");
 
         // second refresh: the one-shot server is gone (connection refused),
         // so refresh_one must fall back to the cached copy instead of failing.
-        let n = svc
-            .refresh_one(&format!("http://{addr}/repo-1/index.json"), "t")
-            .await
-            .expect("cached refresh");
+        let n = svc.refresh_one(&format!("http://{addr}/repo-1/index.json"), "t").await.expect("cached refresh");
         assert_eq!(n, 1, "offline refresh served from cache");
 
         let count: i64 = suwayomi_db::query_scalar(
@@ -1173,7 +1172,9 @@ mod tests {
         // 旧版条目没有 icon 字段 → 按仓库约定补 <index 目录>/icon/<pkg>.png
         assert_eq!(
             entries[0].icon.as_deref(),
-            Some("https://raw.githubusercontent.com/stevenyomi/copymanga/repo/icon/eu.kanade.tachiyomi.extension.zh.copymanga.png")
+            Some(
+                "https://raw.githubusercontent.com/stevenyomi/copymanga/repo/icon/eu.kanade.tachiyomi.extension.zh.copymanga.png"
+            )
         );
 
         // 同一个数组格式但用新版写法的条目（versionName/versionCode/布尔 nsfw/
@@ -1393,7 +1394,7 @@ fn parse_mihon_pb_index(bytes: &[u8]) -> PbResult<Vec<RepoIndexEntry>> {
     Ok(out)
 }
 
-fn parse_mihon_extension(p: &mut PbReader) -> PbResult<Option<RepoIndexEntry>> {
+fn parse_mihon_extension(p: &mut PbReader<'_>) -> PbResult<Option<RepoIndexEntry>> {
     let body = p.len_delimited()?;
     let mut b = PbReader { d: body, i: 0 };
     let mut name = String::new();
@@ -1544,7 +1545,8 @@ mod mihon_pb_tests {
 
     #[test]
     fn parses_mihon_index_pb() {
-        let e1 = make_ext("TestSrc", "eu.kanade.tachiyomi.extension.en.testsrc", "1.2.3", 42, 1, "en", "https://x/a.apk");
+        let e1 =
+            make_ext("TestSrc", "eu.kanade.tachiyomi.extension.en.testsrc", "1.2.3", 42, 1, "en", "https://x/a.apk");
         let e2 = make_ext("Multi", "eu.kanade.tachiyomi.extension.all.multi", "2.0", 7, 3, "zh", "https://x/b.apk");
         let mut list = Vec::new();
         list.extend(ld(1, &e1));

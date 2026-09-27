@@ -5,6 +5,10 @@
 //! Android 宿主 App 走 JNI 调同一个 `run`（见 crates/suwayomi-android 与
 //! docs/migration/ANDROID_IMPL.md）。
 
+// 测试代码允许 panic：unwrap / expect / panic! 在断言里是常规写法，
+// 逐个改成 `?` 传播只会让失败信息更难读。生产代码不受这条影响
+// （`cfg_attr(test, ...)`）。
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo))]
 // release 无控制台窗口（隐藏启动在真实系统上可能被安全软件拦截）；日志由父进程重定向
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -28,10 +32,11 @@ async fn main() -> anyhow::Result<()> {
     let _instance_guard = {
         use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError};
         use windows_sys::Win32::System::Threading::CreateMutexW;
-        let name: Vec<u16> = "SuwayomiServerSingleInstance"
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
+        let name: Vec<u16> = "SuwayomiServerSingleInstance".encode_utf16().chain(std::iter::once(0)).collect();
+        // SAFETY: `name` 是以 NUL 结尾的 UTF-16 字符串切片，指针在 `CreateMutexW`
+        // 调用期间保持有效（`name` 活到块结束）；`CreateMutexW` 的 bInitialOwner=0
+        // 表示不立即占有互斥体，返回的句柄在进程退出前一直由 `_instance_guard` 持有。
+        #[allow(unsafe_code)] // Windows 单实例互斥体只能走 Win32 API，没有 safe 封装
         unsafe {
             let h = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
             let already = h.is_null() || GetLastError() == ERROR_ALREADY_EXISTS;

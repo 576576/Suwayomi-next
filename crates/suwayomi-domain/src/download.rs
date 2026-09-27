@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{Mutex, broadcast};
 
 use suwayomi_core::db::Db;
 use suwayomi_core::models::now_epoch_secs;
@@ -137,7 +137,9 @@ impl DownloadManager {
     pub async fn snapshot(&self) -> Vec<DownloadJob> {
         let mut jobs = self.queue.lock().await.iter().cloned().collect::<Vec<_>>();
         // Merge live progress ticks (written synchronously during downloads).
-        let progress = self.progress_by_id.lock().unwrap();
+        // 中毒时取内部值继续用：进度表只是缓存，读不到最坏是进度显示慢一拍，
+        // 不该让一次快照查询把整个下载管理器拖崩。
+        let progress = self.progress_by_id.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         for job in &mut jobs {
             if let Some(p) = progress.get(&job.chapter_id) {
                 job.progress = *p;
@@ -149,11 +151,11 @@ impl DownloadManager {
     /// Records a per-page progress tick. Synchronous so it can be called from
     /// the downloader while pages are being fetched concurrently.
     pub fn set_progress(&self, chapter_id: i32, progress: f64) {
-        self.progress_by_id.lock().unwrap().insert(chapter_id, progress);
+        self.progress_by_id.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(chapter_id, progress);
     }
 
     fn clear_progress(&self, chapter_id: i32) {
-        self.progress_by_id.lock().unwrap().remove(&chapter_id);
+        self.progress_by_id.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&chapter_id);
     }
 
     fn emit(&self, event: DownloadEvent) {
@@ -237,9 +239,12 @@ impl DownloadManager {
     pub async fn reorder(&self, chapter_id: i32, to: usize) {
         let mut queue = self.queue.lock().await;
         if let Some(pos) = queue.iter().position(|j| j.chapter_id == chapter_id) {
-            let job = queue.remove(pos).expect("position just found");
             let to = to.min(queue.len());
-            queue.insert(to, job);
+            // `remove` 返回 Option 而不是 panic：pos 来自上面的 `position`，
+            // 取不到时（理论上不会）就什么都不做，比 `expect("position just found")` 稳。
+            if let Some(job) = queue.remove(pos) {
+                queue.insert(to, job);
+            }
         }
         drop(queue);
         self.emit_snapshot().await;
@@ -279,7 +284,10 @@ impl DownloadManager {
             }
             // Peek (do not pop) the head: the job stays in the queue while it
             // is processed so its state/progress are visible to snapshots.
-            let job = { let queue = self.queue.lock().await; queue.front().cloned() };
+            let job = {
+                let queue = self.queue.lock().await;
+                queue.front().cloned()
+            };
             let Some(job) = job else {
                 // idle: keep the worker alive waiting for new jobs
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -288,7 +296,10 @@ impl DownloadManager {
             if matches!(job.state, JobState::Finished | JobState::Error) {
                 // terminal leftover: drop it so the next queued chapter runs
                 // (re-processing it would re-download the same chapter forever)
-                { let mut queue = self.queue.lock().await; queue.pop_front(); }
+                {
+                    let mut queue = self.queue.lock().await;
+                    queue.pop_front();
+                }
                 self.clear_progress(job.chapter_id);
                 self.emit_snapshot().await;
                 continue;
@@ -316,9 +327,7 @@ impl DownloadManager {
         let result = if !pages.is_empty() {
             Ok(pages)
         } else {
-            self.fetcher
-                .fetch_pages(job.source_id, &job.manga_url, &job.chapter_url)
-                .await
+            self.fetcher.fetch_pages(job.source_id, &job.manga_url, &job.chapter_url).await
         };
 
         match result {
@@ -335,12 +344,14 @@ impl DownloadManager {
                 // reading (mirroring reconcile_downloads' layout).
                 let tx = self.tx.clone();
                 let cid = job.chapter_id;
-                match self.download_chapter_archive(&job, &pages, &mut |i| {
-                    let progress = ((i + 1) as f64 / total).min(1.0);
-                    // Keep the queued job's progress accurate at all times.
-                    self.set_progress(cid, progress);
-                    let _ = tx.send(DownloadEvent::Progress { chapter_id: cid, progress });
-                }).await
+                match self
+                    .download_chapter_archive(&job, &pages, &mut |i| {
+                        let progress = ((i + 1) as f64 / total).min(1.0);
+                        // Keep the queued job's progress accurate at all times.
+                        self.set_progress(cid, progress);
+                        let _ = tx.send(DownloadEvent::Progress { chapter_id: cid, progress });
+                    })
+                    .await
                 {
                     Ok((archive, files)) => {
                         archive_opt = Some(archive);
@@ -357,14 +368,13 @@ impl DownloadManager {
                     // Register the download so offline reading works through
                     // `/api/v1/manga/{manga}/chapter/{order}/page/{n}/image`.
                     let pool = self.db.pool();
-                    let chapter_row: Option<(i32, i32)> = suwayomi_db::query_as(
-                        "SELECT c.manga, c.source_order FROM chapter c WHERE c.id = $1",
-                    )
-                    .bind(job.chapter_id)
-                    .fetch_optional(pool)
-                    .await
-                    .ok()
-                    .flatten();
+                    let chapter_row: Option<(i32, i32)> =
+                        suwayomi_db::query_as("SELECT c.manga, c.source_order FROM chapter c WHERE c.id = $1")
+                            .bind(job.chapter_id)
+                            .fetch_optional(pool)
+                            .await
+                            .ok()
+                            .flatten();
                     let img_base = chapter_row
                         .map(|(manga_id, source_order)| format!("/api/v1/manga/{manga_id}/chapter/{source_order}/page"))
                         .unwrap_or_default();
@@ -381,11 +391,20 @@ impl DownloadManager {
                         match existing {
                             Some((pid,)) => {
                                 let sql = bind_placeholders("UPDATE page SET url = ?, image_url = ? WHERE id = ?");
-                                let _ = suwayomi_db::query(&sql).bind(name).bind(&image_url).bind(pid).execute(pool).await;
+                                let _ =
+                                    suwayomi_db::query(&sql).bind(name).bind(&image_url).bind(pid).execute(pool).await;
                             }
                             None => {
-                                let sql = bind_placeholders("INSERT INTO page (\"index\", url, image_url, chapter) VALUES (?, ?, ?, ?)");
-                                let _ = suwayomi_db::query(&sql).bind(pi).bind(name).bind(&image_url).bind(job.chapter_id).execute(pool).await;
+                                let sql = bind_placeholders(
+                                    "INSERT INTO page (\"index\", url, image_url, chapter) VALUES (?, ?, ?, ?)",
+                                );
+                                let _ = suwayomi_db::query(&sql)
+                                    .bind(pi)
+                                    .bind(name)
+                                    .bind(&image_url)
+                                    .bind(job.chapter_id)
+                                    .execute(pool)
+                                    .await;
                             }
                         }
                     }
@@ -473,7 +492,9 @@ impl DownloadManager {
             meta.title = job.chapter_name.clone();
         }
         let e = xml_escape;
-        let mut xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ComicInfo xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\n");
+        let mut xml = String::from(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ComicInfo xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\n",
+        );
         for (tag, value) in [
             ("Title", &meta.title),
             ("Series", &meta.series),
@@ -541,7 +562,10 @@ impl DownloadManager {
             let url = format!("{}{}", self.server_base_url, proxy_path);
             let client = client.clone();
             join.spawn(async move {
-                let _permit = permit_src.acquire_owned().await.expect("semaphore closed");
+                // 信号量关闭只在所有 `Arc` 都释放后发生；真发生了也只是这一页下载失败，
+                // 让 `JoinSet` 收成一条错误，而不是 panic 掉整个下载任务。
+                let _permit =
+                    permit_src.acquire_owned().await.map_err(|_| format!("page {idx}: download queue closed"))?;
                 let r = client.get(&url).send().await;
                 let resp = match r {
                     Ok(r) if r.status().is_success() => r,
@@ -559,14 +583,14 @@ impl DownloadManager {
         let mut errors: Vec<String> = Vec::new();
         while let Some(joined) = join.join_next().await {
             match joined {
-                    Ok(Ok((idx, bytes))) => {
-                        let ext = image_ext_from_content_type(&bytes);
-                        downloaded.push((idx, format!("{idx}.{ext}"), bytes));
-                        progress(downloaded.len());
-                    }
-                    Ok(Err(e)) => errors.push(e),
-                    Err(e) => errors.push(format!("join: {e}")),
+                Ok(Ok((idx, bytes))) => {
+                    let ext = image_ext_from_content_type(&bytes);
+                    downloaded.push((idx, format!("{idx}.{ext}"), bytes));
+                    progress(downloaded.len());
                 }
+                Ok(Err(e)) => errors.push(e),
+                Err(e) => errors.push(format!("join: {e}")),
+            }
         }
         if downloaded.is_empty() {
             // No page could be fetched — don't leave behind an empty manga
@@ -575,7 +599,12 @@ impl DownloadManager {
             return Err(format!("no page image could be downloaded: {}", errors.join("; ")));
         }
         if !errors.is_empty() {
-            tracing::warn!(chapter_id = job.chapter_id, "download: {} page(s) failed: {}", errors.len(), errors.join("; "));
+            tracing::warn!(
+                chapter_id = job.chapter_id,
+                "download: {} page(s) failed: {}",
+                errors.len(),
+                errors.join("; ")
+            );
         }
 
         // Bundle into a CBZ.
@@ -637,13 +666,13 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
     // again; real downloads always set real_url to the CBZ path.
     // Same for markers whose archive file has since disappeared from disk.
     let stale_ids: Vec<i32> = {
-        let sql = bind_placeholders(
-            "SELECT id, real_url FROM chapter WHERE is_downloaded = TRUE",
-        );
+        let sql = bind_placeholders("SELECT id, real_url FROM chapter WHERE is_downloaded = TRUE");
         let rows = suwayomi_db::query(&sql).fetch_all(db.pool()).await.unwrap_or_default();
         let mut ids: Vec<i32> = Vec::new();
         for r in rows {
-            let id: i32 = r.get("id");
+            // `try_get` 而不是 `get`：缺列 / NULL 时跳过这一行，不该让一次清理
+            // 扫描把整个进程打挂（库里已经没有会 panic 的 `get` 了）。
+            let Ok(id) = r.try_get::<i32, _>("id") else { continue };
             let real: Option<String> = r.try_get("real_url").ok().flatten();
             let missing = match &real {
                 Some(p) if !p.is_empty() => !std::path::Path::new(p).exists(),
@@ -666,14 +695,12 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
         .map(|r| r.rows_affected())
         .unwrap_or(0)
     } else {
-        suwayomi_db::query(
-            bind_placeholders("UPDATE chapter SET is_downloaded = FALSE WHERE id = ANY($1)").as_str(),
-        )
-        .bind(&stale_ids)
-        .execute(db.pool())
-        .await
-        .map(|r| r.rows_affected())
-        .unwrap_or(0)
+        suwayomi_db::query(bind_placeholders("UPDATE chapter SET is_downloaded = FALSE WHERE id = ANY($1)").as_str())
+            .bind(&stale_ids)
+            .execute(db.pool())
+            .await
+            .map(|r| r.rows_affected())
+            .unwrap_or(0)
     };
     if cleared > 0 {
         tracing::info!("downloads: cleared {cleared} stale download marker(s) without an archive");
@@ -693,7 +720,8 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
     // same pages, so readers saw the first page repeated. Dedupe once:
     // keep the lowest id per (chapter, index).
     let _ = suwayomi_db::query(
-        bind_placeholders("DELETE FROM page WHERE id NOT IN (SELECT MIN(id) FROM page GROUP BY chapter, \"index\")").as_str(),
+        bind_placeholders("DELETE FROM page WHERE id NOT IN (SELECT MIN(id) FROM page GROUP BY chapter, \"index\")")
+            .as_str(),
     )
     .execute(db.pool())
     .await;
@@ -716,15 +744,11 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
         };
         // resolve source row by name+lang (case-insensitive)
         let sql = bind_placeholders("SELECT id FROM source WHERE LOWER(name) = LOWER(?) AND LOWER(lang) = LOWER(?)");
-        let source_id: Option<(i64,)> = match suwayomi_db::query_as(&sql)
-            .bind(&name)
-            .bind(&lang)
-            .fetch_optional(db.pool())
-            .await
-        {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
+        let source_id: Option<(i64,)> =
+            match suwayomi_db::query_as(&sql).bind(&name).bind(&lang).fetch_optional(db.pool()).await {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
         let Some((source_id,)) = source_id else { continue };
 
         let manga_dirs = match std::fs::read_dir(source_entry.path()) {
@@ -778,10 +802,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
             }
             // 3) chapters from the directory listing (files or subdirs)
             let entries: Vec<_> = match std::fs::read_dir(manga_entry.path()) {
-                Ok(it) => it
-                    .flatten()
-                    .filter(|e| e.file_name() != ".nomedia" && e.file_name() != ".noxml")
-                    .collect(),
+                Ok(it) => it.flatten().filter(|e| e.file_name() != ".nomedia" && e.file_name() != ".noxml").collect(),
                 Err(_) => Vec::new(),
             };
             if entries.is_empty() {
@@ -794,11 +815,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
             for entry in &entries {
                 let p = entry.path();
                 if p.is_file() {
-                    let ext = p
-                        .extension()
-                        .and_then(|x| x.to_str())
-                        .unwrap_or("")
-                        .to_lowercase();
+                    let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("").to_lowercase();
                     if crate::source::local::ARCHIVE_EXTS.contains(&ext.as_str()) {
                         meta = crate::source::local::read_archive_meta(&p);
                         if meta.is_some() {
@@ -967,9 +984,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                                 .flatten();
                             match existing_page {
                                 Some((pid,)) => {
-                                    let sql = bind_placeholders(
-                                        "UPDATE page SET url = ?, image_url = ? WHERE id = ?",
-                                    );
+                                    let sql = bind_placeholders("UPDATE page SET url = ?, image_url = ? WHERE id = ?");
                                     let _ = suwayomi_db::query(&sql)
                                         .bind(pname)
                                         .bind(&image_url)
@@ -993,14 +1008,8 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                         }
                         // Reflect the page count on the chapter row —
                         // the reader relies on it for paged-mode state.
-                        let sql = bind_placeholders(
-                            "UPDATE chapter SET page_count = ? WHERE id = ?",
-                        );
-                        let _ = suwayomi_db::query(&sql)
-                            .bind(page_count)
-                            .bind(cid)
-                            .execute(db.pool())
-                            .await;
+                        let sql = bind_placeholders("UPDATE chapter SET page_count = ? WHERE id = ?");
+                        let _ = suwayomi_db::query(&sql).bind(page_count).bind(cid).execute(db.pool()).await;
                     }
                 }
             }
@@ -1008,11 +1017,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
     }
 
     if !matched_mangas.is_empty() {
-        tracing::info!(
-            "downloads reconcile: {} manga, {} chapters",
-            matched_mangas.len(),
-            total_chapters
-        );
+        tracing::info!("downloads reconcile: {} manga, {} chapters", matched_mangas.len(), total_chapters);
     }
 
     // The downloads tree should only contain content-bearing folders (a CBZ
@@ -1045,16 +1050,19 @@ async fn read_db_pages(
          ORDER BY \"index\" ASC ",
     );
     let rows = suwayomi_db::query(&sql).bind(chapter_id).fetch_all(pool).await?;
-    Ok(rows.into_iter().map(|r| {
-        let url: String = r.try_get("url").unwrap_or_default();
-        let image_url: Option<String> = r.try_get("image_url").ok().flatten();
-        suwayomi_core::source::SourcePage {
-            index: r.try_get("index").unwrap_or(0),
-            image_url: image_url.or(Some(url.clone())),
-            url,
-            uri: None,
-        }
-    }).collect())
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let url: String = r.try_get("url").unwrap_or_default();
+            let image_url: Option<String> = r.try_get("image_url").ok().flatten();
+            suwayomi_core::source::SourcePage {
+                index: r.try_get("index").unwrap_or(0),
+                image_url: image_url.or(Some(url.clone())),
+                url,
+                uri: None,
+            }
+        })
+        .collect())
 }
 
 /// `"nHentai.com (unoriginal) (JA)"` -> `("nHentai.com (unoriginal)", "ja")`.
@@ -1144,16 +1152,14 @@ fn sanitize_file_name(raw: &str) -> String {
             c => c,
         })
         .collect();
-    let collapsed = cleaned
-        .chars()
-        .fold(String::new(), |mut acc, c| {
-            if acc.ends_with('_') && c == '_' {
-                // skip duplicate underscores
-            } else {
-                acc.push(c);
-            }
-            acc
-        });
+    let collapsed = cleaned.chars().fold(String::new(), |mut acc, c| {
+        if acc.ends_with('_') && c == '_' {
+            // skip duplicate underscores
+        } else {
+            acc.push(c);
+        }
+        acc
+    });
     let trimmed = collapsed.trim_matches(|c| c == '.' || c == ' ' || c == '_');
     if trimmed.is_empty() { "_".to_string() } else { trimmed.to_string() }
 }
@@ -1189,9 +1195,18 @@ mod tests {
             .execute(pool)
             .await
             .expect("ext");
-        suwayomi_db::query("INSERT INTO source (name, lang, extension) VALUES ('S','en',1)").execute(pool).await.expect("src");
-        suwayomi_db::query("INSERT INTO manga (url, title, in_library, source) VALUES ('/m','M',TRUE,1)").execute(pool).await.expect("manga");
-        suwayomi_db::query("INSERT INTO chapter (url, name, source_order, manga) VALUES ('/m/c1','Ch1',0,1)").execute(pool).await.expect("ch");
+        suwayomi_db::query("INSERT INTO source (name, lang, extension) VALUES ('S','en',1)")
+            .execute(pool)
+            .await
+            .expect("src");
+        suwayomi_db::query("INSERT INTO manga (url, title, in_library, source) VALUES ('/m','M',TRUE,1)")
+            .execute(pool)
+            .await
+            .expect("manga");
+        suwayomi_db::query("INSERT INTO chapter (url, name, source_order, manga) VALUES ('/m/c1','Ch1',0,1)")
+            .execute(pool)
+            .await
+            .expect("ch");
         db
     }
 
@@ -1293,7 +1308,10 @@ mod tests {
         assert!(seen_snapshot, "must see snapshots from the worker");
         mgr.stop().await;
         // stub fetcher → job failed, not downloaded
-        let downloaded: bool = suwayomi_db::query_scalar("SELECT is_downloaded FROM chapter WHERE id = 1").fetch_one(db.pool()).await.expect("flag");
+        let downloaded: bool = suwayomi_db::query_scalar("SELECT is_downloaded FROM chapter WHERE id = 1")
+            .fetch_one(db.pool())
+            .await
+            .expect("flag");
         assert!(!downloaded, "stub fetcher cannot download");
     }
 }

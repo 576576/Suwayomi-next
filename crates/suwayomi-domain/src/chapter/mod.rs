@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use suwayomi_core::db::Db;
-use suwayomi_core::models::{now_epoch_secs, ChapterDataClass, MangaChapterDataClass, PaginatedList};
+use suwayomi_core::models::{ChapterDataClass, MangaChapterDataClass, PaginatedList, now_epoch_secs};
 use suwayomi_core::schema::{ChapterRow, MangaRow};
 
 use crate::error::{DomainError, Result};
@@ -130,11 +130,8 @@ impl ChapterService {
             // sourceOrder is 1-based (Tachiyomi/WebUI convention).
             let source_order = i as i32 + 1;
             let sql = bind_placeholders("SELECT id FROM chapter WHERE manga = ? AND url = ?");
-            let existing: Option<(i32,)> = suwayomi_db::query_as(&sql)
-                .bind(manga_id)
-                .bind(&c.url)
-                .fetch_optional(self.db.pool())
-                .await?;
+            let existing: Option<(i32,)> =
+                suwayomi_db::query_as(&sql).bind(manga_id).bind(&c.url).fetch_optional(self.db.pool()).await?;
             match existing {
                 Some((id,)) => {
                     let sql = bind_placeholders(
@@ -175,10 +172,12 @@ impl ChapterService {
         let sql = bind_placeholders("UPDATE manga SET chapters_last_fetched_at = ? WHERE id = ?");
         suwayomi_db::query(&sql).bind(now).bind(manga_id).execute(self.db.pool()).await?;
         // re-read what we just persisted
-        let rows = suwayomi_db::query_as::<ChapterRow>(&bind_placeholders("SELECT * FROM chapter WHERE manga = ? ORDER BY source_order DESC"))
-            .bind(manga_id)
-            .fetch_all(self.db.pool())
-            .await?;
+        let rows = suwayomi_db::query_as::<ChapterRow>(&bind_placeholders(
+            "SELECT * FROM chapter WHERE manga = ? ORDER BY source_order DESC",
+        ))
+        .bind(manga_id)
+        .fetch_all(self.db.pool())
+        .await?;
         Ok(rows.iter().map(chapter_row_to_data_class).collect())
     }
 
@@ -446,8 +445,9 @@ impl ChapterService {
         for cid in chapter_ids {
             let chapter = self.fetch_by_id(cid).await?;
             let manga_sql = bind_placeholders("SELECT * FROM manga WHERE id = ?");
-            let manga =
-                { suwayomi_db::query_as::<MangaRow>(&manga_sql).bind(chapter.manga).fetch_optional(self.db.pool()).await? };
+            let manga = {
+                suwayomi_db::query_as::<MangaRow>(&manga_sql).bind(chapter.manga).fetch_optional(self.db.pool()).await?
+            };
             if let Some(m) = manga {
                 items.push(MangaChapterDataClass {
                     manga: manga_row_to_data_class(&m),

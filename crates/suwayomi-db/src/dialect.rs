@@ -197,9 +197,9 @@ fn copy_quoted(chars: &[char], i: &mut usize, out: &mut String, quote: char) {
 
 /// Pulls the next parameter, reporting a binding mismatch rather than panicking.
 fn take<'a>(params: &'a [Value], next: &mut usize) -> Result<&'a Value> {
-    let value = params.get(*next).ok_or_else(|| {
-        Error::Other("query uses more placeholders than values were bound".to_owned())
-    })?;
+    let value = params
+        .get(*next)
+        .ok_or_else(|| Error::Other("query uses more placeholders than values were bound".to_owned()))?;
     *next += 1;
     Ok(value)
 }
@@ -321,10 +321,7 @@ fn starts_with_ci(chars: &[char], i: usize, needle: &str) -> bool {
     if i + n.len() > chars.len() {
         return false;
     }
-    chars[i..i + n.len()]
-        .iter()
-        .zip(n.iter())
-        .all(|(a, b)| a.eq_ignore_ascii_case(b))
+    chars[i..i + n.len()].iter().zip(n.iter()).all(|(a, b)| a.eq_ignore_ascii_case(b))
 }
 
 /// `true` when the option is an identifier character (so `ILIKE` in `ILIKES`
@@ -343,12 +340,12 @@ mod tests {
 
     #[test]
     fn renumbers_bare_placeholders_per_dialect() {
-        let p = plan(Dialect::Postgres, "SELECT * FROM t WHERE a = ? AND b = ?", &[Value::Int(1), Value::Int(2)])
-            .unwrap();
+        let p =
+            plan(Dialect::Postgres, "SELECT * FROM t WHERE a = ? AND b = ?", &[Value::Int(1), Value::Int(2)]).unwrap();
         assert_eq!(p.sql, "SELECT * FROM t WHERE a = $1 AND b = $2");
 
-        let p = plan(Dialect::Sqlite, "SELECT * FROM t WHERE a = ? AND b = ?", &[Value::Int(1), Value::Int(2)])
-            .unwrap();
+        let p =
+            plan(Dialect::Sqlite, "SELECT * FROM t WHERE a = ? AND b = ?", &[Value::Int(1), Value::Int(2)]).unwrap();
         assert_eq!(p.sql, "SELECT * FROM t WHERE a = ?1 AND b = ?2");
     }
 

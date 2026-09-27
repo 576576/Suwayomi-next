@@ -3,12 +3,18 @@
 //! Category / CategoryManga / Meta). Source-fetching paths go through the
 //! `SourceFetcher` trait; the JVM-sandbox backend is `source::sandbox`.
 
+// 测试代码允许 panic：unwrap / expect / panic! 在断言里是常规写法，
+// 逐个改成 `?` 传播只会让失败信息更难读。生产代码不受这条影响
+// （`cfg_attr(test, ...)`）。
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo))]
+
 pub mod category;
-pub mod download;
-pub mod extension_store;
-pub mod koreader_sync;
 pub mod chapter;
+pub mod download;
 pub mod error;
+pub mod extension_store;
+pub(crate) mod http;
+pub mod koreader_sync;
 pub mod manga;
 pub mod meta;
 pub mod page;
@@ -22,8 +28,8 @@ pub mod updater;
 mod sandbox_e2e {
     //! End-to-end test against a running JVM sandbox (see `ext-runtime.jar`).
     //! Skipped when no sandbox is listening on the test port.
-    use crate::source::sandbox::HttpSandboxFetcher;
     use crate::source::SourceFetcher;
+    use crate::source::sandbox::HttpSandboxFetcher;
 
     const SANDBOX: &str = "http://127.0.0.1:8088";
 
@@ -46,22 +52,13 @@ mod sandbox_e2e {
         let m = &page.mangas[0];
         eprintln!("popular[0]: {} ({})", m.title, m.url);
         // details + chapters
-        let smanga = suwayomi_core::source::SManga {
-            url: m.url.clone(),
-            ..Default::default()
-        };
-        let (updated, chapters) = f
-            .fetch_manga_update(en.id, &smanga, &[], true, true)
-            .await
-            .expect("fetch update");
+        let smanga = suwayomi_core::source::SManga { url: m.url.clone(), ..Default::default() };
+        let (updated, chapters) = f.fetch_manga_update(en.id, &smanga, &[], true, true).await.expect("fetch update");
         assert!(!updated.title.is_empty(), "details returned empty title");
         assert!(!chapters.is_empty(), "no chapters");
         eprintln!("details: {} | chapters: {}", updated.title, chapters.len());
         // pages for the first chapter
-        let pages = f
-            .fetch_pages(en.id, &smanga.url, &chapters[0].url)
-            .await
-            .expect("fetch pages");
+        let pages = f.fetch_pages(en.id, &smanga.url, &chapters[0].url).await.expect("fetch pages");
         assert!(!pages.is_empty(), "no pages");
         eprintln!("pages: {} (first: {})", pages.len(), pages[0].url);
         assert!(pages[0].url.starts_with("http"), "page url looks like a URL");

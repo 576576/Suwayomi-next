@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{Mutex, broadcast};
 
 use suwayomi_core::db::Db;
 use suwayomi_core::schema::{CategoryRow, ChapterRow, MangaRow};
@@ -71,11 +71,7 @@ pub struct LibraryUpdateStatus {
 
 impl LibraryUpdateStatus {
     pub fn idle() -> Self {
-        Self {
-            category_updates: vec![],
-            jobs_info: UpdaterJobsInfo::default(),
-            manga_updates: vec![],
-        }
+        Self { category_updates: vec![], jobs_info: UpdaterJobsInfo::default(), manga_updates: vec![] }
     }
 }
 
@@ -136,12 +132,8 @@ impl UpdateManager {
     /// 本轮被跳过的漫画（`summary` 的 skippedMangas）。
     pub async fn skipped_mangas(&self) -> Vec<MangaRow> {
         let st = self.state.lock().await;
-        let mut rows: Vec<MangaRow> = st
-            .jobs
-            .values()
-            .filter(|j| j.status == MangaJobStatus::Skipped)
-            .map(|j| j.manga.clone())
-            .collect();
+        let mut rows: Vec<MangaRow> =
+            st.jobs.values().filter(|j| j.status == MangaJobStatus::Skipped).map(|j| j.manga.clone()).collect();
         rows.sort_by_key(|m| m.id);
         rows
     }
@@ -263,7 +255,11 @@ impl UpdateManager {
             jobs_info: UpdaterJobsInfo {
                 finished_jobs: 0,
                 is_running: true,
-                skipped_categories_count: self.category_status().await.get(&CategoryJobStatus::Skipped).map_or(0, |c| c.len() as i32),
+                skipped_categories_count: self
+                    .category_status()
+                    .await
+                    .get(&CategoryJobStatus::Skipped)
+                    .map_or(0, |c| c.len() as i32),
                 skipped_mangas_count: 0,
                 total_jobs: total,
             },
@@ -301,7 +297,11 @@ impl UpdateManager {
                 jobs_info: UpdaterJobsInfo {
                     finished_jobs: finished,
                     is_running: true,
-                    skipped_categories_count: self.category_status().await.get(&CategoryJobStatus::Skipped).map_or(0, |c| c.len() as i32),
+                    skipped_categories_count: self
+                        .category_status()
+                        .await
+                        .get(&CategoryJobStatus::Skipped)
+                        .map_or(0, |c| c.len() as i32),
                     skipped_mangas_count: skipped,
                     total_jobs: total,
                 },
@@ -315,7 +315,11 @@ impl UpdateManager {
             jobs_info: UpdaterJobsInfo {
                 finished_jobs: finished,
                 is_running: false,
-                skipped_categories_count: self.category_status().await.get(&CategoryJobStatus::Skipped).map_or(0, |c| c.len() as i32),
+                skipped_categories_count: self
+                    .category_status()
+                    .await
+                    .get(&CategoryJobStatus::Skipped)
+                    .map_or(0, |c| c.len() as i32),
                 skipped_mangas_count: skipped,
                 total_jobs: total,
             },
@@ -408,22 +412,18 @@ impl UpdateManager {
 /// 库内漫画 id，可按分类过滤。
 async fn library_manga_ids(pool: &Db, categories: Option<&[i32]>) -> Result<Vec<i32>, suwayomi_db::Error> {
     match categories {
-        Some(cats) if !cats.is_empty() => {
-            suwayomi_db::query_as::<(i32,)>(
-                "SELECT DISTINCT m.id FROM manga m JOIN category_manga cm ON cm.manga = m.id \
+        Some(cats) if !cats.is_empty() => suwayomi_db::query_as::<(i32,)>(
+            "SELECT DISTINCT m.id FROM manga m JOIN category_manga cm ON cm.manga = m.id \
                  WHERE m.in_library = TRUE AND cm.category = ANY($1) ORDER BY m.id",
-            )
-            .bind(cats)
+        )
+        .bind(cats)
+        .fetch_all(pool)
+        .await
+        .map(|rows| rows.into_iter().map(|r| r.0).collect()),
+        _ => suwayomi_db::query_as::<(i32,)>("SELECT id FROM manga WHERE in_library = TRUE ORDER BY id")
             .fetch_all(pool)
             .await
-            .map(|rows| rows.into_iter().map(|r| r.0).collect())
-        }
-        _ => {
-            suwayomi_db::query_as::<(i32,)>("SELECT id FROM manga WHERE in_library = TRUE ORDER BY id")
-                .fetch_all(pool)
-                .await
-                .map(|rows| rows.into_iter().map(|r| r.0).collect())
-        }
+            .map(|rows| rows.into_iter().map(|r| r.0).collect()),
     }
 }
 
@@ -433,8 +433,8 @@ pub(crate) async fn fetch_manga_row(pool: &Db, manga_id: i32) -> Result<MangaRow
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use async_trait::async_trait;
@@ -464,8 +464,22 @@ mod tests {
             Ok((
                 SManga::default(),
                 vec![
-                    SChapter { url: "/c/1".into(), name: "Ch 1".into(), chapter_number: 1.0, scanlator: None, date_upload: 1_700_000_000_000, memo: Default::default() },
-                    SChapter { url: "/c/2".into(), name: "Ch 2".into(), chapter_number: 2.0, scanlator: Some("TL".into()), date_upload: 1_700_000_100_000, memo: Default::default() },
+                    SChapter {
+                        url: "/c/1".into(),
+                        name: "Ch 1".into(),
+                        chapter_number: 1.0,
+                        scanlator: None,
+                        date_upload: 1_700_000_000_000,
+                        memo: Default::default(),
+                    },
+                    SChapter {
+                        url: "/c/2".into(),
+                        name: "Ch 2".into(),
+                        chapter_number: 2.0,
+                        scanlator: Some("TL".into()),
+                        date_upload: 1_700_000_100_000,
+                        memo: Default::default(),
+                    },
                 ],
             ))
         }
@@ -495,7 +509,10 @@ mod tests {
             .execute(pool)
             .await
             .expect("ext");
-        suwayomi_db::query("INSERT INTO source (name, lang, extension) VALUES ('S','en',1)").execute(pool).await.expect("src");
+        suwayomi_db::query("INSERT INTO source (name, lang, extension) VALUES ('S','en',1)")
+            .execute(pool)
+            .await
+            .expect("src");
         suwayomi_db::query("INSERT INTO manga (url, title, in_library, source) VALUES ('/m','Manga One',TRUE,1)")
             .execute(pool)
             .await
@@ -538,9 +555,13 @@ mod tests {
         assert!(saw_running, "必须出现 is_running=true 的事件");
         assert!(saw_complete, "必须出现 finished_jobs >= 1 的收尾事件");
 
-        let n: i64 = suwayomi_db::query_scalar("SELECT COUNT(*) FROM chapter").fetch_one(db.pool()).await.expect("统计章节");
+        let n: i64 =
+            suwayomi_db::query_scalar("SELECT COUNT(*) FROM chapter").fetch_one(db.pool()).await.expect("统计章节");
         assert_eq!(n, 2, "更新器应插入两章");
-        let names: Vec<String> = suwayomi_db::query_scalar("SELECT name FROM chapter ORDER BY source_order").fetch_all(db.pool()).await.expect("章节名");
+        let names: Vec<String> = suwayomi_db::query_scalar("SELECT name FROM chapter ORDER BY source_order")
+            .fetch_all(db.pool())
+            .await
+            .expect("章节名");
         assert_eq!(names, vec!["Ch 1".to_string(), "Ch 2".to_string()]);
 
         // jobs / skippedMangas 是 REST summary 的数据源。

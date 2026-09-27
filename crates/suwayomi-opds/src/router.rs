@@ -1,10 +1,10 @@
 //! OPDS v1.2 routes — mirrors `opds/OpdsAPI.kt` + `controller/OpdsV1Controller.kt`.
 
+use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::Router;
 use serde::Deserialize;
 use suwayomi_rest::state::AppState;
 
@@ -37,12 +37,7 @@ pub fn opds_router() -> Router<AppState> {
 }
 
 fn ctx<'a>(state: &'a AppState, lang: &'a str) -> FeedCtx<'a> {
-    FeedCtx {
-        db: &state.db,
-        base_url: BASE_URL,
-        lang,
-        fetcher: Some(state.fetcher.clone()),
-    }
+    FeedCtx { db: &state.db, base_url: BASE_URL, lang, fetcher: Some(state.fetcher.clone()) }
 }
 
 fn xml(body: String) -> Response {
@@ -124,7 +119,8 @@ async fn library_series_feed(State(state): State<AppState>, Query(q): Query<Seri
     let page = q.page_number.unwrap_or(1).max(1);
     let is_search = q.query.is_some() || q.author.is_some() || q.title.is_some();
     if is_search {
-        xml(feeds::search_feed(&ctx(&state, lang), q.query.as_deref(), q.author.as_deref(), q.title.as_deref(), page).await)
+        xml(feeds::search_feed(&ctx(&state, lang), q.query.as_deref(), q.author.as_deref(), q.title.as_deref(), page)
+            .await)
     } else {
         let sort = q.sort.as_deref().unwrap_or("title");
         let filter = q.filter.as_deref().unwrap_or("all");
@@ -183,7 +179,8 @@ async fn library_source_feed(
     let page = q.page_number.unwrap_or(1).max(1);
     let sort = q.sort.as_deref().unwrap_or("title");
     let filter = q.filter.as_deref().unwrap_or("all");
-    xml(feeds::library_series_feed(&ctx(&state, lang), Some(source_id), None, None, None, None, page, sort, filter).await)
+    xml(feeds::library_series_feed(&ctx(&state, lang), Some(source_id), None, None, None, None, page, sort, filter)
+        .await)
 }
 
 async fn category_feed(
@@ -195,10 +192,15 @@ async fn category_feed(
     let page = q.page_number.unwrap_or(1).max(1);
     let sort = q.sort.as_deref().unwrap_or("title");
     let filter = q.filter.as_deref().unwrap_or("all");
-    xml(feeds::library_series_feed(&ctx(&state, lang), None, Some(category_id), None, None, None, page, sort, filter).await)
+    xml(feeds::library_series_feed(&ctx(&state, lang), None, Some(category_id), None, None, None, page, sort, filter)
+        .await)
 }
 
-async fn genre_feed(State(state): State<AppState>, Path(genre): Path<String>, Query(q): Query<SeriesQuery>) -> Response {
+async fn genre_feed(
+    State(state): State<AppState>,
+    Path(genre): Path<String>,
+    Query(q): Query<SeriesQuery>,
+) -> Response {
     let lang = q.lang.as_deref().unwrap_or("en");
     let page = q.page_number.unwrap_or(1).max(1);
     let sort = q.sort.as_deref().unwrap_or("title");
@@ -215,7 +217,8 @@ async fn status_feed(
     let page = q.page_number.unwrap_or(1).max(1);
     let sort = q.sort.as_deref().unwrap_or("title");
     let filter = q.filter.as_deref().unwrap_or("all");
-    xml(feeds::library_series_feed(&ctx(&state, lang), None, None, Some(status_id), None, None, page, sort, filter).await)
+    xml(feeds::library_series_feed(&ctx(&state, lang), None, None, Some(status_id), None, None, page, sort, filter)
+        .await)
 }
 
 async fn language_feed(
@@ -227,7 +230,8 @@ async fn language_feed(
     let page = q.page_number.unwrap_or(1).max(1);
     let sort = q.sort.as_deref().unwrap_or("title");
     let filter = q.filter.as_deref().unwrap_or("all");
-    xml(feeds::library_series_feed(&ctx(&state, lang), None, None, None, Some(&lang_code), None, page, sort, filter).await)
+    xml(feeds::library_series_feed(&ctx(&state, lang), None, None, None, Some(&lang_code), None, page, sort, filter)
+        .await)
 }
 
 async fn series_chapters_feed(
@@ -241,7 +245,11 @@ async fn series_chapters_feed(
     let filter = q.filter.as_deref().unwrap_or("all");
     match feeds::series_chapters_feed(&ctx(&state, lang), series_id, page, sort, filter).await {
         Ok(body) => xml(body),
-        Err(_) => (StatusCode::NOT_FOUND, feeds::not_found_feed(&ctx(&state, lang), &format!("series/{series_id}/chapters"), "Manga not found")).into_response(),
+        Err(_) => (
+            StatusCode::NOT_FOUND,
+            feeds::not_found_feed(&ctx(&state, lang), &format!("series/{series_id}/chapters"), "Manga not found"),
+        )
+            .into_response(),
     }
 }
 
@@ -255,7 +263,11 @@ async fn chapter_metadata_feed(
         Ok(body) => xml(body),
         Err(_) => (
             StatusCode::NOT_FOUND,
-            feeds::not_found_feed(&ctx(&state, lang), &format!("series/{series_id}/chapter/{chapter_index}/metadata"), "Chapter not found"),
+            feeds::not_found_feed(
+                &ctx(&state, lang),
+                &format!("series/{series_id}/chapter/{chapter_index}/metadata"),
+                "Chapter not found",
+            ),
         )
             .into_response(),
     }

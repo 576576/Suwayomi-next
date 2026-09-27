@@ -2,7 +2,7 @@
 
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderValue, Method, StatusCode};
+use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -34,7 +34,9 @@ async fn batch(
         s.chapter.delete_chapters(ids).await?;
     }
     if let Some(ids) = &ids {
-        s.chapter.modify_chapters_by_ids(ids, change.is_read, change.is_bookmarked, change.last_page_read, true).await?;
+        s.chapter
+            .modify_chapters_by_ids(ids, change.is_read, change.is_bookmarked, change.last_page_read, true)
+            .await?;
     }
     Ok(Json(serde_json::json!({ "message": "success" })))
 }
@@ -78,10 +80,8 @@ async fn download(
     } else {
         Body::from(tokio::fs::read(&archive).await.map_err(|e| ApiError::Internal(e.to_string()))?)
     };
-    let mut resp = Response::builder()
-        .status(StatusCode::OK)
-        .body(body)
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let mut resp =
+        Response::builder().status(StatusCode::OK).body(body).map_err(|e| ApiError::Internal(e.to_string()))?;
     let headers = resp.headers_mut();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
     if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{file_name}\"")) {

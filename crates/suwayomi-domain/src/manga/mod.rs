@@ -8,13 +8,13 @@ use std::sync::Arc;
 
 use suwayomi_core::db::Db;
 use suwayomi_core::models::{
-    now_epoch_secs, to_genre_list, ChapterDataClass, MangaDataClass, MangaStatus, UpdateStrategy,
+    ChapterDataClass, MangaDataClass, MangaStatus, UpdateStrategy, now_epoch_secs, to_genre_list,
 };
 use suwayomi_core::schema::{ChapterRow, MangaRow};
 use suwayomi_core::source::SManga;
 
-use crate::category::category_manga::CategoryMangaService;
 use crate::category::CategoryService;
+use crate::category::category_manga::CategoryMangaService;
 use crate::error::{DomainError, Result};
 use crate::meta::{MetaService, MetaTable};
 use crate::source::SourceFetcher;

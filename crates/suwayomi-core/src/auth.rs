@@ -243,16 +243,26 @@ impl AuthContext {
     }
 
     fn sign(&self, data: &[u8]) -> Vec<u8> {
-        let mut mac = HmacSha256::new_from_slice(&self.secret).expect("hmac accepts any key length");
+        let mut mac = self.mac();
         mac.update(data);
         mac.finalize().into_bytes().to_vec()
     }
 
     fn verify_signature(&self, data: &[u8], sig: &[u8]) -> bool {
-        let mut mac = HmacSha256::new_from_slice(&self.secret).expect("hmac accepts any key length");
+        let mut mac = self.mac();
         mac.update(data);
         // verify_slice 做的是常数时间比较
         mac.verify_slice(sig).is_ok()
+    }
+
+    /// HMAC 接受**任意长度**的密钥（RFC 2104：超过块长先 hash，不足补零），
+    /// 所以 `new_from_slice` 的 `InvalidLength` 在 `Hmac` 上不可达。
+    ///
+    /// 这里保留 `expect` 是为了把"不可达"显式写出来、并带一句说明理由的文案，
+    /// 而不是留一个没有上下文的 `unwrap()` 崩溃点。
+    #[allow(clippy::expect_used)]
+    fn mac(&self) -> HmacSha256 {
+        HmacSha256::new_from_slice(&self.secret).expect("hmac accepts any key length")
     }
 }
 
@@ -348,9 +358,7 @@ pub fn load_or_create_secret(dir: &Path) -> std::io::Result<(Arc<[u8]>, SecretSo
     {
         let bytes = secret.into_bytes();
         if bytes.len() < 32 {
-            tracing::warn!(
-                "SUWAYOMI_SESSION_SECRET is shorter than 32 bytes; use a long random value"
-            );
+            tracing::warn!("SUWAYOMI_SESSION_SECRET is shorter than 32 bytes; use a long random value");
         }
         return Ok((Arc::from(bytes.into_boxed_slice()), SecretSource::Env));
     }

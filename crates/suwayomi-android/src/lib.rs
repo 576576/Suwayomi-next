@@ -21,6 +21,15 @@
 //!
 //! 一个进程只 `start()` 一次：tokio runtime 与关闭通道都是进程级单例。
 
+// 测试代码允许 panic：unwrap / expect / panic! 在断言里是常规写法，
+// 逐个改成 `?` 传播只会让失败信息更难读。生产代码不受这条影响
+// （`cfg_attr(test, ...)`）。
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo))]
+// JNI 边界本身就是 unsafe 的：入口函数必须 `#[no_mangle]` + `extern "system"`
+// 才能被 `System.loadLibrary` 解析到，没有任何 safe 封装可用。整个 crate 就是
+// 这一层边界（194 行，不含业务逻辑），所以在 crate 级放行 unsafe。
+#![allow(unsafe_code)]
+
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
@@ -95,12 +104,12 @@ pub extern "system" fn Java_org_suwayomi_next_NativeServer_version<'local>(
 }
 
 fn start_inner(
-    env: &mut JNIEnv,
-    data_dir: JString,
-    webui_dir: JString,
-    ip: JString,
+    env: &mut JNIEnv<'_>,
+    data_dir: JString<'_>,
+    webui_dir: JString<'_>,
+    ip: JString<'_>,
     port: jint,
-    sandbox_url: JString,
+    sandbox_url: JString<'_>,
 ) -> jint {
     suwayomi_server::init_logging("info");
 
@@ -166,13 +175,19 @@ fn start_inner(
         shutdown: Some(shutdown_rx),
     };
 
-    let runtime = RUNTIME.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .thread_name("suwayomi")
-            .build()
-            .expect("build tokio runtime")
-    });
+    // 建 runtime 会失败（IO 线程池起不来等）。以前这里 `expect` 直接崩进程，
+    // 而 JNI 崩溃在 Android 上表现为整个 App 闪退且抓不到 Java 栈；改成返回错误码，
+    // 宿主 App 能按 6 处理（与下面的 4/5 同一套约定）。
+    let runtime = match RUNTIME.get() {
+        Some(r) => r,
+        None => match tokio::runtime::Builder::new_multi_thread().enable_all().thread_name("suwayomi").build() {
+            Ok(r) => RUNTIME.get_or_init(|| r),
+            Err(e) => {
+                tracing::error!("cannot create tokio runtime: {e}");
+                return 6;
+            }
+        },
+    };
     runtime.spawn(async move {
         if let Err(e) = suwayomi_server::run(options).await {
             tracing::error!("server exited with error: {e}");
@@ -183,7 +198,7 @@ fn start_inner(
     0
 }
 
-fn read_string(env: &mut JNIEnv, s: &JString) -> Option<String> {
+fn read_string(env: &mut JNIEnv<'_>, s: &JString<'_>) -> Option<String> {
     match env.get_string(s) {
         Ok(v) => Some(v.into()),
         Err(e) => {

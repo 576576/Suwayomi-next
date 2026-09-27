@@ -2,6 +2,9 @@
 //! output exactly (camelCase), enum values match Kotlin names, and `memo`
 //! is excluded from serialization (@JsonIgnore).
 
+// 集成测试里 panic 就是断言失败的表达方式，不需要改成错误传播。
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo)]
+
 use serde_json::json;
 use suwayomi_core::models::{
     CategoryDataClass, ChapterDataClass, IncludeOrExclude, MangaDataClass, MangaStatus, PageDataClass, UpdateStrategy,

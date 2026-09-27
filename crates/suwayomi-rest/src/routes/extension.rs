@@ -92,12 +92,11 @@ async fn icon(State(s): State<AppState>, Path(pkg): Path<String>) -> ApiResult<a
     }
 
     if bytes.is_none() {
-        let icon_url: Option<String> =
-            suwayomi_db::query_scalar("SELECT icon_url FROM extension WHERE pkg_name = $1")
-                .bind(&pkg)
-                .fetch_optional(s.db.pool())
-                .await
-                .map_err(ApiError::from)?;
+        let icon_url: Option<String> = suwayomi_db::query_scalar("SELECT icon_url FROM extension WHERE pkg_name = $1")
+            .bind(&pkg)
+            .fetch_optional(s.db.pool())
+            .await
+            .map_err(ApiError::from)?;
         if let Some(url) = icon_url.filter(|u| !u.is_empty()) {
             match reqwest::get(&url).await {
                 // 死链会把 404 正文喂回来，状态码与魔数都要过。
@@ -137,10 +136,7 @@ async fn icon(State(s): State<AppState>, Path(pkg): Path<String>) -> ApiResult<a
 
 async fn install(State(s): State<AppState>, Path(pkg): Path<String>) -> ApiResult<Json<serde_json::Value>> {
     let pkg = checked_pkg_name(&pkg)?;
-    s.extension_store
-        .install(pkg)
-        .await
-        .map_err(ApiError::from)?;
+    s.extension_store.install(pkg).await.map_err(ApiError::from)?;
     Ok(Json(serde_json::json!({ "installed": true, "pkgName": pkg })))
 }
 
@@ -155,10 +151,7 @@ async fn update(State(s): State<AppState>, Path(pkg): Path<String>) -> ApiResult
 
 async fn uninstall(State(s): State<AppState>, Path(pkg): Path<String>) -> ApiResult<Json<serde_json::Value>> {
     let pkg = checked_pkg_name(&pkg)?;
-    s.extension_store
-        .uninstall(pkg)
-        .await
-        .map_err(ApiError::from)?;
+    s.extension_store.uninstall(pkg).await.map_err(ApiError::from)?;
     Ok(Json(serde_json::json!({ "uninstalled": true, "pkgName": pkg })))
 }
 

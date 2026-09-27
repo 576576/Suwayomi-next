@@ -62,10 +62,7 @@ impl Shikimori {
     }
 
     async fn refresh(&self, oauth: &SmOAuth) -> Result<SmOAuth> {
-        let refresh_token = oauth
-            .refresh_token
-            .clone()
-            .ok_or_else(|| DomainError::token_expired(self.name()))?;
+        let refresh_token = oauth.refresh_token.clone().ok_or_else(|| DomainError::token_expired(self.name()))?;
         let app = self.require_oauth_app()?;
         let resp = self
             .ctx
@@ -160,16 +157,11 @@ impl Shikimori {
     }
 
     async fn find_lib_manga(&self, track: &Track) -> Result<Option<Track>> {
-        let manga: SmManga = serde_json::from_value(
-            self.get(&format!("{API_URL}/mangas/{}", track.remote_id)).await?,
-        )
-        .map_err(|e| DomainError::tracker(format!("Shikimori 作品详情无法解析：{e}")))?;
+        let manga: SmManga = serde_json::from_value(self.get(&format!("{API_URL}/mangas/{}", track.remote_id)).await?)
+            .map_err(|e| DomainError::tracker(format!("Shikimori 作品详情无法解析：{e}")))?;
 
         let user_id = self.user_id().await?;
-        let url = format!(
-            "{API_URL}/v2/user_rates?user_id={user_id}&target_id={}&target_type=Manga",
-            track.remote_id
-        );
+        let url = format!("{API_URL}/v2/user_rates?user_id={user_id}&target_id={}&target_type=Manga", track.remote_id);
         let value = self.get(&url).await?;
         let entries: Vec<SmUserListEntry> = serde_json::from_value(value)
             .map_err(|e| DomainError::tracker(format!("Shikimori 列表项响应无法解析：{e}")))?;
@@ -242,8 +234,7 @@ impl TrackerService for Shikimori {
     }
 
     async fn auth_callback(&self, url: &str) -> Result<()> {
-        let code = extract_token(url, "code")
-            .ok_or_else(|| DomainError::tracker("Shikimori：回调地址里没有 code"))?;
+        let code = extract_token(url, "code").ok_or_else(|| DomainError::tracker("Shikimori：回调地址里没有 code"))?;
         self.login(&code).await
     }
 

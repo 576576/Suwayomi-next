@@ -55,21 +55,14 @@ pub fn local_source_root() -> PathBuf {
     {
         return base.join("data").join("local");
     }
-    std::env::current_dir()
-        .unwrap_or_default()
-        .join("data")
-        .join("local")
+    std::env::current_dir().unwrap_or_default().join("data").join("local")
 }
 
 /// Resolve the manga folder for a local manga url (the folder name) — used by
 /// chapter scanning / image serving.
 pub fn local_manga_dir(root: &Path, manga_url: &str) -> Option<PathBuf> {
     let dir = root.join(manga_url);
-    if dir.is_dir() {
-        Some(dir)
-    } else {
-        None
-    }
+    if dir.is_dir() { Some(dir) } else { None }
 }
 
 /// Scan the chapters of one local manga folder: image subdirectories and
@@ -363,8 +356,7 @@ fn parse_meta_json(bytes: &[u8]) -> Option<ArchiveMeta> {
             }
         };
         push(&mut langs, &t.japanese);
-        let mut extras: Vec<(&String, &String)> =
-            t.extra.iter().filter(|(_, v)| !v.trim().is_empty()).collect();
+        let mut extras: Vec<(&String, &String)> = t.extra.iter().filter(|(_, v)| !v.trim().is_empty()).collect();
         extras.sort_by(|a, b| a.0.cmp(b.0));
         for (k, v) in extras {
             if k != "english" {
@@ -414,8 +406,8 @@ fn parse_meta_json(bytes: &[u8]) -> Option<ArchiveMeta> {
 /// Parse `ComicInfo.xml` — the ComicRack metadata standard used inside CBZ
 /// files. Only the commonly-present fields are extracted.
 fn parse_comic_info_xml(bytes: &[u8]) -> Option<ArchiveMeta> {
-    use quick_xml::events::Event;
     use quick_xml::Reader;
+    use quick_xml::events::Event;
 
     let mut reader = Reader::from_reader(bytes);
     reader.config_mut().trim_text(true);
@@ -546,10 +538,8 @@ pub fn scan_local_source(root: &Path) -> Vec<SManga> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
     };
-    let mut dirs: Vec<_> = entries
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-        .collect();
+    let mut dirs: Vec<_> =
+        entries.filter_map(|e| e.ok()).filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false)).collect();
     dirs.sort_by(|a, b| natural_cmp(&a.file_name().to_string_lossy(), &b.file_name().to_string_lossy()));
 
     let mut out = Vec::with_capacity(dirs.len());
@@ -864,11 +854,7 @@ mod tests {
             let opts = SimpleFileOptions::default();
             zw.start_file("1.jpg", opts).unwrap();
             zw.write_all(&[0xFF, 0xD8, 0xFF]).unwrap();
-            zw.start_file(
-                "meta.json",
-                opts,
-            )
-            .unwrap();
+            zw.start_file("meta.json", opts).unwrap();
             zw.write_all(
                 br#"{"title":{"english":"Work EN","japanese":"Work JP"},"upload_date":1594958203,"num_pages":24,"scanlator":"X","tags":[{"type":"artist","name":"Pochi"},{"type":"group","name":"Circle"},{"type":"parody","name":"Series"},{"type":"character","name":"Chizuru"}]}"#,
             )
@@ -979,10 +965,7 @@ mod tests {
             .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
             .unwrap();
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
         let epoch = local_latest_update_epoch(&manga);
         assert!(epoch >= now - 5, "应该取更新那一章的时间，得到 {epoch}（now={now}）");
 

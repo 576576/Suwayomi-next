@@ -9,7 +9,7 @@
 //! short enough for Windows path limits).
 
 use axum::extract::{Path, State};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 
@@ -32,10 +32,8 @@ fn fnv1a64(s: &str) -> u64 {
 }
 
 async fn proxy_image(State(_s): State<AppState>, Path(b64): Path<String>) -> Response {
-    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(&b64)
-        .ok()
-        .and_then(|b| String::from_utf8(b).ok());
+    let decoded =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&b64).ok().and_then(|b| String::from_utf8(b).ok());
     let Some(url) = decoded else {
         return err_response(StatusCode::BAD_REQUEST, "bad base64 url");
     };
@@ -50,9 +48,7 @@ async fn proxy_image(State(_s): State<AppState>, Path(b64): Path<String>) -> Res
 
     // cache hit
     if let Ok(bytes) = tokio::fs::read(&img_path).await {
-        let ct = tokio::fs::read_to_string(&mime_path)
-            .await
-            .unwrap_or_else(|_| "application/octet-stream".into());
+        let ct = tokio::fs::read_to_string(&mime_path).await.unwrap_or_else(|_| "application/octet-stream".into());
         return ok_response(bytes, &ct);
     }
 

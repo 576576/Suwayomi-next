@@ -48,10 +48,7 @@ struct RouteState {
 /// 两层：按操作判定的授权层在最外，WebSocket 升级层在内。`login` /
 /// `refreshToken` 必须匿名可达，而这是纯粹按路径判不出来的——所以授权这一层
 /// 只有放在这里。
-pub fn graphql_router<S: Clone + Send + Sync + 'static>(
-    schema: GraphQLSchema,
-    auth: Arc<AuthContext>,
-) -> Router<S> {
+pub fn graphql_router<S: Clone + Send + Sync + 'static>(schema: GraphQLSchema, auth: Arc<AuthContext>) -> Router<S> {
     let state = RouteState { schema, auth };
     Router::<S>::new()
         .route_service("/graphql", GraphQL::new(state.schema.clone()))
@@ -84,11 +81,7 @@ fn is_ws_upgrade(headers: &header::HeaderMap) -> bool {
 ///
 /// 主体由外层的认证中间件解析并注入；这一层只回答一个问题：**这次请求的操作
 /// 是不是「匿名也可调用」的那两个**。判定不了的一律拒绝。
-async fn graphql_auth_middleware(
-    State(state): State<RouteState>,
-    req: Request,
-    next: Next,
-) -> Response {
+async fn graphql_auth_middleware(State(state): State<RouteState>, req: Request, next: Next) -> Response {
     if state.auth.is_disabled() {
         return next.run(req).await;
     }
@@ -103,7 +96,10 @@ async fn graphql_auth_middleware(
 
     let (parts, body) = req.into_parts();
     if parts.method == Method::GET || parts.method == Method::HEAD {
-        if parts.uri.query().is_some_and(|q| query_param(q, "query").is_some_and(|query| operation_is_public(&query, query_param(q, "operationName").as_deref()))) {
+        if parts.uri.query().is_some_and(|q| {
+            query_param(q, "query")
+                .is_some_and(|query| operation_is_public(&query, query_param(q, "operationName").as_deref()))
+        }) {
             return next.run(Request::from_parts(parts, body)).await;
         }
         return unauthorized_graphql();

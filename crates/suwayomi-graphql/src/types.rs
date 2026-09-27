@@ -4,14 +4,14 @@
 use async_graphql::{Context, Enum, Interface, Object, SimpleObject, Union};
 use suwayomi_core::db::Db;
 use suwayomi_core::models::{
-    now_epoch_secs, IncludeOrExclude as DomainInclude, MangaStatus as DomainStatus, UpdateStrategy as DomainStrategy,
+    IncludeOrExclude as DomainInclude, MangaStatus as DomainStatus, UpdateStrategy as DomainStrategy, now_epoch_secs,
 };
 use suwayomi_core::schema::{CategoryRow, ChapterRow, MangaRow, TrackRecordRow};
 
 use crate::scalars::{Cursor, LongString};
-use base64::Engine;
 use crate::state::GraphQLState;
 use crate::track::{TrackRecordNodeList, TrackRecordType};
+use base64::Engine;
 use suwayomi_domain::sql::bind_placeholders;
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -616,7 +616,11 @@ impl ChapterType {
 
 async fn fetch_manga_row(state: &GraphQLState, id: i32) -> async_graphql::Result<MangaRow> {
     let sql = bind_placeholders("SELECT * FROM manga WHERE id = ?");
-    suwayomi_db::query_as::<MangaRow>(&sql).bind(id).fetch_one(state.db.pool()).await.map_err(async_graphql::Error::from)
+    suwayomi_db::query_as::<MangaRow>(&sql)
+        .bind(id)
+        .fetch_one(state.db.pool())
+        .await
+        .map_err(async_graphql::Error::from)
 }
 
 /// CategoryType — mirrors `graphql/types/CategoryType.kt`.
@@ -1045,9 +1049,7 @@ fn preference_from_json(v: &serde_json::Value) -> Option<Preference> {
             .unwrap_or_default()
     }
     fn optional_strings(v: &serde_json::Value, key: &str) -> Option<Vec<String>> {
-        v.get(key)
-            .and_then(|x| x.as_array())
-            .map(|a| a.iter().filter_map(|i| i.as_str().map(str::to_string)).collect())
+        v.get(key).and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|i| i.as_str().map(str::to_string)).collect())
     }
 
     let key = text(v, "key");
@@ -1398,9 +1400,8 @@ impl SourceType {
             return Ok(false);
         }
         let state = ctx.data::<GraphQLState>()?;
-        let sql = bind_placeholders(
-            "SELECT EXISTS(SELECT 1 FROM extension WHERE id = ? AND store_index_url IS NOT NULL)",
-        );
+        let sql =
+            bind_placeholders("SELECT EXISTS(SELECT 1 FROM extension WHERE id = ? AND store_index_url IS NOT NULL)");
         let has: bool = suwayomi_db::query_scalar(&sql)
             .bind(self.extension_id)
             .fetch_one(state.db.pool())
@@ -1451,8 +1452,11 @@ impl SourceType {
         }
         let state = ctx.data::<GraphQLState>()?;
         let sql = bind_placeholders("SELECT meta_key, value FROM source_meta WHERE source_ref = ?");
-        let rows =
-            suwayomi_db::query(&sql).bind(self.id).fetch_all(state.db.pool()).await.map_err(async_graphql::Error::from)?;
+        let rows = suwayomi_db::query(&sql)
+            .bind(self.id)
+            .fetch_all(state.db.pool())
+            .await
+            .map_err(async_graphql::Error::from)?;
         Ok(rows
             .iter()
             .map(|r| SourceMetaType {

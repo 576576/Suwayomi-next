@@ -46,10 +46,8 @@ fn main() {
             }
         });
 
-    let build_time = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let build_time =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
 
     println!("cargo:rustc-env=SUWAYOMI_VERSION_NAME={version_name}");
     println!("cargo:rustc-env=SUWAYOMI_VERSION_CODE={version_code}");

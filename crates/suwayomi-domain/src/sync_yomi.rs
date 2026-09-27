@@ -9,7 +9,7 @@
 
 use prost::Message;
 use reqwest::Client;
-use suwayomi_core::backup::{create_backup_proto, restore_backup_proto, Backup, BackupFlags};
+use suwayomi_core::backup::{Backup, BackupFlags, create_backup_proto, restore_backup_proto};
 use suwayomi_core::config::{RuntimeConfig, ServerConfig};
 use suwayomi_core::db::Db;
 
@@ -40,11 +40,11 @@ impl SyncYomiService {
         Self {
             db,
             config: config.into(),
-            http: Client::builder()
-                .connect_timeout(std::time::Duration::from_secs(30))
-                .read_timeout(std::time::Duration::from_secs(30))
-                .build()
-                .expect("reqwest client"),
+            http: crate::http::build_client(
+                Client::builder()
+                    .connect_timeout(std::time::Duration::from_secs(30))
+                    .read_timeout(std::time::Duration::from_secs(30)),
+            ),
         }
     }
 
@@ -139,11 +139,10 @@ impl SyncYomiService {
     /// Last completed sync cycle (read from `global_meta`), if any.
     pub async fn last_sync_status(&self) -> Result<Option<crate::sync_yomi::SyncStatus>> {
         const KEY_LAST: &str = "sync_yomi_last_synced_at";
-        let v: Option<String> =
-            suwayomi_db::query_scalar("SELECT value FROM suwayomi.global_meta WHERE meta_key = $1")
-                .bind(KEY_LAST)
-                .fetch_optional(self.db.pool())
-                .await?;
+        let v: Option<String> = suwayomi_db::query_scalar("SELECT value FROM suwayomi.global_meta WHERE meta_key = $1")
+            .bind(KEY_LAST)
+            .fetch_optional(self.db.pool())
+            .await?;
         Ok(v.and_then(|s| s.parse::<i64>().ok()).map(|ts| SyncStatus {
             synced_at: ts,
             pulled: false,
@@ -158,7 +157,9 @@ impl SyncYomiService {
             return Err(DomainError::Source("SyncYomi not configured (syncYomiHost / syncYomiApiKey)".into()));
         }
         let flags = build_backup_flags(&self.config.snapshot());
-        let _local = create_backup_proto(self.db.pool(), flags).await.map_err(|e| DomainError::Source(format!("backup: {e}")))?;
+        let _local = create_backup_proto(self.db.pool(), flags)
+            .await
+            .map_err(|e| DomainError::Source(format!("backup: {e}")))?;
         let (remote, etag) = self.pull().await?;
 
         let pulled = remote.is_some();
@@ -170,7 +171,9 @@ impl SyncYomiService {
                 .await
                 .map_err(|e| DomainError::Source(format!("restore: {e}")))?;
         }
-        let merged = create_backup_proto(self.db.pool(), flags).await.map_err(|e| DomainError::Source(format!("backup: {e}")))?;
+        let merged = create_backup_proto(self.db.pool(), flags)
+            .await
+            .map_err(|e| DomainError::Source(format!("backup: {e}")))?;
         let pushed_count = merged.backup_manga.len();
         let pushed = self.push(&merged, &etag).await?;
         let now = std::time::SystemTime::now()
@@ -185,12 +188,7 @@ impl SyncYomiService {
         .execute(self.db.pool())
         .await?;
 
-        Ok(SyncStatus {
-            synced_at: now,
-            pulled,
-            pushed,
-            mangas: pushed_count,
-        })
+        Ok(SyncStatus { synced_at: now, pulled, pushed, mangas: pushed_count })
     }
 }
 
@@ -285,7 +283,9 @@ mod tests {
                 };
                 let _ = sock.write_all(body.as_bytes()).await;
                 let _ = sock.shutdown().await;
-                if reads >= 1 { break; }
+                if reads >= 1 {
+                    break;
+                }
             }
         });
 
@@ -320,44 +320,80 @@ mod tests {
         let db = suwayomi_core::db::Db::postgres(&url).await.expect("db");
         db.migrate().await.expect("migrate");
         let pool = db.pool();
-        suwayomi_db::query("INSERT INTO suwayomi.manga (url, title, source, initialized) VALUES ('/m/t', 'T', 1, FALSE)")
-            .execute(pool).await.expect("insert");
+        suwayomi_db::query(
+            "INSERT INTO suwayomi.manga (url, title, source, initialized) VALUES ('/m/t', 'T', 1, FALSE)",
+        )
+        .execute(pool)
+        .await
+        .expect("insert");
         let mid: i32 = suwayomi_db::query_scalar("SELECT id FROM suwayomi.manga WHERE url = '/m/t'")
-            .fetch_one(pool).await.unwrap();
+            .fetch_one(pool)
+            .await
+            .unwrap();
 
         let v0: i64 = suwayomi_db::query_scalar("SELECT version FROM suwayomi.manga WHERE id = $1")
-            .bind(mid).fetch_one(pool).await.unwrap();
+            .bind(mid)
+            .fetch_one(pool)
+            .await
+            .unwrap();
         assert_eq!(v0, 0, "fresh row version 0");
-
-
 
         // change url -> version bumps
         suwayomi_db::query("UPDATE suwayomi.manga SET url = '/m/t2' WHERE id = $1")
-            .bind(mid).execute(pool).await.expect("update");
+            .bind(mid)
+            .execute(pool)
+            .await
+            .expect("update");
         let v1: i64 = suwayomi_db::query_scalar("SELECT version FROM suwayomi.manga WHERE id = $1")
-            .bind(mid).fetch_one(pool).await.unwrap();
+            .bind(mid)
+            .fetch_one(pool)
+            .await
+            .unwrap();
         assert_eq!(v1, 1, "url change bumps version");
 
         // is_syncing=true suppresses the bump
         suwayomi_db::query("UPDATE suwayomi.manga SET is_syncing = TRUE WHERE id = $1")
-            .bind(mid).execute(pool).await.expect("update");
+            .bind(mid)
+            .execute(pool)
+            .await
+            .expect("update");
         suwayomi_db::query("UPDATE suwayomi.manga SET url = '/m/t3' WHERE id = $1")
-            .bind(mid).execute(pool).await.expect("update");
+            .bind(mid)
+            .execute(pool)
+            .await
+            .expect("update");
         let v2: i64 = suwayomi_db::query_scalar("SELECT version FROM suwayomi.manga WHERE id = $1")
-            .bind(mid).fetch_one(pool).await.unwrap();
+            .bind(mid)
+            .fetch_one(pool)
+            .await
+            .unwrap();
         assert_eq!(v2, 1, "is_syncing suppresses version bump");
 
         // category_manga insert bumps manga version (once syncing is cleared)
         suwayomi_db::query("UPDATE suwayomi.manga SET is_syncing = FALSE WHERE id = $1")
-            .bind(mid).execute(pool).await.expect("clear syncing");
+            .bind(mid)
+            .execute(pool)
+            .await
+            .expect("clear syncing");
         suwayomi_db::query("INSERT INTO suwayomi.category (name, is_default) VALUES ('Cat', FALSE)")
-            .execute(pool).await.expect("cat");
+            .execute(pool)
+            .await
+            .expect("cat");
         let cid: i32 = suwayomi_db::query_scalar("SELECT id FROM suwayomi.category WHERE name = 'Cat'")
-            .fetch_one(pool).await.unwrap();
+            .fetch_one(pool)
+            .await
+            .unwrap();
         suwayomi_db::query("INSERT INTO suwayomi.category_manga (category, manga) VALUES ($1, $2)")
-            .bind(cid).bind(mid).execute(pool).await.expect("catmanga");
+            .bind(cid)
+            .bind(mid)
+            .execute(pool)
+            .await
+            .expect("catmanga");
         let v3: i64 = suwayomi_db::query_scalar("SELECT version FROM suwayomi.manga WHERE id = $1")
-            .bind(mid).fetch_one(pool).await.unwrap();
+            .bind(mid)
+            .fetch_one(pool)
+            .await
+            .unwrap();
         assert_eq!(v3, 2, "category_manga insert bumps manga version");
     }
 }

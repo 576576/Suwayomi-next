@@ -78,8 +78,7 @@ impl AniList {
     /// 用户 id 以字符串存在 `username` 列（评分与列表查询都用它）。
     async fn user_id(&self) -> Result<i64> {
         let raw = self.ctx.store.username(ANILIST).await?;
-        raw.parse::<i64>()
-            .map_err(|_| DomainError::tracker(format!("AniList：用户 id 「{raw}」无法解析")))
+        raw.parse::<i64>().map_err(|_| DomainError::tracker(format!("AniList：用户 id 「{raw}」无法解析")))
     }
 
     async fn gql(&self, query: &str, variables: serde_json::Value) -> Result<serde_json::Value> {
@@ -191,13 +190,7 @@ impl AniList {
         let value = self.gql(&query, json!({ "id": user_id, "manga_id": remote_id })).await?;
         let result: AlUserListResult = serde_json::from_value(value)
             .map_err(|e| DomainError::tracker(format!("AniList 列表项响应无法解析：{e}")))?;
-        Ok(result
-            .data
-            .page
-            .media_list
-            .into_iter()
-            .next()
-            .map(|item| item.into_track()))
+        Ok(result.data.page.media_list.into_iter().next().map(|item| item.into_track()))
     }
 
     async fn get_lib_manga(&self, remote_id: i64, user_id: i64) -> Result<Track> {
@@ -308,8 +301,20 @@ impl TrackerService for AniList {
     async fn index_to_score(&self, index: i32) -> Result<f64> {
         Ok(match self.score_type().await.as_str() {
             "POINT_100" | "POINT_10_DECIMAL" => index as f64,
-            "POINT_5" => if index == 0 { 0.0 } else { index as f64 * 20.0 - 10.0 },
-            "POINT_3" => if index == 0 { 0.0 } else { index as f64 * 25.0 + 10.0 },
+            "POINT_5" => {
+                if index == 0 {
+                    0.0
+                } else {
+                    index as f64 * 20.0 - 10.0
+                }
+            }
+            "POINT_3" => {
+                if index == 0 {
+                    0.0
+                } else {
+                    index as f64 * 25.0 + 10.0
+                }
+            }
             _ => index as f64 * 10.0,
         })
     }

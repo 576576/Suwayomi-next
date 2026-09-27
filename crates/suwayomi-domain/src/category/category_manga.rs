@@ -60,7 +60,8 @@ impl CategoryMangaService {
     /// Mirrors `getMangaCategories`.
     pub async fn get_manga_categories(&self, manga_id: i32) -> Result<Vec<CategoryDataClass>> {
         let sql = bind_placeholders(
-            "SELECT c.* FROM category_manga cm INNER JOIN category c ON c.id = cm.category WHERE cm.manga = ? ORDER BY c.sort_order ASC");
+            "SELECT c.* FROM category_manga cm INNER JOIN category c ON c.id = cm.category WHERE cm.manga = ? ORDER BY c.sort_order ASC",
+        );
         let rows = suwayomi_db::query_as::<CategoryRow>(&sql).bind(manga_id).fetch_all(self.db.pool()).await?;
         Ok(rows
             .iter()
@@ -85,7 +86,8 @@ impl CategoryMangaService {
             "SELECT m.* FROM manga m LEFT JOIN category_manga cm ON cm.manga = m.id WHERE m.in_library = TRUE AND cm.manga IS NULL ORDER BY m.title ASC".to_string()
         } else {
             bind_placeholders(
-                "SELECT m.* FROM manga m INNER JOIN category_manga cm ON cm.manga = m.id WHERE m.in_library = TRUE AND cm.category = ? ORDER BY m.title ASC")
+                "SELECT m.* FROM manga m INNER JOIN category_manga cm ON cm.manga = m.id WHERE m.in_library = TRUE AND cm.category = ? ORDER BY m.title ASC",
+            )
         };
         let rows = {
             if category_id == CategoryService::DEFAULT_CATEGORY_ID {

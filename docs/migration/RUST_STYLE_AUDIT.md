@@ -26,6 +26,10 @@
 默认级别 `cargo clippy` 全 workspace 只有 **1 条 warning**，说明"最低门槛"是守住的；
 但 pedantic + nursery 级别有 **2,664 条 warning**——门开得太低，问题都在门槛下面堆着。
 
+> **本文档 §一～§六 是 2026-09-26 的审计快照**（描述"改之前"的状态），保持原样以便对照。
+> 四个阶段的落地结果见 **§七**：门禁已接进 CI，生产代码 panic 路径归零，
+> `indexing_slicing` 归零，三处进程级路径单例与 `Arc<dyn SourceFetcher>` 均已消除。
+
 ---
 
 ## 二、审计方法与复现命令
@@ -489,30 +493,38 @@ CI（`build.yml`）里加两个 job：`fmt`（`cargo fmt --all --check`）、
 库里的 `panic!` → 返回 `Result`；`unwrap` 表达的不变式 → `ok_or_else` 或重构。
 目标：生产代码 `unwrap_used` / `expect_used` / `panic` 三个 lint 全部 deny 且归零。
 
-### 阶段 3 —— 控制流函数式化（1～2 周，逐文件推进）
+### 阶段 3 —— 控制流函数式化（1～2 周，逐文件推进）　✅ 已完成（`ef0ee9a`）
 
 优先顺序（按 §3.3 与 clippy 热点）：
 `domain/download.rs` → `domain/source/local.rs` → `core/backup.rs` → `db/config.rs` → `rest/routes/image.rs`。
 主要动作：`manual_let_else` 23 处、`map_unwrap_or` 116 处、`option_if_let_else` 76 处
 直接吃 clippy 的自动修复（`cargo clippy --fix`），再手工处理索引循环与累积器。
 
-### 阶段 4 —— 架构层去 OOP（2～4 周，最大收益也最大风险，建议单独立项）
+落地记录见 §7「阶段 3」。
 
-1. 拆掉 3 个全局单例 → 引入只读的 `Arc<AppPaths>`，显式传参（P0-3）。
-2. `DownloadManager` 拆成"不可变队列快照 + 纯迁移函数 + 单个 actor 持有可变状态"（P0-2）。
-3. `Arc<dyn SourceFetcher>` 改为泛型或封闭 enum（P0-1），先从 `MangaService` /
-   `ChapterService` 这两个最小服务对象试点，验证编译期开销可接受再铺开。
-4. `PbReader`、`XmlWriter` 改成纯函数 / 不可变树（P1-5），这两个是独立模块，
-   改动面小、收益直观，适合作为函数式重构的样板。
+### 阶段 4 —— 架构层去 OOP（2～4 周，最大收益也最大风险，建议单独立项）　✅ 已完成（`b9832d1` … `6a4de5d`）
+
+1. ✅ 拆掉 3 个全局单例 → 引入 `AppPaths`，显式传参（P0-3）。`f254e9a`
+2. ✅ `DownloadManager` 拆成"不可变队列快照 + 纯迁移函数 + 单个 actor 持有可变状态"（P0-2）。`6a4de5d`
+3. ✅ `Arc<dyn SourceFetcher>` 改为封闭 enum（P0-1）。`b9832d1`
+   （原计划"先从 `MangaService` / `ChapterService` 试点"被跳过：枚举方案一次到位，
+   编译期开销无变化，不留半成品状态。）
+4. ✅ `PbReader`、`XmlWriter` 改成纯函数 / 不可变树（P1-5）。随阶段 3 一并完成
+   （`opds/src/xml.rs` 的 `XmlNode` 树、`domain/extension_store.rs` 的 `pb::*` 自由函数）。
+
+落地记录见 §7「阶段 3–4」。
 
 ---
 
-## 七、阶段 1–2 落地记录（分支 `refactor/guard-enhance`）
+## 七、落地记录
 
-> 执行时间：2026-09-26　结果：`cargo fmt --check` / `clippy -D warnings` / `cargo test` 三道门全绿
-> 改动：87 个文件（+1,732 / −1,423），其中约 1,500 行是 `cargo fmt` 的重排
+> 阶段 1–2：分支 `refactor/guard-enhance`（87 文件，+1,732 / −1,423）
+> 阶段 3–4：分支 `refactor/oop2fp-1`（`ef0ee9a` / `b9832d1` / `f254e9a` / `6a4de5d`）
+> 每个阶段结束时 `cargo fmt --check` / `clippy -D warnings` / `cargo test` 三道门全绿
 
 ### 阶段 1 —— 立门禁
+
+> 执行时间：2026-09-26　改动：87 个文件（+1,732 / −1,423），其中约 1,500 行是 `cargo fmt` 的重排
 
 | 动作 | 文件 | 说明 |
 |------|------|------|
@@ -561,14 +573,113 @@ clippy（`--lib --bins`，排除测试）实测 **29 处**（7 `unwrap` + 19 `ex
 **顺带清掉的**：`rust_2018_idioms` 的 16 处省略生命周期（`&FeedCtx` → `&FeedCtx<'_>` 等）、
 `clippy::manual_filter`（`category/mod.rs:99` 的 `and_then(|n| if …)` → `filter(|n| …)`）。
 
+### 阶段 3 —— 控制流函数式化（`ef0ee9a`，76 文件，+1,751 / −1,706）
+
+**P1 家族逐条清零**。这不是"把 `for` 换成 `map`"的机械改写，而是把**索引游标**
+换成**切片游标**：`while i < chars.len() { match chars[i] … }` → `while let Some(&c) = chars.get(i)`，
+`bytes[0] == 0x89 && bytes[1] == b'P'` → `bytes.starts_with(b"\x89PNG")`。
+
+| 类别 | 数量 | 处理方式 |
+|------|-----:|----------|
+| `indexing_slicing` | 111 → **0** | `db/dialect.rs`（23 处）为主：`while let Some(&c) = chars.get(i)`；`bound[slot]` → `bound.get(slot).ok_or_else(...)`；`&s[a..b]` → `s.get(a..b)`。全 workspace 含测试归零 |
+| 同构模板收敛 | 8+9 份 → 2 个 helper | `types.rs::cursor_edges<T,E>(nodes, wrap)` 替掉 8 份 `if has_next_page / else if has_previous_page / else`；`PageInfo::for_total` 替掉 9 份字面量 |
+| 魔数嗅探 | 5 处 | `sniff_image_mime` / `guess_content_type` / `is_image` / gzip / WEBP+`ftyp` 全部改 `starts_with` / `get(8..12).is_some_and(...)` |
+| percent-decode | 2 处 | 改游标推进；`graphql` 侧保留 `+`→空格，`rest` 侧保留 `+` 字面量（两边语义本来就不同，注释写明） |
+| JSON 取值 | 2 文件 | `j["tag_name"]` → `j.get("tag_name")`，新增 `jvm_field(j, key)` 收敛回退链 |
+| 控制流形状 | 22 条 lint 归零 | `needless_continue` 8、`useless_let_if_seq` 6、`match_same_arms` 5、`option_if_let_else` 4、`similar_names` 4、`unused_self` 4、`items_after_statements` 17 等全部清零后写进根 `Cargo.toml`，由 CI 的 `-D warnings` 兜住 |
+
+`natural_cmp` 重写成双字节游标 + `digit_run()` / `strip_leading_zeros()` / `drop_first()`
+三个小纯函数；`parse_comic_info_xml` 不再返回 `Option<Option<..>>`。
+
+**顺手提前完成 P1-5**：`opds/src/xml.rs` 的 `&mut self` push 构建器换成不可变
+`XmlNode` 树 + 纯函数 `render`；`domain/extension_store.rs` 的
+`PbReader<'a> { d, i }`（内部游标 + `&mut self`）换成 `pb::varint/key/len_delimited/skip`
+四个自由函数，每次返回 `(值, 剩余切片)`，`pb_fields` 用迭代器把剩余切片串起来。
+
+### 阶段 4 —— 架构层去 OOP（4 个提交）
+
+#### 4-1　三处进程级路径单例 → 显式注入 `AppPaths`（`f254e9a`，20 文件）
+
+删掉 `CACHE_ROOT_OVERRIDE` / `LOCAL_ROOT_OVERRIDE` / `DOWNLOADS_ROOT_OVERRIDE`
+三个 `OnceLock` 与对应的 `set_*_root()`，新增 `suwayomi_core::config::AppPaths`：
+
+```rust
+pub struct AppPaths(Arc<RwLock<PathsInner>>);   // data / cache 只读；downloads / local_sources 可替换
+pub fn data(&self) -> PathBuf;   pub fn cache(&self) -> PathBuf;
+pub fn downloads(&self) -> PathBuf;   pub fn local_sources(&self) -> PathBuf;
+pub fn set_downloads(&self, path: Option<PathBuf>);   pub fn set_local_sources(&self, path: Option<PathBuf>);
+```
+
+**与报告原方案的偏差（有意）**：原方案是"纯只读 `Arc<AppPaths>`"。但
+`downloadsPath` / `localSourcePath` 在 WebUI 保存后必须**立即生效**（不重启），
+纯只读结构承载不了这两个根，会把既有行为改掉。所以这两个根留在 `RwLock` 里
+（克隆共享同一份），`data` / `cache` 保持只读。目标（消灭隐藏全局状态）达成：
+没有进程级单例，同一进程内可并存多套路径。
+
+清空设置时的回退语义与旧的 `set_*(None)` 逐字对齐（下载 → `<data>/downloads`；
+本地图源 → env / 发布布局 / `cwd/data/local`）。`ServerOptions` 新增
+`cache_dir: Option<PathBuf>` 承载 Android 的显式缓存根，`set_cache_root` 随之删除。
+
+同时把两个同构函数 `load_local_source_path` / `load_downloads_path` 合并成
+`setting_path(blob, key, data_dir)`。
+
+#### 4-2　`Arc<dyn SourceFetcher>` → 封闭枚举 `SourceBackend`（`b9832d1`，15 文件）
+
+```rust
+#[derive(Clone, Default)]
+pub enum SourceBackend {
+    #[default] Stub,
+    Sandbox(HttpSandboxFetcher),
+    #[cfg(test)] Test(Arc<dyn SourceFetcher>),   // 测试替身，不进生产构建
+}
+#[async_trait] impl SourceFetcher for SourceBackend { /* 每个方法 match self，静态派发 */ }
+```
+
+`ChapterService` / `DownloadManager` / `MangaListService` / `MangaService` /
+`UpdateManager` / `GraphQLState` / `AppState` / OPDS `FeedCtx` / `server` 的字段与参数
+统一换成按值 `SourceBackend`。全树 `Arc<dyn …>` **26 → 8**，其中 `SourceFetcher`
+只剩上面那个 `#[cfg(test)]` 变体。
+
+#### 4-3　`DownloadManager` → 不可变快照 + 纯迁移函数 + 单份可变状态（`6a4de5d`，1 文件 +383/−92）
+
+原来状态切成 4 个 `Arc<Mutex<_>>` / `Arc<AtomicBool>`，任何方法都能改，类型上
+看不出"谁能改什么"。现在：
+
+```rust
+pub struct QueueState { jobs: Vec<DownloadJob>, progress: HashMap<i32, f64>, running: bool }
+pub enum QueueEvent { Enqueued(..), Dequeued{..}, Reordered{..}, Cleared, Patched{..},
+                      DrainedTerminalFront, Progress{..}, Started, Stopped }
+#[must_use] pub fn apply(self, event: QueueEvent) -> Self   // 纯函数：状态 + 事件 → 新状态
+```
+
+* 队列语义全部落在 `apply` 里，无锁、无 IO → 新增 **10 个纯单测**，不必起 tokio
+  runtime 或数据库。
+* `DownloadManager` 只剩 `Arc<Mutex<QueueState>>` 一份可变状态；`worker_spawned`
+  留在 `AtomicBool`（spawn-once 生命周期闩，不是领域状态）。
+* `queue` 从 `tokio::sync::Mutex` 换成 `std::sync::Mutex`：临界区里没有 `.await`
+  （`await_holding_lock` 可证），同步锁让高频的 `set_progress` 不必进 async 上下文。
+  `apply` 用 `mem::take` 而不是 `clone`，只挪 `Vec` / `HashMap` 的几个指针。
+* 纯逻辑拆成自由函数：`source_dir_name` / `archive_file_name` /
+  `chapter_archive_path`（落盘路径规则只有一处定义）、`page_progress`、
+  `page_image_url`、`JobState::is_terminal`。
+
+**顺带修掉一个可达的 panic**：`reorder` 原来按**移除前**的长度夹取上界
+（`to.min(queue.len())`），随后 `VecDeque::insert` 在 `to > len` 时 panic ——
+WebUI 把作业拖到队尾（客户端传 `to == len`）就会触发。现在先移除再夹取，
+越界落到队尾，并有回归测试。
+
+#### 4-4　`PbReader` / `XmlWriter` → 纯函数 / 不可变树
+
+随阶段 3 完成，见上文「顺手提前完成 P1-5」。
+
 ### 门禁现状
 
 | 门 | 命令 | 结果 |
 |----|------|------|
 | 格式 | `cargo fmt --all --check` | ✅ 0 diff |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings` | ✅ 0 warning |
-| 测试 | `cargo test --workspace` | ✅ 154 passed / 0 failed |
-| pedantic + nursery | `-- -W clippy::pedantic -W clippy::nursery` | 2,642 条（阶段 3 的工作量） |
+| 测试 | `cargo test --workspace` | ✅ 176 passed / 0 failed |
+| pedantic + nursery + indexing_slicing | `-- -W clippy::pedantic -W clippy::nursery -W clippy::indexing_slicing` | 2,134 → **1,982**；`indexing_slicing` 归零，`Arc<dyn …>` 26 → 8，进程级路径单例 3 → 0 |
 
 ## 附录 A：命中规则对照表（rust-skills）
 
@@ -599,14 +710,14 @@ clippy（`--lib --bins`，排除测试）实测 **29 处**（7 `unwrap` + 19 `ex
 ## 附录 B：复现命令
 
 ```bash
-# 1) 格式门禁
-cargo fmt --all --check            # 当前：399 处 diff
+# 1) 格式门禁（审计时 399 处 diff；阶段 1 后 0 diff）
+cargo fmt --all --check
 
-# 2) 默认 clippy（当前：1 warning）
+# 2) 默认 clippy（审计时 1 warning；阶段 1 后 0 warning，CI 以 -D warnings 卡住）
 cargo clippy --workspace --all-targets --message-format=short
 
-# 3) pedantic + nursery（当前：2,664 warnings）
-cargo clippy --workspace --all-targets -- -W clippy::pedantic -W clippy::nursery
+# 3) pedantic + nursery + 索引切片（审计时 2,664；阶段 4 后 1,982，indexing_slicing 归零）
+cargo clippy --workspace --all-targets -- -W clippy::pedantic -W clippy::nursery -W clippy::indexing_slicing
 
 # 4) 一键吃自动修复（建议先跑 fmt，再跑 clippy --fix，逐批 review）
 cargo fmt --all && cargo clippy --fix --workspace --allow-dirty --allow-staged

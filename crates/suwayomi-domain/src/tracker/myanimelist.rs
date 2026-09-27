@@ -16,6 +16,7 @@ use super::service::{
     TrackerCtx, TrackerService, check, extract_token, format_date, generate_code_verifier, now_secs, parse_date,
 };
 use super::{MYANIMELIST, Track, TrackSearch};
+use suwayomi_core::text::urlencode;
 
 /// 内置默认值 = 上游 Suwayomi 在 MyAnimeList 注册的应用；`trackers.json` 缺键时用它。
 pub(super) const DEFAULT_CLIENT_ID: &str = "3fda277931a4f9bc01fa4a715ce8b91d";
@@ -44,10 +45,7 @@ impl MyAnimeList {
 
     /// 保存 OAuth 串（上游 `saveOAuth`）。空串等同 `null`。
     async fn save_oauth(&self, oauth: Option<&MalOAuth>) -> Result<()> {
-        let token = match oauth {
-            Some(o) => serde_json::to_string(o).unwrap_or_default(),
-            None => String::new(),
-        };
+        let token = oauth.map_or_else(String::new, |o| serde_json::to_string(o).unwrap_or_default());
         self.ctx.store.set_token(MYANIMELIST, &token).await
     }
 
@@ -250,12 +248,12 @@ impl MyAnimeList {
         let mut offset = 0usize;
         loop {
             let token = self.bearer().await?;
-            let mut url = format!(
-                "{BASE_API_URL}/users/@me/mangalist?fields=list_status{{start_date,finish_date}}&limit={LIST_PAGE}"
+            // 分页参数用"拼好再拼"的方式表达：offset 为 0 时是空串，
+            // 于是 URL 只是一个表达式，不需要事后改一个 String。
+            let offset_param = if offset > 0 { format!("&offset={offset}") } else { String::new() };
+            let url = format!(
+                "{BASE_API_URL}/users/@me/mangalist?fields=list_status{{start_date,finish_date}}&limit={LIST_PAGE}{offset_param}"
             );
-            if offset > 0 {
-                url.push_str(&format!("&offset={offset}"));
-            }
             let value = self.ctx.auth_get(MYANIMELIST, self.name(), &url, &token).await?;
             let page: MalUserSearchResult = serde_json::from_value(value)
                 .map_err(|e| DomainError::tracker(format!("MyAnimeList 列表无法解析：{e}")))?;
@@ -266,7 +264,7 @@ impl MyAnimeList {
                     out.push(self.get_manga_details(item.node.id).await?);
                 }
             }
-            if page.paging.next.as_deref().map(str::is_empty).unwrap_or(true) {
+            if page.paging.next.as_deref().is_none_or(str::is_empty) {
                 break;
             }
             offset += LIST_PAGE;
@@ -450,18 +448,6 @@ fn apply_list_status(track: &mut Track, status: &MalListStatus) {
     if let Some(d) = status.finish_date.as_deref() {
         track.finished_reading_date = parse_date(d);
     }
-}
-
-/// 极简 query 转义：只处理会破坏查询串的字符，值都是搜索关键词。
-fn urlencode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 #[derive(Debug, Clone, Deserialize)]

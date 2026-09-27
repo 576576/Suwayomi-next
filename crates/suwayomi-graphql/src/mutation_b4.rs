@@ -1272,12 +1272,13 @@ impl MutationRootB4 {
         ctx: &Context<'_>,
         input: RestoreBackupInput,
     ) -> async_graphql::Result<RestoreBackupPayload> {
+        use std::io::Read as _;
+
         let state = ctx.data::<crate::state::GraphQLState>()?;
         // Read the uploaded .tachibk payload and restore it (upserts manga/
         // chapters/categories idempotently; sources are matched by name).
         let mut upload = input.backup.value(ctx)?;
         let mut bytes = Vec::new();
-        use std::io::Read as _;
         upload.content.read_to_end(&mut bytes).map_err(|e| async_graphql::Error::new(format!("read upload: {e}")))?;
 
         let id = format!("restore-{}", chrono::Utc::now().timestamp_millis());
@@ -1657,10 +1658,11 @@ impl MutationRootB4 {
         ctx: &Context<'_>,
         input: InstallExternalExtensionInput,
     ) -> async_graphql::Result<InstallExternalExtensionPayload> {
+        use std::io::Read as _;
+
         let state = ctx.data::<GraphQLState>()?;
         let mut upload = input.extension_file.value(ctx)?;
         let mut bytes = Vec::new();
-        use std::io::Read as _;
         upload.content.read_to_end(&mut bytes).map_err(|e| async_graphql::Error::new(format!("read upload: {e}")))?;
         if bytes.is_empty() {
             return Err(async_graphql::Error::new("empty apk upload"));

@@ -59,7 +59,7 @@ impl Row {
     {
         let name = index.name();
         let pos = self.position(&name)?;
-        let value = &self.values[pos];
+        let value = self.values.get(pos).ok_or_else(|| Error::ColumnNotFound(name.to_string()))?;
         // `Option<T>` handles NULL itself; everything else must report it.
         T::decode(value, &name)
     }

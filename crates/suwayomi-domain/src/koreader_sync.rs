@@ -349,9 +349,8 @@ impl KoreaderSyncService {
 
         let url = format!("{}/syncs/progress/{hash}", server.trim_end_matches('/'));
         let req = self.build_request(&url, "GET", &username, &user_key)?.build().map_err(DomainError::from)?;
-        let resp = match self.http.execute(req).await {
-            Ok(r) => r,
-            Err(_) => return Ok(None),
+        let Ok(resp) = self.http.execute(req).await else {
+            return Ok(None);
         };
         if !resp.status().is_success() {
             return Ok(None);
@@ -370,7 +369,7 @@ impl KoreaderSyncService {
         };
         let Some(timestamp) = progress.updated_at else { return Ok(None) };
         // XPath progress (non-numeric) is not supported
-        if progress.progress.as_deref().map(|p| p.starts_with('/')).unwrap_or(false) {
+        if progress.progress.as_deref().is_some_and(|p| p.starts_with('/')) {
             return Ok(None);
         }
         let device = progress.device.unwrap_or_else(|| "KOReader".into());

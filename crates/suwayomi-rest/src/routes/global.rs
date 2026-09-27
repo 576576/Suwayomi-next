@@ -29,8 +29,8 @@ async fn modify_meta(
     State(s): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let key = body["key"].as_str().unwrap_or_default().to_string();
-    let value = body["value"].as_str().unwrap_or_default().to_string();
+    let key = body.get("key").and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
+    let value = body.get("value").and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
     meta_handler::set_global_meta(&s, key, value).await?;
     Ok(Json(serde_json::json!({ "message": "success" })))
 }

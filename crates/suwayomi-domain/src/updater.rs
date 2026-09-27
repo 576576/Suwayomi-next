@@ -206,13 +206,11 @@ impl UpdateManager {
         &self,
         requested: Option<&[i32]>,
     ) -> Result<HashMap<CategoryJobStatus, Vec<CategoryRow>>, suwayomi_db::Error> {
-        let mut all: Vec<CategoryRow> =
+        let all: Vec<CategoryRow> =
             suwayomi_db::query_as("SELECT * FROM category ORDER BY id").fetch_all(self.db.pool()).await?;
         let mut out: HashMap<CategoryJobStatus, Vec<CategoryRow>> = HashMap::new();
-        let (updating, skipped): (Vec<CategoryRow>, Vec<CategoryRow>) = all.drain(..).partition(|c| match requested {
-            Some(ids) => ids.contains(&c.id),
-            None => c.include_in_update != 0,
-        });
+        let (updating, skipped): (Vec<CategoryRow>, Vec<CategoryRow>) =
+            all.into_iter().partition(|c| requested.map_or(c.include_in_update != 0, |ids| ids.contains(&c.id)));
         out.insert(CategoryJobStatus::Updating, updating);
         out.insert(CategoryJobStatus::Skipped, skipped);
         Ok(out)
@@ -547,9 +545,8 @@ mod tests {
                         break;
                     }
                 }
-                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
-                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
-                Err(_) => break,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) | Err(_) => break,
             }
         }
         assert!(saw_running, "必须出现 is_running=true 的事件");
@@ -590,7 +587,7 @@ mod tests {
                         break;
                     }
                 }
-                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
                 _ => break,
             }
         }

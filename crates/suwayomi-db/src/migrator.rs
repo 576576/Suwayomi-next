@@ -53,7 +53,7 @@ const POSTGRES_PRELUDE: &str = "CREATE SCHEMA IF NOT EXISTS suwayomi";
 
 /// Advisory lock key serialising concurrent migrators (same value the
 /// pre-dual-backend migrator used).
-const ADVISORY_LOCK_KEY: i64 = 728232364;
+const ADVISORY_LOCK_KEY: i64 = 728_232_364;
 
 /// Default backend — the translated baseline already carries `alt_titles`, so
 /// there is no separate increment step.
@@ -206,7 +206,7 @@ fn build_script(kind: BackendKind, migrations: &[Migration]) -> String {
 
 /// Current unix time in seconds.
 fn now_epoch_secs() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
 #[cfg(test)]

@@ -45,9 +45,8 @@ pub fn spawn(state: GraphQLState) {
 
 /// Creates a backup now if one is due according to `autoBackupFrequency`.
 pub async fn run_if_due(state: &GraphQLState) {
-    let (frequency_secs, folder, flags) = match load_settings(state).await {
-        Some(v) => v,
-        None => return,
+    let Some((frequency_secs, folder, flags)) = load_settings(state).await else {
+        return;
     };
     if frequency_secs <= 0 {
         return;

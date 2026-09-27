@@ -162,11 +162,11 @@ async fn refresh(State(s): State<AppState>) -> ApiResult<Json<serde_json::Value>
 }
 
 fn guess_content_type(bytes: &[u8]) -> &'static str {
-    if bytes.len() > 3 && bytes[0] == 0x89 && bytes[1] == b'P' && bytes[2] == b'N' && bytes[3] == b'G' {
+    if bytes.starts_with(b"\x89PNG") {
         "image/png"
-    } else if bytes.len() > 2 && bytes[0] == 0xff && bytes[1] == 0xd8 {
+    } else if bytes.starts_with(b"\xff\xd8") {
         "image/jpeg"
-    } else if bytes.len() > 3 && &bytes[0..4] == b"RIFF" {
+    } else if bytes.starts_with(b"RIFF") {
         "image/webp"
     } else {
         "image/*"

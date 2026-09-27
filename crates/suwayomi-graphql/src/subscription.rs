@@ -42,7 +42,7 @@ impl SubscriptionRoot {
             Err(_) => return futures::stream::empty().boxed(),
         };
         let rx = state.download.subscribe();
-        futures::stream::unfold((state.clone(), rx), |(state, mut rx)| async move {
+        futures::stream::unfold((state, rx), |(state, mut rx)| async move {
             loop {
                 match rx.recv().await {
                     Ok(event) => {
@@ -52,7 +52,8 @@ impl SubscriptionRoot {
                         let status = crate::mutation_b4::download_status(&state).await.ok()?;
                         return Some((status, (state.clone(), rx)));
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    // 落后于广播只是丢事件；match 已是循环体末尾，等价于 continue。
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
                 }
             }
@@ -72,7 +73,7 @@ impl SubscriptionRoot {
             Err(_) => return futures::stream::empty().boxed(),
         };
         let rx = state.download.subscribe();
-        futures::stream::unfold((state.clone(), rx), |(state, mut rx)| async move {
+        futures::stream::unfold((state, rx), |(state, mut rx)| async move {
             loop {
                 match rx.recv().await {
                     Ok(event) => {
@@ -91,7 +92,8 @@ impl SubscriptionRoot {
                             (state.clone(), rx),
                         ));
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    // 落后于广播只是丢事件；match 已是循环体末尾，等价于 continue。
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
                 }
             }
@@ -131,7 +133,8 @@ impl SubscriptionRoot {
             let status = loop {
                 match rx.recv().await {
                     Ok(s) => break s,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    // 落后于广播只是丢事件；match 已是循环体末尾，等价于 continue。
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
                 }
             };

@@ -29,14 +29,14 @@ pub fn resolve(
         blob,
         "jwtTokenExpiry",
         &config.jwt_token_expiry,
-        Duration::from_secs(5 * 60),
+        Duration::from_mins(5),
     );
     let refresh_ttl = duration_setting(
         "SUWAYOMI_JWT_REFRESH_EXPIRY",
         blob,
         "jwtRefreshExpiry",
         &config.jwt_refresh_expiry,
-        Duration::from_secs(60 * 24 * 3600),
+        Duration::from_hours(1440),
     );
 
     let cookie_secure = matches!(
@@ -90,15 +90,12 @@ fn duration_setting(
     default: Duration,
 ) -> Duration {
     let raw = pick(env_key, blob, blob_key, fallback);
-    match parse_duration(&raw) {
-        Some(value) => value,
-        None => {
-            if !raw.is_empty() {
-                tracing::warn!("ignoring unparsable duration {raw:?} for {blob_key}");
-            }
-            default
+    parse_duration(&raw).unwrap_or_else(|| {
+        if !raw.is_empty() {
+            tracing::warn!("ignoring unparsable duration {raw:?} for {blob_key}");
         }
-    }
+        default
+    })
 }
 
 #[cfg(test)]
@@ -109,7 +106,7 @@ mod tests {
     fn env_is_clean() -> bool {
         ["SUWAYOMI_AUTH_MODE", "SUWAYOMI_AUTH_USERNAME", "SUWAYOMI_AUTH_PASSWORD"]
             .iter()
-            .all(|key| std::env::var(key).map(|v| v.trim().is_empty()).unwrap_or(true))
+            .all(|key| std::env::var(key).map_or(true, |v| v.trim().is_empty()))
     }
 
     #[test]

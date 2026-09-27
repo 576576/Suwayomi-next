@@ -3,7 +3,14 @@
 //! asserts the resulting Atom/OPDS XML.
 
 // 集成测试里 panic 就是断言失败的表达方式，不需要改成错误传播。
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::todo,
+    clippy::indexing_slicing
+)]
 
 use std::sync::Arc;
 use suwayomi_core::db::Db;

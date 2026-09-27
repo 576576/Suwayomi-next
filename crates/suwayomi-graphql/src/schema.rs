@@ -1,5 +1,11 @@
 //! Schema construction + axum handlers — mirrors
 //! `graphql/server/GraphQLServer.kt` + `GraphQLController.kt`.
+//!
+//! 模块级放行 `useless_let_if_seq`：`async-graphql-derive` 的 `MergedObject` 展开里
+//! 有一处 clippy 不认的 `let mut`（见下方 `RootMutation`），属于上游宏实现，用
+//! item 上的 `#[allow]` 盖不住。
+
+#![allow(clippy::useless_let_if_seq)]
 
 use std::sync::Arc;
 
@@ -20,6 +26,8 @@ use crate::query::QueryRoot;
 use crate::state::GraphQLState;
 use crate::subscription::SubscriptionRoot;
 
+// `async-graphql-derive` 的 `MergedObject` 展开里有一处 clippy 不认的 `let mut`，
+// 属于上游宏实现，与本 crate 无关。
 #[derive(MergedObject, Default)]
 #[graphql(name = "Mutation")]
 pub struct RootMutation(pub MutationRoot, pub MutationRootB4);
@@ -138,18 +146,18 @@ fn query_param(query: &str, key: &str) -> Option<String> {
 fn percent_decode(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
-            if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                out.push(byte);
-                i += 3;
-                continue;
-            }
+    let mut rest = bytes;
+    while let Some((&b, tail)) = rest.split_first() {
+        // `%XX` only when two hex digits actually follow; `tail.get(..2)` is `None`
+        // otherwise, which is exactly the old `i + 2 < bytes.len()` guard.
+        let hex = if b == b'%' { tail.get(..2) } else { None };
+        if let Some(byte) = hex.and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok()) {
+            out.push(byte);
+            rest = tail.get(2..).unwrap_or_default();
+        } else {
+            out.push(if b == b'+' { b' ' } else { b });
+            rest = tail;
         }
-        out.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
-        i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
 }

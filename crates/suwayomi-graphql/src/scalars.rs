@@ -2,6 +2,7 @@
 //! `LongString` (Long→String, JS precision), `Duration` (ISO-8601), `Cursor`.
 
 use async_graphql::{InputValueError, InputValueResult, Scalar, ScalarType, Value};
+use std::fmt::Write as _;
 
 /// Long encoded as String (JS-safe). Matches Kotlin `LongAsString`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -34,9 +35,8 @@ pub struct DurationScalar(pub std::time::Duration);
 #[Scalar(name = "Duration")]
 impl ScalarType for DurationScalar {
     fn parse(value: Value) -> InputValueResult<Self> {
-        let s = match value {
-            Value::String(s) => s,
-            _ => return Err(InputValueError::custom("expected string")),
+        let Value::String(s) = value else {
+            return Err(InputValueError::custom("expected string"));
         };
         parse_iso8601_duration(&s)
             .map(DurationScalar)
@@ -56,7 +56,7 @@ pub struct Cursor(pub String);
 impl ScalarType for Cursor {
     fn parse(value: Value) -> InputValueResult<Self> {
         match value {
-            Value::String(s) => Ok(Cursor(s)),
+            Value::String(s) => Ok(Self(s)),
             _ => Err(InputValueError::custom("expected string")),
         }
     }
@@ -75,13 +75,13 @@ pub fn format_iso8601_duration(d: std::time::Duration) -> String {
     let seconds = total % 60;
     let mut out = "PT".to_string();
     if hours > 0 {
-        out.push_str(&format!("{hours}H"));
+        let _ = write!(out, "{hours}H");
     }
     if minutes > 0 {
-        out.push_str(&format!("{minutes}M"));
+        let _ = write!(out, "{minutes}M");
     }
     if seconds > 0 || out == "PT" {
-        out.push_str(&format!("{seconds}S"));
+        let _ = write!(out, "{seconds}S");
     }
     out
 }
@@ -114,14 +114,14 @@ mod tests {
 
     #[test]
     fn long_string_roundtrip() {
-        assert_eq!(LongString(1234567890123).to_value(), Value::String("1234567890123".into()));
+        assert_eq!(LongString(1_234_567_890_123).to_value(), Value::String("1234567890123".into()));
         let v = Value::String("42".into());
         assert_eq!(LongString::parse(v).unwrap(), LongString(42));
     }
 
     #[test]
     fn duration_iso8601_roundtrip() {
-        let d = std::time::Duration::from_secs(5400);
+        let d = std::time::Duration::from_mins(90);
         assert_eq!(format_iso8601_duration(d), "PT1H30M");
         assert_eq!(parse_iso8601_duration("PT1H30M"), Some(d));
         assert_eq!(parse_iso8601_duration("PT45S"), Some(std::time::Duration::from_secs(45)));

@@ -37,7 +37,7 @@ impl TrackerCtx {
 
     /// 站点应用凭据的快照；非 OAuth 站点（MangaUpdates）为 `None`。
     pub fn oauth_app(&self, tracker_id: i32) -> Option<AppCredentials> {
-        self.oauth.read().unwrap_or_else(|e| e.into_inner()).app(tracker_id).cloned()
+        self.oauth.read().unwrap_or_else(std::sync::PoisonError::into_inner).app(tracker_id).cloned()
     }
 
     /// 发一个带 `Authorization: Bearer` 的 GET。`401` 会置上「token 过期」
@@ -144,7 +144,7 @@ pub trait TrackerService: Send + Sync {
 }
 
 /// `401` 视为登录过期。其余非 2xx 直接报错，正文尽量带上。
-pub(crate) async fn check(
+pub async fn check(
     ctx: &TrackerCtx,
     tracker_id: i32,
     name: &str,
@@ -182,22 +182,22 @@ pub fn extract_token(url: &str, key: &str) -> Option<String> {
 
 /// 上游 `isExpired()` 的统一形态：`created_at + expires_in - 3600 < now`。
 /// 提前一小时刷新，避免请求正好撞在过期点上。
-pub(crate) fn expires_soon(created_at: i64, expires_in: i64) -> bool {
+pub fn expires_soon(created_at: i64, expires_in: i64) -> bool {
     now_secs() > created_at + expires_in - 3600
 }
 
-pub(crate) fn now_secs() -> i64 {
+pub fn now_secs() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
-pub(crate) fn now_millis() -> i64 {
+pub fn now_millis() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
 /// 对应上游 `PkceUtil.generateCodeVerifier()`：50 字节随机数的 base64url（无填充）。
 /// 上游用 `SecureRandom`，这里用 `uuid` v4（同样走 getrandom）攒够字节数，
 /// 免得到一个函数新引 `rand`。返回长度 67，与上游一致。
-pub(crate) fn generate_code_verifier() -> String {
+pub fn generate_code_verifier() -> String {
     use base64::Engine as _;
     let mut bytes = Vec::with_capacity(64);
     while bytes.len() < 50 {
@@ -208,7 +208,7 @@ pub(crate) fn generate_code_verifier() -> String {
 }
 
 /// epoch 毫秒 → `yyyy-MM-dd`（本地时区，对应上游 `SimpleDateFormat` 的默认行为）。
-pub(crate) fn format_date(ms: i64) -> Option<String> {
+pub fn format_date(ms: i64) -> Option<String> {
     use chrono::TimeZone as _;
     if ms == 0 {
         return None;
@@ -217,7 +217,7 @@ pub(crate) fn format_date(ms: i64) -> Option<String> {
 }
 
 /// `yyyy-MM-dd` → 本地当天零点的 epoch 毫秒。解析失败（如站点返回 `2016-00-00`）返回 0。
-pub(crate) fn parse_date(s: &str) -> i64 {
+pub fn parse_date(s: &str) -> i64 {
     use chrono::TimeZone as _;
     let Ok(date) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") else {
         return 0;
@@ -225,5 +225,5 @@ pub(crate) fn parse_date(s: &str) -> i64 {
     let Some(naive) = date.and_hms_opt(0, 0, 0) else {
         return 0;
     };
-    chrono::Local.from_local_datetime(&naive).single().map(|dt| dt.timestamp_millis()).unwrap_or(0)
+    chrono::Local.from_local_datetime(&naive).single().map_or(0, |dt| dt.timestamp_millis())
 }

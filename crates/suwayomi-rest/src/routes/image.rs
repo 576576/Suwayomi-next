@@ -53,17 +53,15 @@ async fn proxy_image(State(_s): State<AppState>, Path(b64): Path<String>) -> Res
     }
 
     // upstream fetch
-    let client = match reqwest::Client::builder()
+    let Ok(client) = reqwest::Client::builder()
         .user_agent("Suwayomi-next/1.0")
         .connect_timeout(std::time::Duration::from_secs(10))
         .build()
-    {
-        Ok(c) => c,
-        Err(_) => return err_response(StatusCode::INTERNAL_SERVER_ERROR, "http client"),
+    else {
+        return err_response(StatusCode::INTERNAL_SERVER_ERROR, "http client");
     };
-    let resp = match client.get(&url).send().await {
-        Ok(r) => r,
-        Err(_) => return err_response(StatusCode::BAD_GATEWAY, "upstream unreachable"),
+    let Ok(resp) = client.get(&url).send().await else {
+        return err_response(StatusCode::BAD_GATEWAY, "upstream unreachable");
     };
     if !resp.status().is_success() {
         return err_response(StatusCode::BAD_GATEWAY, "upstream error");

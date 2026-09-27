@@ -6,7 +6,14 @@
 //! skipped when absent.
 
 // 集成测试里 panic 就是断言失败的表达方式，不需要改成错误传播。
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::todo,
+    clippy::indexing_slicing
+)]
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -121,7 +128,7 @@ async fn manga_meta_upsert_matches_kotlin() {
 
     let map = manga.get_meta_map(id).await.unwrap();
     assert_eq!(map.len(), 1, "Manga meta should have one member");
-    assert_eq!(map.get("test").map(|s| s.as_str()), Some("value"));
+    assert_eq!(map.get("test").map(std::string::String::as_str), Some("value"));
 
     // update existing key
     let mut m = HashMap::new();
@@ -129,7 +136,7 @@ async fn manga_meta_upsert_matches_kotlin() {
     manga.modify_metas(&m).await.unwrap();
     let map = manga.get_meta_map(id).await.unwrap();
     assert_eq!(map.len(), 1);
-    assert_eq!(map.get("test").map(|s| s.as_str()), Some("v2"));
+    assert_eq!(map.get("test").map(std::string::String::as_str), Some("v2"));
 }
 
 #[tokio::test]

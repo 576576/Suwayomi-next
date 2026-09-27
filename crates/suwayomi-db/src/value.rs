@@ -21,7 +21,7 @@ pub enum Value {
     Bool(bool),
     Text(String),
     Blob(Vec<u8>),
-    Array(Vec<Value>),
+    Array(Vec<Self>),
 }
 
 impl Value {
@@ -217,10 +217,7 @@ encode_array!(i32 => i32, i64 => i64);
 
 impl<T: Encode> Encode for Option<T> {
     fn encode(self) -> Value {
-        match self {
-            Some(v) => v.encode(),
-            None => Value::Null,
-        }
+        self.map_or(Value::Null, Encode::encode)
     }
 }
 
@@ -229,10 +226,7 @@ where
     T: Clone,
 {
     fn encode(self) -> Value {
-        match self {
-            Some(v) => v.clone().encode(),
-            None => Value::Null,
-        }
+        self.as_ref().map_or(Value::Null, |v| v.clone().encode())
     }
 }
 
@@ -256,7 +250,7 @@ decode_int!(i8, i16, i32, i64, u8, u16, u32, isize, usize);
 
 impl Decode for f32 {
     fn decode(value: &Value, column: &str) -> Result<Self> {
-        Ok(value.as_f64(column)? as f32)
+        Ok(value.as_f64(column)? as Self)
     }
 }
 

@@ -32,7 +32,7 @@ const PLAN_TO_READ: i32 = 5;
 const REREADING: i32 = 6;
 
 /// mediaList 里要取的字段（与上游 `findLibManga` 的 query 一致）。
-const MEDIA_FIELDS: &str = r#"
+const MEDIA_FIELDS: &str = r"
     id
     title { userPreferred }
     coverImage { large }
@@ -42,7 +42,7 @@ const MEDIA_FIELDS: &str = r#"
     description
     startDate { year month day }
     staff { edges { role node { name { full userPreferred native } } } }
-"#;
+";
 
 pub struct AniList {
     ctx: TrackerCtx,
@@ -104,13 +104,13 @@ impl AniList {
     }
 
     async fn add_lib_manga(&self, track: &mut Track) -> Result<()> {
-        let query = r#"
+        let query = r"
             mutation AddManga($mangaId: Int, $progress: Int, $status: MediaListStatus, $private: Boolean) {
                 SaveMediaListEntry(mediaId: $mangaId, progress: $progress, status: $status, private: $private) {
                     id
                 }
             }
-        "#;
+        ";
         let value = self
             .gql(
                 query,
@@ -129,7 +129,7 @@ impl AniList {
     }
 
     async fn update_lib_manga(&self, track: &mut Track) -> Result<()> {
-        let query = r#"
+        let query = r"
             mutation UpdateManga(
                 $listId: Int, $progress: Int, $status: MediaListStatus, $private: Boolean,
                 $score: Int, $startedAt: FuzzyDateInput, $completedAt: FuzzyDateInput
@@ -141,7 +141,7 @@ impl AniList {
                     id
                 }
             }
-        "#;
+        ";
         self.gql(
             query,
             json!({
@@ -159,18 +159,18 @@ impl AniList {
     }
 
     async fn delete_lib_manga(&self, track: &Track) -> Result<()> {
-        let query = r#"
+        let query = r"
             mutation DeleteManga($listId: Int) {
                 DeleteMediaListEntry(id: $listId) { deleted }
             }
-        "#;
+        ";
         self.gql(query, json!({ "listId": track.library_id })).await?;
         Ok(())
     }
 
     async fn find_lib_manga(&self, remote_id: i64, user_id: i64) -> Result<Option<Track>> {
         let query = format!(
-            r#"
+            r"
             query ($id: Int!, $manga_id: Int!) {{
                 Page {{
                     mediaList(userId: $id, type: MANGA, mediaId: $manga_id) {{
@@ -185,12 +185,12 @@ impl AniList {
                     }}
                 }}
             }}
-        "#
+        "
         );
         let value = self.gql(&query, json!({ "id": user_id, "manga_id": remote_id })).await?;
         let result: AlUserListResult = serde_json::from_value(value)
             .map_err(|e| DomainError::tracker(format!("AniList 列表项响应无法解析：{e}")))?;
-        Ok(result.data.page.media_list.into_iter().next().map(|item| item.into_track()))
+        Ok(result.data.page.media_list.into_iter().next().map(AlUserListItem::into_track))
     }
 
     async fn get_lib_manga(&self, remote_id: i64, user_id: i64) -> Result<Track> {
@@ -201,24 +201,24 @@ impl AniList {
 
     async fn search_api(&self, query: &str) -> Result<Vec<TrackSearch>> {
         let gql = format!(
-            r#"
+            r"
             query Search($query: String) {{
                 Page(perPage: 50) {{
                     media(search: $query, type: MANGA, format_not_in: [NOVEL]) {{ {MEDIA_FIELDS} }}
                 }}
             }}
-        "#
+        "
         );
         let value = self.gql(&gql, json!({ "query": query })).await?;
         let result: AlSearchResult = serde_json::from_value(value)
             .map_err(|e| DomainError::tracker(format!("AniList 搜索响应无法解析：{e}")))?;
-        Ok(result.data.page.media.iter().map(|m| m.to_track_search()).collect())
+        Ok(result.data.page.media.iter().map(AlSearchItem::to_track_search).collect())
     }
 
     async fn get_current_user(&self) -> Result<(i64, String)> {
-        let query = r#"
+        let query = r"
             query User { Viewer { id mediaListOptions { scoreFormat } } }
-        "#;
+        ";
         let value = self.gql(query, json!({})).await?;
         let result: AlCurrentUserResult = serde_json::from_value(value)
             .map_err(|e| DomainError::tracker(format!("AniList 用户信息无法解析：{e}")))?;
@@ -305,14 +305,14 @@ impl TrackerService for AniList {
                 if index == 0 {
                     0.0
                 } else {
-                    index as f64 * 20.0 - 10.0
+                    (index as f64).mul_add(20.0, -10.0)
                 }
             }
             "POINT_3" => {
                 if index == 0 {
                     0.0
                 } else {
-                    index as f64 * 25.0 + 10.0
+                    (index as f64).mul_add(25.0, 10.0)
                 }
             }
             _ => index as f64 * 10.0,
@@ -340,7 +340,7 @@ impl TrackerService for AniList {
                     "😊".to_string()
                 }
             }
-            other => to_api_score(score, other)?.to_string(),
+            other => to_api_score(score, other)?,
         })
     }
 
@@ -371,22 +371,19 @@ impl TrackerService for AniList {
 
     async fn bind(&self, track: &mut Track, has_read_chapters: bool) -> Result<()> {
         let user_id = self.user_id().await?;
-        match self.find_lib_manga(track.remote_id, user_id).await? {
-            Some(remote) => {
-                // AniList 的条目隐私属于远端设置，绑定时不覆盖本地（上游 copyRemotePrivate=false）。
-                track.copy_personal_from(&remote, false);
-                track.library_id = remote.library_id;
-                if track.status != COMPLETED {
-                    let is_rereading = track.status == REREADING;
-                    track.status = if !is_rereading && has_read_chapters { READING } else { track.status };
-                }
-                self.update(track, false).await
+        if let Some(remote) = self.find_lib_manga(track.remote_id, user_id).await? {
+            // AniList 的条目隐私属于远端设置，绑定时不覆盖本地（上游 copyRemotePrivate=false）。
+            track.copy_personal_from(&remote, false);
+            track.library_id = remote.library_id;
+            if track.status != COMPLETED {
+                let is_rereading = track.status == REREADING;
+                track.status = if !is_rereading && has_read_chapters { READING } else { track.status };
             }
-            None => {
-                track.status = if has_read_chapters { READING } else { PLAN_TO_READ };
-                track.score = 0.0;
-                self.add_lib_manga(track).await
-            }
+            self.update(track, false).await
+        } else {
+            track.status = if has_read_chapters { READING } else { PLAN_TO_READ };
+            track.score = 0.0;
+            self.add_lib_manga(track).await
         }
     }
 
@@ -507,10 +504,10 @@ fn fuzzy_date_input(ms: i64) -> serde_json::Value {
     if ms == 0 {
         return json!({ "year": null, "month": null, "day": null });
     }
-    match chrono::Local.timestamp_millis_opt(ms).single() {
-        Some(dt) => json!({ "year": dt.year(), "month": dt.month(), "day": dt.day() }),
-        None => json!({ "year": null, "month": null, "day": null }),
-    }
+    chrono::Local.timestamp_millis_opt(ms).single().map_or_else(
+        || json!({ "year": null, "month": null, "day": null }),
+        |dt| json!({ "year": dt.year(), "month": dt.month(), "day": dt.day() }),
+    )
 }
 
 fn html_decode(s: &str) -> String {
@@ -554,8 +551,7 @@ impl AlFuzzyDate {
         chrono::NaiveDate::from_ymd_opt(y, m as u32, d as u32)
             .and_then(|date| date.and_hms_opt(0, 0, 0))
             .and_then(|naive| chrono::Local.from_local_datetime(&naive).single())
-            .map(|dt| dt.timestamp_millis())
-            .unwrap_or(0)
+            .map_or(0, |dt| dt.timestamp_millis())
     }
 }
 
@@ -764,7 +760,7 @@ impl AlUserListItem {
     fn into_track(self) -> Track {
         let mut track = Track::create(ANILIST);
         track.remote_id = self.media.id;
-        track.title = self.media.title.user_preferred.clone();
+        track.title.clone_from(&self.media.title.user_preferred);
         track.status = from_api_status(&self.status).unwrap_or(READING);
         track.score = self.score_raw as f64;
         track.started_reading_date = self.started_at.to_epoch_millis();

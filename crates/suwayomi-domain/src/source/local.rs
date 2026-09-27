@@ -50,7 +50,7 @@ pub fn local_source_root() -> PathBuf {
     }
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
-        && dir.file_name().map(|n| n == "bin").unwrap_or(false)
+        && dir.file_name().is_some_and(|n| n == "bin")
         && let Some(base) = dir.parent()
     {
         return base.join("data").join("local");
@@ -75,13 +75,13 @@ pub fn scan_local_chapters(manga_dir: &Path) -> Vec<SChapter> {
     let Ok(entries) = std::fs::read_dir(manga_dir) else {
         return chapters;
     };
-    for entry in entries.filter_map(|e| e.ok()) {
+    for entry in entries.filter_map(std::result::Result::ok) {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
         if name.starts_with('.') || name.eq_ignore_ascii_case("cover.jpg") || name == "details.json" {
             continue;
         }
-        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
         let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("").to_lowercase();
         let is_archive = ARCHIVE_EXTS.contains(&ext.as_str());
         if !is_dir && !is_archive {
@@ -115,40 +115,44 @@ pub fn scan_local_chapters(manga_dir: &Path) -> Vec<SChapter> {
 /// Natural-order comparison: numeric runs are compared by value so that
 /// `1.jpg < 2.jpg < 10.jpg` (lexicographic order would put "10" before "2",
 /// which shows up as page 1 → page 10 in the reader).
+///
+/// 两个字节游标同步前进：撞到数字段就整段比数值，否则逐字节比较。全程走切片
+/// 而不是下标，越界无从发生。
 fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    let ab = a.as_bytes();
-    let bb = b.as_bytes();
-    let (mut pa, mut pb) = (0usize, 0usize);
-    while pa < ab.len() && pb < bb.len() {
-        let (ca, cb) = (ab[pa], bb[pb]);
-        if ca.is_ascii_digit() && cb.is_ascii_digit() {
-            let mut ea = pa;
-            while ea < ab.len() && ab[ea].is_ascii_digit() {
-                ea += 1;
-            }
-            let mut eb = pb;
-            while eb < bb.len() && bb[eb].is_ascii_digit() {
-                eb += 1;
-            }
+    let (mut ra, mut rb) = (a.as_bytes(), b.as_bytes());
+    while let (Some(&ca), Some(&cb)) = (ra.first(), rb.first()) {
+        let (ord, next_a, next_b) = if ca.is_ascii_digit() && cb.is_ascii_digit() {
+            let (da, ta) = digit_run(ra);
+            let (db, tb) = digit_run(rb);
             // 去前导零后按（长度 → 字典序）比较数值
-            let da = a[pa..ea].trim_start_matches('0');
-            let db = b[pb..eb].trim_start_matches('0');
-            let ord = da.len().cmp(&db.len()).then_with(|| da.cmp(db));
-            if ord != std::cmp::Ordering::Equal {
-                return ord;
-            }
-            pa = ea;
-            pb = eb;
+            let (sa, sb) = (strip_leading_zeros(da), strip_leading_zeros(db));
+            (sa.len().cmp(&sb.len()).then_with(|| sa.cmp(sb)), ta, tb)
         } else {
-            let ord = ca.cmp(&cb);
-            if ord != std::cmp::Ordering::Equal {
-                return ord;
-            }
-            pa += 1;
-            pb += 1;
+            (ca.cmp(&cb), drop_first(ra), drop_first(rb))
+        };
+        if ord != std::cmp::Ordering::Equal {
+            return ord;
         }
+        (ra, rb) = (next_a, next_b);
     }
-    ab.len().cmp(&bb.len())
+    ra.len().cmp(&rb.len())
+}
+
+/// Splits the leading ASCII-digit run off `s` as `(run, rest)`.
+fn digit_run(s: &[u8]) -> (&[u8], &[u8]) {
+    let n = s.iter().take_while(|c| c.is_ascii_digit()).count();
+    s.split_at_checked(n).unwrap_or((s, &[]))
+}
+
+/// `digits` without leading `0` bytes (the run is all ASCII digits by then).
+fn strip_leading_zeros(digits: &[u8]) -> &[u8] {
+    let n = digits.iter().take_while(|c| **c == b'0').count();
+    digits.get(n..).unwrap_or_default()
+}
+
+/// `s` minus its first byte.
+fn drop_first(s: &[u8]) -> &[u8] {
+    s.get(1..).unwrap_or_default()
 }
 
 /// Scan the page images of one chapter folder. For directory chapters this
@@ -160,7 +164,7 @@ pub fn scan_local_pages(chapter_path: &Path, url_prefix: &str) -> Vec<SourcePage
     if chapter_path.is_dir() {
         let mut files: Vec<_> = std::fs::read_dir(chapter_path)
             .map(|it| {
-                it.filter_map(|e| e.ok())
+                it.filter_map(std::result::Result::ok)
                     .filter(|e| {
                         let path = e.path();
                         let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("");
@@ -189,13 +193,11 @@ pub fn scan_local_pages(chapter_path: &Path, url_prefix: &str) -> Vec<SourcePage
 /// name, sorted by name) — mirrors the Local Source wiki rule that folder
 /// structure inside archives is ignored.
 pub fn list_archive_pages(archive: &Path) -> Vec<(usize, String)> {
-    let file = match std::fs::File::open(archive) {
-        Ok(f) => f,
-        Err(_) => return Vec::new(),
+    let Ok(file) = std::fs::File::open(archive) else {
+        return Vec::new();
     };
-    let mut zip = match zip::ZipArchive::new(file) {
-        Ok(z) => z,
-        Err(_) => return Vec::new(),
+    let Ok(mut zip) = zip::ZipArchive::new(file) else {
+        return Vec::new();
     };
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut names = Vec::new();
@@ -281,7 +283,7 @@ pub fn read_archive_meta(archive: &Path) -> Option<ArchiveMeta> {
         if name == "comicinfo.xml" {
             let mut buf = Vec::with_capacity(entry.size() as usize);
             std::io::Read::read_to_end(&mut entry, &mut buf).ok()?;
-            return parse_comic_info_xml(&buf);
+            return Some(parse_comic_info_xml(&buf));
         }
     }
     None
@@ -292,7 +294,7 @@ pub fn read_archive_meta(archive: &Path) -> Option<ArchiveMeta> {
 /// no `details.json`).
 fn scan_manga_archive_meta(manga_dir: &Path) -> Option<ArchiveMeta> {
     let entries = std::fs::read_dir(manga_dir).ok()?;
-    for entry in entries.filter_map(|e| e.ok()) {
+    for entry in entries.filter_map(std::result::Result::ok) {
         let path = entry.path();
         if path.is_file() {
             let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("").to_lowercase();
@@ -380,8 +382,8 @@ fn parse_meta_json(bytes: &[u8]) -> Option<ArchiveMeta> {
             };
             match tag.r#type.as_deref() {
                 Some("artist") => artist.push(name.to_string()),
-                Some("group") | Some("circle") => author.push(name.to_string()),
-                Some("parody") | Some("character") | Some("category") => genre.push(name.to_string()),
+                Some("group" | "circle") => author.push(name.to_string()),
+                // parody / character / category，以及没见过的类型，都归到 genre
                 _ => genre.push(name.to_string()),
             }
         }
@@ -405,7 +407,10 @@ fn parse_meta_json(bytes: &[u8]) -> Option<ArchiveMeta> {
 
 /// Parse `ComicInfo.xml` — the ComicRack metadata standard used inside CBZ
 /// files. Only the commonly-present fields are extracted.
-fn parse_comic_info_xml(bytes: &[u8]) -> Option<ArchiveMeta> {
+///
+/// 字段全是可选的（缺失就是 `None`），所以这里没有"整体成功/失败"之分——
+/// 只要 XML 结构不进死循环就一定产出一份 meta。
+fn parse_comic_info_xml(bytes: &[u8]) -> ArchiveMeta {
     use quick_xml::Reader;
     use quick_xml::events::Event;
 
@@ -483,7 +488,7 @@ fn parse_comic_info_xml(bytes: &[u8]) -> Option<ArchiveMeta> {
         lines.join("\n").trim().to_string()
     });
 
-    Some(ArchiveMeta {
+    ArchiveMeta {
         title,
         number,
         scanlator: text("scaninformation"),
@@ -495,7 +500,7 @@ fn parse_comic_info_xml(bytes: &[u8]) -> Option<ArchiveMeta> {
         artist: text("penciller"),
         genre,
         description,
-    })
+    }
 }
 
 /// Parse `YYYY-MM-DD` (and `YYYY-MM-DDTHH:MM:SS`) date strings to epoch
@@ -517,12 +522,12 @@ fn parse_chapter_number(name: &str, fallback: f32) -> f32 {
     let bytes = name.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i].is_ascii_digit() {
+        if bytes.get(i).is_some_and(u8::is_ascii_digit) {
             let start = i;
-            while i < bytes.len() && bytes[i].is_ascii_digit() {
+            while bytes.get(i).is_some_and(u8::is_ascii_digit) {
                 i += 1;
             }
-            let num: f32 = name[start..i].parse().unwrap_or(0.0);
+            let num: f32 = name.get(start..i).and_then(|s| s.parse().ok()).unwrap_or(0.0);
             if best.is_none() || num < best.unwrap_or(f32::MAX) {
                 best = Some(num);
             }
@@ -539,7 +544,7 @@ pub fn scan_local_source(root: &Path) -> Vec<SManga> {
         return Vec::new();
     };
     let mut dirs: Vec<_> =
-        entries.filter_map(|e| e.ok()).filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false)).collect();
+        entries.filter_map(std::result::Result::ok).filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).collect();
     dirs.sort_by(|a, b| natural_cmp(&a.file_name().to_string_lossy(), &b.file_name().to_string_lossy()));
 
     let mut out = Vec::with_capacity(dirs.len());
@@ -610,12 +615,11 @@ fn file_mtime(path: &Path) -> i64 {
         .ok()
         .and_then(|m| m.modified().ok())
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 fn is_image_name(name: &str) -> bool {
-    let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("").to_lowercase();
+    let ext = name.rsplit_once('.').map_or("", |(_, e)| e).to_lowercase();
     IMAGE_EXTS.contains(&ext.as_str())
 }
 
@@ -626,12 +630,12 @@ pub fn local_latest_update_epoch(manga_dir: &Path) -> i64 {
     let Ok(entries) = std::fs::read_dir(manga_dir) else {
         return newest;
     };
-    for entry in entries.filter_map(|e| e.ok()) {
+    for entry in entries.filter_map(std::result::Result::ok) {
         let name = entry.file_name().to_string_lossy().into_owned();
         if name.starts_with('.') || name.eq_ignore_ascii_case("cover.jpg") || name == "details.json" {
             continue;
         }
-        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
         let ext = Path::new(&name).extension().and_then(|x| x.to_str()).unwrap_or("").to_lowercase();
         if !is_dir && !ARCHIVE_EXTS.contains(&ext.as_str()) {
             continue;
@@ -716,7 +720,7 @@ fn cover_source(manga_dir: &Path) -> Option<CoverSource> {
             }
         } else if let Some((_, member)) = list_archive_pages(&path).into_iter().next() {
             return Some(CoverSource {
-                ext: member.rsplit_once('.').map(|(_, e)| e).unwrap_or("jpg").to_lowercase(),
+                ext: member.rsplit_once('.').map_or("jpg", |(_, e)| e).to_lowercase(),
                 mtime: file_mtime(&path),
                 member: Some(member),
                 path,
@@ -729,14 +733,14 @@ fn cover_source(manga_dir: &Path) -> Option<CoverSource> {
 fn first_image_in_dir(dir: &Path) -> Option<PathBuf> {
     let mut files: Vec<_> = std::fs::read_dir(dir)
         .ok()?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            !name.starts_with('.') && e.file_type().map(|t| t.is_file()).unwrap_or(false) && is_image_name(&name)
+            !name.starts_with('.') && e.file_type().is_ok_and(|t| t.is_file()) && is_image_name(&name)
         })
         .collect();
     files.sort_by(|a, b| natural_cmp(&a.file_name().to_string_lossy(), &b.file_name().to_string_lossy()));
-    files.first().map(|e| e.path())
+    files.first().map(std::fs::DirEntry::path)
 }
 
 /// 取或生成缓存封面。缓存比源图片新就直接复用（生成后 mtime 即当前时间，
@@ -867,7 +871,7 @@ mod tests {
         assert_eq!(meta.manga_title.as_deref(), Some("Work JP"));
         assert_eq!(meta.artist.as_deref(), Some("Pochi"));
         assert_eq!(meta.author.as_deref(), Some("Circle"));
-        assert_eq!(meta.upload_date, Some(1594958203));
+        assert_eq!(meta.upload_date, Some(1_594_958_203));
         assert_eq!(meta.page_count, Some(24));
         assert_eq!(meta.scanlator.as_deref(), Some("X"));
         assert!(meta.genre.as_deref().unwrap().contains("Series"));
@@ -878,7 +882,7 @@ mod tests {
         // embedded metadata (meta.json only enriches number/date/scanlator).
         assert_eq!(chapters[0].name, "ch001");
         assert_eq!(chapters[0].scanlator.as_deref(), Some("X"));
-        assert_eq!(chapters[0].date_upload, 1594958203);
+        assert_eq!(chapters[0].date_upload, 1_594_958_203);
 
         // manga-level enrichment when no details.json exists
         let mangas = scan_local_source(&tmp);
@@ -987,7 +991,7 @@ mod tests {
   <PublicationDate>2023-05-10</PublicationDate>
   <ScanInformation>Scan Group</ScanInformation>
 </ComicInfo>"#;
-        let meta = parse_comic_info_xml(xml).expect("comicinfo parsed");
+        let meta = parse_comic_info_xml(xml);
         assert_eq!(meta.title.as_deref(), Some("Chapter 5"));
         assert_eq!(meta.manga_title.as_deref(), Some("My Series"));
         assert_eq!(meta.number, Some(5.0));
@@ -997,6 +1001,6 @@ mod tests {
         assert_eq!(meta.scanlator.as_deref(), Some("Scan Group"));
         assert!(meta.genre.as_deref().unwrap().contains("Action"));
         // PublicationDate -> epoch seconds
-        assert_eq!(meta.upload_date, Some(1683676800)); // 2023-05-10T00:00:00Z
+        assert_eq!(meta.upload_date, Some(1_683_676_800)); // 2023-05-10T00:00:00Z
     }
 }

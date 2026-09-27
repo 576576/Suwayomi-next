@@ -23,6 +23,7 @@ use base64::Engine;
 use suwayomi_core::auth::{AuthContext, AuthMode, Principal, SESSION_COOKIE, TOKEN_COOKIE, now};
 
 use crate::state::AppState;
+use suwayomi_core::text::urlencode;
 
 /// 登录页与登出：必须匿名可达，否则没人能登录进来。
 pub fn is_login_flow(path: &str) -> bool {
@@ -183,18 +184,18 @@ pub fn safe_public_path(root: &Path, raw_path: &str) -> Option<PathBuf> {
 fn percent_decode(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
-            if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                out.push(byte);
-                i += 3;
-                continue;
-            }
+    let mut rest = bytes;
+    while let Some((&b, tail)) = rest.split_first() {
+        // `%XX` only when two hex digits actually follow; `tail.get(..2)` is `None`
+        // otherwise, which is exactly the old `i + 2 < bytes.len()` guard.
+        let hex = if b == b'%' { tail.get(..2) } else { None };
+        if let Some(byte) = hex.and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok()) {
+            out.push(byte);
+            rest = tail.get(2..).unwrap_or_default();
+        } else {
+            out.push(b);
+            rest = tail;
         }
-        out.push(bytes[i]);
-        i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
 }
@@ -234,7 +235,7 @@ fn csrf_ok(headers: &HeaderMap) -> bool {
         let Some(host) = headers.get(header::HOST).and_then(|v| v.to_str().ok()) else {
             return false;
         };
-        let origin_host = origin.split_once("://").map(|(_, rest)| rest).unwrap_or(origin);
+        let origin_host = origin.split_once("://").map_or(origin, |(_, rest)| rest);
         if !origin_host.eq_ignore_ascii_case(host) {
             return false;
         }
@@ -248,17 +249,14 @@ fn unauthorized() -> Response {
 }
 
 fn challenge(auth: &AuthContext, path: &str, query: Option<&str>) -> Response {
-    match auth.mode {
-        AuthMode::BasicAuth => {
-            (StatusCode::UNAUTHORIZED, [(header::WWW_AUTHENTICATE, "Basic realm=\"Suwayomi\"")]).into_response()
+    if auth.mode == AuthMode::BasicAuth {
+        (StatusCode::UNAUTHORIZED, [(header::WWW_AUTHENTICATE, "Basic realm=\"Suwayomi\"")]).into_response()
+    } else {
+        let mut target = format!("/login.html?redirect={}", urlencode(&page_target(path, query)));
+        if target.len() > 4096 {
+            target = "/login.html".to_string();
         }
-        _ => {
-            let mut target = format!("/login.html?redirect={}", urlencode(&page_target(path, query)));
-            if target.len() > 4096 {
-                target = "/login.html".to_string();
-            }
-            Redirect::to(&target).into_response()
-        }
+        Redirect::to(&target).into_response()
     }
 }
 
@@ -269,17 +267,6 @@ fn page_target(path: &str, query: Option<&str>) -> String {
     };
     let kept: Vec<&str> = query.split('&').filter(|pair| !pair.starts_with("token=")).collect();
     if kept.is_empty() { path.to_string() } else { format!("{path}?{}", kept.join("&")) }
-}
-
-fn urlencode(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(byte as char),
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
 }
 
 /// 认证中间件。

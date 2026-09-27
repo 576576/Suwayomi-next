@@ -12,6 +12,7 @@ use crate::error::{DomainError, Result};
 
 use super::service::{TrackerCtx, TrackerService, check, expires_soon, extract_token, now_secs};
 use super::{SHIKIMORI, Track, TrackSearch};
+use suwayomi_core::text::urlencode;
 
 const BASE_URL: &str = "https://shikimori.io";
 const API_URL: &str = "https://shikimori.io/api";
@@ -39,10 +40,7 @@ impl Shikimori {
     }
 
     async fn save_token(&self, oauth: Option<&SmOAuth>) -> Result<()> {
-        let token = match oauth {
-            Some(o) => serde_json::to_string(o).unwrap_or_default(),
-            None => String::new(),
-        };
+        let token = oauth.map_or_else(String::new, |o| serde_json::to_string(o).unwrap_or_default());
         self.ctx.store.set_token(SHIKIMORI, &token).await
     }
 
@@ -247,21 +245,18 @@ impl TrackerService for Shikimori {
     }
 
     async fn bind(&self, track: &mut Track, has_read_chapters: bool) -> Result<()> {
-        match self.find_lib_manga(track).await? {
-            Some(remote) => {
-                track.copy_personal_from(&remote, true);
-                track.library_id = remote.library_id;
-                if track.status != COMPLETED {
-                    let is_rereading = track.status == REREADING;
-                    track.status = if !is_rereading && has_read_chapters { READING } else { track.status };
-                }
-                self.update(track, false).await
+        if let Some(remote) = self.find_lib_manga(track).await? {
+            track.copy_personal_from(&remote, true);
+            track.library_id = remote.library_id;
+            if track.status != COMPLETED {
+                let is_rereading = track.status == REREADING;
+                track.status = if !is_rereading && has_read_chapters { READING } else { track.status };
             }
-            None => {
-                track.status = if has_read_chapters { READING } else { PLAN_TO_READ };
-                track.score = 0.0;
-                self.put_user_rate(track).await
-            }
+            self.update(track, false).await
+        } else {
+            track.status = if has_read_chapters { READING } else { PLAN_TO_READ };
+            track.score = 0.0;
+            self.put_user_rate(track).await
         }
     }
 
@@ -337,17 +332,6 @@ fn from_shikimori_status(status: &str) -> Result<i32> {
         "rewatching" => Ok(REREADING),
         other => Err(DomainError::tracker(format!("Shikimori：未知状态 {other}"))),
     }
-}
-
-fn urlencode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 // ---- DTO ----
@@ -434,7 +418,7 @@ impl SmUserListEntry {
     /// 用到；照抄会把错误的 id 写进 `track_record`。
     fn to_track(&self, remote_id: i64, manga: &SmManga) -> Track {
         let mut track = Track::create(SHIKIMORI);
-        track.title = manga.name.clone();
+        track.title.clone_from(&manga.name);
         track.remote_id = remote_id;
         track.total_chapters = manga.chapters;
         track.library_id = Some(self.id);

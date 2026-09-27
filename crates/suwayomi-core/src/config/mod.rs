@@ -27,7 +27,7 @@ pub fn cache_root() -> std::path::PathBuf {
     }
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
-        && dir.file_name().map(|n| n == "bin").unwrap_or(false)
+        && dir.file_name().is_some_and(|n| n == "bin")
         && let Some(base) = dir.parent()
     {
         return base.join("cache");
@@ -48,7 +48,7 @@ pub fn app_root() -> std::path::PathBuf {
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {
-        if dir.file_name().map(|n| n == "bin").unwrap_or(false)
+        if dir.file_name().is_some_and(|n| n == "bin")
             && let Some(base) = dir.parent()
         {
             return base.to_path_buf();
@@ -232,13 +232,13 @@ impl ServerConfig {
             blob.get(key).and_then(|v| v.as_str()).map(str::to_string)
         }
         fn flag(blob: &serde_json::Value, key: &str) -> Option<bool> {
-            blob.get(key).and_then(|v| v.as_bool())
+            blob.get(key).and_then(serde_json::Value::as_bool)
         }
 
         if let Some(v) = text(blob, "ip") {
             self.ip = v;
         }
-        if let Some(v) = blob.get("port").and_then(|v| v.as_i64()) {
+        if let Some(v) = blob.get("port").and_then(serde_json::Value::as_i64) {
             self.port = v as i32;
         }
         if let Some(v) = text(blob, "databaseType") {
@@ -295,7 +295,7 @@ impl ServerConfig {
         if let Some(v) = text(blob, "koreaderSyncStrategyBackward") {
             self.koreader_sync_strategy_backward = conflict_strategy(&v, self.koreader_sync_strategy_backward);
         }
-        if let Some(v) = blob.get("koreaderSyncPercentageTolerance").and_then(|v| v.as_f64()) {
+        if let Some(v) = blob.get("koreaderSyncPercentageTolerance").and_then(serde_json::Value::as_f64) {
             self.koreader_sync_percentage_tolerance = v as f32;
         }
         if let Some(v) = flag(blob, "syncYomiEnabled") {

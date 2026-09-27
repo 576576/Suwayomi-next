@@ -116,7 +116,7 @@ pub struct Backup {
 }
 
 /// `tracker_credential` 表的一行。
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct BackupTrackerCredential {
     #[prost(int32, tag = "1")]
     pub tracker_id: i32,
@@ -220,7 +220,7 @@ pub struct BackupChapter {
     pub meta: HashMap<String, String>,
 }
 
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct BackupCategory {
     #[prost(string, tag = "1")]
     pub name: String,
@@ -238,7 +238,7 @@ pub struct BackupCategory {
     pub meta: HashMap<String, String>,
 }
 
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct BackupSource {
     #[prost(string, tag = "1")]
     pub name: String,
@@ -278,7 +278,7 @@ pub struct BackupTracking {
     pub media_id: i64,
 }
 
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct BackupHistory {
     #[prost(string, tag = "1")]
     pub url: String,
@@ -288,7 +288,7 @@ pub struct BackupHistory {
     pub read_at: i64,
 }
 
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
 pub struct BackupServerSettings {
     #[prost(string, tag = "1")]
     pub ip: String,
@@ -351,12 +351,7 @@ fn validate_backup_inner(backup: &Backup) -> RestoreSummary {
         .into_iter()
         .collect();
     let name_of = |sid: i64| {
-        backup
-            .backup_sources
-            .iter()
-            .find(|s| s.source_id == sid)
-            .map(|s| s.name.clone())
-            .unwrap_or_else(|| sid.to_string())
+        backup.backup_sources.iter().find(|s| s.source_id == sid).map_or_else(|| sid.to_string(), |s| s.name.clone())
     };
     let mangas_missing: Vec<String> = backup
         .backup_manga
@@ -402,27 +397,25 @@ pub async fn restore_backup_proto(
             .bind(&c.name)
             .fetch_optional(pool)
             .await?;
-        let id = match existing {
-            Some(id) => id,
-            None => {
-                // Use a fresh, collision-free sort_order: keying membership by
-                // numeric order is fine within one backup file, but reusing a
-                // value already taken in the DB (e.g. several categories at
-                // order 0) would make a later restore of our own export map
-                // memberships onto the wrong category.
-                let next_order: i32 =
-                    suwayomi_db::query_scalar("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM category")
-                        .fetch_one(pool)
-                        .await?;
-                let id: i32 =
-                    suwayomi_db::query_scalar("INSERT INTO category (name, sort_order) VALUES ($1, $2) RETURNING id")
-                        .bind(&c.name)
-                        .bind(next_order)
-                        .fetch_one(pool)
-                        .await?;
-                summary.restored_categories += 1;
-                id
-            }
+        let id = if let Some(id) = existing {
+            id
+        } else {
+            // Use a fresh, collision-free sort_order: keying membership by
+            // numeric order is fine within one backup file, but reusing a
+            // value already taken in the DB (e.g. several categories at
+            // order 0) would make a later restore of our own export map
+            // memberships onto the wrong category.
+            let next_order: i32 = suwayomi_db::query_scalar("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM category")
+                .fetch_one(pool)
+                .await?;
+            let id: i32 =
+                suwayomi_db::query_scalar("INSERT INTO category (name, sort_order) VALUES ($1, $2) RETURNING id")
+                    .bind(&c.name)
+                    .bind(next_order)
+                    .fetch_one(pool)
+                    .await?;
+            summary.restored_categories += 1;
+            id
         };
         let _ = idx;
         category_mapping.insert(c.order, id);
@@ -510,78 +503,76 @@ pub async fn restore_backup_proto(
             .bind(m.source)
             .fetch_optional(pool)
             .await?;
-        let manga_id = match existing {
-            Some((
-                id,
-                cur_artist,
-                cur_author,
-                cur_desc,
-                cur_genre,
-                cur_status,
-                cur_thumb,
-                cur_strategy,
-                cur_added,
-                cur_init,
-                cur_inlib,
-            )) => {
-                let dirty = m.artist.as_deref().is_some_and(|v| cur_artist.as_deref() != Some(v))
-                    || m.author.as_deref().is_some_and(|v| cur_author.as_deref() != Some(v))
-                    || m.description.as_deref().is_some_and(|v| cur_desc.as_deref() != Some(v))
-                    || (!genre_new.is_empty() && cur_genre.as_deref() != Some(genre_new.as_str()))
-                    || m.status != cur_status
-                    || m.thumbnail_url.as_deref().is_some_and(|v| cur_thumb.as_deref() != Some(v))
-                    || cur_strategy != strategy_new
-                    || !cur_inlib
-                    || cur_added != Some(added_secs)
-                    || (m.description.is_some() && !cur_init);
-                if dirty {
-                    suwayomi_db::query(
-                        "UPDATE manga SET artist = COALESCE($1, artist), author = COALESCE($2, author), \
-                         description = COALESCE($3, description), genre = COALESCE(NULLIF($4, ''), genre), \
-                         status = $5, thumbnail_url = COALESCE($6, thumbnail_url), update_strategy = $7, \
-                         in_library = TRUE, in_library_at = $8, \
-                         initialized = initialized OR $9 WHERE id = $10",
-                    )
-                    .bind(&m.artist)
-                    .bind(&m.author)
-                    .bind(&m.description)
-                    .bind(&genre_new)
-                    .bind(m.status)
-                    .bind(&m.thumbnail_url)
-                    .bind(&strategy_new)
-                    .bind(added_secs)
-                    .bind(m.description.is_some())
-                    .bind(id)
-                    .execute(pool)
-                    .await?;
-                }
-                id
-            }
-            None => {
-                let id: i32 = suwayomi_db::query_scalar(
-                    "INSERT INTO manga (url, title, artist, author, description, genre, status, thumbnail_url, \
-                     update_strategy, source, initialized, in_library, in_library_at, last_modified_at, version) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE, $12, $13, $14) RETURNING id",
+        let manga_id = if let Some((
+            id,
+            cur_artist,
+            cur_author,
+            cur_desc,
+            cur_genre,
+            cur_status,
+            cur_thumb,
+            cur_strategy,
+            cur_added,
+            cur_init,
+            cur_inlib,
+        )) = existing
+        {
+            let dirty = m.artist.as_deref().is_some_and(|v| cur_artist.as_deref() != Some(v))
+                || m.author.as_deref().is_some_and(|v| cur_author.as_deref() != Some(v))
+                || m.description.as_deref().is_some_and(|v| cur_desc.as_deref() != Some(v))
+                || (!genre_new.is_empty() && cur_genre.as_deref() != Some(genre_new.as_str()))
+                || m.status != cur_status
+                || m.thumbnail_url.as_deref().is_some_and(|v| cur_thumb.as_deref() != Some(v))
+                || cur_strategy != strategy_new
+                || !cur_inlib
+                || cur_added != Some(added_secs)
+                || (m.description.is_some() && !cur_init);
+            if dirty {
+                suwayomi_db::query(
+                    "UPDATE manga SET artist = COALESCE($1, artist), author = COALESCE($2, author), \
+                     description = COALESCE($3, description), genre = COALESCE(NULLIF($4, ''), genre), \
+                     status = $5, thumbnail_url = COALESCE($6, thumbnail_url), update_strategy = $7, \
+                     in_library = TRUE, in_library_at = $8, \
+                     initialized = initialized OR $9 WHERE id = $10",
                 )
-                .bind(&m.url)
-                .bind(&m.title)
                 .bind(&m.artist)
                 .bind(&m.author)
                 .bind(&m.description)
-                .bind(m.genre.join(", "))
+                .bind(&genre_new)
                 .bind(m.status)
                 .bind(&m.thumbnail_url)
-                .bind(update_strategy_name(m.update_strategy))
-                .bind(m.source)
-                .bind(m.description.is_some())
+                .bind(&strategy_new)
                 .bind(added_secs)
-                .bind(m.last_modified_at)
-                .bind(m.version)
-                .fetch_one(pool)
+                .bind(m.description.is_some())
+                .bind(id)
+                .execute(pool)
                 .await?;
-                summary.restored_manga += 1;
-                id
             }
+            id
+        } else {
+            let id: i32 = suwayomi_db::query_scalar(
+                "INSERT INTO manga (url, title, artist, author, description, genre, status, thumbnail_url, \
+                 update_strategy, source, initialized, in_library, in_library_at, last_modified_at, version) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE, $12, $13, $14) RETURNING id",
+            )
+            .bind(&m.url)
+            .bind(&m.title)
+            .bind(&m.artist)
+            .bind(&m.author)
+            .bind(&m.description)
+            .bind(m.genre.join(", "))
+            .bind(m.status)
+            .bind(&m.thumbnail_url)
+            .bind(update_strategy_name(m.update_strategy))
+            .bind(m.source)
+            .bind(m.description.is_some())
+            .bind(added_secs)
+            .bind(m.last_modified_at)
+            .bind(m.version)
+            .fetch_one(pool)
+            .await?;
+            summary.restored_manga += 1;
+            id
         };
 
         // chapters (upsert on (url, manga))
@@ -596,46 +587,27 @@ pub async fn restore_backup_proto(
                 .bind(manga_id)
                 .fetch_optional(pool)
                 .await?;
-            match existing_ch {
-                Some((cid, cur_name, cur_scan, cur_read, cur_book, cur_lpr, cur_upload, cur_number, cur_order)) => {
-                    // source_order is 1-based here (Mihon/phone backups are
-                    // 0-based): the reader indexes chapters by
-                    // `len - sourceOrder` on a DESC-sorted list, so a 0-based
-                    // chapter (or 0) can never be opened.
-                    let new_order = ch.source_order + 1;
-                    let dirty = cur_name != ch.name
-                        || cur_scan.as_deref() != ch.scanlator.as_deref()
-                        || cur_read != ch.read
-                        || cur_book != ch.bookmark
-                        || cur_lpr != ch.last_page_read
-                        || cur_upload != ch.date_upload
-                        || cur_number != ch.chapter_number
-                        || cur_order != new_order;
-                    if dirty {
-                        suwayomi_db::query(
-                            "UPDATE chapter SET name = $1, scanlator = $2, read = $3, bookmark = $4, last_page_read = $5, \
-                             date_upload = $6, chapter_number = $7, source_order = $8 WHERE id = $9",
-                        )
-                        .bind(&ch.name)
-                        .bind(&ch.scanlator)
-                        .bind(ch.read)
-                        .bind(ch.bookmark)
-                        .bind(ch.last_page_read)
-                        .bind(ch.date_upload)
-                        .bind(ch.chapter_number)
-                        .bind(new_order)
-                        .bind(cid)
-                        .execute(pool)
-                        .await?;
-                    }
-                    chapter_ids.push(cid);
-                }
-                None => {
-                    let cid: i32 = suwayomi_db::query_scalar(
-                        "INSERT INTO chapter (url, name, scanlator, read, bookmark, last_page_read, date_upload, \
-                         chapter_number, source_order, manga) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
+            if let Some((cid, cur_name, cur_scan, cur_read, cur_book, cur_lpr, cur_upload, cur_number, cur_order)) =
+                existing_ch
+            {
+                // source_order is 1-based here (Mihon/phone backups are
+                // 0-based): the reader indexes chapters by
+                // `len - sourceOrder` on a DESC-sorted list, so a 0-based
+                // chapter (or 0) can never be opened.
+                let new_order = ch.source_order + 1;
+                let dirty = cur_name != ch.name
+                    || cur_scan.as_deref() != ch.scanlator.as_deref()
+                    || cur_read != ch.read
+                    || cur_book != ch.bookmark
+                    || cur_lpr != ch.last_page_read
+                    || cur_upload != ch.date_upload
+                    || cur_number != ch.chapter_number
+                    || cur_order != new_order;
+                if dirty {
+                    suwayomi_db::query(
+                        "UPDATE chapter SET name = $1, scanlator = $2, read = $3, bookmark = $4, last_page_read = $5, \
+                         date_upload = $6, chapter_number = $7, source_order = $8 WHERE id = $9",
                     )
-                    .bind(&ch.url)
                     .bind(&ch.name)
                     .bind(&ch.scanlator)
                     .bind(ch.read)
@@ -643,13 +615,31 @@ pub async fn restore_backup_proto(
                     .bind(ch.last_page_read)
                     .bind(ch.date_upload)
                     .bind(ch.chapter_number)
-                    .bind(ch.source_order + 1)
-                    .bind(manga_id)
-                    .fetch_one(pool)
+                    .bind(new_order)
+                    .bind(cid)
+                    .execute(pool)
                     .await?;
-                    summary.restored_chapters += 1;
-                    chapter_ids.push(cid);
                 }
+                chapter_ids.push(cid);
+            } else {
+                let cid: i32 = suwayomi_db::query_scalar(
+                    "INSERT INTO chapter (url, name, scanlator, read, bookmark, last_page_read, date_upload, \
+                     chapter_number, source_order, manga) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
+                )
+                .bind(&ch.url)
+                .bind(&ch.name)
+                .bind(&ch.scanlator)
+                .bind(ch.read)
+                .bind(ch.bookmark)
+                .bind(ch.last_page_read)
+                .bind(ch.date_upload)
+                .bind(ch.chapter_number)
+                .bind(ch.source_order + 1)
+                .bind(manga_id)
+                .fetch_one(pool)
+                .await?;
+                summary.restored_chapters += 1;
+                chapter_ids.push(cid);
             }
         }
 
@@ -956,9 +946,10 @@ pub enum BackupError {
 
 /// Serializes the current database into a gzipped `Backup` protobuf payload.
 pub async fn create_backup(pool: &Db, flags: BackupFlags) -> Result<Vec<u8>, BackupError> {
+    use std::io::Write;
+
     let backup = create_backup_proto(pool, flags).await?;
     let bytes = backup.encode_to_vec();
-    use std::io::Write;
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     encoder.write_all(&bytes)?;
     let gz = encoder.finish()?;
@@ -969,6 +960,7 @@ pub async fn create_backup(pool: &Db, flags: BackupFlags) -> Result<Vec<u8>, Bac
 mod tests {
     use super::*;
     use crate::db::Db;
+    use std::io::{Read, Write};
 
     async fn seed() -> Db {
         let db = Db::sqlite_in_memory().await.expect("connect");
@@ -1011,8 +1003,6 @@ mod tests {
     async fn backup_roundtrip_preserves_manga() {
         let db = seed().await;
         let gz = create_backup(db.pool(), BackupFlags::default()).await.expect("create backup");
-
-        use std::io::Read;
         let mut decoder = flate2::read::GzDecoder::new(gz.as_slice());
         let mut raw = Vec::new();
         decoder.read_to_end(&mut raw).expect("gunzip");
@@ -1040,7 +1030,6 @@ mod tests {
         let db = Db::sqlite_in_memory().await.expect("connect");
         db.migrate().await.expect("migrate");
         let gz = create_backup(db.pool(), BackupFlags::default()).await.expect("create backup");
-        use std::io::Read;
         let mut decoder = flate2::read::GzDecoder::new(gz.as_slice());
         let mut raw = Vec::new();
         decoder.read_to_end(&mut raw).expect("gunzip");
@@ -1183,7 +1172,6 @@ mod tests {
         manga.update_strategy = 0;
         let backup = Backup { backup_manga: vec![manga], ..Default::default() };
         let raw = backup.encode_to_vec();
-        use std::io::Write;
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         enc.write_all(&raw).expect("write");
         let gz = enc.finish().expect("gz");

@@ -104,7 +104,7 @@ impl Db {
 
     /// Compatibility accessor: the old handle exposed a `PgPool` here, and
     /// hundreds of call sites pass `db.pool()` straight to a query builder.
-    pub fn pool(&self) -> &Db {
+    pub fn pool(&self) -> &Self {
         self
     }
 

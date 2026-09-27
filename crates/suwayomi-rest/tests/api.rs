@@ -2,7 +2,14 @@
 //! Requires `DATABASE_URL`; skipped when absent.
 
 // 集成测试里 panic 就是断言失败的表达方式，不需要改成错误传播。
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::todo,
+    clippy::indexing_slicing
+)]
 
 use std::sync::Arc;
 
@@ -102,8 +109,7 @@ async fn category_crud_via_http() {
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     let arr = v.as_array().unwrap();
     assert_eq!(arr.len(), 2, "two categories created: {body}");
-    let names: Vec<&str> = arr.iter().map(|c| c["name"].as_str().unwrap()).collect();
-    assert!(names.contains(&"Action"));
+    assert!(arr.iter().any(|c| c["name"].as_str() == Some("Action")));
 
     // modify category name
     let (status, _) = send(&app, req("PATCH", "/category/1", Some(r#"{"name":"Action2"}"#))).await;

@@ -19,25 +19,25 @@ pub enum ApiError {
 
 impl From<suwayomi_db::Error> for ApiError {
     fn from(e: suwayomi_db::Error) -> Self {
-        ApiError::Internal(e.to_string())
+        Self::Internal(e.to_string())
     }
 }
 
 impl From<suwayomi_domain::error::DomainError> for ApiError {
     fn from(e: suwayomi_domain::error::DomainError) -> Self {
         match e {
-            suwayomi_domain::error::DomainError::NotFound(m) => ApiError::NotFound(m),
-            suwayomi_domain::error::DomainError::Invalid(m) => ApiError::BadRequest(m),
-            suwayomi_domain::error::DomainError::Source(m) => ApiError::Internal(m),
-            suwayomi_domain::error::DomainError::Db(e) => ApiError::Internal(e.to_string()),
-            suwayomi_domain::error::DomainError::Sandbox(e) => ApiError::Internal(e),
+            suwayomi_domain::error::DomainError::NotFound(m) => Self::NotFound(m),
+            suwayomi_domain::error::DomainError::Invalid(m) => Self::BadRequest(m),
+            suwayomi_domain::error::DomainError::Source(m) => Self::Internal(m),
+            suwayomi_domain::error::DomainError::Db(e) => Self::Internal(e.to_string()),
+            suwayomi_domain::error::DomainError::Sandbox(e) => Self::Internal(e),
             // 上游 `getTracker(id)!!` 抛 NPE → 404；站点侧错误与 TokenExpired 都是
             // IOException → 500。这里照抄那套映射。
             suwayomi_domain::error::DomainError::TrackerNotFound(id) => {
-                ApiError::NotFound(format!("tracker {id} not found"))
+                Self::NotFound(format!("tracker {id} not found"))
             }
             suwayomi_domain::error::DomainError::Tracker(m) | suwayomi_domain::error::DomainError::TokenExpired(m) => {
-                ApiError::Internal(m)
+                Self::Internal(m)
             }
         }
     }
@@ -46,11 +46,11 @@ impl From<suwayomi_domain::error::DomainError> for ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
-            ApiError::NotFound(m) => (StatusCode::NOT_FOUND, m),
-            ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
-            ApiError::Unauthorized(m) => (StatusCode::UNAUTHORIZED, m),
-            ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, m),
-            ApiError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
+            Self::NotFound(m) => (StatusCode::NOT_FOUND, m),
+            Self::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
+            Self::Unauthorized(m) => (StatusCode::UNAUTHORIZED, m),
+            Self::Forbidden(m) => (StatusCode::FORBIDDEN, m),
+            Self::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
         };
         (status, Json(json!({ "message": message }))).into_response()
     }

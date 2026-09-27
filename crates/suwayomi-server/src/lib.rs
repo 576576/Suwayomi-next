@@ -8,7 +8,17 @@
 // 测试代码允许 panic：unwrap / expect / panic! 在断言里是常规写法，
 // 逐个改成 `?` 传播只会让失败信息更难读。生产代码不受这条影响
 // （`cfg_attr(test, ...)`）。
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::indexing_slicing
+    )
+)]
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -72,8 +82,7 @@ pub fn config_from_env() -> ServerConfig {
 /// 解析捆绑 WebUI 目录：`SUWAYOMI_WEBUI_DIR` → exe 同级 webui/（都不含 index.html 返回空）
 pub fn resolve_webui_dir() -> std::path::PathBuf {
     let from_env = std::env::var("SUWAYOMI_WEBUI_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("webui"));
+        .map_or_else(|_| std::path::PathBuf::from("webui"), std::path::PathBuf::from);
     if from_env.join("index.html").is_file() {
         return from_env;
     }
@@ -97,7 +106,7 @@ pub fn resolve_data_dir() -> std::path::PathBuf {
     }
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
-        && dir.file_name().map(|n| n == "bin").unwrap_or(false)
+        && dir.file_name().is_some_and(|n| n == "bin")
         && let Some(base) = dir.parent()
     {
         return base.join("data");
@@ -131,7 +140,7 @@ fn resolve_settings_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
     {
         return parent.join("settings");
     }
-    data_dir.parent().map(|base| base.join("settings")).unwrap_or_else(|| std::path::PathBuf::from("settings"))
+    data_dir.parent().map_or_else(|| std::path::PathBuf::from("settings"), |base| base.join("settings"))
 }
 
 /// 扩展沙盒 jar：`SUWAYOMI_SANDBOX_JAR` → exe 同级/../bin 的 ext-runtime.jar（发布布局）
@@ -253,11 +262,14 @@ async fn local_file(State(_state): State<AppState>, path: axum::extract::Path<St
     }
     // 归档成员路径：local/<manga>/<chapter>.zip/<page>
     let segments: Vec<&str> = rel.split('/').collect();
-    for split in 0..segments.len() {
-        let ext = segments[split].rsplit('.').next().unwrap_or("");
+    for (split, segment) in segments.iter().enumerate() {
+        let ext = segment.rsplit('.').next().unwrap_or("");
         if suwayomi_domain::source::local::ARCHIVE_EXTS.contains(&ext.to_lowercase().as_str()) {
-            let archive_rel = segments[..=split].join("/");
-            let member = segments[split + 1..].join("/");
+            let Some((head, tail)) = segments.split_at_checked(split + 1) else {
+                continue;
+            };
+            let archive_rel = head.join("/");
+            let member = tail.join("/");
             if member.is_empty() {
                 continue;
             }
@@ -270,22 +282,22 @@ async fn local_file(State(_state): State<AppState>, path: axum::extract::Path<St
 }
 
 async fn read_file_response(file: &std::path::Path) -> Response {
-    match tokio::fs::read(file).await {
-        Ok(bytes) => {
+    tokio::fs::read(file).await.map_or_else(
+        |_| StatusCode::NOT_FOUND.into_response(),
+        |bytes| {
             let ct = webui_content_type(file);
             bytes_response(bytes, ct, true)
-        }
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
-    }
+        },
+    )
 }
 
 /// 图片文件响应。与 [`read_file_response`] 分开：内容类型走 [`image_content_type`]，
 /// 它认的图片扩展名比 webui 资源那套多（gif/bmp/avif/heic）。
 async fn read_image_response(file: &std::path::Path) -> Response {
-    match tokio::fs::read(file).await {
-        Ok(bytes) => bytes_response(bytes, image_content_type(&file.to_string_lossy()), true),
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
-    }
+    tokio::fs::read(file).await.map_or_else(
+        |_| StatusCode::NOT_FOUND.into_response(),
+        |bytes| bytes_response(bytes, image_content_type(&file.to_string_lossy()), true),
+    )
 }
 
 /// 把字节直接包成响应。
@@ -336,23 +348,23 @@ async fn webui_fallback(State(state): State<AppState>, uri: axum::http::Uri) -> 
         // 越界路径（`..`、盘符、NTFS 数据流）直接 404，不回退 index.html
         None => return StatusCode::NOT_FOUND.into_response(),
     };
-    match tokio::fs::read(&file).await {
-        Ok(bytes) => {
+    tokio::fs::read(&file).await.map_or_else(
+        |_| StatusCode::NOT_FOUND.into_response(),
+        |bytes| {
             let ct = webui_content_type(&file);
             bytes_response(bytes, ct, false)
-        }
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
-    }
+        },
+    )
 }
 
 fn webui_content_type(path: &std::path::Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()) {
         Some("html") => "text/html; charset=utf-8",
-        Some("js") | Some("mjs") => "text/javascript",
+        Some("js" | "mjs") => "text/javascript",
         Some("css") => "text/css",
         Some("json") => "application/json",
         Some("png") => "image/png",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("jpg" | "jpeg") => "image/jpeg",
         Some("svg") => "image/svg+xml",
         Some("ico") => "image/x-icon",
         Some("webp") => "image/webp",
@@ -699,7 +711,7 @@ async fn shutdown_signal(
     tokio::select! {
         _ = tokio::signal::ctrl_c() => tracing::info!("ctrl-c received; graceful shutdown"),
         _ = rx.changed() => tracing::info!("shutdown requested via /api/v1/shutdown; graceful shutdown"),
-        _ = host_fired => tracing::info!("shutdown requested by the host; graceful shutdown"),
+        () = host_fired => tracing::info!("shutdown requested by the host; graceful shutdown"),
     }
 }
 

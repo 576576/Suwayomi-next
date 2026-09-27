@@ -15,7 +15,7 @@ use suwayomi_core::db::Db;
 use crate::error::Result;
 
 /// 一行凭据。缺失时各字段为空串 / false。
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrackerCredential {
     pub username: String,
     pub password: String,
@@ -47,7 +47,7 @@ impl TrackerStore {
         .bind(tracker_id)
         .fetch_optional(&self.db)
         .await?;
-        Ok(row.map(|r| r.into()).unwrap_or_default())
+        Ok(row.map(std::convert::Into::into).unwrap_or_default())
     }
 
     pub async fn username(&self, tracker_id: i32) -> Result<String> {

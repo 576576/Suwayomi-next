@@ -178,7 +178,11 @@ fn pg_cell(row: &tokio_postgres::Row, index: usize, ty: &Type) -> Value {
                 Ok(Some(v)) => $map(v),
                 Ok(None) => Value::Null,
                 Err(e) => {
-                    tracing::warn!(column = %row.columns()[index].name(), error = %e, "unreadable postgres column");
+                    tracing::warn!(
+                        column = %row.columns().get(index).map_or("?", tokio_postgres::Column::name),
+                        error = %e,
+                        "unreadable postgres column"
+                    );
                     Value::Null
                 }
             }

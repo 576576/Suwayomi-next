@@ -37,10 +37,7 @@ impl Bangumi {
     }
 
     async fn save_token(&self, oauth: Option<&BgmOAuth>) -> Result<()> {
-        let token = match oauth {
-            Some(o) => serde_json::to_string(o).unwrap_or_default(),
-            None => String::new(),
-        };
+        let token = oauth.map_or_else(String::new, |o| serde_json::to_string(o).unwrap_or_default());
         self.ctx.store.set_token(BANGUMI, &token).await
     }
 
@@ -91,11 +88,13 @@ impl Bangumi {
         self.ctx.store.username(BANGUMI).await
     }
 
-    fn collection_url(&self, remote_id: i64) -> String {
+    /// 条目地址。站点数据与 `self` 无关，写成关联函数避免无意义的接收者。
+    fn collection_url(remote_id: i64) -> String {
         format!("{API_URL}/v0/users/-/collections/{remote_id}")
     }
 
-    fn collection_body(&self, track: &Track) -> Result<serde_json::Value> {
+    /// 条目请求体。
+    fn collection_body(track: &Track) -> Result<serde_json::Value> {
         Ok(json!({
             "type": to_api_status(track.status)?,
             "rate": (track.score as i32).clamp(0, 10),
@@ -110,10 +109,10 @@ impl Bangumi {
         let resp = self
             .ctx
             .http
-            .post(self.collection_url(track.remote_id))
+            .post(Self::collection_url(track.remote_id))
             .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
             .header(reqwest::header::USER_AGENT, super::USER_AGENT)
-            .json(&self.collection_body(track)?)
+            .json(&Self::collection_body(track)?)
             .send()
             .await
             .map_err(|e| DomainError::tracker(format!("Bangumi 新增条目失败：{e}")))?;
@@ -127,10 +126,10 @@ impl Bangumi {
         let resp = self
             .ctx
             .http
-            .patch(self.collection_url(track.remote_id))
+            .patch(Self::collection_url(track.remote_id))
             .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
             .header(reqwest::header::USER_AGENT, super::USER_AGENT)
-            .json(&self.collection_body(track)?)
+            .json(&Self::collection_body(track)?)
             .send()
             .await
             .map_err(|e| DomainError::tracker(format!("Bangumi 推送失败：{e}")))?;
@@ -275,23 +274,20 @@ impl TrackerService for Bangumi {
     }
 
     async fn bind(&self, track: &mut Track, has_read_chapters: bool) -> Result<()> {
-        match self.status_lib_manga(track.remote_id).await? {
-            Some(status_track) => {
-                track.copy_personal_from(&status_track, false);
-                track.score = status_track.score;
-                track.last_chapter_read = status_track.last_chapter_read;
-                track.total_chapters = status_track.total_chapters;
-                track.private = status_track.private;
-                if track.status != COMPLETED {
-                    track.status = if has_read_chapters { READING } else { status_track.status };
-                }
-                self.update(track, false).await
+        if let Some(status_track) = self.status_lib_manga(track.remote_id).await? {
+            track.copy_personal_from(&status_track, false);
+            track.score = status_track.score;
+            track.last_chapter_read = status_track.last_chapter_read;
+            track.total_chapters = status_track.total_chapters;
+            track.private = status_track.private;
+            if track.status != COMPLETED {
+                track.status = if has_read_chapters { READING } else { status_track.status };
             }
-            None => {
-                track.status = if has_read_chapters { READING } else { PLAN_TO_READ };
-                track.score = 0.0;
-                self.add_lib_manga(track).await
-            }
+            self.update(track, false).await
+        } else {
+            track.status = if has_read_chapters { READING } else { PLAN_TO_READ };
+            track.score = 0.0;
+            self.add_lib_manga(track).await
         }
     }
 
@@ -339,7 +335,7 @@ impl TrackerService for Bangumi {
         Ok(result
             .data
             .iter()
-            .filter(|s| s.platform.as_deref().map(|p| p == "漫画").unwrap_or(true))
+            .filter(|s| s.platform.as_deref().is_none_or(|p| p == "漫画"))
             .map(BgmSubject::to_track_search)
             .collect())
     }

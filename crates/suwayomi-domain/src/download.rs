@@ -17,9 +17,13 @@ use suwayomi_core::models::now_epoch_secs;
 
 use crate::source::SourceFetcher;
 use crate::sql::bind_placeholders;
+use std::fmt::Write as _;
 
 /// 下载根的显式覆盖（`downloadsPath` 设置，进程级）。服务端启动时与保存设置后写入。
 static DOWNLOADS_ROOT_OVERRIDE: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
+
+/// 同一章内并发拉取页面的上限。对 CDN 友好，比旧的串行循环快约 8×。
+const PAGE_FETCH_CONCURRENCY: usize = 8;
 
 /// 设置下载根。`None`/空串表示回到默认的 `<数据目录>/downloads`。
 pub fn set_downloads_root(path: Option<PathBuf>) {
@@ -169,7 +173,6 @@ impl DownloadManager {
 
     /// Enqueues a chapter by id (idempotent: skips if already queued).
     pub async fn enqueue_chapter(&self, chapter_id: i32) -> Result<(), String> {
-        let pool = self.db.pool();
         #[derive(suwayomi_db::FromRow)]
         #[allow(dead_code)] // FromRow maps all selected columns
         struct Row {
@@ -182,6 +185,7 @@ impl DownloadManager {
             manga_source: i64,
             manga_url: String,
         }
+        let pool = self.db.pool();
         let row: Option<Row> = suwayomi_db::query_as(
             "SELECT c.id AS chapter_id, c.name AS chapter_name, c.url AS chapter_url, c.is_downloaded, \
              m.id AS manga_id, m.title AS manga_title, m.source AS manga_source, m.url AS manga_url \
@@ -324,10 +328,10 @@ impl DownloadManager {
             Ok(rows) => pages = rows,
             Err(e) => tracing::debug!("read_db_pages: {e}"),
         }
-        let result = if !pages.is_empty() {
-            Ok(pages)
-        } else {
+        let result = if pages.is_empty() {
             self.fetcher.fetch_pages(job.source_id, &job.manga_url, &job.chapter_url).await
+        } else {
+            Ok(pages)
         };
 
         match result {
@@ -360,7 +364,7 @@ impl DownloadManager {
                     }
                     Err(e) => {
                         failed = pages.len();
-                        archive_err = Some(e.to_string());
+                        archive_err = Some(e);
                     }
                 }
 
@@ -388,24 +392,20 @@ impl DownloadManager {
                             .await
                             .ok()
                             .flatten();
-                        match existing {
-                            Some((pid,)) => {
-                                let sql = bind_placeholders("UPDATE page SET url = ?, image_url = ? WHERE id = ?");
-                                let _ =
-                                    suwayomi_db::query(&sql).bind(name).bind(&image_url).bind(pid).execute(pool).await;
-                            }
-                            None => {
-                                let sql = bind_placeholders(
-                                    "INSERT INTO page (\"index\", url, image_url, chapter) VALUES (?, ?, ?, ?)",
-                                );
-                                let _ = suwayomi_db::query(&sql)
-                                    .bind(pi)
-                                    .bind(name)
-                                    .bind(&image_url)
-                                    .bind(job.chapter_id)
-                                    .execute(pool)
-                                    .await;
-                            }
+                        if let Some((pid,)) = existing {
+                            let sql = bind_placeholders("UPDATE page SET url = ?, image_url = ? WHERE id = ?");
+                            let _ = suwayomi_db::query(&sql).bind(name).bind(&image_url).bind(pid).execute(pool).await;
+                        } else {
+                            let sql = bind_placeholders(
+                                "INSERT INTO page (\"index\", url, image_url, chapter) VALUES (?, ?, ?, ?)",
+                            );
+                            let _ = suwayomi_db::query(&sql)
+                                .bind(pi)
+                                .bind(name)
+                                .bind(&image_url)
+                                .bind(job.chapter_id)
+                                .execute(pool)
+                                .await;
                         }
                     }
                     let _ = suwayomi_db::query(
@@ -489,7 +489,7 @@ impl DownloadManager {
             }
         }
         if meta.title.is_empty() {
-            meta.title = job.chapter_name.clone();
+            meta.title.clone_from(&job.chapter_name);
         }
         let e = xml_escape;
         let mut xml = String::from(
@@ -508,7 +508,7 @@ impl DownloadManager {
             ("PublicationDate", &meta.pub_date),
         ] {
             if !value.is_empty() {
-                xml.push_str(&format!("  <{tag}>{}</{tag}>\n", e(value)));
+                let _ = writeln!(xml, "  <{tag}>{}</{tag}>", e(value));
             }
         }
         xml.push_str("</ComicInfo>");
@@ -544,8 +544,6 @@ impl DownloadManager {
 
         // 并发经同源图片代理下载页面：已代理缓存的在线阅读页命中磁盘秒回
         // （warm path），冷页绕开 CORS/hotlink，中断后可断点续拉。
-        // 8 并发对 CDN 友好且比旧的串行循环快约 8×。
-        const CONCURRENCY: usize = 8;
         let fetches: Vec<(i32, String)> = pages
             .iter()
             .map(|p| {
@@ -553,7 +551,7 @@ impl DownloadManager {
                 (p.index, raw)
             })
             .collect();
-        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(CONCURRENCY));
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(PAGE_FETCH_CONCURRENCY));
         let client = self.client.clone();
         let mut join = tokio::task::JoinSet::new();
         for (idx, raw_url) in fetches.clone() {
@@ -692,15 +690,13 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
         )
         .execute(db.pool())
         .await
-        .map(|r| r.rows_affected())
-        .unwrap_or(0)
+        .map_or(0, |r| r.rows_affected())
     } else {
         suwayomi_db::query(bind_placeholders("UPDATE chapter SET is_downloaded = FALSE WHERE id = ANY($1)").as_str())
             .bind(&stale_ids)
             .execute(db.pool())
             .await
-            .map(|r| r.rows_affected())
-            .unwrap_or(0)
+            .map_or(0, |r| r.rows_affected())
     };
     if cleared > 0 {
         tracing::info!("downloads: cleared {cleared} stale download marker(s) without an archive");
@@ -728,9 +724,8 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
     let mut matched_mangas: std::collections::HashSet<i32> = std::collections::HashSet::new();
     let mut total_chapters = 0usize;
 
-    let source_dirs = match std::fs::read_dir(&root) {
-        Ok(it) => it,
-        Err(_) => return Ok(0),
+    let Ok(source_dirs) = std::fs::read_dir(&root) else {
+        return Ok(0);
     };
     for source_entry in source_dirs.flatten() {
         if !source_entry.path().is_dir() {
@@ -738,9 +733,8 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
         }
         // "{name} ({LANG})" -> (name, lang)
         let dir_name = source_entry.file_name().to_string_lossy().into_owned();
-        let (name, lang) = match split_source_dir_name(&dir_name) {
-            Some(v) => v,
-            None => continue,
+        let Some((name, lang)) = split_source_dir_name(&dir_name) else {
+            continue;
         };
         // resolve source row by name+lang (case-insensitive)
         let sql = bind_placeholders("SELECT id FROM source WHERE LOWER(name) = LOWER(?) AND LOWER(lang) = LOWER(?)");
@@ -751,9 +745,8 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
             };
         let Some((source_id,)) = source_id else { continue };
 
-        let manga_dirs = match std::fs::read_dir(source_entry.path()) {
-            Ok(it) => it,
-            Err(_) => continue,
+        let Ok(manga_dirs) = std::fs::read_dir(source_entry.path()) else {
+            continue;
         };
         for manga_entry in manga_dirs.flatten() {
             if !manga_entry.path().is_dir() {
@@ -776,17 +769,16 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
             // `sanitize_file_name(title)`，标题里有 Windows 非法字符（`|` `:` `?` 等）
             // 时目录名与 title 本来就不相等 —— 只按 title 找会永远匹配不上，磁盘上
             // 明明有归档却显示未下载。
-            let row = match row {
-                Some(r) => Some(r),
-                None => {
-                    let sql = bind_placeholders("SELECT id, title, url FROM manga WHERE source = ?");
-                    let candidates: Vec<(i32, String, String)> =
-                        suwayomi_db::query_as(&sql).bind(source_id).fetch_all(db.pool()).await.unwrap_or_default();
-                    candidates
-                        .into_iter()
-                        .find(|(_, title, _)| manga_dir_matches(title, &manga_title))
-                        .map(|(id, _, url)| (id, url))
-                }
+            let row = if let Some(r) = row {
+                Some(r)
+            } else {
+                let sql = bind_placeholders("SELECT id, title, url FROM manga WHERE source = ?");
+                let candidates: Vec<(i32, String, String)> =
+                    suwayomi_db::query_as(&sql).bind(source_id).fetch_all(db.pool()).await.unwrap_or_default();
+                candidates
+                    .into_iter()
+                    .find(|(_, title, _)| manga_dir_matches(title, &manga_title))
+                    .map(|(id, _, url)| (id, url))
             };
             let Some((_manga_id, manga_url)) = row else {
                 tracing::warn!(%manga_title, "downloads: no matching manga row");
@@ -801,10 +793,10 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                 matched_mangas.insert(*vid);
             }
             // 3) chapters from the directory listing (files or subdirs)
-            let entries: Vec<_> = match std::fs::read_dir(manga_entry.path()) {
-                Ok(it) => it.flatten().filter(|e| e.file_name() != ".nomedia" && e.file_name() != ".noxml").collect(),
-                Err(_) => Vec::new(),
-            };
+            let entries: Vec<_> = std::fs::read_dir(manga_entry.path()).map_or_else(
+                |_| Vec::new(),
+                |it| it.flatten().filter(|e| e.file_name() != ".nomedia" && e.file_name() != ".noxml").collect(),
+            );
             if entries.is_empty() {
                 continue;
             }
@@ -856,26 +848,20 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                     // name. Without the real_url match, reconcile re-inserted
                     // our own downloads as duplicate "Chapter.cbz" chapters.
                     let sql = bind_placeholders("SELECT id FROM chapter WHERE manga = ? AND real_url = ?");
-                    let mut existing: Option<(i32, bool)> = match suwayomi_db::query_as::<(i32,)>(&sql)
+                    let mut existing: Option<(i32, bool)> = suwayomi_db::query_as::<(i32,)>(&sql)
                         .bind(vid)
                         .bind(&cbz_path)
                         .fetch_optional(db.pool())
                         .await
-                    {
-                        Ok(v) => v.map(|(id,)| (id, true)),
-                        Err(_) => None,
-                    };
+                        .map_or(None, |v| v.map(|(id,)| (id, true)));
                     if existing.is_none() {
                         let sql = bind_placeholders("SELECT id FROM chapter WHERE manga = ? AND url = ?");
-                        existing = match suwayomi_db::query_as::<(i32,)>(&sql)
+                        existing = suwayomi_db::query_as::<(i32,)>(&sql)
                             .bind(vid)
                             .bind(&cname)
                             .fetch_optional(db.pool())
                             .await
-                        {
-                            Ok(v) => v.map(|(id,)| (id, false)),
-                            Err(_) => None,
-                        };
+                            .map_or(None, |v| v.map(|(id,)| (id, false)));
                     }
                     // Chapter name: prefer the archive's own metadata title
                     // (ComicInfo `<Title>`), then the file stem, then
@@ -982,28 +968,25 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
                                 .await
                                 .ok()
                                 .flatten();
-                            match existing_page {
-                                Some((pid,)) => {
-                                    let sql = bind_placeholders("UPDATE page SET url = ?, image_url = ? WHERE id = ?");
-                                    let _ = suwayomi_db::query(&sql)
-                                        .bind(pname)
-                                        .bind(&image_url)
-                                        .bind(pid)
-                                        .execute(db.pool())
-                                        .await;
-                                }
-                                None => {
-                                    let sql = bind_placeholders(
-                                        "INSERT INTO page (\"index\", url, image_url, chapter) VALUES (?, ?, ?, ?)",
-                                    );
-                                    let _ = suwayomi_db::query(&sql)
-                                        .bind(*pi as i32)
-                                        .bind(pname)
-                                        .bind(&image_url)
-                                        .bind(cid)
-                                        .execute(db.pool())
-                                        .await;
-                                }
+                            if let Some((pid,)) = existing_page {
+                                let sql = bind_placeholders("UPDATE page SET url = ?, image_url = ? WHERE id = ?");
+                                let _ = suwayomi_db::query(&sql)
+                                    .bind(pname)
+                                    .bind(&image_url)
+                                    .bind(pid)
+                                    .execute(db.pool())
+                                    .await;
+                            } else {
+                                let sql = bind_placeholders(
+                                    "INSERT INTO page (\"index\", url, image_url, chapter) VALUES (?, ?, ?, ?)",
+                                );
+                                let _ = suwayomi_db::query(&sql)
+                                    .bind(*pi as i32)
+                                    .bind(pname)
+                                    .bind(&image_url)
+                                    .bind(cid)
+                                    .execute(db.pool())
+                                    .await;
                             }
                         }
                         // Reflect the page count on the chapter row —
@@ -1057,7 +1040,7 @@ async fn read_db_pages(
             let image_url: Option<String> = r.try_get("image_url").ok().flatten();
             suwayomi_core::source::SourcePage {
                 index: r.try_get("index").unwrap_or(0),
-                image_url: image_url.or(Some(url.clone())),
+                image_url: image_url.or_else(|| Some(url.clone())),
                 url,
                 uri: None,
             }
@@ -1107,7 +1090,7 @@ fn prune_empty_dir_tree(path: &std::path::Path) {
             }
         }
     }
-    let is_empty = std::fs::read_dir(path).map(|mut rd| rd.next().is_none()).unwrap_or(false);
+    let is_empty = std::fs::read_dir(path).is_ok_and(|mut rd| rd.next().is_none());
     if is_empty {
         let _ = std::fs::remove_dir(path);
     }
@@ -1121,7 +1104,7 @@ fn remove_empty_dir_ancestors(start: &std::path::Path, stop: &std::path::Path) {
         if cur == stop || !cur.starts_with(stop) {
             break;
         }
-        let is_empty = std::fs::read_dir(&cur).map(|mut rd| rd.next().is_none()).unwrap_or(false);
+        let is_empty = std::fs::read_dir(&cur).is_ok_and(|mut rd| rd.next().is_none());
         if !is_empty {
             break;
         }
@@ -1170,11 +1153,11 @@ fn image_ext_from_content_type(bytes: &[u8]) -> &'static str {
         "png"
     } else if bytes.starts_with(&[0xFF, 0xD8]) {
         "jpg"
-    } else if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+    } else if bytes.len() > 12 && bytes.starts_with(b"RIFF") && bytes.get(8..12).is_some_and(|w| w == b"WEBP") {
         "webp"
     } else if bytes.starts_with(b"GIF") {
         "gif"
-    } else if bytes.len() > 8 && &bytes[4..8] == b"ftyp" {
+    } else if bytes.len() > 8 && bytes.get(4..8).is_some_and(|w| w == b"ftyp") {
         "avif"
     } else {
         "jpg"

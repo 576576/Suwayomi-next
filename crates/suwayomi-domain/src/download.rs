@@ -5,12 +5,11 @@
 //! and the REST download endpoints). Page fetching goes through
 //! [`SourceFetcher::fetch_pages`]; success marks the chapter `is_downloaded`.
 
-use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::broadcast;
 
 use suwayomi_core::config::AppPaths;
 use suwayomi_core::db::Db;
@@ -40,8 +39,15 @@ pub enum JobState {
     Error,
 }
 
+impl JobState {
+    /// 终止态：队首是它就必须出队，否则 worker 会把同一章反复重下。
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Finished | Self::Error)
+    }
+}
+
 /// One chapter download job.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DownloadJob {
     pub chapter_id: i32,
     pub manga_id: i32,
@@ -53,6 +59,130 @@ pub struct DownloadJob {
     pub state: JobState,
     pub progress: f64, // 0.0 ..= 1.0
     pub tries: i32,
+}
+
+/// 队列上能发生的事 —— 对外命令的语义化形式。
+///
+/// 把"命令"（`enqueue` / `dequeue` / `reorder` / …）与"状态怎么变"分开：
+/// 命令负责校验与副作用（查库、发事件、拉起 worker），
+/// 迁移只负责 [`QueueState::apply`] 里那几条规则。
+#[derive(Debug, Clone)]
+pub enum QueueEvent {
+    /// 追加一个作业（同 `chapter_id` 已在队里就忽略，保持幂等）。
+    Enqueued(DownloadJob),
+    /// 移除一个作业（包括正在下载的那个）。
+    Dequeued { chapter_id: i32 },
+    /// 把作业移到新位置（`to` 越界截到队尾）。
+    Reordered { chapter_id: i32, to: usize },
+    /// 清空整个队列。
+    Cleared,
+    /// 就地更新作业的 state / progress / tries（正在下载的那个）。
+    Patched { chapter_id: i32, state: JobState, progress: f64, tries: i32 },
+    /// 队首的终止态作业出队，并丢掉它的实时进度。
+    DrainedTerminalFront,
+    /// 记录一页下载完成后的进度（不改作业结构）。
+    Progress { chapter_id: i32, progress: f64 },
+    /// 开始处理队列。
+    Started,
+    /// 处理完当前作业后停下来。
+    Stopped,
+}
+
+/// 队列状态 —— 值语义，可整体移动、可比较。
+///
+/// 所有迁移都是 `self -> Self` 的纯函数（见 [`QueueState::apply`]）：没有锁、
+/// 没有 IO、没有全局状态，队列语义（入队去重、终止项出队、重排越界）可以直接
+/// 跑单测，不必起 tokio runtime 或数据库。
+///
+/// 实时进度与作业列表分开存：进度每页都在变，而作业列表的结构变化很少；
+/// 合成一个字段的话每次进度心跳都要重建整个列表。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct QueueState {
+    jobs: Vec<DownloadJob>,
+    progress: std::collections::HashMap<i32, f64>,
+    running: bool,
+}
+
+impl QueueState {
+    /// 合并实时进度后的对外快照。
+    pub fn snapshot(&self) -> Vec<DownloadJob> {
+        self.jobs
+            .iter()
+            .map(|job| {
+                self.progress
+                    .get(&job.chapter_id)
+                    .map_or_else(|| job.clone(), |progress| DownloadJob { progress: *progress, ..job.clone() })
+            })
+            .collect()
+    }
+
+    pub fn front(&self) -> Option<&DownloadJob> {
+        self.jobs.first()
+    }
+
+    pub fn contains(&self, chapter_id: i32) -> bool {
+        self.jobs.iter().any(|j| j.chapter_id == chapter_id)
+    }
+
+    pub fn len(&self) -> usize {
+        self.jobs.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.jobs.is_empty()
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.running
+    }
+
+    /// 状态迁移（纯函数）：旧状态 + 事件 → 新状态。
+    ///
+    /// 刻意不返回 `Result`：非法输入（重复入队、越界重排、移除不存在的作业）
+    /// 一律按幂等处理 —— 队列是多个对外入口的汇聚点，让每个入口各自处理
+    /// "队列里没有这条作业"只会把同一份判断散到各处。
+    #[must_use]
+    pub fn apply(mut self, event: QueueEvent) -> Self {
+        match event {
+            QueueEvent::Enqueued(job) => {
+                if !self.contains(job.chapter_id) {
+                    self.jobs.push(job);
+                }
+            }
+            QueueEvent::Dequeued { chapter_id } => self.jobs.retain(|j| j.chapter_id != chapter_id),
+            QueueEvent::Reordered { chapter_id, to } => {
+                if let Some(pos) = self.jobs.iter().position(|j| j.chapter_id == chapter_id) {
+                    let job = self.jobs.remove(pos);
+                    // 先移除再夹取上界：`Vec::insert` 在 `to > len` 时 panic，
+                    // 而调用方给的是"客户端想要的位置"，越界只该落到队尾。
+                    let to = to.min(self.jobs.len());
+                    self.jobs.insert(to, job);
+                }
+            }
+            QueueEvent::Cleared => self.jobs.clear(),
+            QueueEvent::Patched { chapter_id, state, progress, tries } => {
+                if let Some(job) = self.jobs.iter_mut().find(|j| j.chapter_id == chapter_id) {
+                    job.state = state;
+                    job.progress = progress;
+                    job.tries = tries;
+                }
+            }
+            QueueEvent::DrainedTerminalFront => {
+                if self.front().is_some_and(|j| j.state.is_terminal()) {
+                    if let Some(done) = self.jobs.first() {
+                        self.progress.remove(&done.chapter_id);
+                    }
+                    self.jobs.remove(0);
+                }
+            }
+            QueueEvent::Progress { chapter_id, progress } => {
+                self.progress.insert(chapter_id, progress);
+            }
+            QueueEvent::Started => self.running = true,
+            QueueEvent::Stopped => self.running = false,
+        }
+        self
+    }
 }
 
 /// Events streamed on the broadcast channel.
@@ -72,15 +202,20 @@ pub struct DownloadManager {
     paths: AppPaths,
     client: reqwest::Client,
     server_base_url: String,
-    queue: Arc<Mutex<VecDeque<DownloadJob>>>,
-    /// Live per-chapter progress (0..1) written synchronously by the page
-    /// downloader; merged into snapshots. Kept separate from `queue` so no
-    /// async lock is needed for progress ticks.
-    progress_by_id: Arc<std::sync::Mutex<std::collections::HashMap<i32, f64>>>,
+    /// 唯一的可变状态：队列 + 实时进度 + 运行开关，一把锁持有。
+    ///
+    /// 用 `std::sync::Mutex` 而不是 tokio 的：所有迁移都是"移出状态 → 跑纯函数
+    /// → 放回"，临界区里没有 `.await`，同步锁反而让 `set_progress` 这类高频
+    /// 同步调用不必进 async 上下文。
+    state: Arc<std::sync::Mutex<QueueState>>,
     tx: broadcast::Sender<DownloadEvent>,
-    running: Arc<AtomicBool>,
+    /// spawn-once 闩：worker 只拉一次，之后常驻等活（不是领域状态，是生命周期
+    /// 守卫，所以留在原子量里）。
     worker_spawned: Arc<AtomicBool>,
 }
+
+/// worker 空转时的轮询间隔。
+const IDLE_POLL: std::time::Duration = std::time::Duration::from_millis(300);
 
 impl DownloadManager {
     pub fn new(db: Db, fetcher: SourceBackend, paths: AppPaths) -> Self {
@@ -97,12 +232,27 @@ impl DownloadManager {
             paths,
             client,
             server_base_url: String::from("http://127.0.0.1:8090"),
-            queue: Arc::new(Mutex::new(VecDeque::new())),
-            progress_by_id: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            state: Arc::new(std::sync::Mutex::new(QueueState::default())),
             tx,
-            running: Arc::new(AtomicBool::new(false)),
             worker_spawned: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// 取状态锁。中毒只说明"某个持有锁的线程 panic 过"，队列值本身仍然完整；
+    /// 继续用旧值比让整个下载管理器崩掉好（与 `RuntimeConfig::snapshot` 同一口径）。
+    fn state(&self) -> std::sync::MutexGuard<'_, QueueState> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// 施加一次队列迁移：把状态移出锁、跑纯函数、再放回。
+    ///
+    /// 用 `mem::take` 而不是 `clone`：迁移函数按值接收状态（这是它保持纯的原因），
+    /// 而队列里每个作业都带若干 `String`；`take` 只是把 `Vec` / `HashMap` 的
+    /// 几个指针挪走再挪回，不碰堆上的内容。
+    fn apply(&self, event: QueueEvent) {
+        let mut guard = self.state();
+        let current = std::mem::take(&mut *guard);
+        *guard = current.apply(event);
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<DownloadEvent> {
@@ -122,32 +272,18 @@ impl DownloadManager {
     }
 
     pub fn is_running(&self) -> bool {
-        self.running.load(Ordering::SeqCst)
+        self.state().is_running()
     }
 
     /// Queue snapshot for REST/GraphQL.
     pub async fn snapshot(&self) -> Vec<DownloadJob> {
-        let mut jobs = self.queue.lock().await.iter().cloned().collect::<Vec<_>>();
-        // Merge live progress ticks (written synchronously during downloads).
-        // 中毒时取内部值继续用：进度表只是缓存，读不到最坏是进度显示慢一拍，
-        // 不该让一次快照查询把整个下载管理器拖崩。
-        let progress = self.progress_by_id.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        for job in &mut jobs {
-            if let Some(p) = progress.get(&job.chapter_id) {
-                job.progress = *p;
-            }
-        }
-        jobs
+        self.state().snapshot()
     }
 
     /// Records a per-page progress tick. Synchronous so it can be called from
     /// the downloader while pages are being fetched concurrently.
     pub fn set_progress(&self, chapter_id: i32, progress: f64) {
-        self.progress_by_id.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(chapter_id, progress);
-    }
-
-    fn clear_progress(&self, chapter_id: i32) {
-        self.progress_by_id.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&chapter_id);
+        self.apply(QueueEvent::Progress { chapter_id, progress });
     }
 
     fn emit(&self, event: DownloadEvent) {
@@ -187,12 +323,12 @@ impl DownloadManager {
         if r.is_downloaded {
             return Err(format!("chapter {chapter_id} already downloaded"));
         }
-
-        let mut queue = self.queue.lock().await;
-        if queue.iter().any(|j| j.chapter_id == chapter_id) {
-            return Ok(()); // already queued
+        // 已在队里就直接返回，不发快照也不重拉 worker（批量入队时不刷消息）。
+        if self.state().contains(chapter_id) {
+            return Ok(());
         }
-        queue.push_back(DownloadJob {
+
+        self.apply(QueueEvent::Enqueued(DownloadJob {
             chapter_id,
             manga_id: r.manga_id,
             manga_title: r.manga_title,
@@ -203,8 +339,7 @@ impl DownloadManager {
             state: JobState::Queued,
             progress: 0.0,
             tries: 0,
-        });
-        drop(queue);
+        }));
         self.emit_snapshot().await;
         // Auto-start the worker: downloading from the manga/reader pages must
         // progress without the user having to open the queue and press play.
@@ -212,39 +347,35 @@ impl DownloadManager {
         Ok(())
     }
 
-    /// Removes a queued job (no-op if currently downloading).
+    /// Removes a queued job (no-op if not queued).
     pub async fn dequeue_chapter(&self, chapter_id: i32) -> Result<(), String> {
-        let mut queue = self.queue.lock().await;
-        queue.retain(|j| j.chapter_id != chapter_id);
-        drop(queue);
+        self.apply(QueueEvent::Dequeued { chapter_id });
         self.emit_snapshot().await;
         Ok(())
     }
 
     /// Clears the whole queue.
     pub async fn clear(&self) {
-        self.queue.lock().await.clear();
+        self.apply(QueueEvent::Cleared);
         self.emit_snapshot().await;
     }
 
     /// Moves a queued chapter to a new position (0-based).
     pub async fn reorder(&self, chapter_id: i32, to: usize) {
-        let mut queue = self.queue.lock().await;
-        if let Some(pos) = queue.iter().position(|j| j.chapter_id == chapter_id) {
-            let to = to.min(queue.len());
-            // `remove` 返回 Option 而不是 panic：pos 来自上面的 `position`，
-            // 取不到时（理论上不会）就什么都不做，比 `expect("position just found")` 稳。
-            if let Some(job) = queue.remove(pos) {
-                queue.insert(to, job);
-            }
-        }
-        drop(queue);
+        self.apply(QueueEvent::Reordered { chapter_id, to });
         self.emit_snapshot().await;
     }
 
     /// Starts the worker (no-op if already running).
     pub async fn start(&self) {
-        if self.running.swap(true, Ordering::SeqCst) {
+        let was_running = {
+            let mut guard = self.state();
+            let current = std::mem::take(&mut *guard);
+            let was = current.is_running();
+            *guard = current.apply(QueueEvent::Started);
+            was
+        };
+        if was_running {
             return;
         }
         self.ensure_worker();
@@ -253,7 +384,7 @@ impl DownloadManager {
 
     /// Requests the worker to stop after the current job.
     pub async fn stop(&self) {
-        self.running.store(false, Ordering::SeqCst);
+        self.apply(QueueEvent::Stopped);
         self.emit_snapshot().await;
     }
 
@@ -269,30 +400,23 @@ impl DownloadManager {
 
     async fn worker_loop(&self) {
         loop {
-            if !self.running.load(Ordering::SeqCst) {
+            if !self.is_running() {
                 // wait briefly for a start signal; then check queue
-                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                tokio::time::sleep(IDLE_POLL).await;
                 continue;
             }
             // Peek (do not pop) the head: the job stays in the queue while it
             // is processed so its state/progress are visible to snapshots.
-            let job = {
-                let queue = self.queue.lock().await;
-                queue.front().cloned()
-            };
+            let job = { self.state().front().cloned() };
             let Some(job) = job else {
                 // idle: keep the worker alive waiting for new jobs
-                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                tokio::time::sleep(IDLE_POLL).await;
                 continue;
             };
-            if matches!(job.state, JobState::Finished | JobState::Error) {
+            if job.state.is_terminal() {
                 // terminal leftover: drop it so the next queued chapter runs
                 // (re-processing it would re-download the same chapter forever)
-                {
-                    let mut queue = self.queue.lock().await;
-                    queue.pop_front();
-                }
-                self.clear_progress(job.chapter_id);
+                self.apply(QueueEvent::DrainedTerminalFront);
                 self.emit_snapshot().await;
                 continue;
             }
@@ -304,7 +428,7 @@ impl DownloadManager {
     async fn process_job(&self, mut job: DownloadJob) {
         job.state = JobState::Downloading;
         job.tries += 1;
-        self.patch_job(&job).await;
+        self.patch_job(&job);
         self.emit_snapshot().await;
 
         // Page list source, in priority order:
@@ -324,7 +448,7 @@ impl DownloadManager {
 
         match result {
             Ok(pages) => {
-                let total = pages.len().max(1) as f64;
+                let page_total = pages.len();
                 let mut stored = 0usize;
                 let mut failed = 0usize;
                 let mut page_files: Vec<(i32, String)> = Vec::new(); // (index, file name in archive)
@@ -332,13 +456,13 @@ impl DownloadManager {
                 let mut archive_err: Option<String> = None;
                 // Download every page image (server-side, so CDN CORS/referer
                 // rules don't matter), then bundle them into a CBZ under
-                // `{data_dir}/downloads/…` and wire the chapter up for offline
-                // reading (mirroring reconcile_downloads' layout).
+                // `{downloads}/…` and wire the chapter up for offline reading
+                // (mirroring reconcile_downloads' layout).
                 let tx = self.tx.clone();
                 let cid = job.chapter_id;
                 match self
                     .download_chapter_archive(&job, &pages, &mut |i| {
-                        let progress = ((i + 1) as f64 / total).min(1.0);
+                        let progress = page_progress(i + 1, page_total);
                         // Keep the queued job's progress accurate at all times.
                         self.set_progress(cid, progress);
                         let _ = tx.send(DownloadEvent::Progress { chapter_id: cid, progress });
@@ -367,11 +491,9 @@ impl DownloadManager {
                             .await
                             .ok()
                             .flatten();
-                    let img_base = chapter_row
-                        .map(|(manga_id, source_order)| format!("/api/v1/manga/{manga_id}/chapter/{source_order}/page"))
-                        .unwrap_or_default();
                     for (pi, name) in &page_files {
-                        let image_url = format!("{img_base}/{pi}/image");
+                        let image_url = chapter_row
+                            .map_or_else(String::new, |(manga_id, order)| page_image_url(manga_id, order, *pi));
                         let sql = bind_placeholders("SELECT id FROM page WHERE chapter = ? AND \"index\" = ?");
                         let existing: Option<(i32,)> = suwayomi_db::query_as(&sql)
                             .bind(job.chapter_id)
@@ -423,7 +545,7 @@ impl DownloadManager {
                 job.state = JobState::Error;
             }
         }
-        self.patch_job(&job).await;
+        self.patch_job(&job);
     }
 
     /// Builds a `ComicInfo.xml` (ComicRack standard) payload for the archive,
@@ -519,13 +641,11 @@ impl DownloadManager {
             .await
             .map_err(|e| format!("source lookup: {e}"))?;
         let (src_name, src_lang) = src.ok_or_else(|| "source row missing".to_string())?;
-        let source_dir = format!("{src_name} ({})", src_lang.to_uppercase());
-        let manga_dir = sanitize_file_name(&job.manga_title);
-        let chapter_file = format!("{}.cbz", sanitize_file_name(&job.chapter_name));
-
-        let dir = self.paths.downloads().join(&source_dir).join(&manga_dir);
+        let root = self.paths.downloads();
+        let cbz_path = chapter_archive_path(&root, &src_name, &src_lang, &job.manga_title, &job.chapter_name);
+        // 归档目录恒有上级（路径由 root + 三段拼出），取不到就退回下载根。
+        let dir = cbz_path.parent().map_or_else(|| root.clone(), Path::to_path_buf);
         std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {e}"))?;
-        let cbz_path = dir.join(&chapter_file);
 
         // ComicInfo.xml（ComicRack 标准）随包写入，携带作品/章节元数据
         let comic_info = self.build_comic_info(job, pages.len()).await;
@@ -619,17 +739,64 @@ impl DownloadManager {
         Ok((cbz_path, downloaded.into_iter().map(|(i, n, _)| (i, n)).collect()))
     }
 
-    async fn patch_job(&self, job: &DownloadJob) {
-        // The processed job stays in the queue while it runs; update it in
-        // place. Never (re-)insert here — that used to push a copy back to the
-        // front, which the worker then popped again and re-downloaded forever.
-        let mut queue = self.queue.lock().await;
-        if let Some(existing) = queue.iter_mut().find(|j| j.chapter_id == job.chapter_id) {
-            existing.state = job.state;
-            existing.progress = job.progress;
-            existing.tries = job.tries;
-        }
+    /// 把作业的 state / progress / tries 落回队列。
+    ///
+    /// The processed job stays in the queue while it runs; update it in
+    /// place. Never (re-)insert here — that used to push a copy back to the
+    /// front, which the worker then popped again and re-downloaded forever.
+    fn patch_job(&self, job: &DownloadJob) {
+        self.apply(QueueEvent::Patched {
+            chapter_id: job.chapter_id,
+            state: job.state,
+            progress: job.progress,
+            tries: job.tries,
+        });
     }
+}
+
+// ---------------------------------------------------------------------------
+// 纯逻辑：路径拼装与进度换算
+// ---------------------------------------------------------------------------
+// 这三件事跟"下载"这件事本身无关（没有 IO、没有状态），单独拆出来既能让
+// 落盘路径的规则只有一处定义，也让它们可以直接跑单测。
+
+/// 下载目录里一个源的子目录名：`"{SourceName} ({LANG})"`。
+///
+/// `reconcile_downloads` 按同一规则反推目录名，两边必须一致。
+pub fn source_dir_name(source_name: &str, lang: &str) -> String {
+    format!("{source_name} ({})", lang.to_uppercase())
+}
+
+/// 一章归档在磁盘上的文件名（净化后的章节名 + `.cbz`）。
+pub fn archive_file_name(chapter_name: &str) -> String {
+    format!("{}.cbz", sanitize_file_name(chapter_name))
+}
+
+/// 一章归档的落盘路径：
+/// `{root}/{SourceName} ({LANG})/{MangaTitle}/{Chapter}.cbz`。
+///
+/// 目录名与文件名都先过 [`sanitize_file_name`]（Windows 非法字符被替换成 `_`）。
+pub fn chapter_archive_path(
+    root: &Path,
+    source_name: &str,
+    lang: &str,
+    manga_title: &str,
+    chapter_name: &str,
+) -> PathBuf {
+    root.join(source_dir_name(source_name, lang))
+        .join(sanitize_file_name(manga_title))
+        .join(archive_file_name(chapter_name))
+}
+
+/// 页面下载进度（0..1）：已完成页数 / 总页数，超过 1 截到 1。
+/// 总页数为 0 时按 1 处理，避免除零。
+pub fn page_progress(done: usize, total: usize) -> f64 {
+    (done as f64 / total.max(1) as f64).min(1.0)
+}
+
+/// 一章某页在 REST 路由下的图片地址（离线阅读用）。
+fn page_image_url(manga_id: i32, source_order: i32, index: i32) -> String {
+    format!("/api/v1/manga/{manga_id}/chapter/{source_order}/page/{index}/image")
 }
 
 // ---------------------------------------------------------------------------
@@ -1160,6 +1327,130 @@ mod tests {
     fn test_paths() -> AppPaths {
         let tmp = std::env::temp_dir();
         AppPaths::new(tmp.clone(), tmp.join("cache"))
+    }
+
+    /// 一个排队中的作业；只关心 `chapter_id`，其余字段给固定值。
+    fn job(chapter_id: i32) -> DownloadJob {
+        DownloadJob {
+            chapter_id,
+            manga_id: 1,
+            manga_title: "M".to_owned(),
+            chapter_name: format!("Ch{chapter_id}"),
+            chapter_url: format!("/m/c{chapter_id}"),
+            source_id: 1,
+            manga_url: "/m".to_owned(),
+            state: JobState::Queued,
+            progress: 0.0,
+            tries: 0,
+        }
+    }
+
+    fn queued(ids: &[i32]) -> QueueState {
+        ids.iter().fold(QueueState::default(), |s, id| s.apply(QueueEvent::Enqueued(job(*id))))
+    }
+
+    fn ids(state: &QueueState) -> Vec<i32> {
+        state.snapshot().iter().map(|j| j.chapter_id).collect()
+    }
+
+    #[test]
+    fn queue_enqueue_is_idempotent() {
+        let state = queued(&[1, 2, 1]);
+        assert_eq!(ids(&state), [1, 2]);
+        assert!(state.contains(2));
+        assert!(!state.contains(3));
+    }
+
+    #[test]
+    fn queue_dequeue_removes_matching_job() {
+        let state = queued(&[1, 2, 3]).apply(QueueEvent::Dequeued { chapter_id: 2 });
+        assert_eq!(ids(&state), [1, 3]);
+    }
+
+    #[test]
+    fn queue_reorder_moves_job_and_clamps_out_of_range_to_tail() {
+        let state = queued(&[1, 2, 3]).apply(QueueEvent::Reordered { chapter_id: 1, to: 1 });
+        assert_eq!(ids(&state), [2, 1, 3]);
+
+        // `to == len` 是客户端能给到的最大位置。移除后再夹取上界，
+        // 落到队尾而不是越界 —— 旧实现按移除前的长度夹取，会 `insert` 越界 panic。
+        let state = queued(&[1, 2, 3]).apply(QueueEvent::Reordered { chapter_id: 1, to: 3 });
+        assert_eq!(ids(&state), [2, 3, 1]);
+
+        // 越界到远超长度也一样，且不存在的作业是 no-op
+        let state = queued(&[1, 2, 3]).apply(QueueEvent::Reordered { chapter_id: 1, to: usize::MAX });
+        assert_eq!(ids(&state), [2, 3, 1]);
+        let state = state.apply(QueueEvent::Reordered { chapter_id: 99, to: 0 });
+        assert_eq!(ids(&state), [2, 3, 1]);
+    }
+
+    #[test]
+    fn queue_clears_everything() {
+        assert!(queued(&[1, 2]).apply(QueueEvent::Cleared).is_empty());
+    }
+
+    #[test]
+    fn queue_patch_updates_job_in_place_without_reordering() {
+        let state = queued(&[1, 2, 3]).apply(QueueEvent::Patched {
+            chapter_id: 2,
+            state: JobState::Downloading,
+            progress: 0.5,
+            tries: 1,
+        });
+        assert_eq!(ids(&state), [1, 2, 3], "增量更新不该动队列顺序");
+        assert_eq!(state.front().map(|j| j.state), Some(JobState::Queued));
+        assert_eq!(state.snapshot()[1].state, JobState::Downloading);
+        assert_eq!(state.snapshot()[1].progress, 0.5);
+        assert_eq!(state.snapshot()[1].tries, 1);
+        // 不存在的作业同样只是 no-op
+        let state =
+            state.apply(QueueEvent::Patched { chapter_id: 99, state: JobState::Error, progress: 0.0, tries: 9 });
+        assert_eq!(ids(&state), [1, 2, 3]);
+    }
+
+    #[test]
+    fn queue_drains_terminal_front_and_drops_its_progress() {
+        // 队首没到终止态 → 不出队
+        let state = queued(&[1, 2])
+            .apply(QueueEvent::Progress { chapter_id: 1, progress: 0.25 })
+            .apply(QueueEvent::DrainedTerminalFront);
+        assert_eq!(ids(&state), [1, 2]);
+
+        // 队首 Finished → 出队，进度也一并丢掉
+        let state = state
+            .apply(QueueEvent::Patched { chapter_id: 1, state: JobState::Finished, progress: 1.0, tries: 1 })
+            .apply(QueueEvent::DrainedTerminalFront);
+        assert_eq!(ids(&state), [2]);
+        assert_eq!(state.snapshot()[0].progress, 0.0, "被清掉的是 1 的进度，不该串到 2 上");
+    }
+
+    #[test]
+    fn queue_snapshot_merges_live_progress() {
+        let state = queued(&[1, 2]).apply(QueueEvent::Progress { chapter_id: 2, progress: 0.75 });
+        let jobs = state.snapshot();
+        assert_eq!(jobs[0].progress, 0.0);
+        assert_eq!(jobs[1].progress, 0.75);
+    }
+
+    #[test]
+    fn queue_start_stop_toggles_running() {
+        assert!(!QueueState::default().is_running());
+        assert!(QueueState::default().apply(QueueEvent::Started).is_running());
+        assert!(!QueueState::default().apply(QueueEvent::Started).apply(QueueEvent::Stopped).is_running());
+    }
+
+    #[test]
+    fn archive_path_sanitizes_every_segment() {
+        let path = chapter_archive_path(Path::new("/dl"), "nHentai.com", "ja", "A|B", "Ch:1");
+        assert_eq!(path, Path::new("/dl").join("nHentai.com (JA)").join("A_B").join("Ch_1.cbz"));
+    }
+
+    #[test]
+    fn page_progress_clamps_and_handles_zero_total() {
+        assert_eq!(page_progress(0, 0), 0.0);
+        assert_eq!(page_progress(1, 0), 1.0);
+        assert_eq!(page_progress(1, 4), 0.25);
+        assert_eq!(page_progress(9, 4), 1.0);
     }
 
     async fn seed() -> Db {

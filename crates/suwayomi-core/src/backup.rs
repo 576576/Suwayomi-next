@@ -350,7 +350,14 @@ fn validate_backup_inner(backup: &Backup) -> RestoreSummary {
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
         .collect();
-    let name_of = |sid: i64| backup.backup_sources.iter().find(|s| s.source_id == sid).map(|s| s.name.clone()).unwrap_or_else(|| sid.to_string());
+    let name_of = |sid: i64| {
+        backup
+            .backup_sources
+            .iter()
+            .find(|s| s.source_id == sid)
+            .map(|s| s.name.clone())
+            .unwrap_or_else(|| sid.to_string())
+    };
     let mangas_missing: Vec<String> = backup
         .backup_manga
         .iter()
@@ -375,9 +382,14 @@ pub async fn restore_backup(pool: &Db, gz: &[u8], flags: BackupFlags) -> Result<
 }
 
 /// Restores from an already-decoded `Backup` message (idempotent upserts).
-pub async fn restore_backup_proto(pool: &Db, backup: &Backup, flags: BackupFlags) -> Result<RestoreSummary, BackupError> {
+pub async fn restore_backup_proto(
+    pool: &Db,
+    backup: &Backup,
+    flags: BackupFlags,
+) -> Result<RestoreSummary, BackupError> {
     let mut summary = validate_backup_inner(backup);
-    let source_names: HashMap<i64, String> = backup.backup_sources.iter().map(|s| (s.source_id, s.name.clone())).collect();
+    let source_names: HashMap<i64, String> =
+        backup.backup_sources.iter().map(|s| (s.source_id, s.name.clone())).collect();
 
     // 1) categories: order -> id (reuse existing by name; mirrors Kotlin's
     //    `BackupCategory.order`-keyed mapping used by BackupManga.categories)
@@ -386,7 +398,10 @@ pub async fn restore_backup_proto(pool: &Db, backup: &Backup, flags: BackupFlags
         if !flags.include_categories {
             break;
         }
-        let existing: Option<i32> = suwayomi_db::query_scalar("SELECT id FROM category WHERE name = $1").bind(&c.name).fetch_optional(pool).await?;
+        let existing: Option<i32> = suwayomi_db::query_scalar("SELECT id FROM category WHERE name = $1")
+            .bind(&c.name)
+            .fetch_optional(pool)
+            .await?;
         let id = match existing {
             Some(id) => id,
             None => {
@@ -396,12 +411,15 @@ pub async fn restore_backup_proto(pool: &Db, backup: &Backup, flags: BackupFlags
                 // order 0) would make a later restore of our own export map
                 // memberships onto the wrong category.
                 let next_order: i32 =
-                    suwayomi_db::query_scalar("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM category").fetch_one(pool).await?;
-                let id: i32 = suwayomi_db::query_scalar("INSERT INTO category (name, sort_order) VALUES ($1, $2) RETURNING id")
-                    .bind(&c.name)
-                    .bind(next_order)
-                    .fetch_one(pool)
-                    .await?;
+                    suwayomi_db::query_scalar("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM category")
+                        .fetch_one(pool)
+                        .await?;
+                let id: i32 =
+                    suwayomi_db::query_scalar("INSERT INTO category (name, sort_order) VALUES ($1, $2) RETURNING id")
+                        .bind(&c.name)
+                        .bind(next_order)
+                        .fetch_one(pool)
+                        .await?;
                 summary.restored_categories += 1;
                 id
             }
@@ -434,14 +452,19 @@ pub async fn restore_backup_proto(pool: &Db, backup: &Backup, flags: BackupFlags
 
     // 2) ensure an extension row exists (source.extension FK — a violation
     //    would terminate the embedded session)
-    let ext_id: i32 = match suwayomi_db::query_scalar::<i32>("SELECT id FROM extension ORDER BY id LIMIT 1").fetch_optional(pool).await? {
+    let ext_id: i32 = match suwayomi_db::query_scalar::<i32>("SELECT id FROM extension ORDER BY id LIMIT 1")
+        .fetch_optional(pool)
+        .await?
+    {
         Some(id) => id,
-        None => suwayomi_db::query_scalar(
-            "INSERT INTO extension (name, pkg_name, version_name, version_code, lang, content_warning) \
+        None => {
+            suwayomi_db::query_scalar(
+                "INSERT INTO extension (name, pkg_name, version_name, version_code, lang, content_warning) \
              VALUES ('restored', 'org.suwayomi.restored', '0.0.0', 0, 'en', 0) RETURNING id",
-        )
-        .fetch_one(pool)
-        .await?,
+            )
+            .fetch_one(pool)
+            .await?
+        }
     };
 
     // 3) restore each manga
@@ -449,10 +472,11 @@ pub async fn restore_backup_proto(pool: &Db, backup: &Backup, flags: BackupFlags
     let manga_to_restore: &[BackupManga] = if flags.include_manga { &backup.backup_manga } else { &[] };
     for m in manga_to_restore {
         // ensure source exists
-        let source_exists: bool = suwayomi_db::query_scalar::<bool>("SELECT EXISTS(SELECT 1 FROM source WHERE id = $1)")
-            .bind(m.source)
-            .fetch_one(pool)
-            .await?;
+        let source_exists: bool =
+            suwayomi_db::query_scalar::<bool>("SELECT EXISTS(SELECT 1 FROM source WHERE id = $1)")
+                .bind(m.source)
+                .fetch_one(pool)
+                .await?;
         if !source_exists {
             let name = source_names.get(&m.source).cloned().unwrap_or_else(|| format!("source-{}", m.source));
             suwayomi_db::query("INSERT INTO source (id, name, lang, extension) VALUES ($1, $2, 'en', $3)")
@@ -487,7 +511,19 @@ pub async fn restore_backup_proto(pool: &Db, backup: &Backup, flags: BackupFlags
             .fetch_optional(pool)
             .await?;
         let manga_id = match existing {
-            Some((id, cur_artist, cur_author, cur_desc, cur_genre, cur_status, cur_thumb, cur_strategy, cur_added, cur_init, cur_inlib)) => {
+            Some((
+                id,
+                cur_artist,
+                cur_author,
+                cur_desc,
+                cur_genre,
+                cur_status,
+                cur_thumb,
+                cur_strategy,
+                cur_added,
+                cur_init,
+                cur_inlib,
+            )) => {
                 let dirty = m.artist.as_deref().is_some_and(|v| cur_artist.as_deref() != Some(v))
                     || m.author.as_deref().is_some_and(|v| cur_author.as_deref() != Some(v))
                     || m.description.as_deref().is_some_and(|v| cur_desc.as_deref() != Some(v))
@@ -632,13 +668,15 @@ pub async fn restore_backup_proto(pool: &Db, backup: &Backup, flags: BackupFlags
         // history: match chapter by url, apply last_page_read / last_read_at
         let history_to_restore: &[BackupHistory] = if flags.include_history { &m.history } else { &[] };
         for h in history_to_restore {
-            let _ = suwayomi_db::query("UPDATE chapter SET last_page_read = $1, last_read_at = $2 WHERE url = $3 AND manga = $4")
-                .bind(h.last_read as i32)
-                .bind(h.read_at / 1000)
-                .bind(&h.url)
-                .bind(manga_id)
-                .execute(pool)
-                .await;
+            let _ = suwayomi_db::query(
+                "UPDATE chapter SET last_page_read = $1, last_read_at = $2 WHERE url = $3 AND manga = $4",
+            )
+            .bind(h.last_read as i32)
+            .bind(h.read_at / 1000)
+            .bind(&h.url)
+            .bind(manga_id)
+            .execute(pool)
+            .await;
         }
 
         if flags.include_tracking {
@@ -660,10 +698,8 @@ async fn restore_manga_tracker_data(pool: &Db, manga_id: i32, tracks: &[BackupTr
     if tracks.is_empty() {
         return Ok(());
     }
-    let existing: Vec<TrackRecordRow> = suwayomi_db::query_as("SELECT * FROM track_record WHERE manga_id = $1")
-        .bind(manga_id)
-        .fetch_all(pool)
-        .await?;
+    let existing: Vec<TrackRecordRow> =
+        suwayomi_db::query_as("SELECT * FROM track_record WHERE manga_id = $1").bind(manga_id).fetch_all(pool).await?;
     let existing_by_tracker: HashMap<i32, &TrackRecordRow> = existing.iter().map(|r| (r.sync_id, r)).collect();
 
     for t in tracks {
@@ -726,9 +762,8 @@ pub async fn create_backup_proto(pool: &Db, flags: BackupFlags) -> Result<Backup
 }
 
 async fn build_backup(pool: &Db, flags: BackupFlags) -> Result<Backup, BackupError> {
-    let category_rows: Vec<CategoryRow> = suwayomi_db::query_as("SELECT * FROM category ORDER BY sort_order, id")
-        .fetch_all(pool)
-        .await?;
+    let category_rows: Vec<CategoryRow> =
+        suwayomi_db::query_as("SELECT * FROM category ORDER BY sort_order, id").fetch_all(pool).await?;
     let backup_categories: Vec<BackupCategory> = category_rows
         .iter()
         .map(|c| BackupCategory {
@@ -751,7 +786,10 @@ async fn build_backup(pool: &Db, flags: BackupFlags) -> Result<Backup, BackupErr
     let mut source_ids: Vec<i64> = Vec::new();
     for m in &manga_rows {
         let chapters: Vec<ChapterRow> = if flags.include_chapters {
-            suwayomi_db::query_as("SELECT * FROM chapter WHERE manga = $1 ORDER BY source_order").bind(m.id).fetch_all(pool).await?
+            suwayomi_db::query_as("SELECT * FROM chapter WHERE manga = $1 ORDER BY source_order")
+                .bind(m.id)
+                .fetch_all(pool)
+                .await?
         } else {
             Vec::new()
         };
@@ -844,7 +882,8 @@ async fn build_backup(pool: &Db, flags: BackupFlags) -> Result<Backup, BackupErr
 
     let mut backup_sources: Vec<BackupSource> = Vec::with_capacity(source_ids.len());
     for sid in &source_ids {
-        let name: Option<String> = suwayomi_db::query_scalar("SELECT name FROM source WHERE id = $1").bind(sid).fetch_optional(pool).await?;
+        let name: Option<String> =
+            suwayomi_db::query_scalar("SELECT name FROM source WHERE id = $1").bind(sid).fetch_optional(pool).await?;
         if let Some(name) = name {
             backup_sources.push(BackupSource { name, source_id: *sid, meta: HashMap::new() });
         }
@@ -858,14 +897,8 @@ async fn build_backup(pool: &Db, flags: BackupFlags) -> Result<Backup, BackupErr
         .fetch_all(pool)
         .await?
         .into_iter()
-        .map(|(tracker_id, username, password, token, token_expired, score_type, pkce_verifier)| BackupTrackerCredential {
-            tracker_id,
-            username,
-            password,
-            token,
-            token_expired,
-            score_type,
-            pkce_verifier,
+        .map(|(tracker_id, username, password, token, token_expired, score_type, pkce_verifier)| {
+            BackupTrackerCredential { tracker_id, username, password, token, token_expired, score_type, pkce_verifier }
         })
         .collect()
     } else {
@@ -945,7 +978,10 @@ mod tests {
             .execute(pool)
             .await
             .expect("ext");
-        suwayomi_db::query("INSERT INTO source (name, lang, extension) VALUES ('MangaDex','en',1)").execute(pool).await.expect("src");
+        suwayomi_db::query("INSERT INTO source (name, lang, extension) VALUES ('MangaDex','en',1)")
+            .execute(pool)
+            .await
+            .expect("src");
         suwayomi_db::query(
             "INSERT INTO manga (url, title, author, genre, status, thumbnail_url, in_library, source, initialized) \
              VALUES ('/m/1','Backup Manga','Author','Action, Drama',1,'https://t.jpg',TRUE,1,TRUE)",
@@ -960,8 +996,14 @@ mod tests {
         .execute(pool)
         .await
         .expect("chapter");
-        suwayomi_db::query("INSERT INTO category (name, sort_order) VALUES ('Cat',1)").execute(pool).await.expect("category");
-        suwayomi_db::query("INSERT INTO category_manga (category, manga) VALUES (1,1)").execute(pool).await.expect("cm");
+        suwayomi_db::query("INSERT INTO category (name, sort_order) VALUES ('Cat',1)")
+            .execute(pool)
+            .await
+            .expect("category");
+        suwayomi_db::query("INSERT INTO category_manga (category, manga) VALUES (1,1)")
+            .execute(pool)
+            .await
+            .expect("cm");
         db
     }
 
@@ -1022,19 +1064,38 @@ mod tests {
         assert!(summary.missing_sources.is_empty(), "sources included in backup");
 
         // verify content
-        let n: i64 = suwayomi_db::query_scalar("SELECT COUNT(*) FROM manga").fetch_one(fresh.pool()).await.expect("count manga");
+        let n: i64 =
+            suwayomi_db::query_scalar("SELECT COUNT(*) FROM manga").fetch_one(fresh.pool()).await.expect("count manga");
         assert_eq!(n, 1);
-        let title: String = suwayomi_db::query_scalar("SELECT title FROM manga WHERE id = 1").fetch_one(fresh.pool()).await.expect("title");
+        let title: String = suwayomi_db::query_scalar("SELECT title FROM manga WHERE id = 1")
+            .fetch_one(fresh.pool())
+            .await
+            .expect("title");
         assert_eq!(title, "Backup Manga");
-        let in_lib: bool = suwayomi_db::query_scalar("SELECT in_library FROM manga WHERE id = 1").fetch_one(fresh.pool()).await.expect("in_library");
+        let in_lib: bool = suwayomi_db::query_scalar("SELECT in_library FROM manga WHERE id = 1")
+            .fetch_one(fresh.pool())
+            .await
+            .expect("in_library");
         assert!(in_lib, "favorite manga restored as in-library");
-        let ch: i64 = suwayomi_db::query_scalar("SELECT COUNT(*) FROM chapter WHERE manga = 1").fetch_one(fresh.pool()).await.expect("count chapters");
+        let ch: i64 = suwayomi_db::query_scalar("SELECT COUNT(*) FROM chapter WHERE manga = 1")
+            .fetch_one(fresh.pool())
+            .await
+            .expect("count chapters");
         assert_eq!(ch, 1);
-        let cm: i64 = suwayomi_db::query_scalar("SELECT COUNT(*) FROM category_manga WHERE manga = 1").fetch_one(fresh.pool()).await.expect("count cm");
+        let cm: i64 = suwayomi_db::query_scalar("SELECT COUNT(*) FROM category_manga WHERE manga = 1")
+            .fetch_one(fresh.pool())
+            .await
+            .expect("count cm");
         assert_eq!(cm, 1, "category membership restored");
-        let cat: String = suwayomi_db::query_scalar("SELECT name FROM category WHERE id = 1").fetch_one(fresh.pool()).await.expect("category");
+        let cat: String = suwayomi_db::query_scalar("SELECT name FROM category WHERE id = 1")
+            .fetch_one(fresh.pool())
+            .await
+            .expect("category");
         assert_eq!(cat, "Cat");
-        let src: String = suwayomi_db::query_scalar("SELECT name FROM source WHERE id = 1").fetch_one(fresh.pool()).await.expect("source");
+        let src: String = suwayomi_db::query_scalar("SELECT name FROM source WHERE id = 1")
+            .fetch_one(fresh.pool())
+            .await
+            .expect("source");
         assert_eq!(src, "MangaDex");
     }
 
@@ -1061,10 +1122,12 @@ mod tests {
         .execute(pool)
         .await
         .expect("unsupported track record");
-        suwayomi_db::query("INSERT INTO tracker_credential (tracker_id, username, password, token) VALUES (2, 'user', 'tok', '{}')")
-            .execute(pool)
-            .await
-            .expect("credential");
+        suwayomi_db::query(
+            "INSERT INTO tracker_credential (tracker_id, username, password, token) VALUES (2, 'user', 'tok', '{}')",
+        )
+        .execute(pool)
+        .await
+        .expect("credential");
 
         let gz = create_backup(pool, BackupFlags::default()).await.expect("create backup");
         let backup = decode_gz_backup(&gz).expect("decode");
@@ -1074,8 +1137,9 @@ mod tests {
         assert_eq!(backup.tracker_credentials.len(), 1);
 
         // 关掉 tracking 之后两份数据都不带走
-        let no_tracking =
-            create_backup(pool, BackupFlags { include_tracking: false, ..Default::default() }).await.expect("create backup");
+        let no_tracking = create_backup(pool, BackupFlags { include_tracking: false, ..Default::default() })
+            .await
+            .expect("create backup");
         let backup = decode_gz_backup(&no_tracking).expect("decode");
         assert!(backup.backup_manga[0].tracking.is_empty());
         assert!(backup.tracker_credentials.is_empty());
@@ -1084,11 +1148,12 @@ mod tests {
         fresh.migrate().await.expect("migrate fresh");
         restore_backup(fresh.pool(), &gz, BackupFlags::default()).await.expect("restore");
 
-        let (remote_id, last_chapter_read, private): (i64, f64, bool) =
-            suwayomi_db::query_as("SELECT remote_id, last_chapter_read, private FROM track_record WHERE manga_id = 1 AND sync_id = 2")
-                .fetch_one(fresh.pool())
-                .await
-                .expect("track record restored");
+        let (remote_id, last_chapter_read, private): (i64, f64, bool) = suwayomi_db::query_as(
+            "SELECT remote_id, last_chapter_read, private FROM track_record WHERE manga_id = 1 AND sync_id = 2",
+        )
+        .fetch_one(fresh.pool())
+        .await
+        .expect("track record restored");
         assert_eq!(remote_id, 12345);
         assert_eq!(last_chapter_read, 3.5);
         assert!(private);
@@ -1116,10 +1181,7 @@ mod tests {
             ..Default::default()
         };
         manga.update_strategy = 0;
-        let backup = Backup {
-            backup_manga: vec![manga],
-            ..Default::default()
-        };
+        let backup = Backup { backup_manga: vec![manga], ..Default::default() };
         let raw = backup.encode_to_vec();
         use std::io::Write;
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
@@ -1135,7 +1197,10 @@ mod tests {
         db.migrate().await.expect("migrate");
         let s = restore_backup(db.pool(), &gz, BackupFlags::default()).await.expect("restore");
         assert_eq!(s.restored_manga, 1);
-        let src_name: Option<String> = suwayomi_db::query_scalar("SELECT name FROM source WHERE id = 999").fetch_one(db.pool()).await.expect("src");
+        let src_name: Option<String> = suwayomi_db::query_scalar("SELECT name FROM source WHERE id = 999")
+            .fetch_one(db.pool())
+            .await
+            .expect("src");
         assert_eq!(src_name.as_deref(), Some("source-999"));
     }
 }

@@ -448,7 +448,6 @@ pub struct ValidateBackupResult {
 // Track domain
 // ---------------------------------------------------------------------------
 
-
 /// Mirrors `KoSyncStatusPayload`.
 #[derive(SimpleObject)]
 // 上游类型名就是 `KoSyncStatusPayload`（同文件里的 KoSyncConnectPayload /
@@ -989,8 +988,6 @@ pub struct PartialSettingsTypeInput {
     pub webui_update_check_interval: Option<f64>,
 }
 
-
-
 #[derive(InputObject)]
 pub struct UpdateCategoryMangaInput {
     pub categories: Vec<i32>,
@@ -1246,11 +1243,7 @@ impl MutationRootB4 {
         Ok(UpdateLibraryPayload { client_mutation_id: input.client_mutation_id, update_status })
     }
 
-    async fn update_stop(
-        &self,
-        ctx: &Context<'_>,
-        input: UpdateStopInput,
-    ) -> async_graphql::Result<UpdateStopPayload> {
+    async fn update_stop(&self, ctx: &Context<'_>, input: UpdateStopInput) -> async_graphql::Result<UpdateStopPayload> {
         let state = ctx.data::<crate::state::GraphQLState>()?;
         state.update.stop().await;
         Ok(UpdateStopPayload { client_mutation_id: input.client_mutation_id })
@@ -1268,7 +1261,10 @@ impl MutationRootB4 {
         // REST export/file endpoint.
         let flags = suwayomi_core::backup::BackupFlags::from_partial(&backup_flags(input.flags.as_ref()));
         suwayomi_core::backup::create_backup(state.db.pool(), flags).await.map_err(async_graphql::Error::from)?;
-        Ok(CreateBackupPayload { client_mutation_id: input.client_mutation_id, url: "/api/v1/backup/export/file".to_string() })
+        Ok(CreateBackupPayload {
+            client_mutation_id: input.client_mutation_id,
+            url: "/api/v1/backup/export/file".to_string(),
+        })
     }
 
     async fn restore_backup(
@@ -1282,10 +1278,7 @@ impl MutationRootB4 {
         let mut upload = input.backup.value(ctx)?;
         let mut bytes = Vec::new();
         use std::io::Read as _;
-        upload
-            .content
-            .read_to_end(&mut bytes)
-            .map_err(|e| async_graphql::Error::new(format!("read upload: {e}")))?;
+        upload.content.read_to_end(&mut bytes).map_err(|e| async_graphql::Error::new(format!("read upload: {e}")))?;
 
         let id = format!("restore-{}", chrono::Utc::now().timestamp_millis());
         let flags = suwayomi_core::backup::BackupFlags::from_partial(&backup_flags(input.flags.as_ref()));
@@ -1303,19 +1296,11 @@ impl MutationRootB4 {
             }
             Err(e) => {
                 tracing::error!(%e, "backup restore failed");
-                BackupRestoreStatus {
-                    manga_progress: 0,
-                    state: BackupRestoreState::Failure,
-                    total_manga: 0,
-                }
+                BackupRestoreStatus { manga_progress: 0, state: BackupRestoreState::Failure, total_manga: 0 }
             }
         };
         state.set_backup_restore_status(&id, final_status.clone()).await;
-        Ok(RestoreBackupPayload {
-            client_mutation_id: input.client_mutation_id,
-            id,
-            status: Some(final_status),
-        })
+        Ok(RestoreBackupPayload { client_mutation_id: input.client_mutation_id, id, status: Some(final_status) })
     }
 
     // ---- Track ----
@@ -1323,10 +1308,7 @@ impl MutationRootB4 {
     /// Mirrors `bindTrack`.
     async fn bind_track(&self, ctx: &Context<'_>, input: BindTrackInput) -> async_graphql::Result<BindTrackPayload> {
         let state = ctx.data::<GraphQLState>()?;
-        state
-            .tracker
-            .bind(input.manga_id, input.tracker_id, input.remote_id.0, input.private.unwrap_or(false))
-            .await?;
+        state.tracker.bind(input.manga_id, input.tracker_id, input.remote_id.0, input.private.unwrap_or(false)).await?;
         let row = fetch_track_record_row_for(state, input.manga_id, input.tracker_id).await?;
         Ok(BindTrackPayload {
             client_mutation_id: input.client_mutation_id,
@@ -1574,12 +1556,9 @@ impl MutationRootB4 {
     ) -> async_graphql::Result<PushKoSyncProgressPayload> {
         let state = ctx.data::<GraphQLState>()?;
         let _ = state.koreader.push_progress(input.chapter_id).await;
-        let chapter = fetch_chapter_row(state, input.chapter_id).await.ok().map(|c| crate::types::ChapterType::from_row(&c));
-        Ok(PushKoSyncProgressPayload {
-            client_mutation_id: input.client_mutation_id,
-            success: true,
-            chapter,
-        })
+        let chapter =
+            fetch_chapter_row(state, input.chapter_id).await.ok().map(|c| crate::types::ChapterType::from_row(&c));
+        Ok(PushKoSyncProgressPayload { client_mutation_id: input.client_mutation_id, success: true, chapter })
     }
 
     /// Mirrors `pullKoSyncProgress`.
@@ -1593,7 +1572,10 @@ impl MutationRootB4 {
         let mut sync_conflict = None;
         if let Some(r) = &result {
             if r.is_conflict {
-                sync_conflict = Some(crate::mutation::SyncConflictInfoType { device_name: r.device.clone(), remote_page: r.page_read });
+                sync_conflict = Some(crate::mutation::SyncConflictInfoType {
+                    device_name: r.device.clone(),
+                    remote_page: r.page_read,
+                });
             }
             if r.should_update {
                 suwayomi_db::query("UPDATE suwayomi.chapter SET last_page_read = $1, last_read_at = $2 WHERE id = $3")
@@ -1604,12 +1586,9 @@ impl MutationRootB4 {
                     .await?;
             }
         }
-        let chapter = fetch_chapter_row(state, input.chapter_id).await.ok().map(|c| crate::types::ChapterType::from_row(&c));
-        Ok(PullKoSyncProgressPayload {
-            client_mutation_id: input.client_mutation_id,
-            chapter,
-            sync_conflict,
-        })
+        let chapter =
+            fetch_chapter_row(state, input.chapter_id).await.ok().map(|c| crate::types::ChapterType::from_row(&c));
+        Ok(PullKoSyncProgressPayload { client_mutation_id: input.client_mutation_id, chapter, sync_conflict })
     }
 
     // ---- Extension ----
@@ -1653,7 +1632,10 @@ impl MutationRootB4 {
         let state = ctx.data::<GraphQLState>()?;
         apply_extension_patch(state, std::slice::from_ref(&input.id), &input.patch).await?;
         let ext = fetch_extension_by_pkg(state, &input.id).await?;
-        Ok(UpdateExtensionPayload { client_mutation_id: input.client_mutation_id, extension: ext.map(|r| crate::types::ExtensionType { row: r }) })
+        Ok(UpdateExtensionPayload {
+            client_mutation_id: input.client_mutation_id,
+            extension: ext.map(|r| crate::types::ExtensionType { row: r }),
+        })
     }
 
     async fn update_extensions(
@@ -1679,19 +1661,12 @@ impl MutationRootB4 {
         let mut upload = input.extension_file.value(ctx)?;
         let mut bytes = Vec::new();
         use std::io::Read as _;
-        upload
-            .content
-            .read_to_end(&mut bytes)
-            .map_err(|e| async_graphql::Error::new(format!("read upload: {e}")))?;
+        upload.content.read_to_end(&mut bytes).map_err(|e| async_graphql::Error::new(format!("read upload: {e}")))?;
         if bytes.is_empty() {
             return Err(async_graphql::Error::new("empty apk upload"));
         }
         state.extension_store.install_external(&bytes).await.map_err(async_graphql::Error::from)?;
-        let meta = state
-            .extension_store
-            .sync_sources()
-            .await
-            .map_err(async_graphql::Error::from)?;
+        let meta = state.extension_store.sync_sources().await.map_err(async_graphql::Error::from)?;
         let _ = meta;
         // resolve the freshly installed package (inspect told us the name;
         // simplest: the newest is_installed row without a store link)
@@ -1703,7 +1678,9 @@ impl MutationRootB4 {
         .map_err(async_graphql::Error::from)?;
         Ok(InstallExternalExtensionPayload {
             client_mutation_id: input.client_mutation_id,
-            extension: crate::types::ExtensionType { row: ext.ok_or_else(|| async_graphql::Error::new("extension not registered"))? },
+            extension: crate::types::ExtensionType {
+                row: ext.ok_or_else(|| async_graphql::Error::new("extension not registered"))?,
+            },
         })
     }
 
@@ -1793,20 +1770,13 @@ impl MutationRootB4 {
     ) -> async_graphql::Result<UpdateSourcePreferencePayload> {
         let state = ctx.data::<GraphQLState>()?;
         let source_id = input.source.0;
-        let position = input
-            .change
-            .position
-            .ok_or_else(|| async_graphql::Error::new("missing preference position"))?;
+        let position = input.change.position.ok_or_else(|| async_graphql::Error::new("missing preference position"))?;
         let value = preference_value(&input.change)?;
-        let base = state
-            .sandbox_base
-            .clone()
-            .ok_or_else(|| async_graphql::Error::new("extension sandbox is not running"))?;
+        let base =
+            state.sandbox_base.clone().ok_or_else(|| async_graphql::Error::new("extension sandbox is not running"))?;
         let fetcher = suwayomi_domain::source::sandbox::HttpSandboxFetcher::new(base);
-        let updated = fetcher
-            .set_source_preference(source_id, position, &value)
-            .await
-            .map_err(async_graphql::Error::from)?;
+        let updated =
+            fetcher.set_source_preference(source_id, position, &value).await.map_err(async_graphql::Error::from)?;
         if updated.is_none() {
             return Err(async_graphql::Error::new(format!("source {source_id} has no preferences")));
         }
@@ -1826,7 +1796,10 @@ impl MutationRootB4 {
         let state = ctx.data::<GraphQLState>()?;
         let svc = state.sync_yomi.clone();
         if !svc.enabled() {
-            return Ok(StartSyncPayload { client_mutation_id: input.client_mutation_id, result: StartSyncResult::SyncDisabled });
+            return Ok(StartSyncPayload {
+                client_mutation_id: input.client_mutation_id,
+                result: StartSyncResult::SyncDisabled,
+            });
         }
         // Fire-and-forget: the sync cycle runs in the background (matches the
         // Kotlin GlobalScope.launch semantics). A later query can inspect the
@@ -1863,10 +1836,7 @@ impl MutationRootB4 {
             .await
             .map_err(async_graphql::Error::from)?;
         tracing::info!("download index rebuilt: {chapters} chapter(s)");
-        Ok(RebuildDownloadIndexPayload {
-            client_mutation_id: input.client_mutation_id,
-            chapters: chapters as i32,
-        })
+        Ok(RebuildDownloadIndexPayload { client_mutation_id: input.client_mutation_id, chapters: chapters as i32 })
     }
 
     async fn clear_cookies_and_cache(
@@ -1907,9 +1877,8 @@ impl MutationRootB4 {
         let json = partial_settings_to_json(&input.settings);
         let mut merged: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
         let existing_sql = bind_placeholders("SELECT value FROM global_meta WHERE meta_key = 'settings'");
-        if let Ok(Some(existing)) = suwayomi_db::query_scalar::<String>(&existing_sql)
-            .fetch_optional(state.db.pool())
-            .await
+        if let Ok(Some(existing)) =
+            suwayomi_db::query_scalar::<String>(&existing_sql).fetch_optional(state.db.pool()).await
             && let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(&existing)
         {
             merged = map;
@@ -2062,8 +2031,6 @@ pub(crate) async fn download_status(state: &GraphQLState) -> async_graphql::Resu
         queue,
         state: if state.download.is_running() { DownloaderState::Started } else { DownloaderState::Stopped },
     })
-
-
 }
 
 /// Applies an extension patch (install / uninstall / update) for the given
@@ -2082,9 +2049,7 @@ async fn apply_extension_patch(
                 .await
                 .map_err(async_graphql::Error::from)?;
         let Some(row) = row else { continue };
-        if (patch.install == Some(true) && !row.is_installed)
-            || (patch.update == Some(true) && row.has_update)
-        {
+        if (patch.install == Some(true) && !row.is_installed) || (patch.update == Some(true) && row.has_update) {
             svc.install(pkg).await.map_err(async_graphql::Error::from)?;
         } else if patch.uninstall == Some(true) && row.is_installed {
             svc.uninstall(pkg).await.map_err(async_graphql::Error::from)?;
@@ -2093,7 +2058,10 @@ async fn apply_extension_patch(
     Ok(())
 }
 
-async fn fetch_extension_by_pkg(state: &GraphQLState, pkg: &str) -> async_graphql::Result<Option<suwayomi_core::schema::ExtensionRow>> {
+async fn fetch_extension_by_pkg(
+    state: &GraphQLState,
+    pkg: &str,
+) -> async_graphql::Result<Option<suwayomi_core::schema::ExtensionRow>> {
     suwayomi_db::query_as("SELECT * FROM suwayomi.extension WHERE pkg_name = $1")
         .bind(pkg)
         .fetch_optional(state.db.pool())
@@ -2118,7 +2086,7 @@ async fn fetch_extensions_by_pkg(
 /// the upstream camelCase field names, for persistence under global_meta.
 fn partial_settings_to_json(s: &PartialSettingsTypeInput) -> serde_json::Value {
     use crate::scalars::format_iso8601_duration;
-    use serde_json::{json, Map, Value};
+    use serde_json::{Map, Value, json};
 
     let mut m = Map::new();
     macro_rules! put {
@@ -2129,12 +2097,15 @@ fn partial_settings_to_json(s: &PartialSettingsTypeInput) -> serde_json::Value {
         };
     }
 
-    put!("authMode", s.auth_mode.map(|v| match v {
-        AuthMode::None => "NONE",
-        AuthMode::BasicAuth => "BASIC_AUTH",
-        AuthMode::SimpleLogin => "SIMPLE_LOGIN",
-        AuthMode::UiLogin => "UI_LOGIN",
-    }));
+    put!(
+        "authMode",
+        s.auth_mode.map(|v| match v {
+            AuthMode::None => "NONE",
+            AuthMode::BasicAuth => "BASIC_AUTH",
+            AuthMode::SimpleLogin => "SIMPLE_LOGIN",
+            AuthMode::UiLogin => "UI_LOGIN",
+        })
+    );
     put!("authPassword", s.auth_password.clone());
     put!("authUsername", s.auth_username.clone());
     put!("autoBackupIncludeCategories", s.auto_backup_include_categories);
@@ -2154,10 +2125,13 @@ fn partial_settings_to_json(s: &PartialSettingsTypeInput) -> serde_json::Value {
     put!("backupTime", s.backup_time.clone());
     put!("dataDir", s.data_dir.clone());
     put!("databasePassword", s.database_password.clone());
-    put!("databaseType", s.database_type.map(|v| match v {
-        GraphqlDatabaseType::H2 => "H2",
-        GraphqlDatabaseType::Postgresql => "POSTGRESQL",
-    }));
+    put!(
+        "databaseType",
+        s.database_type.map(|v| match v {
+            GraphqlDatabaseType::H2 => "H2",
+            GraphqlDatabaseType::Postgresql => "POSTGRESQL",
+        })
+    );
     put!("databaseUrl", s.database_url.clone());
     put!("databaseUsername", s.database_username.clone());
     put!("debugLogsEnabled", s.debug_logs_enabled);
@@ -2185,37 +2159,52 @@ fn partial_settings_to_json(s: &PartialSettingsTypeInput) -> serde_json::Value {
     put!("jwtRefreshExpiry", s.jwt_refresh_expiry.map(|d| format_iso8601_duration(d.0)));
     put!("jwtTokenExpiry", s.jwt_token_expiry.map(|d| format_iso8601_duration(d.0)));
     put!("kcefEnabled", s.kcef_enabled);
-    put!("koreaderSyncChecksumMethod", s.koreader_sync_checksum_method.map(|v| match v {
-        KoreaderSyncChecksumMethod::Binary => "BINARY",
-        KoreaderSyncChecksumMethod::Filename => "FILENAME",
-    }));
+    put!(
+        "koreaderSyncChecksumMethod",
+        s.koreader_sync_checksum_method.map(|v| match v {
+            KoreaderSyncChecksumMethod::Binary => "BINARY",
+            KoreaderSyncChecksumMethod::Filename => "FILENAME",
+        })
+    );
     put!("koreaderSyncPercentageTolerance", s.koreader_sync_percentage_tolerance);
-    put!("koreaderSyncStrategyBackward", s.koreader_sync_strategy_backward.map(|v| match v {
-        KoreaderSyncConflictStrategy::Prompt => "PROMPT",
-        KoreaderSyncConflictStrategy::KeepLocal => "KEEP_LOCAL",
-        KoreaderSyncConflictStrategy::KeepRemote => "KEEP_REMOTE",
-        KoreaderSyncConflictStrategy::Disabled => "DISABLED",
-    }));
-    put!("koreaderSyncStrategyForward", s.koreader_sync_strategy_forward.map(|v| match v {
-        KoreaderSyncConflictStrategy::Prompt => "PROMPT",
-        KoreaderSyncConflictStrategy::KeepLocal => "KEEP_LOCAL",
-        KoreaderSyncConflictStrategy::KeepRemote => "KEEP_REMOTE",
-        KoreaderSyncConflictStrategy::Disabled => "DISABLED",
-    }));
+    put!(
+        "koreaderSyncStrategyBackward",
+        s.koreader_sync_strategy_backward.map(|v| match v {
+            KoreaderSyncConflictStrategy::Prompt => "PROMPT",
+            KoreaderSyncConflictStrategy::KeepLocal => "KEEP_LOCAL",
+            KoreaderSyncConflictStrategy::KeepRemote => "KEEP_REMOTE",
+            KoreaderSyncConflictStrategy::Disabled => "DISABLED",
+        })
+    );
+    put!(
+        "koreaderSyncStrategyForward",
+        s.koreader_sync_strategy_forward.map(|v| match v {
+            KoreaderSyncConflictStrategy::Prompt => "PROMPT",
+            KoreaderSyncConflictStrategy::KeepLocal => "KEEP_LOCAL",
+            KoreaderSyncConflictStrategy::KeepRemote => "KEEP_REMOTE",
+            KoreaderSyncConflictStrategy::Disabled => "DISABLED",
+        })
+    );
     put!("localSourcePath", s.local_source_path.clone());
     put!("maxLogFileSize", s.max_log_file_size.clone());
     put!("maxLogFiles", s.max_log_files);
     put!("maxLogFolderSize", s.max_log_folder_size.clone());
     put!("maxSourcesInParallel", s.max_sources_in_parallel);
-    put!("opdsCbzMimetype", s.opds_cbz_mimetype.map(|v| match v {
-        CbzMediaType::Modern => "MODERN",
-        CbzMediaType::Legacy => "LEGACY",
-        CbzMediaType::Compatible => "COMPATIBLE",
-    }));
-    put!("opdsChapterSortOrder", s.opds_chapter_sort_order.map(|v| match v {
-        SortOrder::Asc => "ASC",
-        SortOrder::Desc => "DESC",
-    }));
+    put!(
+        "opdsCbzMimetype",
+        s.opds_cbz_mimetype.map(|v| match v {
+            CbzMediaType::Modern => "MODERN",
+            CbzMediaType::Legacy => "LEGACY",
+            CbzMediaType::Compatible => "COMPATIBLE",
+        })
+    );
+    put!(
+        "opdsChapterSortOrder",
+        s.opds_chapter_sort_order.map(|v| match v {
+            SortOrder::Asc => "ASC",
+            SortOrder::Desc => "DESC",
+        })
+    );
     put!("opdsEnablePageReadProgress", s.opds_enable_page_read_progress);
     put!("opdsItemsPerPage", s.opds_items_per_page);
     put!("opdsMarkAsReadOnDownload", s.opds_mark_as_read_on_download);
@@ -2246,20 +2235,29 @@ fn partial_settings_to_json(s: &PartialSettingsTypeInput) -> serde_json::Value {
     put!("systemTrayEnabled", s.system_tray_enabled);
     put!("updateMangas", s.update_mangas);
     put!("useHikariConnectionPool", s.use_hikari_connection_pool);
-    put!("webUIChannel", s.webui_channel.map(|v| match v {
-        WebUIChannel::Bundled => "BUNDLED",
-        WebUIChannel::Stable => "STABLE",
-        WebUIChannel::Preview => "PREVIEW",
-    }));
-    put!("webUIFlavor", s.webui_flavor.map(|v| match v {
-        WebUIFlavor::Webui => "WEBUI",
-        WebUIFlavor::Vui => "VUI",
-        WebUIFlavor::Custom => "CUSTOM",
-    }));
-    put!("webUIInterface", s.webui_interface.map(|v| match v {
-        WebUIInterface::Browser => "BROWSER",
-        WebUIInterface::Electron => "ELECTRON",
-    }));
+    put!(
+        "webUIChannel",
+        s.webui_channel.map(|v| match v {
+            WebUIChannel::Bundled => "BUNDLED",
+            WebUIChannel::Stable => "STABLE",
+            WebUIChannel::Preview => "PREVIEW",
+        })
+    );
+    put!(
+        "webUIFlavor",
+        s.webui_flavor.map(|v| match v {
+            WebUIFlavor::Webui => "WEBUI",
+            WebUIFlavor::Vui => "VUI",
+            WebUIFlavor::Custom => "CUSTOM",
+        })
+    );
+    put!(
+        "webUIInterface",
+        s.webui_interface.map(|v| match v {
+            WebUIInterface::Browser => "BROWSER",
+            WebUIInterface::Electron => "ELECTRON",
+        })
+    );
     put!("webUIUpdateCheckInterval", s.webui_update_check_interval);
 
     Value::Object(m)
@@ -2267,7 +2265,7 @@ fn partial_settings_to_json(s: &PartialSettingsTypeInput) -> serde_json::Value {
 
 fn conversion_to_json(c: &SettingsDownloadConversionTypeInput) -> serde_json::Value {
     use crate::scalars::format_iso8601_duration;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     Value::Object(
         [
@@ -2276,10 +2274,11 @@ fn conversion_to_json(c: &SettingsDownloadConversionTypeInput) -> serde_json::Va
             Some(("connectTimeout".to_string(), json!(c.connect_timeout.map(|d| format_iso8601_duration(d.0))))),
             Some((
                 "headers".to_string(),
-                json!(c.headers.as_ref().map(|hs| hs
-                    .iter()
-                    .map(|h| json!({ "name": h.name, "value": h.value }))
-                    .collect::<Vec<_>>())),
+                json!(
+                    c.headers
+                        .as_ref()
+                        .map(|hs| hs.iter().map(|h| json!({ "name": h.name, "value": h.value })).collect::<Vec<_>>())
+                ),
             )),
             Some(("mimeType".to_string(), json!(c.mime_type))),
             Some(("target".to_string(), json!(c.target))),

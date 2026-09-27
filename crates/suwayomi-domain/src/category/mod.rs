@@ -46,7 +46,9 @@ impl CategoryService {
     /// Mirrors `createCategory`/`createCategories` (dedupe, illegal "Default" name).
     pub async fn create_categories(&self, names: &[String]) -> Result<Vec<i32>> {
         let existing = self.get_category_list().await?;
-        let existing_names: Vec<String> = existing.iter().map(|c| c.name.to_lowercase()).collect();
+        // 小写名 -> id，建一次就够：原来先 `contains` 再 `find` 再用 `unwrap` 兜底，
+        // 把"一定能找到"当成不变式写在 unwrap 里；查表查不到就走新建分支，没有 panic。
+        let by_lower_name: HashMap<String, i32> = existing.iter().map(|c| (c.name.to_lowercase(), c.id)).collect();
         let mut created_by_name: HashMap<String, i32> = HashMap::new();
 
         let mut out = Vec::new();
@@ -56,9 +58,8 @@ impl CategoryService {
                 continue;
             }
             let lower = name.to_lowercase();
-            if existing_names.contains(&lower) {
-                let id = existing.iter().find(|c| c.name.to_lowercase() == lower).map(|c| c.id).unwrap();
-                out.push(id);
+            if let Some(id) = by_lower_name.get(&lower) {
+                out.push(*id);
                 continue;
             }
             if let Some(id) = created_by_name.get(&lower) {
@@ -96,7 +97,7 @@ impl CategoryService {
         let (name, is_default) = if category_id == Self::DEFAULT_CATEGORY_ID {
             (None, None)
         } else {
-            let n = name.and_then(|n| if n.eq_ignore_ascii_case(Self::DEFAULT_CATEGORY_NAME) { None } else { Some(n) });
+            let n = name.filter(|n| !n.eq_ignore_ascii_case(Self::DEFAULT_CATEGORY_NAME));
             (n, is_default)
         };
         if name.is_none() && is_default.is_none() && include_in_update.is_none() && include_in_download.is_none() {
@@ -218,7 +219,8 @@ impl CategoryService {
 
     pub async fn get_category_size(&self, category_id: i32) -> Result<i64> {
         let sql = bind_placeholders(
-            "SELECT count(*) FROM category_manga cm WHERE cm.category = ? AND EXISTS (SELECT 1 FROM manga m WHERE m.id = cm.manga AND m.in_library = TRUE)");
+            "SELECT count(*) FROM category_manga cm WHERE cm.category = ? AND EXISTS (SELECT 1 FROM manga m WHERE m.id = cm.manga AND m.in_library = TRUE)",
+        );
         let n = suwayomi_db::query_scalar::<i64>(&sql).bind(category_id).fetch_one(self.db.pool()).await?;
         Ok(n)
     }
@@ -246,8 +248,9 @@ impl CategoryService {
 
     async fn list_rows_excluding_default(&self) -> Result<Vec<CategoryRow>> {
         let sql = bind_placeholders("SELECT * FROM category WHERE id != ? ORDER BY sort_order ASC");
-        let rows =
-            { suwayomi_db::query_as::<CategoryRow>(&sql).bind(Self::DEFAULT_CATEGORY_ID).fetch_all(self.db.pool()).await? };
+        let rows = {
+            suwayomi_db::query_as::<CategoryRow>(&sql).bind(Self::DEFAULT_CATEGORY_ID).fetch_all(self.db.pool()).await?
+        };
         Ok(rows)
     }
 }

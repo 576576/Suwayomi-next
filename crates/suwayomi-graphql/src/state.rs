@@ -5,18 +5,18 @@ use std::sync::Arc;
 use suwayomi_core::auth::AuthContext;
 use suwayomi_core::config::{RuntimeConfig, ServerConfig};
 use suwayomi_core::db::Db;
-use suwayomi_domain::category::category_manga::CategoryMangaService;
 use suwayomi_domain::category::CategoryService;
+use suwayomi_domain::category::category_manga::CategoryMangaService;
 use suwayomi_domain::chapter::ChapterService;
-use suwayomi_domain::manga::library::LibraryService;
-use suwayomi_domain::manga::manga_list::MangaListService;
-use suwayomi_domain::manga::MangaService;
-use suwayomi_domain::page::PageService;
 use suwayomi_domain::download::DownloadManager;
 use suwayomi_domain::extension_store::ExtensionStoreService;
 use suwayomi_domain::koreader_sync::KoreaderSyncService;
-use suwayomi_domain::sync_yomi::SyncYomiService;
+use suwayomi_domain::manga::MangaService;
+use suwayomi_domain::manga::library::LibraryService;
+use suwayomi_domain::manga::manga_list::MangaListService;
+use suwayomi_domain::page::PageService;
 use suwayomi_domain::source::SourceFetcher;
+use suwayomi_domain::sync_yomi::SyncYomiService;
 use suwayomi_domain::tracker::TrackerManager;
 use suwayomi_domain::updater::UpdateManager;
 
@@ -57,7 +57,8 @@ pub struct GraphQLState {
     /// JVM sandbox base URL (e.g. `http://127.0.0.1:8091`) — aboutServer JVM info.
     pub sandbox_base: Option<String>,
     /// In-memory results of finished backup restores (`restoreStatus(id:)`).
-    backup_restores: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, crate::mutation_b4::BackupRestoreStatus>>>,
+    backup_restores:
+        std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, crate::mutation_b4::BackupRestoreStatus>>>,
 }
 
 impl GraphQLState {
@@ -85,7 +86,29 @@ impl GraphQLState {
         let koreader = KoreaderSyncService::new(db.clone(), runtime.clone());
         let sync_yomi = SyncYomiService::new(db.clone(), runtime.clone());
         let extension_store = ExtensionStoreService::new(db.clone(), sandbox_base.clone());
-        Self { db, config: runtime, config_base: config, auth, manga, chapter, category, category_manga, library, manga_list, page, update, tracker, download, koreader, sync_yomi, extension_store, webui_dir, data_dir, sandbox_base, backup_restores: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())) }
+        Self {
+            db,
+            config: runtime,
+            config_base: config,
+            auth,
+            manga,
+            chapter,
+            category,
+            category_manga,
+            library,
+            manga_list,
+            page,
+            update,
+            tracker,
+            download,
+            koreader,
+            sync_yomi,
+            extension_store,
+            webui_dir,
+            data_dir,
+            sandbox_base,
+            backup_restores: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        }
     }
 
     pub async fn set_backup_restore_status(&self, id: &str, status: crate::mutation_b4::BackupRestoreStatus) {

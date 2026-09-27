@@ -63,20 +63,6 @@ impl Row {
         // `Option<T>` handles NULL itself; everything else must report it.
         T::decode(value, &name)
     }
-
-    /// Reads a column, panicking when it is missing or undecodable.
-    ///
-    /// Mirrors `sqlx::Row::get`.
-    pub fn get<T, I>(&self, index: I) -> T
-    where
-        T: Decode,
-        I: ColumnIndex,
-    {
-        match self.try_get(index) {
-            Ok(v) => v,
-            Err(e) => panic!("suwayomi-db: {e}"),
-        }
-    }
 }
 
 /// Anything usable as a column selector.

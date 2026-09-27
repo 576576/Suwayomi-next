@@ -94,13 +94,11 @@ impl TrackerStore {
 
     /// 对应 `setTrackToken`：空串等同于 upstream 的 `null`（清掉 token 并复位过期标记）。
     pub async fn set_token(&self, tracker_id: i32, token: &str) -> Result<()> {
-        suwayomi_db::query(
-            "UPDATE tracker_credential SET token = ?, token_expired = FALSE WHERE tracker_id = ?",
-        )
-        .bind(token)
-        .bind(tracker_id)
-        .execute(&self.db)
-        .await?;
+        suwayomi_db::query("UPDATE tracker_credential SET token = ?, token_expired = FALSE WHERE tracker_id = ?")
+            .bind(token)
+            .bind(tracker_id)
+            .execute(&self.db)
+            .await?;
         Ok(())
     }
 

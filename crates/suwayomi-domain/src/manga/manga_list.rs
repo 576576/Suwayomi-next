@@ -10,7 +10,7 @@ use suwayomi_core::source::{MangasPage, SManga};
 
 use crate::error::{DomainError, Result};
 use crate::manga::manga_row_to_data_class;
-use crate::source::{SourceFetcher, LOCAL_SOURCE_ID};
+use crate::source::{LOCAL_SOURCE_ID, SourceFetcher};
 use crate::sql::bind_placeholders;
 
 #[derive(Clone)]
@@ -36,7 +36,11 @@ impl MangaListService {
         for s in mangas {
             let q = bind_placeholders("SELECT * FROM manga WHERE source = ? AND url = ?");
             let row = {
-                suwayomi_db::query_as::<MangaRow>(&q).bind(source_id).bind(&s.url).fetch_optional(self.db.pool()).await?
+                suwayomi_db::query_as::<MangaRow>(&q)
+                    .bind(source_id)
+                    .bind(&s.url)
+                    .fetch_optional(self.db.pool())
+                    .await?
             };
             if let Some(r) = row {
                 existing_by_url.insert(r.url.clone(), r);
@@ -70,7 +74,8 @@ impl MangaListService {
         // Hard-coding TRUE here made the details page never auto-fetch, so
         // freshly browsed manga showed an empty chapter list.
         let sql = bind_placeholders(
-            "INSERT INTO manga (url, title, artist, author, description, genre, alt_titles, status, thumbnail_url, update_strategy, memo, source, initialized) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)");
+            "INSERT INTO manga (url, title, artist, author, description, genre, alt_titles, status, thumbnail_url, update_strategy, memo, source, initialized) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)",
+        );
         let memo = s.memo.to_string();
         let alt_titles = serde_json::to_string(&s.alt_titles).unwrap_or_else(|_| "[]".to_string());
         let last_id = {
@@ -97,7 +102,8 @@ impl MangaListService {
 
     async fn update_manga(&self, existing: &MangaRow, s: &SManga) -> Result<()> {
         let sql = bind_placeholders(
-            "UPDATE manga SET title = ?, artist = COALESCE(?, artist), author = COALESCE(?, author), description = COALESCE(?, description), genre = COALESCE(?, genre), alt_titles = ?, status = ?, thumbnail_url = COALESCE(?, thumbnail_url), update_strategy = ?, memo = ?, thumbnail_url_last_fetched = ? WHERE id = ?");
+            "UPDATE manga SET title = ?, artist = COALESCE(?, artist), author = COALESCE(?, author), description = COALESCE(?, description), genre = COALESCE(?, genre), alt_titles = ?, status = ?, thumbnail_url = COALESCE(?, thumbnail_url), update_strategy = ?, memo = ?, thumbnail_url_last_fetched = ? WHERE id = ?",
+        );
         let memo = s.memo.to_string();
         let alt_titles = serde_json::to_string(&s.alt_titles).unwrap_or_else(|_| "[]".to_string());
         let thumbnail_changed =

@@ -4,6 +4,9 @@
 //! database and `Db::sqlite(path)` a persistent file. The PostgreSQL side of the
 //! same contract lives in `db_pg.rs`.
 
+// 集成测试里 panic 就是断言失败的表达方式，不需要改成错误传播。
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo)]
+
 use suwayomi_core::db::{BackendKind, Db};
 use suwayomi_core::schema::{ChapterRow, MangaRow, PageRow};
 
@@ -74,10 +77,8 @@ async fn manga_chapter_page_roundtrip() {
         .await
         .expect("insert manga");
 
-    let manga: MangaRow = suwayomi_db::query_as("SELECT * FROM manga WHERE id = 1")
-        .fetch_one(&db)
-        .await
-        .expect("fetch manga");
+    let manga: MangaRow =
+        suwayomi_db::query_as("SELECT * FROM manga WHERE id = 1").fetch_one(&db).await.expect("fetch manga");
     assert_eq!(manga.title, "Test Manga");
     assert_eq!(manga.source, 1);
     assert!(!manga.in_library);
@@ -92,10 +93,8 @@ async fn manga_chapter_page_roundtrip() {
         .await
         .expect("insert chapter");
 
-    let chapter: ChapterRow = suwayomi_db::query_as("SELECT * FROM chapter WHERE id = 1")
-        .fetch_one(&db)
-        .await
-        .expect("fetch chapter");
+    let chapter: ChapterRow =
+        suwayomi_db::query_as("SELECT * FROM chapter WHERE id = 1").fetch_one(&db).await.expect("fetch chapter");
     assert_eq!(chapter.name, "Chapter 1");
     assert_eq!(chapter.chapter_number, -1.0);
     assert_eq!(chapter.manga, manga.id);
@@ -111,10 +110,8 @@ async fn manga_chapter_page_roundtrip() {
         .await
         .expect("insert page");
 
-    let page: PageRow = suwayomi_db::query_as("SELECT * FROM page WHERE id = 1")
-        .fetch_one(&db)
-        .await
-        .expect("fetch page");
+    let page: PageRow =
+        suwayomi_db::query_as("SELECT * FROM page WHERE id = 1").fetch_one(&db).await.expect("fetch page");
     assert_eq!(page.index, 0);
     assert_eq!(page.chapter, chapter.id);
 }

@@ -6,6 +6,11 @@
 //! - `eu.kanade.tachiyomi.source.model.*`     → source
 //! - `suwayomi.server.settings.*`   → config
 
+// 测试代码允许 panic：unwrap / expect / panic! 在断言里是常规写法，
+// 逐个改成 `?` 传播只会让失败信息更难读。生产代码不受这条影响
+// （`cfg_attr(test, ...)`）。
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo))]
+
 pub mod auth;
 pub mod backup;
 pub mod config;
@@ -29,4 +34,3 @@ pub mod version {
     /// default `release`). Reported to the WebUI as `aboutServer.buildType`.
     pub const BUILD_TYPE: &str = env!("SUWAYOMI_BUILD_TYPE");
 }
-

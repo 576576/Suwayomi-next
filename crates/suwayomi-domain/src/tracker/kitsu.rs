@@ -65,9 +65,7 @@ impl RatingSystem {
             return 0.0;
         }
         // 越界按未评分处理而不是 panic：前端可能拿着过期的选项表提交。
-        self.twenty_scale
-            .get(index as usize - 1)
-            .map_or(0.0, |v| *v as f64 / 2.0)
+        self.twenty_scale.get(index as usize - 1).map_or(0.0, |v| *v as f64 / 2.0)
     }
 
     /// `Track::score` → 展示串。取「不超过该分数的最大档位」，与站点网页一致。
@@ -150,10 +148,7 @@ impl Kitsu {
     }
 
     async fn refresh(&self, oauth: &KitsuOAuth) -> Result<KitsuOAuth> {
-        let refresh_token = oauth
-            .refresh_token
-            .clone()
-            .ok_or_else(|| DomainError::token_expired(self.name()))?;
+        let refresh_token = oauth.refresh_token.clone().ok_or_else(|| DomainError::token_expired(self.name()))?;
         let app = self.require_oauth_app()?;
         let resp = self
             .ctx
@@ -198,10 +193,7 @@ impl Kitsu {
         if let Some(b) = body {
             req = req.header(reqwest::header::CONTENT_TYPE, VND_API_JSON).json(&b);
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| DomainError::tracker(format!("Kitsu 请求失败：{e}")))?;
+        let resp = req.send().await.map_err(|e| DomainError::tracker(format!("Kitsu 请求失败：{e}")))?;
         check(&self.ctx, KITSU, self.name(), resp).await
     }
 
@@ -229,9 +221,8 @@ impl Kitsu {
     }
 
     async fn update_lib_manga(&self, track: &Track) -> Result<()> {
-        let library_id = track
-            .library_id
-            .ok_or_else(|| DomainError::tracker("Kitsu：条目缺少 library_id，无法更新"))?;
+        let library_id =
+            track.library_id.ok_or_else(|| DomainError::tracker("Kitsu：条目缺少 library_id，无法更新"))?;
         let body = json!({
             "data": {
                 "type": "libraryEntries",
@@ -246,26 +237,19 @@ impl Kitsu {
                 }
             }
         });
-        self.authed(
-            reqwest::Method::PATCH,
-            &format!("{BASE_URL}library-entries/{library_id}"),
-            Some(body),
-        )
-        .await?;
+        self.authed(reqwest::Method::PATCH, &format!("{BASE_URL}library-entries/{library_id}"), Some(body)).await?;
         Ok(())
     }
 
     async fn remove_lib_manga(&self, library_id: i64) -> Result<()> {
-        self.authed(reqwest::Method::DELETE, &format!("{BASE_URL}library-entries/{library_id}"), None)
-            .await?;
+        self.authed(reqwest::Method::DELETE, &format!("{BASE_URL}library-entries/{library_id}"), None).await?;
         Ok(())
     }
 
     /// 对应上游 `findLibManga`。用户列表里没有、或站点没带回作品时返回 `None`。
     async fn find_lib_manga(&self, remote_id: i64, user_id: &str) -> Result<Option<Track>> {
-        let url = format!(
-            "{BASE_URL}library-entries?filter[manga_id]={remote_id}&filter[user_id]={user_id}&include=manga"
-        );
+        let url =
+            format!("{BASE_URL}library-entries?filter[manga_id]={remote_id}&filter[user_id]={user_id}&include=manga");
         let value = self.authed(reqwest::Method::GET, &url, None).await?;
         let result: KitsuListSearchResult = serde_json::from_value(value)
             .map_err(|e| DomainError::tracker(format!("Kitsu 列表项响应无法解析：{e}")))?;
@@ -277,9 +261,7 @@ impl Kitsu {
         let value = self.authed(reqwest::Method::GET, &url, None).await?;
         let result: KitsuListSearchResult = serde_json::from_value(value)
             .map_err(|e| DomainError::tracker(format!("Kitsu 列表项响应无法解析：{e}")))?;
-        result
-            .first_to_track()?
-            .ok_or_else(|| DomainError::tracker("Kitsu：用户列表里找不到该作品"))
+        result.first_to_track()?.ok_or_else(|| DomainError::tracker("Kitsu：用户列表里找不到该作品"))
     }
 
     async fn search_api(&self, query: &str) -> Result<Vec<TrackSearch>> {
@@ -299,8 +281,8 @@ impl Kitsu {
             .await
             .map_err(|e| DomainError::tracker(format!("Kitsu 搜索失败：{e}")))?;
         let value = check(&self.ctx, KITSU, self.name(), resp).await?;
-        let hits: KitsuAlgoliaSearchResult = serde_json::from_value(value)
-            .map_err(|e| DomainError::tracker(format!("Kitsu 搜索响应无法解析：{e}")))?;
+        let hits: KitsuAlgoliaSearchResult =
+            serde_json::from_value(value).map_err(|e| DomainError::tracker(format!("Kitsu 搜索响应无法解析：{e}")))?;
         Ok(hits
             .hits
             .iter()
@@ -335,15 +317,10 @@ impl Kitsu {
     ///
     /// 对应 Mihon `KitsuApi.getCurrentUser()`；`login` 与 `refresh_user` 共用。
     async fn sync_current_user(&self) -> Result<String> {
-        let user = self
-            .authed(reqwest::Method::GET, &format!("{BASE_URL}users?filter[self]=true"), None)
-            .await?;
-        let result: KitsuCurrentUserResult = serde_json::from_value(user)
-            .map_err(|e| DomainError::tracker(format!("Kitsu 用户信息无法解析：{e}")))?;
-        let current = result
-            .data
-            .first()
-            .ok_or_else(|| DomainError::tracker("Kitsu：拿不到当前用户 id"))?;
+        let user = self.authed(reqwest::Method::GET, &format!("{BASE_URL}users?filter[self]=true"), None).await?;
+        let result: KitsuCurrentUserResult =
+            serde_json::from_value(user).map_err(|e| DomainError::tracker(format!("Kitsu 用户信息无法解析：{e}")))?;
+        let current = result.data.first().ok_or_else(|| DomainError::tracker("Kitsu：拿不到当前用户 id"))?;
         self.save_rating_system(current.attributes.rating_system.as_deref()).await?;
         Ok(current.id.clone())
     }
@@ -423,8 +400,8 @@ impl TrackerService for Kitsu {
             .await
             .map_err(|e| DomainError::tracker(format!("Kitsu 登录失败：{e}")))?;
         let value = check(&self.ctx, KITSU, self.name(), resp).await?;
-        let oauth: KitsuOAuth = serde_json::from_value(value)
-            .map_err(|e| DomainError::tracker(format!("Kitsu 登录响应无法解析：{e}")))?;
+        let oauth: KitsuOAuth =
+            serde_json::from_value(value).map_err(|e| DomainError::tracker(format!("Kitsu 登录响应无法解析：{e}")))?;
         self.save_token(Some(&oauth)).await?;
 
         let user_id = self.sync_current_user().await?;
@@ -478,9 +455,8 @@ impl TrackerService for Kitsu {
     }
 
     async fn refresh(&self, track: &mut Track) -> Result<()> {
-        let library_id = track
-            .library_id
-            .ok_or_else(|| DomainError::tracker("Kitsu：条目缺少 library_id，无法刷新"))?;
+        let library_id =
+            track.library_id.ok_or_else(|| DomainError::tracker("Kitsu：条目缺少 library_id，无法刷新"))?;
         let remote = self.get_lib_manga(library_id).await?;
         track.copy_personal_from(&remote, true);
         track.total_chapters = remote.total_chapters;
@@ -531,11 +507,7 @@ fn to_api_score(score: f64) -> Option<i32> {
 
 /// 对应上游 `DecimalFormat("0.#")`：整数不带小数点。
 fn format_half(v: f64) -> String {
-    if (v.fract()).abs() < f64::EPSILON {
-        format!("{}", v as i64)
-    } else {
-        format!("{v:.1}")
-    }
+    if (v.fract()).abs() < f64::EPSILON { format!("{}", v as i64) } else { format!("{v:.1}") }
 }
 
 /// 对应上游 `KitsuDateHelper.convert`：本地时间按 `...Z` 的格式发出去。
@@ -544,10 +516,7 @@ fn kitsu_date(ms: i64) -> Option<String> {
     if ms == 0 {
         return None;
     }
-    chrono::Local
-        .timestamp_millis_opt(ms)
-        .single()
-        .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
+    chrono::Local.timestamp_millis_opt(ms).single().map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
 }
 
 /// 对应上游 `KitsuDateHelper.parse`。
@@ -559,11 +528,7 @@ fn parse_kitsu_date(s: Option<&str>) -> i64 {
     let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.3fZ") else {
         return 0;
     };
-    chrono::Local
-        .from_local_datetime(&naive)
-        .single()
-        .map(|dt| dt.timestamp_millis())
-        .unwrap_or(0)
+    chrono::Local.from_local_datetime(&naive).single().map(|dt| dt.timestamp_millis()).unwrap_or(0)
 }
 
 fn urlencode(s: &str) -> String {
@@ -718,10 +683,7 @@ struct KitsuAlgoliaSearchItem {
 
 impl KitsuAlgoliaSearchItem {
     fn to_track_search(&self) -> TrackSearch {
-        let start_date = self
-            .start_date
-            .and_then(|secs| super::service::format_date(secs * 1000))
-            .unwrap_or_default();
+        let start_date = self.start_date.and_then(|secs| super::service::format_date(secs * 1000)).unwrap_or_default();
         TrackSearch {
             tracker_id: KITSU,
             remote_id: self.id,
@@ -812,8 +774,7 @@ struct KitsuCover {
 
 /// JSON:API 的 `id` 是字符串，落进 `Track` 的 `i64` 字段前要解析。
 fn json_api_id(raw: &str) -> Result<i64> {
-    raw.parse()
-        .map_err(|_| DomainError::tracker(format!("Kitsu：id「{raw}」不是数字")))
+    raw.parse().map_err(|_| DomainError::tracker(format!("Kitsu：id「{raw}」不是数字")))
 }
 
 /// 对应 Mihon `KitsuApi.getMangaDetails` 里的 `matches(Regex("\\d+"))`：

@@ -155,14 +155,14 @@ impl HttpSandboxFetcher {
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into(),
-            client: reqwest::Client::builder()
-                .connect_timeout(std::time::Duration::from_secs(5))
-                // 本地回环绝不走代理：reqwest 默认读取 HTTP_PROXY/HTTPS_PROXY 等
-                // 环境变量（Clash 常设置），会把 127.0.0.1:8091 也转发到代理，
-                // 代理无法连接该端口返回 502 Bad Gateway（install reload 失败）。
-                .no_proxy()
-                .build()
-                .expect("reqwest client"),
+            client: crate::http::build_client(
+                reqwest::Client::builder()
+                    .connect_timeout(std::time::Duration::from_secs(5))
+                    // 本地回环绝不走代理：reqwest 默认读取 HTTP_PROXY/HTTPS_PROXY 等
+                    // 环境变量（Clash 常设置），会把 127.0.0.1:8091 也转发到代理，
+                    // 代理无法连接该端口返回 502 Bad Gateway（install reload 失败）。
+                    .no_proxy(),
+            ),
         }
     }
 
@@ -394,10 +394,7 @@ impl SourceFetcher for HttpSandboxFetcher {
         }
         let json: serde_json::Value = r.json().await.map_err(DomainError::from)?;
         // /source/{id}/filters 返回 {"filters":[...]}；兼容纯数组
-        Ok(json
-            .get("filters")
-            .cloned()
-            .unwrap_or_else(|| if json.is_array() { json } else { serde_json::json!([]) }))
+        Ok(json.get("filters").cloned().unwrap_or_else(|| if json.is_array() { json } else { serde_json::json!([]) }))
     }
 
     async fn fetch_pages(
@@ -438,13 +435,11 @@ fn kill_port_listener(port: u16) {
         let text = String::from_utf8_lossy(&out.stdout);
         for line in text.lines() {
             let l = line.to_ascii_lowercase();
-            if l.contains(&format!(":{port}")) && l.contains("listening")
+            if l.contains(&format!(":{port}"))
+                && l.contains("listening")
                 && let Some(pid) = line.split_whitespace().last()
             {
-                let _ = Command::new("taskkill")
-                    .args(["/F", "/PID", pid])
-                    .creation_flags(0x08000000)
-                    .output();
+                let _ = Command::new("taskkill").args(["/F", "/PID", pid]).creation_flags(0x08000000).output();
             }
         }
     }
@@ -610,8 +605,7 @@ impl SandboxProcess {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
         }
-        let mut child = spawn_java(jar_path, port)
-            .map_err(|e| DomainError::Sandbox(format!("spawn sandbox: {e}")))?;
+        let mut child = spawn_java(jar_path, port).map_err(|e| DomainError::Sandbox(format!("spawn sandbox: {e}")))?;
         let base = format!("http://127.0.0.1:{port}");
         let fetcher = HttpSandboxFetcher::new(base.clone());
         // wait for health with retries (up to ~15s); bail if OUR child died
@@ -653,7 +647,9 @@ impl SandboxProcess {
                 tracing::warn!("jvm sandbox lost (health failed {fails} consecutive times); restarting on port {port}");
                 // kill the old JVM so the port is released
                 {
-                    let mut guard = child.lock().unwrap();
+                    // 锁中毒只是说明上一个持锁线程 panic 过，`Option<Child>` 仍然可读；
+                    // 这里要的是"把残留 JVM 杀掉"，中毒不该让监控任务先崩一步。
+                    let mut guard = child.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     let _ = fetch_child_kill(&mut guard);
                 }
                 // wait for the port to free up (bind probe)
@@ -676,7 +672,7 @@ impl SandboxProcess {
                             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                         }
                         if ok {
-                            *child.lock().unwrap() = Some(c);
+                            *child.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(c);
                             tracing::info!("jvm sandbox restarted on port {port}");
                         } else {
                             tracing::warn!("jvm sandbox restart failed to become healthy");
@@ -709,7 +705,8 @@ fn fetch_child_kill(child: &mut Option<std::process::Child>) -> std::io::Result<
 impl Drop for SandboxProcess {
     fn drop(&mut self) {
         self.monitor.abort();
-        let mut guard = self.child.lock().unwrap();
+        // `Drop` 里更不能 panic：中毒时也要把子进程收干净，否则 JVM 会变成孤儿进程。
+        let mut guard = self.child.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let _ = fetch_child_kill(&mut guard);
     }
 }

@@ -218,9 +218,7 @@ mod tests {
     use crate::tracker::{BANGUMI, KITSU};
 
     fn temp_file() -> std::path::PathBuf {
-        std::env::temp_dir()
-            .join(format!("tracker-oauth-test-{}", uuid::Uuid::new_v4()))
-            .join("trackers.json")
+        std::env::temp_dir().join(format!("tracker-oauth-test-{}", uuid::Uuid::new_v4())).join("trackers.json")
     }
 
     #[test]

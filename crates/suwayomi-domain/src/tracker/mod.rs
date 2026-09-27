@@ -36,11 +36,7 @@ pub use store::{TrackerCredential, TrackerStore};
 /// 补丁里给了就用它（去掉首尾空白）；留空或全空白 = 回到内置默认值。
 fn filled(value: String, fallback: &str) -> String {
     let trimmed = value.trim();
-    if trimmed.is_empty() {
-        fallback.to_string()
-    } else {
-        trimmed.to_string()
-    }
+    if trimmed.is_empty() { fallback.to_string() } else { trimmed.to_string() }
 }
 
 /// 桌面端默认 UA。部分站点（MAL）缺 UA 会直接拒请求。
@@ -237,11 +233,7 @@ impl TrackerManager {
 
     /// 同 [`Self::new`]，但用 `trackers.json` 里读到的站点应用凭据，并记住它的位置
     /// 以便设置页改动落盘。
-    pub fn with_oauth(
-        db: Db,
-        oauth: Arc<RwLock<TrackerOAuthApps>>,
-        oauth_config: std::path::PathBuf,
-    ) -> Self {
+    pub fn with_oauth(db: Db, oauth: Arc<RwLock<TrackerOAuthApps>>, oauth_config: std::path::PathBuf) -> Self {
         Self::build(db, oauth, Some(oauth_config))
     }
 
@@ -281,19 +273,13 @@ impl TrackerManager {
             client_secret: patch
                 .client_secret
                 .map_or(builtin.client_secret.clone(), |v| filled(v, &builtin.client_secret)),
-            redirect_uri: patch
-                .redirect_uri
-                .map_or(builtin.redirect_uri.clone(), |v| filled(v, &builtin.redirect_uri)),
+            redirect_uri: patch.redirect_uri.map_or(builtin.redirect_uri.clone(), |v| filled(v, &builtin.redirect_uri)),
         };
 
-        let path = self
-            .oauth_config
-            .as_ref()
-            .ok_or_else(|| DomainError::tracker("没有可写的 trackers.json 路径"))?;
+        let path = self.oauth_config.as_ref().ok_or_else(|| DomainError::tracker("没有可写的 trackers.json 路径"))?;
         let mut guard = self.oauth.write().unwrap_or_else(|e| e.into_inner());
         guard.set_app(tracker_id, app);
-        oauth::save(path, &guard)
-            .map_err(|e| DomainError::tracker(format!("写入 trackers.json 失败：{e}")))?;
+        oauth::save(path, &guard).map_err(|e| DomainError::tracker(format!("写入 trackers.json 失败：{e}")))?;
         drop(guard);
         tracing::info!("tracker oauth app updated: {} ({})", tracker_id, path.display());
         Ok(())
@@ -346,7 +332,13 @@ impl TrackerManager {
     /// 失败时**不清**已有凭据 —— 上游 REST `Track.login` / GraphQL
     /// `loginTrackerCredentials` 都是直接调 `authCallback` / `loginImpl`，没有失败
     /// 兜底；站点报错后旧的登录态仍然保留。
-    pub async fn login(&self, tracker_id: i32, callback_url: Option<&str>, username: &str, password: &str) -> Result<()> {
+    pub async fn login(
+        &self,
+        tracker_id: i32,
+        callback_url: Option<&str>,
+        username: &str,
+        password: &str,
+    ) -> Result<()> {
         let tracker = self.get(tracker_id)?;
         match callback_url {
             Some(url) => tracker.auth_callback(url).await,
@@ -414,8 +406,7 @@ impl TrackerManager {
             start_date = Some(oldest.last_read_at * 1000);
         }
         if last_chapter_read.is_some() || start_date.is_some() {
-            self.update(TrackUpdate { record_id, last_chapter_read, start_date, ..Default::default() })
-                .await?;
+            self.update(TrackUpdate { record_id, last_chapter_read, start_date, ..Default::default() }).await?;
         }
         Ok(record_id)
     }
@@ -475,10 +466,7 @@ impl TrackerManager {
         {
             tracker.delete(&Track::from_row(&row)).await?;
         }
-        suwayomi_db::query("DELETE FROM track_record WHERE id = ?")
-            .bind(record_id)
-            .execute(&self.db)
-            .await?;
+        suwayomi_db::query("DELETE FROM track_record WHERE id = ?").bind(record_id).execute(&self.db).await?;
         Ok(())
     }
 

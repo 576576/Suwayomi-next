@@ -21,9 +21,11 @@ impl PageService {
     /// Page list for a chapter (by manga + source_order).
     pub async fn get_page_list_by_index(&self, manga_id: i32, chapter_index: i32) -> Result<Vec<PageDataClass>> {
         let sql = bind_placeholders(
-            "SELECT p.* FROM page p INNER JOIN chapter c ON c.id = p.chapter WHERE c.manga = ? AND c.source_order = ? ORDER BY p.\"index\" ASC");
-        let rows =
-            { suwayomi_db::query_as::<PageRow>(&sql).bind(manga_id).bind(chapter_index).fetch_all(self.db.pool()).await? };
+            "SELECT p.* FROM page p INNER JOIN chapter c ON c.id = p.chapter WHERE c.manga = ? AND c.source_order = ? ORDER BY p.\"index\" ASC",
+        );
+        let rows = {
+            suwayomi_db::query_as::<PageRow>(&sql).bind(manga_id).bind(chapter_index).fetch_all(self.db.pool()).await?
+        };
         Ok(rows
             .iter()
             .map(|r| PageDataClass { index: r.index, image_url: r.image_url.clone().unwrap_or_default() })

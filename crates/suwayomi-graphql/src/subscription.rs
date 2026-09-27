@@ -3,14 +3,12 @@
 //! channel (download / update / sync events).
 
 use async_graphql::{Context, InputObject, SimpleObject, Subscription};
-use futures::stream::{self, Stream};
 use futures::StreamExt;
+use futures::stream::{self, Stream};
 
 use suwayomi_domain::download::DownloadEvent;
 
-use crate::mutation_b4::{
-    DownloadUpdates, LibraryUpdateStatus,
-};
+use crate::mutation_b4::{DownloadUpdates, LibraryUpdateStatus};
 use crate::query::UpdateStatusPayload;
 
 #[derive(SimpleObject, Clone)]

@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
+use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
 use base64::Engine;
@@ -394,11 +394,8 @@ fn html_response(status: StatusCode, html: String, set_cookie: Option<String>) -
 }
 
 fn login_form(redirect: &str, error: &str) -> String {
-    let error_html = if error.is_empty() {
-        String::new()
-    } else {
-        format!("<p class=\"error\">{}</p>", escape_html(error))
-    };
+    let error_html =
+        if error.is_empty() { String::new() } else { format!("<p class=\"error\">{}</p>", escape_html(error)) };
     html_document(
         "Sign in",
         &format!(
@@ -415,12 +412,7 @@ fn login_form(redirect: &str, error: &str) -> String {
 }
 
 fn escape_html(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
+    value.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
 }
 
 /// `GET /login.html`
@@ -441,10 +433,7 @@ pub async fn login_submit(State(state): State<AppState>, uri: Uri, body: String)
     if state.auth.verify_credentials(&user, &password) {
         return (
             StatusCode::SEE_OTHER,
-            [
-                (header::SET_COOKIE, state.auth.session_set_cookie(now())),
-                (header::LOCATION, redirect),
-            ],
+            [(header::SET_COOKIE, state.auth.session_set_cookie(now())), (header::LOCATION, redirect)],
         )
             .into_response();
     }
@@ -461,10 +450,7 @@ pub async fn login_submit(State(state): State<AppState>, uri: Uri, body: String)
 pub async fn logout(State(state): State<AppState>) -> Response {
     (
         StatusCode::SEE_OTHER,
-        [
-            (header::SET_COOKIE, state.auth.session_clear_cookie()),
-            (header::LOCATION, "/login.html".to_string()),
-        ],
+        [(header::SET_COOKIE, state.auth.session_clear_cookie()), (header::LOCATION, "/login.html".to_string())],
     )
         .into_response()
 }
@@ -522,10 +508,7 @@ mod tests {
         let root = std::env::temp_dir();
         let root = root.canonicalize().unwrap();
         assert!(safe_join(&root, "/no-such-spa-route").is_none());
-        assert_eq!(
-            safe_rel_path(&root, "/no-such-spa-route"),
-            Some(root.join("no-such-spa-route"))
-        );
+        assert_eq!(safe_rel_path(&root, "/no-such-spa-route"), Some(root.join("no-such-spa-route")));
         assert_eq!(safe_rel_path(&root, "/library"), Some(root.join("library")));
         // 越界仍然拒绝
         assert!(safe_rel_path(&root, "/../secret").is_none());

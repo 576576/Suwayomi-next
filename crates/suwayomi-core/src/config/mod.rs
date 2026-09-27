@@ -362,13 +362,16 @@ impl RuntimeConfig {
     }
 
     /// 当前配置快照。
+    ///
+    /// 锁中毒只说明"某个持有写锁的线程 panic 过"，配置值本身仍然完整；
+    /// 这种情况继续读旧值重启不了设置页，直接 panic 反而会把一次读配置变成进程退出。
     pub fn snapshot(&self) -> ServerConfig {
-        self.0.read().expect("config lock poisoned").clone()
+        self.0.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     /// 换上一份新配置，之后的 `snapshot` 返回新值。
     pub fn replace(&self, config: ServerConfig) {
-        *self.0.write().expect("config lock poisoned") = config;
+        *self.0.write().unwrap_or_else(std::sync::PoisonError::into_inner) = config;
     }
 }
 
@@ -399,10 +402,7 @@ mod tests {
         assert_eq!(resolve_setting_path("rel/dir", data), std::path::PathBuf::from("rel/dir"));
         assert_eq!(resolve_setting_path("", data), std::path::PathBuf::new());
         // 占位符在中间/后面都不算
-        assert_eq!(
-            resolve_setting_path("data/%DATADIR%", data),
-            std::path::PathBuf::from("data/%DATADIR%")
-        );
+        assert_eq!(resolve_setting_path("data/%DATADIR%", data), std::path::PathBuf::from("data/%DATADIR%"));
         // 多字节开头的值不会因为按字节切片而 panic
         assert_eq!(resolve_setting_path("数据目录/%DATADIR%", data), std::path::PathBuf::from("数据目录/%DATADIR%"));
     }

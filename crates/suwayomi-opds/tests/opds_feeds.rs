@@ -2,10 +2,13 @@
 //! (no external server needed). Inserts seed rows, builds each feed, and
 //! asserts the resulting Atom/OPDS XML.
 
+// 集成测试里 panic 就是断言失败的表达方式，不需要改成错误传播。
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo)]
+
+use std::sync::Arc;
 use suwayomi_core::db::Db;
 use suwayomi_domain::source::StubFetcher;
 use suwayomi_opds::feeds::{self, FeedCtx};
-use std::sync::Arc;
 
 async fn seed() -> Db {
     let db = Db::sqlite_in_memory().await.expect("connect sqlite");
@@ -110,12 +113,7 @@ async fn seed() -> Db {
 }
 
 fn ctx(db: &Db) -> FeedCtx<'_> {
-    FeedCtx {
-        db,
-        base_url: "/api/opds/v1.2",
-        lang: "en",
-        fetcher: Some(Arc::new(StubFetcher)),
-    }
+    FeedCtx { db, base_url: "/api/opds/v1.2", lang: "en", fetcher: Some(Arc::new(StubFetcher)) }
 }
 
 #[tokio::test]

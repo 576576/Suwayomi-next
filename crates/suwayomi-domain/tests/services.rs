@@ -5,6 +5,9 @@
 //! Requires `DATABASE_URL` (e.g. postgres://postgres:postgres@localhost:5432/postgres);
 //! skipped when absent.
 
+// 集成测试里 panic 就是断言失败的表达方式，不需要改成错误传播。
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo)]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -51,7 +54,8 @@ async fn setup() -> Option<Services> {
     db.migrate().await.expect("migrate");
     let pool = db.pool();
     for t in BUSINESS_TABLES {
-        let _ = suwayomi_db::query(&format!("TRUNCATE TABLE suwayomi.{t} RESTART IDENTITY CASCADE")).execute(pool).await;
+        let _ =
+            suwayomi_db::query(&format!("TRUNCATE TABLE suwayomi.{t} RESTART IDENTITY CASCADE")).execute(pool).await;
     }
 
     let fetcher: Arc<dyn suwayomi_domain::source::SourceFetcher> = Arc::new(StubFetcher);
@@ -292,14 +296,16 @@ async fn update_chapter_progress_marks_read_at_last_page() {
         return;
     };
     let manga_id = create_library_manga(&db, "Progress", 1).await;
-    suwayomi_db::query("INSERT INTO suwayomi.chapter (url, name, source_order, page_count, manga) VALUES ($1, $2, $3, 3, $4)")
-        .bind("/c/1")
-        .bind("C1")
-        .bind(1)
-        .bind(manga_id)
-        .execute(pool(&db))
-        .await
-        .unwrap();
+    suwayomi_db::query(
+        "INSERT INTO suwayomi.chapter (url, name, source_order, page_count, manga) VALUES ($1, $2, $3, 3, $4)",
+    )
+    .bind("/c/1")
+    .bind("C1")
+    .bind(1)
+    .bind(manga_id)
+    .execute(pool(&db))
+    .await
+    .unwrap();
     let id = chapter.update_chapter_progress(manga_id, 1, 2).await.unwrap();
     let row = chapter.fetch_by_id(id).await.unwrap();
     assert!(row.read);
@@ -321,12 +327,14 @@ async fn recent_chapters_requires_library_membership() {
     .execute(pool(&db))
     .await
     .unwrap();
-    suwayomi_db::query("INSERT INTO suwayomi.chapter (url, name, source_order, fetched_at, manga) VALUES ($1, $2, 1, 999, 1)")
-        .bind("/c/1")
-        .bind("C1")
-        .execute(pool(&db))
-        .await
-        .unwrap();
+    suwayomi_db::query(
+        "INSERT INTO suwayomi.chapter (url, name, source_order, fetched_at, manga) VALUES ($1, $2, 1, 999, 1)",
+    )
+    .bind("/c/1")
+    .bind("C1")
+    .execute(pool(&db))
+    .await
+    .unwrap();
     let page: PaginatedList<suwayomi_core::models::MangaChapterDataClass> =
         chapter.get_recent_chapters(0).await.unwrap();
     assert!(page.page.is_empty(), "non-library manga chapters must not appear");
@@ -357,11 +365,14 @@ async fn manga_list_insert_or_update_dedupes_and_updates() {
     assert_eq!(ids2.len(), 2);
     assert_eq!(ids2[0], ids1[0]);
 
-    let count: i64 = suwayomi_db::query_scalar("SELECT count(*) FROM suwayomi.manga").fetch_one(pool(&db)).await.unwrap();
+    let count: i64 =
+        suwayomi_db::query_scalar("SELECT count(*) FROM suwayomi.manga").fetch_one(pool(&db)).await.unwrap();
     assert_eq!(count, 3, "no duplicate manga rows for repeated source urls");
 
-    let title: String =
-        suwayomi_db::query_scalar("SELECT title FROM suwayomi.manga WHERE url = '/m/1'").fetch_one(pool(&db)).await.unwrap();
+    let title: String = suwayomi_db::query_scalar("SELECT title FROM suwayomi.manga WHERE url = '/m/1'")
+        .fetch_one(pool(&db))
+        .await
+        .unwrap();
     assert_eq!(title, "One v2", "existing non-library manga title should be updated");
 }
 

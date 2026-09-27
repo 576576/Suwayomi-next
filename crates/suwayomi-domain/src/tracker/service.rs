@@ -31,11 +31,7 @@ impl TrackerCtx {
         Self { store, http, oauth: Arc::new(RwLock::new(TrackerOAuthApps::default())) }
     }
 
-    pub fn with_oauth(
-        store: TrackerStore,
-        http: reqwest::Client,
-        oauth: Arc<RwLock<TrackerOAuthApps>>,
-    ) -> Self {
+    pub fn with_oauth(store: TrackerStore, http: reqwest::Client, oauth: Arc<RwLock<TrackerOAuthApps>>) -> Self {
         Self { store, http, oauth }
     }
 
@@ -74,8 +70,7 @@ pub trait TrackerService: Send + Sync {
 
     /// 同 [`Self::oauth_app`]，缺失时报错 —— OAuth 站点拿它取用。
     fn require_oauth_app(&self) -> Result<AppCredentials> {
-        self.oauth_app()
-            .ok_or_else(|| DomainError::tracker(format!("{}：没有可用的应用凭据", self.name())))
+        self.oauth_app().ok_or_else(|| DomainError::tracker(format!("{}：没有可用的应用凭据", self.name())))
     }
 
     fn supports_reading_dates(&self) -> bool {
@@ -218,10 +213,7 @@ pub(crate) fn format_date(ms: i64) -> Option<String> {
     if ms == 0 {
         return None;
     }
-    chrono::Local
-        .timestamp_millis_opt(ms)
-        .single()
-        .map(|dt| dt.format("%Y-%m-%d").to_string())
+    chrono::Local.timestamp_millis_opt(ms).single().map(|dt| dt.format("%Y-%m-%d").to_string())
 }
 
 /// `yyyy-MM-dd` → 本地当天零点的 epoch 毫秒。解析失败（如站点返回 `2016-00-00`）返回 0。
@@ -233,9 +225,5 @@ pub(crate) fn parse_date(s: &str) -> i64 {
     let Some(naive) = date.and_hms_opt(0, 0, 0) else {
         return 0;
     };
-    chrono::Local
-        .from_local_datetime(&naive)
-        .single()
-        .map(|dt| dt.timestamp_millis())
-        .unwrap_or(0)
+    chrono::Local.from_local_datetime(&naive).single().map(|dt| dt.timestamp_millis()).unwrap_or(0)
 }

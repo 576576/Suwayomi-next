@@ -11,7 +11,7 @@ use suwayomi_core::config::{
     KoreaderSyncConflictStrategy as CoreKoreaderSyncConflictStrategy, ServerConfig,
 };
 
-use crate::scalars::{parse_iso8601_duration, DurationScalar, LongString};
+use crate::scalars::{DurationScalar, LongString, parse_iso8601_duration};
 
 /// `ServerConfig` 里 jwt 时长的默认值（与 `config::ServerConfig::default` 一致）。
 const DEFAULT_TOKEN_EXPIRY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
@@ -335,12 +335,8 @@ impl SettingsType {
             initial_open_in_browser_enabled: c.initial_open_in_browser_enabled,
             ip: c.ip.clone(),
             jwt_audience: c.jwt_audience.clone(),
-            jwt_refresh_expiry: DurationScalar(
-                parse_duration(&c.jwt_refresh_expiry).unwrap_or(DEFAULT_REFRESH_EXPIRY),
-            ),
-            jwt_token_expiry: DurationScalar(
-                parse_duration(&c.jwt_token_expiry).unwrap_or(DEFAULT_TOKEN_EXPIRY),
-            ),
+            jwt_refresh_expiry: DurationScalar(parse_duration(&c.jwt_refresh_expiry).unwrap_or(DEFAULT_REFRESH_EXPIRY)),
+            jwt_token_expiry: DurationScalar(parse_duration(&c.jwt_token_expiry).unwrap_or(DEFAULT_TOKEN_EXPIRY)),
             kcef_enabled: false, // R3: CEF removed (Tauri shell instead)
             koreader_sync_checksum_method: c.koreader_sync_checksum_method.into(),
             koreader_sync_device_id: String::new(),
@@ -410,17 +406,21 @@ impl SettingsType {
         };
         self.auth_username = ov_str(o, "authUsername", self.auth_username.clone());
         self.auth_password = ov_str(o, "authPassword", self.auth_password.clone());
-        self.auto_backup_include_categories = ov_bool(o, "autoBackupIncludeCategories", self.auto_backup_include_categories);
+        self.auto_backup_include_categories =
+            ov_bool(o, "autoBackupIncludeCategories", self.auto_backup_include_categories);
         self.auto_backup_include_chapters = ov_bool(o, "autoBackupIncludeChapters", self.auto_backup_include_chapters);
-        self.auto_backup_include_client_data = ov_bool(o, "autoBackupIncludeClientData", self.auto_backup_include_client_data);
+        self.auto_backup_include_client_data =
+            ov_bool(o, "autoBackupIncludeClientData", self.auto_backup_include_client_data);
         self.auto_backup_include_history = ov_bool(o, "autoBackupIncludeHistory", self.auto_backup_include_history);
         self.auto_backup_include_manga = ov_bool(o, "autoBackupIncludeManga", self.auto_backup_include_manga);
         self.auto_backup_include_server_settings =
             ov_bool(o, "autoBackupIncludeServerSettings", self.auto_backup_include_server_settings);
         self.auto_backup_include_tracking = ov_bool(o, "autoBackupIncludeTracking", self.auto_backup_include_tracking);
-        self.auto_download_ignore_re_uploads = ov_bool(o, "autoDownloadIgnoreReUploads", self.auto_download_ignore_re_uploads);
+        self.auto_download_ignore_re_uploads =
+            ov_bool(o, "autoDownloadIgnoreReUploads", self.auto_download_ignore_re_uploads);
         self.auto_download_new_chapters = ov_bool(o, "autoDownloadNewChapters", self.auto_download_new_chapters);
-        self.auto_download_new_chapters_limit = ov_i32(o, "autoDownloadNewChaptersLimit", self.auto_download_new_chapters_limit);
+        self.auto_download_new_chapters_limit =
+            ov_i32(o, "autoDownloadNewChaptersLimit", self.auto_download_new_chapters_limit);
         self.auto_backup_frequency = ov_i32(o, "autoBackupFrequency", self.auto_backup_frequency);
         self.backup_interval = ov_i32(o, "backupInterval", self.backup_interval);
         self.backup_path = ov_str(o, "backupPath", self.backup_path.clone());
@@ -467,8 +467,10 @@ impl SettingsType {
         };
         self.koreader_sync_percentage_tolerance =
             ov_f64(o, "koreaderSyncPercentageTolerance", self.koreader_sync_percentage_tolerance);
-        self.koreader_sync_strategy_backward = ov_conflict(o, "koreaderSyncStrategyBackward", self.koreader_sync_strategy_backward);
-        self.koreader_sync_strategy_forward = ov_conflict(o, "koreaderSyncStrategyForward", self.koreader_sync_strategy_forward);
+        self.koreader_sync_strategy_backward =
+            ov_conflict(o, "koreaderSyncStrategyBackward", self.koreader_sync_strategy_backward);
+        self.koreader_sync_strategy_forward =
+            ov_conflict(o, "koreaderSyncStrategyForward", self.koreader_sync_strategy_forward);
         self.local_source_path = ov_str(o, "localSourcePath", self.local_source_path.clone());
         self.max_log_file_size = ov_str(o, "maxLogFileSize", self.max_log_file_size.clone());
         self.max_log_files = ov_i32(o, "maxLogFiles", self.max_log_files);
@@ -485,13 +487,16 @@ impl SettingsType {
             Some("DESC") => crate::query::SortOrder::Desc,
             _ => self.opds_chapter_sort_order,
         };
-        self.opds_enable_page_read_progress = ov_bool(o, "opdsEnablePageReadProgress", self.opds_enable_page_read_progress);
+        self.opds_enable_page_read_progress =
+            ov_bool(o, "opdsEnablePageReadProgress", self.opds_enable_page_read_progress);
         self.opds_items_per_page = ov_i32(o, "opdsItemsPerPage", self.opds_items_per_page);
         self.opds_mark_as_read_on_download = ov_bool(o, "opdsMarkAsReadOnDownload", self.opds_mark_as_read_on_download);
         self.opds_show_only_downloaded_chapters =
             ov_bool(o, "opdsShowOnlyDownloadedChapters", self.opds_show_only_downloaded_chapters);
-        self.opds_show_only_unread_chapters = ov_bool(o, "opdsShowOnlyUnreadChapters", self.opds_show_only_unread_chapters);
-        self.opds_skip_chapter_metadata_feed = ov_bool(o, "opdsSkipChapterMetadataFeed", self.opds_skip_chapter_metadata_feed);
+        self.opds_show_only_unread_chapters =
+            ov_bool(o, "opdsShowOnlyUnreadChapters", self.opds_show_only_unread_chapters);
+        self.opds_skip_chapter_metadata_feed =
+            ov_bool(o, "opdsSkipChapterMetadataFeed", self.opds_skip_chapter_metadata_feed);
         self.opds_use_binary_file_sizes = ov_bool(o, "opdsUseBinaryFileSizes", self.opds_use_binary_file_sizes);
         self.port = ov_i32(o, "port", self.port);
         self.serve_conversions = ov_conversions(o, "serveConversions");
@@ -551,11 +556,7 @@ fn ov_f64(o: &serde_json::Value, k: &str, d: f64) -> f64 {
 }
 
 fn ov_dur(o: &serde_json::Value, k: &str, d: DurationScalar) -> DurationScalar {
-    o.get(k)
-        .and_then(serde_json::Value::as_str)
-        .and_then(parse_iso8601_duration)
-        .map(DurationScalar)
-        .unwrap_or(d)
+    o.get(k).and_then(serde_json::Value::as_str).and_then(parse_iso8601_duration).map(DurationScalar).unwrap_or(d)
 }
 
 fn ov_conflict(o: &serde_json::Value, k: &str, d: KoreaderSyncConflictStrategy) -> KoreaderSyncConflictStrategy {

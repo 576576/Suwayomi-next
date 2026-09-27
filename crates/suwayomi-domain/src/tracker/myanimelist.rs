@@ -209,7 +209,10 @@ impl MyAnimeList {
     /// 对应上游 `findListItem`：不在用户列表上时返回 `None`。
     async fn find_list_item(&self, track: &mut Track) -> Result<Option<Track>> {
         let token = self.bearer().await?;
-        let url = format!("{BASE_API_URL}/manga/{}?fields=num_chapters,my_list_status{{start_date,finish_date}}", track.remote_id);
+        let url = format!(
+            "{BASE_API_URL}/manga/{}?fields=num_chapters,my_list_status{{start_date,finish_date}}",
+            track.remote_id
+        );
         let value = self.ctx.auth_get(MYANIMELIST, self.name(), &url, &token).await?;
         let item: MalList = serde_json::from_value(value)
             .map_err(|e| DomainError::tracker(format!("MyAnimeList 列表项无法解析：{e}")))?;
@@ -337,8 +340,8 @@ impl TrackerService for MyAnimeList {
     }
 
     async fn auth_callback(&self, url: &str) -> Result<()> {
-        let code = extract_token(url, "code")
-            .ok_or_else(|| DomainError::tracker("MyAnimeList：回调地址里没有 code"))?;
+        let code =
+            extract_token(url, "code").ok_or_else(|| DomainError::tracker("MyAnimeList：回调地址里没有 code"))?;
         self.login(&code).await
     }
 

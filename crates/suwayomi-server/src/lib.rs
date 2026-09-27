@@ -5,15 +5,20 @@
 //! 例外：未显式给出时按 `SUWAYOMI_*` 解析）。桌面 CLI 在 `main.rs` 里组装参数；
 //! Android 宿主 App 通过 JNI 组装同一份结构（见 docs/migration/ANDROID_IMPL.md）。
 
+// 测试代码允许 panic：unwrap / expect / panic! 在断言里是常规写法，
+// 逐个改成 `?` 传播只会让失败信息更难读。生产代码不受这条影响
+// （`cfg_attr(test, ...)`）。
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo))]
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use axum::Router;
 use axum::extract::{ConnectInfo, Extension, State};
 use axum::http::StatusCode;
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::Router;
 use suwayomi_core::auth::Principal;
 use suwayomi_core::config::ServerConfig;
 use suwayomi_core::db::{Db, DbSettings};
@@ -187,8 +192,8 @@ fn build_router(
                     if !addr.ip().is_loopback() {
                         return (StatusCode::FORBIDDEN, "shutdown only allowed from loopback");
                     }
-                    let from_browser = headers.contains_key(axum::http::header::ORIGIN)
-                        || headers.contains_key("sec-fetch-site");
+                    let from_browser =
+                        headers.contains_key(axum::http::header::ORIGIN) || headers.contains_key("sec-fetch-site");
                     if !state.auth.is_disabled() && !principal.is_authenticated() && from_browser {
                         return (StatusCode::UNAUTHORIZED, "shutdown requires authentication");
                     }
@@ -204,21 +209,13 @@ fn build_router(
     // 登录流程：服务端自渲染的最小页面，不依赖 /assets/*（issue #5 的白屏就是
     // 重定向到一个并不存在的登录页，落到 SPA fallback 后又被门禁掐死 assets）。
     let login = Router::new()
-        .route(
-            "/login.html",
-            get(suwayomi_rest::auth::login_page).post(suwayomi_rest::auth::login_submit),
-        )
+        .route("/login.html", get(suwayomi_rest::auth::login_page).post(suwayomi_rest::auth::login_submit))
         .route("/logout", get(suwayomi_rest::auth::logout));
 
     let auth = middleware::from_fn_with_state(state.clone(), suwayomi_rest::auth::require_auth);
     if state.webui_dir.join("index.html").is_file() {
         tracing::info!("webui static hosting from {}", state.webui_dir.display());
-        Router::new()
-            .merge(api)
-            .merge(login)
-            .fallback(webui_fallback)
-            .layer(auth)
-            .with_state(state)
+        Router::new().merge(api).merge(login).fallback(webui_fallback).layer(auth).with_state(state)
     } else {
         Router::new()
             .route("/", get(index))
@@ -264,15 +261,8 @@ async fn local_file(State(_state): State<AppState>, path: axum::extract::Path<St
             if member.is_empty() {
                 continue;
             }
-            if let Some(bytes) =
-                suwayomi_domain::source::local::read_archive_image(&root.join(&archive_rel), &member)
-            {
-                return Response::builder()
-                    .header(axum::http::header::CONTENT_TYPE, image_content_type(&member))
-                    .header(axum::http::header::CACHE_CONTROL, "public, max-age=3600")
-                    .header(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                    .body(axum::body::Body::from(bytes))
-                    .expect("build response");
+            if let Some(bytes) = suwayomi_domain::source::local::read_archive_image(&root.join(&archive_rel), &member) {
+                return bytes_response(bytes, image_content_type(&member), true);
             }
         }
     }
@@ -283,12 +273,7 @@ async fn read_file_response(file: &std::path::Path) -> Response {
     match tokio::fs::read(file).await {
         Ok(bytes) => {
             let ct = webui_content_type(file);
-            Response::builder()
-                .header(axum::http::header::CONTENT_TYPE, ct)
-                .header(axum::http::header::CACHE_CONTROL, "public, max-age=3600")
-                .header(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .body(axum::body::Body::from(bytes))
-                .expect("build response")
+            bytes_response(bytes, ct, true)
         }
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
@@ -298,14 +283,24 @@ async fn read_file_response(file: &std::path::Path) -> Response {
 /// 它认的图片扩展名比 webui 资源那套多（gif/bmp/avif/heic）。
 async fn read_image_response(file: &std::path::Path) -> Response {
     match tokio::fs::read(file).await {
-        Ok(bytes) => Response::builder()
-            .header(axum::http::header::CONTENT_TYPE, image_content_type(&file.to_string_lossy()))
-            .header(axum::http::header::CACHE_CONTROL, "public, max-age=3600")
-            .header(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-            .body(axum::body::Body::from(bytes))
-            .expect("build response"),
+        Ok(bytes) => bytes_response(bytes, image_content_type(&file.to_string_lossy()), true),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+/// 把字节直接包成响应。
+///
+/// 四个静态托管路径以前都写 `.expect("build response")`：这里的头全是常量，
+/// `Response::builder()` 理论上不会失败，但真失败了也只该让**这一个请求** 500，
+/// 而不是让处理线程 panic（axum 会丢掉整个连接，前端看到的是断流而不是 404）。
+fn bytes_response(bytes: Vec<u8>, content_type: &str, public_cache: bool) -> Response {
+    let mut builder = Response::builder().header(axum::http::header::CONTENT_TYPE, content_type);
+    if public_cache {
+        builder = builder
+            .header(axum::http::header::CACHE_CONTROL, "public, max-age=3600")
+            .header(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+    }
+    builder.body(axum::body::Body::from(bytes)).unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 fn image_content_type(name: &str) -> &'static str {
@@ -344,10 +339,7 @@ async fn webui_fallback(State(state): State<AppState>, uri: axum::http::Uri) -> 
     match tokio::fs::read(&file).await {
         Ok(bytes) => {
             let ct = webui_content_type(&file);
-            Response::builder()
-                .header(axum::http::header::CONTENT_TYPE, ct)
-                .body(axum::body::Body::from(bytes))
-                .expect("build response")
+            bytes_response(bytes, ct, false)
         }
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
@@ -436,11 +428,7 @@ fn load_data_dir_setting(blob: Option<&serde_json::Value>, fallback: std::path::
     // `%APPDIR%/data` 就是发布布局的默认位置，`%DATADIR%/xxx` 表示"现在这个目录下的 xxx"。
     let dir = suwayomi_core::config::resolve_setting_path(&dir, &fallback);
     if dir != fallback {
-        tracing::info!(
-            "data dir from settings: {} (overrides {})",
-            dir.display(),
-            fallback.display()
-        );
+        tracing::info!("data dir from settings: {} (overrides {})", dir.display(), fallback.display());
     }
     dir
 }
@@ -617,7 +605,17 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
         std::sync::Arc::new(std::sync::RwLock::new(oauth_apps)),
         oauth_config,
     );
-    let graphql_state = suwayomi_graphql::GraphQLState::new(db.clone(), config.clone(), auth.clone(), fetcher.clone(), update.clone(), tracker.clone(), sandbox_base.clone(), webui_dir.clone(), data_dir_path.clone());
+    let graphql_state = suwayomi_graphql::GraphQLState::new(
+        db.clone(),
+        config.clone(),
+        auth.clone(),
+        fetcher.clone(),
+        update.clone(),
+        tracker.clone(),
+        sandbox_base.clone(),
+        webui_dir.clone(),
+        data_dir_path.clone(),
+    );
     // 持久化设置（`global_meta` 的 settings blob）盖到 env 基线上：KOReader 同步
     // 策略、SyncYomi 开关这类设置由服务在运行时读取，重启后必须生效。
     graphql_state.reload_runtime_config().await;
@@ -670,12 +668,9 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
         }
     };
     tracing::info!("server listening on http://{addr}");
-    axum::serve(
-        listener,
-        app.clone().into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_signal(shutdown_rx, shutdown))
-    .await?;
+    axum::serve(listener, app.clone().into_make_service_with_connect_info::<std::net::SocketAddr>())
+        .with_graceful_shutdown(shutdown_signal(shutdown_rx, shutdown))
+        .await?;
     tracing::info!("server stopped; shutting down database");
     // 先释放 router 持有的 Db/AppState/GraphQLState 引用，再关掉剩下的连接：
     // SQLite 停掉专属线程并释放文件锁，PostgreSQL 归还连接池。
@@ -688,7 +683,10 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
 
 /// 等待关闭信号（Ctrl+C / shutdown 端点 watch 通道）。优雅关闭让 Db 释放连接
 /// （否则残留连接会阻塞下次启动）、沙盒 Drop 杀 JVM。
-async fn shutdown_signal(mut rx: tokio::sync::watch::Receiver<bool>, mut host: Option<tokio::sync::watch::Receiver<bool>>) {
+async fn shutdown_signal(
+    mut rx: tokio::sync::watch::Receiver<bool>,
+    mut host: Option<tokio::sync::watch::Receiver<bool>>,
+) {
     // 宿主（Android App）没有 Ctrl+C 可发，只能靠这条通道；没有宿主时该分支永不就绪
     let host_fired = async {
         match host.as_mut() {
@@ -711,6 +709,10 @@ async fn shutdown_signal(mut rx: tokio::sync::watch::Receiver<bool>, mut host: O
 /// 不引 `android_logger` / `tracing-android`：需要的只是 liblog 里一个 C 函数。
 #[cfg(target_os = "android")]
 mod android_log {
+    // 直接 `#[link]` 到 liblog 是这里唯一的写 logcat 方式（不引 android_logger /
+    // tracing-android 那套依赖树）；下面两处 unsafe 都有 SAFETY 说明。
+    #![allow(unsafe_code)]
+
     use std::io;
 
     pub struct LogcatWriter;
@@ -739,6 +741,8 @@ mod android_log {
     /// logcat 优先级 INFO（`adb logcat -s Suwayomi`）
     const ANDROID_LOG_INFO: i32 = 4;
 
+    // SAFETY: 声明的是 liblog 里真实存在的 C 函数签名（`int __android_log_write(int, const char*, const char*)`）；
+    // 该库在 Android 上由系统提供、进程启动时已加载。
     #[link(name = "log")]
     unsafe extern "C" {
         fn __android_log_write(prio: i32, tag: *const std::ffi::c_char, text: *const std::ffi::c_char) -> i32;
@@ -750,6 +754,8 @@ mod android_log {
             return;
         }
         // logcat 单行上限约 4KB，超出会被截断；启动日志远小于此
+        // SAFETY: `c"Suwayomi"` 是静态 NUL 结尾字面量；`line` 是 `CString`，同样 NUL 结尾。
+        // 两个指针在调用期间都有效，liblog 只读取不保存。
         if let Ok(line) = std::ffi::CString::new(text) {
             unsafe { __android_log_write(ANDROID_LOG_INFO, c"Suwayomi".as_ptr(), line.as_ptr()) };
         }

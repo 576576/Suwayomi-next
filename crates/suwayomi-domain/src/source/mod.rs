@@ -90,7 +90,6 @@ impl SourceFetcher for StubFetcher {
     }
 }
 
-
 /// Convert an external http(s) image URL into the server's same-origin
 /// proxy path `/api/v1/image/{b64}` (handled by `suwayomi-rest::routes::image`).
 /// Non-http values pass through unchanged so already-proxied paths and local

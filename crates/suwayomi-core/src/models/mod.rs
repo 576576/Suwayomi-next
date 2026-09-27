@@ -13,10 +13,10 @@ pub use category::{CategoryDataClass, IncludeOrExclude};
 pub use chapter::ChapterDataClass;
 pub use extension::{ContentWarning, ExtensionDataClass, ExtensionInfo, ExtensionSource, ExtensionStore};
 pub use manga::{
-    now_epoch_secs, to_genre_list, MangaChapterDataClass, MangaDataClass, MangaStatus, PagedMangaListDataClass,
-    UpdateStrategy,
+    MangaChapterDataClass, MangaDataClass, MangaStatus, PagedMangaListDataClass, UpdateStrategy, now_epoch_secs,
+    to_genre_list,
 };
 pub use page::PageDataClass;
-pub use pagination::{paginated_from, PaginatedList, PAGINATION_FACTOR};
+pub use pagination::{PAGINATION_FACTOR, PaginatedList, paginated_from};
 pub use source::SourceDataClass;
 pub use track::{MangaTrackerDataClass, TrackRecordDataClass, TrackSearchDataClass};

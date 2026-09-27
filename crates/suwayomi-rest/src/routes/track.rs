@@ -109,11 +109,12 @@ pub struct BindParams {
     pub private: bool,
 }
 
-async fn bind(State(s): State<AppState>, axum::extract::Query(q): axum::extract::Query<BindParams>) -> ApiResult<StatusCode> {
-    let remote_id: i64 = q
-        .remote_id
-        .parse()
-        .map_err(|_| ApiError::BadRequest(format!("remoteId 「{}」不是数字", q.remote_id)))?;
+async fn bind(
+    State(s): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<BindParams>,
+) -> ApiResult<StatusCode> {
+    let remote_id: i64 =
+        q.remote_id.parse().map_err(|_| ApiError::BadRequest(format!("remoteId 「{}」不是数字", q.remote_id)))?;
     s.tracker.bind(q.manga_id, q.tracker_id, remote_id, q.private).await?;
     Ok(StatusCode::OK)
 }
@@ -160,13 +161,7 @@ async fn thumbnail(State(s): State<AppState>, Path(tracker_id): Path<i32>) -> Ap
     use axum::response::IntoResponse;
 
     let tracker = s.tracker.get(tracker_id)?;
-    Ok((
-        [
-            (header::CONTENT_TYPE, "image/png"),
-            (header::CACHE_CONTROL, "max-age=86400"),
-        ],
-        tracker.logo(),
-    )
+    Ok(([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "max-age=86400")], tracker.logo())
         .into_response())
 }
 

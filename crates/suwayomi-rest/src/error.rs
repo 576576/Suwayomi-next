@@ -3,9 +3,9 @@
 //! NPE/NoSuchElement → 404, IOException → 500, IllegalArgumentException → 400,
 //! Unauthorized → 401, Forbidden → 403.
 
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde_json::json;
 
 #[derive(Debug)]
@@ -36,8 +36,9 @@ impl From<suwayomi_domain::error::DomainError> for ApiError {
             suwayomi_domain::error::DomainError::TrackerNotFound(id) => {
                 ApiError::NotFound(format!("tracker {id} not found"))
             }
-            suwayomi_domain::error::DomainError::Tracker(m)
-            | suwayomi_domain::error::DomainError::TokenExpired(m) => ApiError::Internal(m),
+            suwayomi_domain::error::DomainError::Tracker(m) | suwayomi_domain::error::DomainError::TokenExpired(m) => {
+                ApiError::Internal(m)
+            }
         }
     }
 }

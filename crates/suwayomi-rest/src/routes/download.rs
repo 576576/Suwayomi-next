@@ -61,10 +61,7 @@ async fn chapter_id_by_index(state: &AppState, manga_id: i32, chapter_index: i32
         .flatten()
 }
 
-async fn queue_chapter(
-    State(s): State<AppState>,
-    Path((manga_id, chapter_index)): Path<(i32, i32)>,
-) -> StatusCode {
+async fn queue_chapter(State(s): State<AppState>, Path((manga_id, chapter_index)): Path<(i32, i32)>) -> StatusCode {
     match chapter_id_by_index(&s, manga_id, chapter_index).await {
         Some(cid) => match s.download.enqueue_chapter(cid).await {
             Ok(()) => StatusCode::OK,
@@ -74,10 +71,7 @@ async fn queue_chapter(
     }
 }
 
-async fn unqueue_chapter(
-    State(s): State<AppState>,
-    Path((manga_id, chapter_index)): Path<(i32, i32)>,
-) -> StatusCode {
+async fn unqueue_chapter(State(s): State<AppState>, Path((manga_id, chapter_index)): Path<(i32, i32)>) -> StatusCode {
     match chapter_id_by_index(&s, manga_id, chapter_index).await {
         Some(cid) => {
             let _ = s.download.dequeue_chapter(cid).await;

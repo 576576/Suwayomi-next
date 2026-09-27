@@ -60,10 +60,7 @@ impl Bangumi {
     }
 
     async fn refresh(&self, oauth: &BgmOAuth) -> Result<BgmOAuth> {
-        let refresh_token = oauth
-            .refresh_token
-            .clone()
-            .ok_or_else(|| DomainError::token_expired(self.name()))?;
+        let refresh_token = oauth.refresh_token.clone().ok_or_else(|| DomainError::token_expired(self.name()))?;
         let app = self.require_oauth_app()?;
         let resp = self
             .ctx
@@ -265,8 +262,7 @@ impl TrackerService for Bangumi {
     }
 
     async fn auth_callback(&self, url: &str) -> Result<()> {
-        let code = extract_token(url, "code")
-            .ok_or_else(|| DomainError::tracker("Bangumi：回调地址里没有 code"))?;
+        let code = extract_token(url, "code").ok_or_else(|| DomainError::tracker("Bangumi：回调地址里没有 code"))?;
         self.login(&code).await
     }
 

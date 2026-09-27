@@ -1,12 +1,12 @@
 //! REST backup endpoints — mirrors `controller/BackupController.kt`.
 //! Export + import + validate are implemented (gzipped protobuf).
 
+use axum::Router;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::Router;
 use serde_json::json;
 
 use crate::state::AppState;
@@ -59,12 +59,12 @@ async fn backup_export_file(State(state): State<AppState>) -> Response {
 
 /// Mirrors `protobufImport`: body is a gzipped Tachiyomi/Mihon protobuf backup.
 async fn backup_import(State(state): State<AppState>, body: Bytes) -> Response {
-    match suwayomi_core::backup::restore_backup(state.db.pool(), &body, suwayomi_core::backup::BackupFlags::default()).await {
-        Ok(summary) => (
-            [(axum::http::header::CONTENT_TYPE, "application/json")],
-            summary_json(&summary, &[]),
-        )
-            .into_response(),
+    match suwayomi_core::backup::restore_backup(state.db.pool(), &body, suwayomi_core::backup::BackupFlags::default())
+        .await
+    {
+        Ok(summary) => {
+            ([(axum::http::header::CONTENT_TYPE, "application/json")], summary_json(&summary, &[])).into_response()
+        }
         Err(e) => {
             tracing::error!(%e, "backup import failed");
             (StatusCode::BAD_REQUEST, format!("backup import failed: {e}")).into_response()
@@ -95,7 +95,8 @@ async fn backup_validate(State(state): State<AppState>, body: Bytes) -> Response
     };
 
     // 备份里出现过、但本机没登录的追踪器才算「缺」（上游 `ProtoBackupValidator`）。
-    let mut sync_ids: Vec<i32> = backup.backup_manga.iter().flat_map(|m| m.tracking.iter().map(|t| t.sync_id)).collect();
+    let mut sync_ids: Vec<i32> =
+        backup.backup_manga.iter().flat_map(|m| m.tracking.iter().map(|t| t.sync_id)).collect();
     sync_ids.sort_unstable();
     sync_ids.dedup();
     let mut missing_trackers: Vec<String> = Vec::new();
@@ -110,10 +111,7 @@ async fn backup_validate(State(state): State<AppState>, body: Bytes) -> Response
     }
     missing_trackers.sort();
 
-    (
-        [(axum::http::header::CONTENT_TYPE, "application/json")],
-        summary_json(&summary, &missing_trackers),
-    )
+    ([(axum::http::header::CONTENT_TYPE, "application/json")], summary_json(&summary, &missing_trackers))
         .into_response()
 }
 

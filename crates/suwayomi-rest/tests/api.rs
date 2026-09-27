@@ -1,17 +1,20 @@
 //! REST API v1 integration tests — full router against PostgreSQL.
 //! Requires `DATABASE_URL`; skipped when absent.
 
+// 集成测试里 panic 就是断言失败的表达方式，不需要改成错误传播。
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo)]
+
 use std::sync::Arc;
 
+use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use axum::Router;
 use http_body_util::BodyExt;
 use suwayomi_core::config::ServerConfig;
 use suwayomi_core::db::Db;
 use suwayomi_domain::source::StubFetcher;
-use suwayomi_rest::routes::api_v1_router;
 use suwayomi_rest::AppState;
+use suwayomi_rest::routes::api_v1_router;
 use tower::ServiceExt;
 
 /// Serialises the tests in this binary: they all talk to the same database and
@@ -41,7 +44,9 @@ async fn setup() -> Option<(Router, suwayomi_db::Db)> {
         "source",
         "extension",
     ] {
-        let _ = suwayomi_db::query(&format!("TRUNCATE TABLE suwayomi.{t} RESTART IDENTITY CASCADE")).execute(db.pool()).await;
+        let _ = suwayomi_db::query(&format!("TRUNCATE TABLE suwayomi.{t} RESTART IDENTITY CASCADE"))
+            .execute(db.pool())
+            .await;
     }
     let pool = db.pool().clone();
     let fetcher: Arc<dyn suwayomi_domain::source::SourceFetcher> = Arc::new(StubFetcher);

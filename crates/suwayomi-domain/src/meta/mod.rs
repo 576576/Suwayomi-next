@@ -149,7 +149,8 @@ impl MetaService {
         } else {
             let ref_col = table.ref_column();
             let table_name = table.table_name();
-            let sql = bind_placeholders(&format!("INSERT INTO {table_name} (meta_key, value, {ref_col}) VALUES (?, ?, ?)"));
+            let sql =
+                bind_placeholders(&format!("INSERT INTO {table_name} (meta_key, value, {ref_col}) VALUES (?, ?, ?)"));
             {
                 suwayomi_db::query(&sql).bind(key).bind(value).bind(ref_id).execute(self.db.pool()).await?;
             }

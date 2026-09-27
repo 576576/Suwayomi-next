@@ -72,22 +72,17 @@ impl KoreaderSyncService {
         Self {
             db,
             config: config.into(),
-            http: Client::builder()
-                .connect_timeout(std::time::Duration::from_secs(10))
-                .build()
-                .expect("reqwest client"),
+            http: crate::http::build_client(Client::builder().connect_timeout(std::time::Duration::from_secs(10))),
         }
     }
 
     // ---- credential storage (global_meta) --------------------------------
 
     async fn meta_get(&self, key: &str) -> Result<Option<String>> {
-        let v: Option<String> = suwayomi_db::query_scalar(
-            "SELECT value FROM suwayomi.global_meta WHERE meta_key = $1",
-        )
-        .bind(key)
-        .fetch_optional(self.db.pool())
-        .await?;
+        let v: Option<String> = suwayomi_db::query_scalar("SELECT value FROM suwayomi.global_meta WHERE meta_key = $1")
+            .bind(key)
+            .fetch_optional(self.db.pool())
+            .await?;
         Ok(v)
     }
 
@@ -173,11 +168,18 @@ impl KoreaderSyncService {
 
     // ---- HTTP plumbing ----------------------------------------------------
 
-    fn build_request(&self, url: &str, method: &str, username: &str, user_key: &str) -> Result<reqwest::RequestBuilder> {
+    fn build_request(
+        &self,
+        url: &str,
+        method: &str,
+        username: &str,
+        user_key: &str,
+    ) -> Result<reqwest::RequestBuilder> {
         let base = self
             .http
             .request(
-                reqwest::Method::from_bytes(method.as_bytes()).map_err(|_| DomainError::Source(format!("bad method {method}")))?,
+                reqwest::Method::from_bytes(method.as_bytes())
+                    .map_err(|_| DomainError::Source(format!("bad method {method}")))?,
                 url,
             )
             .header("Accept", "application/vnd.koreader.v1+json")
@@ -230,7 +232,12 @@ impl KoreaderSyncService {
     // ---- public API -------------------------------------------------------
 
     /// Mirrors `connect`: authorize, fall back to registration for unknown users.
-    pub async fn connect(&self, server_address: &str, username: &str, password: &str) -> Result<(String, KoSyncStatusPayload)> {
+    pub async fn connect(
+        &self,
+        server_address: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<(String, KoSyncStatusPayload)> {
         let user_key = Self::md5(password);
         let server = server_address.trim_end_matches('/').to_string();
         let (ok, msg) = self.authorize(&server, username, &user_key).await?;
@@ -301,12 +308,11 @@ impl KoreaderSyncService {
         let Some((server, username, user_key)) = self.credentials().await? else { return Ok(()) };
         let Some(hash) = self.get_or_generate_chapter_hash(chapter_id).await? else { return Ok(()) };
 
-        let row: Option<(i32, i32)> = suwayomi_db::query_as(
-            "SELECT last_page_read, page_count FROM suwayomi.chapter WHERE id = $1",
-        )
-        .bind(chapter_id)
-        .fetch_optional(self.db.pool())
-        .await?;
+        let row: Option<(i32, i32)> =
+            suwayomi_db::query_as("SELECT last_page_read, page_count FROM suwayomi.chapter WHERE id = $1")
+                .bind(chapter_id)
+                .fetch_optional(self.db.pool())
+                .await?;
         let Some((last_page_read, page_count)) = row else { return Ok(()) };
         if page_count <= 0 {
             return Ok(());
@@ -321,11 +327,8 @@ impl KoreaderSyncService {
             device_id: &device_id,
         };
         let url = format!("{}/syncs/progress", server.trim_end_matches('/'));
-        let req = self
-            .build_request(&url, "PUT", &username, &user_key)?
-            .json(&payload)
-            .build()
-            .map_err(DomainError::from)?;
+        let req =
+            self.build_request(&url, "PUT", &username, &user_key)?.json(&payload).build().map_err(DomainError::from)?;
         let _ = self.http.execute(req).await;
         Ok(())
     }
@@ -345,10 +348,7 @@ impl KoreaderSyncService {
         let Some(hash) = self.get_or_generate_chapter_hash(chapter_id).await? else { return Ok(None) };
 
         let url = format!("{}/syncs/progress/{hash}", server.trim_end_matches('/'));
-        let req = self
-            .build_request(&url, "GET", &username, &user_key)?
-            .build()
-            .map_err(DomainError::from)?;
+        let req = self.build_request(&url, "GET", &username, &user_key)?.build().map_err(DomainError::from)?;
         let resp = match self.http.execute(req).await {
             Ok(r) => r,
             Err(_) => return Ok(None),
@@ -390,20 +390,12 @@ impl KoreaderSyncService {
         let is_remote_newer = timestamp > local_ts;
         let strategy = if is_remote_newer { fwd } else { back };
         match strategy {
-            KoreaderSyncConflictStrategy::Prompt => Ok(Some(SyncResult {
-                page_read,
-                timestamp,
-                device,
-                should_update: false,
-                is_conflict: true,
-            })),
-            KoreaderSyncConflictStrategy::KeepRemote => Ok(Some(SyncResult {
-                page_read,
-                timestamp,
-                device,
-                should_update: true,
-                is_conflict: false,
-            })),
+            KoreaderSyncConflictStrategy::Prompt => {
+                Ok(Some(SyncResult { page_read, timestamp, device, should_update: false, is_conflict: true }))
+            }
+            KoreaderSyncConflictStrategy::KeepRemote => {
+                Ok(Some(SyncResult { page_read, timestamp, device, should_update: true, is_conflict: false }))
+            }
             _ => Ok(None),
         }
     }
@@ -412,11 +404,7 @@ impl KoreaderSyncService {
         let server = self.meta_get(KEY_SERVER).await?.unwrap_or_else(|| DEFAULT_SERVER.into());
         let username = self.meta_get(KEY_USERNAME).await?.unwrap_or_default();
         let user_key = self.meta_get(KEY_USER_KEY).await?.unwrap_or_default();
-        if username.is_empty() || user_key.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some((server, username, user_key)))
-        }
+        if username.is_empty() || user_key.is_empty() { Ok(None) } else { Ok(Some((server, username, user_key))) }
     }
 }
 
@@ -440,19 +428,23 @@ mod tests {
     async fn filename_hash_matches_kotlin_md5() {
         let svc = setup().await;
         // Insert manga + chapter to compute a hash.
-        suwayomi_db::query("INSERT INTO suwayomi.manga (url, title, source, initialized) VALUES ('/m/1', 'Manga Title', 1, FALSE)")
-            .execute(svc.db.pool())
-            .await
-            .expect("manga");
+        suwayomi_db::query(
+            "INSERT INTO suwayomi.manga (url, title, source, initialized) VALUES ('/m/1', 'Manga Title', 1, FALSE)",
+        )
+        .execute(svc.db.pool())
+        .await
+        .expect("manga");
         let mid: i32 = suwayomi_db::query_scalar("SELECT id FROM suwayomi.manga WHERE url = '/m/1'")
             .fetch_one(svc.db.pool())
             .await
             .unwrap();
-        suwayomi_db::query("INSERT INTO suwayomi.chapter (url, name, manga, source_order) VALUES ('/c/1', 'Chapter 01.cbz', $1, 1)")
-            .bind(mid)
-            .execute(svc.db.pool())
-            .await
-            .expect("chapter");
+        suwayomi_db::query(
+            "INSERT INTO suwayomi.chapter (url, name, manga, source_order) VALUES ('/c/1', 'Chapter 01.cbz', $1, 1)",
+        )
+        .bind(mid)
+        .execute(svc.db.pool())
+        .await
+        .expect("chapter");
         let cid: i32 = suwayomi_db::query_scalar("SELECT id FROM suwayomi.chapter WHERE url = '/c/1'")
             .fetch_one(svc.db.pool())
             .await

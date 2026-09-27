@@ -66,7 +66,7 @@ async fn get_thumbnail(
     State(s): State<AppState>,
     Path(manga_id): Path<i32>,
 ) -> crate::error::ApiResult<axum::response::Response> {
-    use axum::http::{header, HeaderValue};
+    use axum::http::{HeaderValue, header};
 
     let row: Option<suwayomi_core::schema::MangaRow> = suwayomi_db::query_as("SELECT * FROM manga WHERE id = $1")
         .bind(manga_id)
@@ -219,11 +219,20 @@ async fn chapter_batch(
     }
     if let Some(indexes) = &chapter_indexes {
         s.chapter
-            .modify_chapters_by_indexes(manga_id, indexes, change.is_read, change.is_bookmarked, change.last_page_read, true)
+            .modify_chapters_by_indexes(
+                manga_id,
+                indexes,
+                change.is_read,
+                change.is_bookmarked,
+                change.last_page_read,
+                true,
+            )
             .await?;
     }
     if let Some(ids) = &chapter_ids {
-        s.chapter.modify_chapters_by_ids(ids, change.is_read, change.is_bookmarked, change.last_page_read, true).await?;
+        s.chapter
+            .modify_chapters_by_ids(ids, change.is_read, change.is_bookmarked, change.last_page_read, true)
+            .await?;
     }
     Ok(Json(serde_json::json!({ "message": "success" })))
 }
@@ -254,7 +263,11 @@ async fn find_chapter_id(s: &AppState, manga_id: i32, index: i32) -> Result<i32,
 /// chapter *number* (e.g. `/chapter/1/page/…` for a chapter whose
 /// source_order is 0) into stored `image_url` values. Fall back to
 /// `chapter_number` so those archives keep serving.
-async fn find_chapter_id_offline(s: &AppState, manga_id: i32, index: i32) -> Result<i32, suwayomi_domain::error::DomainError> {
+async fn find_chapter_id_offline(
+    s: &AppState,
+    manga_id: i32,
+    index: i32,
+) -> Result<i32, suwayomi_domain::error::DomainError> {
     if let Ok(id) = find_chapter_id(s, manga_id, index).await {
         return Ok(id);
     }
@@ -349,9 +362,9 @@ async fn page_image(
         let cid = find_chapter_id_offline(&s, manga_id, chapter_index).await?;
         let sql = suwayomi_domain::sql::bind_placeholders("SELECT real_url FROM chapter WHERE id = ?");
         let real: Option<String> = suwayomi_db::query_scalar(&sql).bind(cid).fetch_optional(s.db.pool()).await?;
-        let real = real.filter(|r| !r.is_empty()).ok_or_else(|| {
-            suwayomi_domain::error::DomainError::NotFound("no archive for this chapter".into())
-        })?;
+        let real = real
+            .filter(|r| !r.is_empty())
+            .ok_or_else(|| suwayomi_domain::error::DomainError::NotFound("no archive for this chapter".into()))?;
         let page = s.page.get_page(cid, index).await?;
         let file_name = page.url;
         Ok::<_, suwayomi_domain::error::DomainError>((real, file_name))

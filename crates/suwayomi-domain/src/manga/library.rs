@@ -2,8 +2,8 @@
 
 use suwayomi_core::db::Db;
 
-use crate::category::category_manga::CategoryMangaService;
 use crate::category::CategoryService;
+use crate::category::category_manga::CategoryMangaService;
 use crate::error::Result;
 use crate::manga::MangaService;
 use crate::sql::bind_placeholders;

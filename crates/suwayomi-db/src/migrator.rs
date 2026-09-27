@@ -62,10 +62,7 @@ const SQLITE_MIGRATIONS: &[Migration] = &[
         version: "0001_schema_baseline",
         sql: include_str!("../../../migrations/sqlite/0001_schema_baseline.sql"),
     },
-    Migration {
-        version: "0002_sync_triggers",
-        sql: include_str!("../../../migrations/sqlite/0002_sync_triggers.sql"),
-    },
+    Migration { version: "0002_sync_triggers", sql: include_str!("../../../migrations/sqlite/0002_sync_triggers.sql") },
     Migration {
         version: "0003_add_source_flags",
         sql: include_str!("../../../migrations/sqlite/0003_add_source_flags.sql"),
@@ -82,10 +79,7 @@ const SQLITE_MIGRATIONS: &[Migration] = &[
 
 /// PostgreSQL — same files the server used before the dual-backend split.
 const POSTGRES_MIGRATIONS: &[Migration] = &[
-    Migration {
-        version: "0001_schema_baseline",
-        sql: include_str!("../../../migrations/0001_schema_baseline.sql"),
-    },
+    Migration { version: "0001_schema_baseline", sql: include_str!("../../../migrations/0001_schema_baseline.sql") },
     Migration {
         version: "0002_add_manga_alt_titles",
         sql: include_str!("../../../migrations/0002_add_manga_alt_titles.sql"),
@@ -98,14 +92,8 @@ const POSTGRES_MIGRATIONS: &[Migration] = &[
         version: "0004_sync_triggers",
         sql: include_str!("../../../migrations/pg-only/0002_sync_triggers.sql"),
     },
-    Migration {
-        version: "0005_add_source_flags",
-        sql: include_str!("../../../migrations/0005_add_source_flags.sql"),
-    },
-    Migration {
-        version: "0006_add_source_urls",
-        sql: include_str!("../../../migrations/0006_add_source_urls.sql"),
-    },
+    Migration { version: "0005_add_source_flags", sql: include_str!("../../../migrations/0005_add_source_flags.sql") },
+    Migration { version: "0006_add_source_urls", sql: include_str!("../../../migrations/0006_add_source_urls.sql") },
     Migration {
         version: "0007_add_tracker_credentials",
         sql: include_str!("../../../migrations/0007_add_tracker_credentials.sql"),
@@ -291,19 +279,14 @@ mod tests {
         db.migrate().await.unwrap();
         db.migrate().await.unwrap();
 
-        let tables = db
-            .fetch_sql("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name", &[])
-            .await
-            .unwrap();
+        let tables =
+            db.fetch_sql("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name", &[]).await.unwrap();
         let names: Vec<String> = tables.iter().filter_map(|r| r.try_get::<String, _>(0usize).ok()).collect();
         assert!(names.contains(&"manga".to_owned()));
         assert!(names.contains(&"chapter".to_owned()));
         assert!(names.contains(&"_suwayomi_migrations".to_owned()));
 
-        let versions = db
-            .fetch_sql("SELECT version FROM _suwayomi_migrations ORDER BY version", &[])
-            .await
-            .unwrap();
+        let versions = db.fetch_sql("SELECT version FROM _suwayomi_migrations ORDER BY version", &[]).await.unwrap();
         assert_eq!(versions.len(), SQLITE_MIGRATIONS.len());
     }
 

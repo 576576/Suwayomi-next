@@ -23,6 +23,11 @@
 //! is chosen at runtime, and `crate::dialect` rewrites each statement for it
 //! (placeholder style, `= ANY(?)` arrays, `ILIKE`, the `suwayomi.` prefix).
 
+// 测试代码允许 panic：unwrap / expect / panic! 在断言里是常规写法，
+// 逐个改成 `?` 传播只会让失败信息更难读。生产代码不受这条影响
+// （`cfg_attr(test, ...)`）。
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo))]
+
 pub mod backend;
 pub mod config;
 pub mod dialect;
@@ -60,6 +65,11 @@ pub use value::{Decode, Encode, Value};
 /// whole body.
 #[doc(hidden)]
 pub mod test_support {
+    // 测试脚手架：拿不到锁文件或锁线程 panic 都说明测试环境已经坏掉（临时目录不可写、
+    // spawn_blocking 被 abort），继续跑只会得到更难懂的失败。这里放行 panic —— 它不是
+    // 生产路径，生产代码里 `suwayomi-db` 不会调 `db_lock()`。
+    #![allow(clippy::expect_used)]
+
     /// Held for the duration of one database-backed test (see [`db_lock`]).
     #[must_use]
     pub struct DbLock {
@@ -77,7 +87,12 @@ pub mod test_support {
         let thread = LOCK.get_or_init(|| std::sync::Arc::new(tokio::sync::Mutex::new(()))).clone().lock_owned().await;
         let file = tokio::task::spawn_blocking(|| {
             let path = std::env::temp_dir().join("suwayomi-db-tests.lock");
-            let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path).expect("open test lock file");
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&path)
+                .expect("open test lock file");
             file.lock().expect("lock test lock file");
             file
         })

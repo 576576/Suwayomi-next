@@ -11,6 +11,10 @@
 //!   2. `git rev-list --count HEAD` (local builds)
 //!   3. fallback 38 (no git available)
 
+// 构建脚本里 panic 就是"构建失败"的正确表达方式（cargo 会把它变成一条带位置的
+// 编译错误），它不进运行时，所以这里放行 panic。
+#![allow(clippy::panic)]
+
 use std::process::Command;
 
 fn main() {
@@ -54,8 +58,7 @@ fn main() {
     //   resource file when target_env is gnu or msvc"。
     #[cfg(windows)]
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
-        let icon = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../assets/images/icon.ico");
+        let icon = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/images/icon.ico");
         let mut res = winres::WindowsResource::new();
         res.set_icon(&icon.to_string_lossy());
         if let Err(e) = res.compile() {

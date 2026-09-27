@@ -9,6 +9,9 @@
 //! 同时覆盖配套行为：扩展从沙盒消失（Android 上走系统安装器卸载）后
 //! `is_installed` 必须回写为未安装，但本地 APK 文件仍在的桌面行不能被误清。
 
+// 集成测试里 panic 就是断言失败的表达方式，不需要改成错误传播。
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo)]
+
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -103,10 +106,8 @@ async fn sandbox_extensions_without_index_rows_get_registered() {
     let svc = service_in(&tmp, db.clone(), mock.base.clone());
 
     // 前置：表是空的（没有任何仓库索引行）
-    let before: i64 = suwayomi_db::query_scalar("SELECT count(*) FROM suwayomi.extension")
-        .fetch_one(db.pool())
-        .await
-        .unwrap();
+    let before: i64 =
+        suwayomi_db::query_scalar("SELECT count(*) FROM suwayomi.extension").fetch_one(db.pool()).await.unwrap();
     assert_eq!(before, 0);
 
     let n = svc.sync_sources().await.expect("sync");
@@ -142,10 +143,8 @@ async fn sandbox_extensions_without_index_rows_get_registered() {
     // 幂等：再同步一次不会插重复行
     let n2 = svc.sync_sources().await.expect("second sync");
     assert_eq!(n2, 1);
-    let exts: i64 = suwayomi_db::query_scalar("SELECT count(*) FROM suwayomi.extension")
-        .fetch_one(db.pool())
-        .await
-        .unwrap();
+    let exts: i64 =
+        suwayomi_db::query_scalar("SELECT count(*) FROM suwayomi.extension").fetch_one(db.pool()).await.unwrap();
     assert_eq!(exts, 1);
 
     let _ = std::fs::remove_dir_all(&tmp);

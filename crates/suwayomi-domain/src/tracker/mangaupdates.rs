@@ -57,10 +57,7 @@ impl MangaUpdates {
         if let Some(b) = body {
             req = req.header(reqwest::header::CONTENT_TYPE, CONTENT_TYPE).json(&b);
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| DomainError::tracker(format!("MangaUpdates 请求失败：{e}")))?;
+        let resp = req.send().await.map_err(|e| DomainError::tracker(format!("MangaUpdates 请求失败：{e}")))?;
         check(&self.ctx, MANGA_UPDATES, self.name(), resp).await
     }
 
@@ -71,10 +68,7 @@ impl MangaUpdates {
         )
         .map_err(|e| DomainError::tracker(format!("MangaUpdates 列表项无法解析：{e}")))?;
 
-        let rating = match self
-            .request(reqwest::Method::GET, &format!("/v1/series/{remote_id}/rating"), None)
-            .await
-        {
+        let rating = match self.request(reqwest::Method::GET, &format!("/v1/series/{remote_id}/rating"), None).await {
             Ok(value) => serde_json::from_value::<MuRating>(value).ok().and_then(|r| r.rating),
             Err(_) => None,
         };
@@ -131,13 +125,8 @@ impl MangaUpdates {
         let value = check(&self.ctx, MANGA_UPDATES, self.name(), resp).await?;
         let login: MuLoginResponse = serde_json::from_value(value)
             .map_err(|e| DomainError::tracker(format!("MangaUpdates 登录响应无法解析：{e}")))?;
-        let context = login
-            .context
-            .ok_or_else(|| DomainError::tracker("MangaUpdates：登录失败"))?;
-        self.ctx
-            .store
-            .set_credentials(MANGA_UPDATES, &context.uid.to_string(), &context.session_token)
-            .await
+        let context = login.context.ok_or_else(|| DomainError::tracker("MangaUpdates：登录失败"))?;
+        self.ctx.store.set_credentials(MANGA_UPDATES, &context.uid.to_string(), &context.session_token).await
     }
 }
 

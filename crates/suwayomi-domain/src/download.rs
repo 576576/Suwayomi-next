@@ -449,6 +449,13 @@ impl DownloadManager {
         match result {
             Ok(pages) => {
                 let page_total = pages.len();
+                // 页列表已知就立刻写回 chapter.page_count：下载页的队列卡片用
+                // `pageCount * progress / pageCount` 渲染「已下页数/总页数」，而
+                // 这一列原本只在压缩包写完后才更新，整个下载过程都显示 -1/-1。
+                if let Some(count) = page_count_to_store(page_total) {
+                    let sql = bind_placeholders("UPDATE chapter SET page_count = ? WHERE id = ?");
+                    let _ = suwayomi_db::query(&sql).bind(count).bind(job.chapter_id).execute(self.db.pool()).await;
+                }
                 let mut stored = 0usize;
                 let mut failed = 0usize;
                 let mut page_files: Vec<(i32, String)> = Vec::new(); // (index, file name in archive)
@@ -792,6 +799,14 @@ pub fn chapter_archive_path(
 /// 总页数为 0 时按 1 处理，避免除零。
 pub fn page_progress(done: usize, total: usize) -> f64 {
     (done as f64 / total.max(1) as f64).min(1.0)
+}
+
+/// 拿到页列表后应写回 `chapter.page_count` 的值；空列表返回 `None`。
+///
+/// 空列表意味着源没给出任何页（该次下载必然失败），此时保留 `-1` 的「未知」
+/// 语义，别把一章写成 0 页 —— 阅读器会拿它夹页码。
+fn page_count_to_store(total: usize) -> Option<i32> {
+    (total > 0).then_some(total as i32)
 }
 
 /// 一章某页在 REST 路由下的图片地址（离线阅读用）。
@@ -1321,7 +1336,9 @@ fn image_ext_from_content_type(bytes: &[u8]) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use suwayomi_core::db::Db;
+    use suwayomi_core::source::{MangasPage, SChapter, SManga};
 
     /// 测试用路径句柄：数据根与缓存根都落在系统临时目录下。
     fn test_paths() -> AppPaths {
@@ -1579,5 +1596,105 @@ mod tests {
             .await
             .expect("flag");
         assert!(!downloaded, "stub fetcher cannot download");
+    }
+
+    #[test]
+    fn page_count_to_store_keeps_unknown_for_empty_page_lists() {
+        assert_eq!(page_count_to_store(0), None);
+        assert_eq!(page_count_to_store(1), Some(1));
+        assert_eq!(page_count_to_store(24), Some(24));
+    }
+
+    /// 只回页列表的桩源：页字节拉不到（图片代理不可达），但页数是真的。
+    ///
+    /// 这里刻意让页面下载失败 —— 失败路径**没有**别的写 `page_count` 的地方
+    /// （成功路径才会用压缩包里的实际页数覆盖），所以「任务结束时
+    /// `page_count` 已经是真实页数」只可能来自「页列表一拿到就写回」。
+    struct PageListStub(usize);
+
+    #[async_trait]
+    impl SourceFetcher for PageListStub {
+        async fn fetch_manga_update(
+            &self,
+            _source_id: i64,
+            _manga: &SManga,
+            _chapters: &[SChapter],
+            _fetch_details: bool,
+            _fetch_chapters: bool,
+        ) -> crate::error::Result<(SManga, Vec<SChapter>)> {
+            Err(crate::error::DomainError::Source("unused in this stub".into()))
+        }
+
+        async fn get_popular_manga(&self, _source_id: i64, _page: u32) -> crate::error::Result<MangasPage> {
+            Ok(MangasPage::default())
+        }
+
+        async fn get_latest_updates(&self, _source_id: i64, _page: u32) -> crate::error::Result<MangasPage> {
+            Ok(MangasPage::default())
+        }
+
+        async fn search_manga(&self, _source_id: i64, _query: &str, _page: u32) -> crate::error::Result<MangasPage> {
+            Ok(MangasPage::default())
+        }
+
+        async fn fetch_pages(
+            &self,
+            _source_id: i64,
+            _manga_url: &str,
+            _chapter_url: &str,
+        ) -> crate::error::Result<Vec<suwayomi_core::source::SourcePage>> {
+            // 端口 1 上不会有服务：页字节必然失败，页数仍然有效。
+            Ok((0..self.0 as i32)
+                .map(|i| suwayomi_core::source::SourcePage::new(i, format!("http://127.0.0.1:1/{i}.jpg"), None))
+                .collect())
+        }
+
+        fn supports_latest(&self, _source_id: i64) -> bool {
+            false
+        }
+    }
+
+    /// 回归：下载页的队列卡片用 `chapter.pageCount * progress` 渲染
+    /// 「已下页数/总页数」（`DownloadQueueChapterCard.tsx`）。`chapter.page_count`
+    /// 原先只在压缩包写完后才更新，整个下载过程都在显示 `-1/-1`
+    /// （`-1` 乘任何 ≥0.5 的进度，`toFixed()` 都是 `-1`）。
+    #[tokio::test]
+    async fn publishes_page_count_before_the_archive_is_written() {
+        let db = seed().await;
+        let mgr = DownloadManager::new(db.clone(), SourceBackend::Test(Arc::new(PageListStub(7))), test_paths());
+
+        let before: i32 = suwayomi_db::query_scalar("SELECT page_count FROM chapter WHERE id = 1")
+            .fetch_one(db.pool())
+            .await
+            .expect("page_count");
+        assert_eq!(before, -1, "前提：排队时章节页数还是未知");
+
+        let mut rx = mgr.subscribe();
+        mgr.enqueue_chapter(1).await.expect("enqueue");
+        mgr.start().await;
+
+        // 等任务进入终止态（本桩必然失败），那一刻页数就该已经写回。
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        let mut frame = None;
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
+                Ok(Ok(DownloadEvent::Snapshot { queue, .. })) if !queue.is_empty() => {
+                    if queue[0].state.is_terminal() {
+                        frame = Some(queue[0].state);
+                        break;
+                    }
+                }
+                Ok(Ok(_)) => {}
+                _ => break,
+            }
+        }
+        mgr.stop().await;
+        assert_eq!(frame, Some(JobState::Error), "桩源拉不到页字节，任务应当失败");
+
+        let after: i32 = suwayomi_db::query_scalar("SELECT page_count FROM chapter WHERE id = 1")
+            .fetch_one(db.pool())
+            .await
+            .expect("page_count");
+        assert_eq!(after, 7, "下载中的章节必须已公布真实页数，否则卡片显示 -1/-1");
     }
 }

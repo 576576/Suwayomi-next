@@ -272,9 +272,11 @@ python .workbuddy/verify/release_inputs_check.py  # 输入顺序 + 发行说明�
 python .workbuddy/verify/workflows_check.py         # 四个 workflow：YAML 可解析 + 每个 run 块过 bash -n + 注释块 ≤ 1 行
 python .workbuddy/verify/release_inputs_check.py    # 输入顺序 + prep 形态开关 + 发行说明渲染（真跑两段 run 脚本，78 项）
 python .workbuddy/verify/clear_dryrun.py            # gh 打桩 + 假 Release 列表，真跑 clear.yml 两个 run 块（9 个场景）
+python .workbuddy/verify/notes_preview.py           # 拿真渲染结果生成 GitHub 风格的 HTML 预览（改排版时肉眼核对）
 ```
 
 - `release_inputs_check.py` 不只看渲染：它把 prep 的 `out` 步骤也真跑一遍（`git` / `curl` / `python3` 全打桩），断言 **auto 的四个形态开关与 dispatch 默认值逐项一致**、两条路径的矩阵一致、以及两道守卫（`pack_msi` 缺 `pack_jre`、两种包都关）真的会红。
+- `notes_preview.py` 是给人看的（不做断言）：把真渲染结果转成 HTML 摆在 `notes_preview.html` 里，含「全形态 + 手填说明」「自动 alpha」「只勾 OCI」三个场景 —— 改排版时比读 `--notes` 的字面量快得多。
 - 它比对的是**渲染后的整段说明**，所以动排版时它是唯一能提前发现「表被 markdown 当成延续行」这类问题的地方。
 - 打桩验不到 WiX 那一步（`pack_msi`）：`.wxs` 的验证是把真 WiX 装在本机、拿真 payload 跑 `wix build` + `wix msi validate` + `wix burn extract`，见「Windows 安装包」。
 - 平台专属代码路径（Windows 的 PE 分支、macOS 的 Mach-O 分支、Android 的 SDK 安装）在本地根本不会被执行 → 这类问题只能真跑 CI，或本地人为复现条件。

@@ -224,6 +224,24 @@ impl Default for ServerConfig {
     }
 }
 
+/// 服务端**自连**用的基址（下载页图片走同源代理，URL 由服务自己拼）。
+///
+/// 端口取**实际绑定**的那个，而不是配置里的 `port`：端口被占用或落在 Windows
+/// 保留段时监听会自顺延（`start()` 的 4501-4900 / +1 回退），回填配置值会把代理
+/// 请求打到没人监听的端口上——每一次下载都整章失败。
+///
+/// host 用地址本身的回环形式：通配地址（`0.0.0.0` / `::`）不是可达的目的地址，
+/// 换成 `127.0.0.1` / `[::1]`；绑定在具体 IP 上时该 IP 本身就是本机地址，原样用
+/// （此时回环可能因不监听它而连不上）。
+pub fn server_base_url(addr: std::net::SocketAddr) -> String {
+    match addr.ip() {
+        std::net::IpAddr::V4(ip) if ip.is_unspecified() => format!("http://127.0.0.1:{}", addr.port()),
+        std::net::IpAddr::V6(ip) if ip.is_unspecified() => format!("http://[::1]:{}", addr.port()),
+        std::net::IpAddr::V6(ip) => format!("http://[{ip}]:{}", addr.port()),
+        std::net::IpAddr::V4(ip) => format!("http://{ip}:{}", addr.port()),
+    }
+}
+
 impl ServerConfig {
     /// 把 `global_meta` 里持久化的 settings blob（`setSettings` 写的 camelCase
     /// JSON）覆盖到本实例上。只认本结构自己持有的字段，其余键忽略；键缺失或
@@ -388,6 +406,20 @@ impl From<ServerConfig> for RuntimeConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_base_url_uses_the_actually_bound_port() {
+        fn addr(s: &str) -> std::net::SocketAddr {
+            s.parse().expect("socket addr")
+        }
+        // 配置的端口不可用、监听自顺延到 8091：基址必须跟着走（此前写死 8090）
+        assert_eq!(server_base_url(addr("0.0.0.0:8091")), "http://127.0.0.1:8091");
+        // 通配 v6 回落到回环 v6；IPv6 字面量要加方括号，否则会被当成端口分隔
+        assert_eq!(server_base_url(addr("[::]:4901")), "http://[::1]:4901");
+        // 绑定在具体地址上时原样用它——此刻该地址才是可达的，回环反而可能没监听
+        assert_eq!(server_base_url(addr("192.168.1.5:18090")), "http://192.168.1.5:18090");
+        assert_eq!(server_base_url(addr("[fe80::1]:8090")), "http://[fe80::1]:8090");
+    }
 
     #[test]
     fn setting_path_expands_tokens() {

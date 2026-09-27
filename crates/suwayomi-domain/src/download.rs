@@ -201,6 +201,11 @@ pub struct DownloadManager {
     /// 路径句柄（`downloadsPath` 设置可覆盖下载根；覆盖后立即生效）。
     paths: AppPaths,
     client: reqwest::Client,
+    /// 下载页图片经**同源** HTTP 代理拉取（warm path 复用阅读器已缓存的页，冷页
+    /// 绕开 CORS/hotlink），所以要拼出指向本服务的完整 URL。
+    ///
+    /// 由 server 在监听成功后注入**实际生效**的地址：端口被占用时监听会自顺延，
+    /// 用配置端口拼出来的 URL 会打到没人监听的地方，整章下载都会失败。
     server_base_url: String,
     /// 唯一的可变状态：队列 + 实时进度 + 运行开关，一把锁持有。
     ///
@@ -218,7 +223,10 @@ pub struct DownloadManager {
 const IDLE_POLL: std::time::Duration = std::time::Duration::from_millis(300);
 
 impl DownloadManager {
-    pub fn new(db: Db, fetcher: SourceBackend, paths: AppPaths) -> Self {
+    /// `server_base_url` 是本服务的自连基址（见字段注释），由调用方在拿到**实际
+    /// 绑定**的监听地址后给出——`suwayomi_core::config::server_base_url` 可按
+    /// `SocketAddr` 推导。
+    pub fn new(db: Db, fetcher: SourceBackend, paths: AppPaths, server_base_url: impl Into<String>) -> Self {
         let (tx, _) = broadcast::channel(128);
         let client = reqwest::Client::builder()
             .user_agent("Suwayomi-next/1.0")
@@ -231,11 +239,16 @@ impl DownloadManager {
             fetcher,
             paths,
             client,
-            server_base_url: String::from("http://127.0.0.1:8090"),
+            server_base_url: server_base_url.into(),
             state: Arc::new(std::sync::Mutex::new(QueueState::default())),
             tx,
             worker_spawned: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// 页面图片的完整 URL：走本服务的**同源**代理（见 `server_base_url` 字段）。
+    fn page_proxy_url(&self, raw_url: &str) -> String {
+        format!("{}{}", self.server_base_url, crate::source::image_proxy_url(raw_url))
     }
 
     /// 取状态锁。中毒只说明"某个持有锁的线程 panic 过"，队列值本身仍然完整；
@@ -671,8 +684,7 @@ impl DownloadManager {
         let mut join = tokio::task::JoinSet::new();
         for (idx, raw_url) in fetches.clone() {
             let permit_src = sem.clone();
-            let proxy_path = crate::source::image_proxy_url(&raw_url);
-            let url = format!("{}{}", self.server_base_url, proxy_path);
+            let url = self.page_proxy_url(&raw_url);
             let client = client.clone();
             join.spawn(async move {
                 // 信号量关闭只在所有 `Arc` 都释放后发生；真发生了也只是这一页下载失败，
@@ -1346,6 +1358,10 @@ mod tests {
         AppPaths::new(tmp.clone(), tmp.join("cache"))
     }
 
+    /// 同源代理基址：桩测试里页字节本来就拉不到（桩源只回页列表），给个不可达
+    /// 地址即可，避免测试悄悄依赖某个真实监听端口。
+    const TEST_BASE_URL: &str = "http://127.0.0.1:1";
+
     /// 一个排队中的作业；只关心 `chapter_id`，其余字段给固定值。
     fn job(chapter_id: i32) -> DownloadJob {
         DownloadJob {
@@ -1493,10 +1509,20 @@ mod tests {
         db
     }
 
+    /// 同源代理 URL 必须落在**注入的**基址上。此前写死 8090：端口被占用自顺延、
+    /// 或被 `SUWAYOMI_PORT` 改掉后，每一页都会打到没人监听的端口上。
+    #[tokio::test]
+    async fn page_proxy_url_uses_the_injected_base() {
+        let db = seed().await;
+        let mgr = DownloadManager::new(db, SourceBackend::Stub, test_paths(), "http://127.0.0.1:4901");
+        let url = mgr.page_proxy_url("https://cdn.example/a.jpg");
+        assert!(url.starts_with("http://127.0.0.1:4901/api/v1/image/"), "{url}");
+    }
+
     #[tokio::test]
     async fn enqueue_dequeue_clear_roundtrip() {
         let db = seed().await;
-        let mgr = DownloadManager::new(db, SourceBackend::Stub, test_paths());
+        let mgr = DownloadManager::new(db, SourceBackend::Stub, test_paths(), TEST_BASE_URL);
 
         mgr.enqueue_chapter(1).await.expect("enqueue");
         let jobs = mgr.snapshot().await;
@@ -1553,7 +1579,7 @@ mod tests {
     #[tokio::test]
     async fn enqueue_unknown_chapter_errors() {
         let db = seed().await;
-        let mgr = DownloadManager::new(db, SourceBackend::Stub, test_paths());
+        let mgr = DownloadManager::new(db, SourceBackend::Stub, test_paths(), TEST_BASE_URL);
         let err = mgr.enqueue_chapter(999).await.unwrap_err();
         assert!(err.contains("not found"), "got: {err}");
     }
@@ -1561,7 +1587,7 @@ mod tests {
     #[tokio::test]
     async fn start_stop_marks_jobs_failed_with_stub_fetcher() {
         let db = seed().await;
-        let mgr = DownloadManager::new(db.clone(), SourceBackend::Stub, test_paths());
+        let mgr = DownloadManager::new(db.clone(), SourceBackend::Stub, test_paths(), TEST_BASE_URL);
         let mut rx = mgr.subscribe();
 
         mgr.enqueue_chapter(1).await.expect("enqueue");
@@ -1661,7 +1687,12 @@ mod tests {
     #[tokio::test]
     async fn publishes_page_count_before_the_archive_is_written() {
         let db = seed().await;
-        let mgr = DownloadManager::new(db.clone(), SourceBackend::Test(Arc::new(PageListStub(7))), test_paths());
+        let mgr = DownloadManager::new(
+            db.clone(),
+            SourceBackend::Test(Arc::new(PageListStub(7))),
+            test_paths(),
+            TEST_BASE_URL,
+        );
 
         let before: i32 = suwayomi_db::query_scalar("SELECT page_count FROM chapter WHERE id = 1")
             .fetch_one(db.pool())

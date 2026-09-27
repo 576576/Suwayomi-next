@@ -618,42 +618,9 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
         std::sync::Arc::new(std::sync::RwLock::new(oauth_apps)),
         oauth_config,
     );
-    let graphql_state = suwayomi_graphql::GraphQLState::new(
-        db.clone(),
-        config.clone(),
-        auth.clone(),
-        fetcher.clone(),
-        update.clone(),
-        tracker.clone(),
-        sandbox_base.clone(),
-        webui_dir.clone(),
-        paths.clone(),
-    );
-    // 持久化设置（`global_meta` 的 settings blob）盖到 env 基线上：KOReader 同步
-    // 策略、SyncYomi 开关这类设置由服务在运行时读取，重启后必须生效。
-    graphql_state.reload_runtime_config().await;
-    // Scheduled auto-backup loop (`autoBackupFrequency`/`backupPath` settings).
-    suwayomi_graphql::autobackup::spawn(graphql_state.clone());
-    let schema = suwayomi_graphql::schema::build_schema(graphql_state);
-    tracing::info!("graphql schema ready ({} type definitions)", suwayomi_graphql::schema::schema_type_count());
-    let state = AppState::new(
-        db.clone(),
-        config.clone(),
-        auth.clone(),
-        fetcher,
-        update,
-        tracker,
-        sandbox_base,
-        webui_dir.clone(),
-        paths,
-    );
-    // shutdown 通知通道：POST /api/v1/shutdown（或 Ctrl+C）触发优雅关闭，
-    // 干净停掉数据库连接与沙盒子进程而非遗留孤儿
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let app = build_router(state, schema, shutdown_tx);
-
     // 端口自动回退：Windows 上 4501-4900 可能是 Hyper-V 动态保留段（10013）
-    // 或端口被占（10048）——上探几个端口而不是崩溃
+    // 或端口被占（10048）——上探几个端口而不是崩溃。
+    // 绑定排在构造 state 之前：下载的同源图片代理要拿**实际生效**的端口。
     let start = config.port;
     let mut port = start;
     let (listener, addr) = loop {
@@ -680,6 +647,46 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
             }
         }
     };
+    // 同源代理要拼完整的 URL，用上面**实际绑定**的端口而非 `config.port`：被占用
+    // 而自顺延后，配置值指向的是没人监听的端口（下载会整章失败）。
+    let server_base_url = suwayomi_core::config::server_base_url(addr);
+    tracing::info!("same-origin proxy base url {server_base_url}");
+
+    let graphql_state = suwayomi_graphql::GraphQLState::new(
+        db.clone(),
+        config.clone(),
+        auth.clone(),
+        fetcher.clone(),
+        update.clone(),
+        tracker.clone(),
+        sandbox_base.clone(),
+        server_base_url.clone(),
+        webui_dir.clone(),
+        paths.clone(),
+    );
+    // 持久化设置（`global_meta` 的 settings blob）盖到 env 基线上：KOReader 同步
+    // 策略、SyncYomi 开关这类设置由服务在运行时读取，重启后必须生效。
+    graphql_state.reload_runtime_config().await;
+    // Scheduled auto-backup loop (`autoBackupFrequency`/`backupPath` settings).
+    suwayomi_graphql::autobackup::spawn(graphql_state.clone());
+    let schema = suwayomi_graphql::schema::build_schema(graphql_state);
+    tracing::info!("graphql schema ready ({} type definitions)", suwayomi_graphql::schema::schema_type_count());
+    let state = AppState::new(
+        db.clone(),
+        config.clone(),
+        auth.clone(),
+        fetcher,
+        update,
+        tracker,
+        sandbox_base,
+        server_base_url,
+        webui_dir.clone(),
+        paths,
+    );
+    // shutdown 通知通道：POST /api/v1/shutdown（或 Ctrl+C）触发优雅关闭，
+    // 干净停掉数据库连接与沙盒子进程而非遗留孤儿
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let app = build_router(state, schema, shutdown_tx);
     tracing::info!("server listening on http://{addr}");
     axum::serve(listener, app.clone().into_make_service_with_connect_info::<std::net::SocketAddr>())
         .with_graceful_shutdown(shutdown_signal(shutdown_rx, shutdown))

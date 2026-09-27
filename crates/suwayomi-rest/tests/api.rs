@@ -46,6 +46,7 @@ async fn setup() -> Option<(Router, suwayomi_db::Db)> {
         update,
         tracker,
         None,
+        "http://127.0.0.1:1".to_owned(),
         std::path::PathBuf::new(),
         {
             let tmp = std::env::temp_dir();

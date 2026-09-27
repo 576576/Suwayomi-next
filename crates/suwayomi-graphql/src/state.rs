@@ -72,6 +72,7 @@ impl GraphQLState {
         update: UpdateManager,
         tracker: TrackerManager,
         sandbox_base: Option<String>,
+        server_base_url: String,
         webui_dir: std::path::PathBuf,
         paths: AppPaths,
     ) -> Self {
@@ -82,7 +83,7 @@ impl GraphQLState {
         let library = LibraryService::new(db.clone(), manga.clone());
         let manga_list = MangaListService::new(db.clone(), fetcher.clone());
         let page = PageService::new(db.clone());
-        let download = DownloadManager::new(db.clone(), fetcher, paths.clone());
+        let download = DownloadManager::new(db.clone(), fetcher, paths.clone(), server_base_url);
         let runtime = RuntimeConfig::new(config.clone());
         let koreader = KoreaderSyncService::new(db.clone(), runtime.clone());
         let sync_yomi = SyncYomiService::new(db.clone(), runtime.clone());

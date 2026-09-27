@@ -62,6 +62,7 @@ impl AppState {
         update: UpdateManager,
         tracker: TrackerManager,
         sandbox_base: Option<String>,
+        server_base_url: String,
         webui_dir: std::path::PathBuf,
         paths: AppPaths,
     ) -> Self {
@@ -72,7 +73,7 @@ impl AppState {
         let library = LibraryService::new(db.clone(), manga.clone());
         let manga_list = MangaListService::new(db.clone(), fetcher.clone());
         let page = PageService::new(db.clone());
-        let download = DownloadManager::new(db.clone(), fetcher.clone(), paths.clone());
+        let download = DownloadManager::new(db.clone(), fetcher.clone(), paths.clone(), server_base_url);
         let extension_store = ExtensionStoreService::new(db.clone(), sandbox_base.clone(), paths.cache());
         Self {
             db,

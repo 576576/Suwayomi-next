@@ -101,11 +101,11 @@
 
   | 捆绑组件 | 集成的版本 |
   |---|---|
-  | Suwayomi-WebUI | `r{code}`；**只有 release 通道**才跟一句「— 最新正式 release」 |
+  | Suwayomi-WebUI | `r{code}` |
   | Suwayomi-ext-runtime | `{V}` |
   | Suwayomi-tray | `{V}`，解析不到时写「（本次未捆绑）」 |
 
-  三者取制品的通道口径一致（release 取最新正式、alpha/beta 取最新构建）。那句通道描述只对 WebUI 行有意义，且**只有 release 通道才写** —— alpha/beta 的整条发布本身就是预发布，在行的末尾再标一次「预发布」是重复信息。推送触发的自动 alpha 用的是同一张表。
+  三者取制品的通道口径一致（release 取最新正式、alpha/beta 取最新构建），但这只在**挑制品**时起作用 —— 表里只写解析到的 tag，不带「最新构建 / 最新正式」之类的通道描述。推送触发的自动 alpha 用的是同一张表。
 - 紧接着是**下载架构表**（同 FlClash 的 "Download based on your OS"）：一行一个 OS，格内是 shields.io 徽章，点进去就是附件本身 —— 用户不必去 Assets 列表里逐个对架构。
 
   | OS | 格内徽章（形态 + 架构） |

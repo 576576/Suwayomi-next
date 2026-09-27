@@ -94,7 +94,6 @@ jobs:
       # WebUI 制品在 prep 解析一次、所有 target 复用（避免各架构拉到不同构建）
       webui_url: ${{ steps.webui.outputs.url }}
       webui_tag: ${{ steps.webui.outputs.tag }}
-      webui_kind: ${{ steps.webui.outputs.kind }}
       ext_runtime_url: ${{ steps.ext_runtime.outputs.url }}
       ext_runtime_version: ${{ steps.ext_runtime.outputs.version }}
       # 裁剪 JRE 按 <base>/ext-runtime-jre-<V>-<os>-<arch>.tar.gz 拼，不必逐个探测。
@@ -246,7 +245,6 @@ jobs:
           TAG="${TAG%%/*}"
           echo "url=$ZIP" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "kind=$KIND" >> "$GITHUB_OUTPUT"
           echo "捆绑 WebUI: $TAG（kind=$KIND）"
 
       - name: 解析扩展沙盒制品
@@ -350,7 +348,6 @@ jobs:
           CH_SUFFIX: ${{ needs.prep.outputs.channel_suffix }}
           PRE: ${{ needs.prep.outputs.prerelease }}
           WEBUI_TAG: ${{ needs.prep.outputs.webui_tag }}
-          WEBUI_KIND: ${{ needs.prep.outputs.webui_kind }}
           # 「捆绑组件」表要用：三个仓库集成的版本在产物名里都看不到。
           EXT_RUNTIME_VERSION: ${{ needs.prep.outputs.ext_runtime_version }}
           TRAY_VERSION: ${{ needs.prep.outputs.tray_version }}
@@ -376,17 +373,12 @@ jobs:
             esac
           done
 
-          case "$WEBUI_KIND" in
-            stable) WEBUI_DESC=" — 最新正式 release" ;;
-            *)      WEBUI_DESC="" ;;
-          esac
-
           # 三个捆绑仓库的版本号在产物 zip 里都看不到，单列一张表；托盘壳缺失时如实标注。
           TRAY_CELL="${TRAY_VERSION:+\`$TRAY_VERSION\`}"
           [ -n "$TRAY_CELL" ] || TRAY_CELL="（本次未捆绑）"
           BUNDLED_TABLE="| 捆绑组件 | 集成的版本 |
           |---|---|
-          | Suwayomi-WebUI | \`$WEBUI_TAG\`$WEBUI_DESC |
+          | Suwayomi-WebUI | \`$WEBUI_TAG\` |
           | Suwayomi-ext-runtime | \`$EXT_RUNTIME_VERSION\` |
           | Suwayomi-tray | $TRAY_CELL |"
 

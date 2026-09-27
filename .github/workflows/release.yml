@@ -112,6 +112,10 @@ jobs:
       # 托盘壳同理：解析一次，各 target 按 <base>/suwayomi-tray-<V>-<target>[.exe] 取。
       tray_version: ${{ steps.tray.outputs.version }}
       tray_base: ${{ steps.tray.outputs.base }}
+      # 「捆绑组件」表里三行的版本号要能点进各自的 release 页面（仓库 slug 由解析步骤反推）。
+      webui_release_url: ${{ steps.webui.outputs.release_url }}
+      ext_runtime_release_url: ${{ steps.ext_runtime.outputs.release_url }}
+      tray_release_url: ${{ steps.tray.outputs.release_url }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -272,8 +276,11 @@ jobs:
           ZIP="$(bash scripts/resolve-webui.sh "$KIND")"
           TAG="${ZIP#*/download/}"
           TAG="${TAG%%/*}"
+          # 发行说明里那行的版本号要跳到 release 页面：仓库 slug 从资产 URL 反推，别在这里另抄一份。
+          REL="${ZIP%%/releases/download/*}/releases/tag/$TAG"
           echo "url=$ZIP" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "release_url=$REL" >> "$GITHUB_OUTPUT"
           echo "捆绑 WebUI: $TAG（kind=$KIND）"
 
       - name: 解析扩展沙盒制品
@@ -293,9 +300,12 @@ jobs:
           if [ -z "$URL" ] || [ -z "$VER" ] || [ -z "$BASE" ]; then
             echo "::error::无法解析 ext-runtime 制品"; exit 1
           fi
+          # 发行说明里那行的版本号要跳到 release 页面：仓库 slug 从资产 URL 反推（与 WebUI 同一套路）。
+          REPO_URL="${URL%%/releases/download/*}"
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "version=$VER" >> "$GITHUB_OUTPUT"
           echo "jre_base=$BASE" >> "$GITHUB_OUTPUT"
+          echo "release_url=$REPO_URL/releases/tag/${BASE##*/}" >> "$GITHUB_OUTPUT"
           echo "捆绑 ext-runtime: $VER（$URL）"
           echo "裁剪 JRE 前缀: $BASE"
 
@@ -310,6 +320,7 @@ jobs:
             *)       TRAY_KIND="--build"  ;;
           esac
           OUT="$(bash scripts/resolve-tray.sh --optional $TRAY_KIND)"
+          URL="$(printf '%s' "$OUT" | sed -n 's/^url=//p')"
           VER="$(printf '%s' "$OUT" | sed -n 's/^version=//p')"
           BASE="$(printf '%s' "$OUT" | sed -n 's/^base=//p')"
           if [ -z "$VER" ] || [ -z "$BASE" ]; then
@@ -317,6 +328,8 @@ jobs:
           else
             echo "version=$VER" >> "$GITHUB_OUTPUT"
             echo "base=$BASE" >> "$GITHUB_OUTPUT"
+            # 没有桌面壳时发行说明里写「（本次未捆绑）」，所以这里的空值是有意义的，不能兜底。
+            echo "release_url=${URL%%/releases/download/*}/releases/tag/${BASE##*/}" >> "$GITHUB_OUTPUT"
             echo "捆绑桌面壳: $VER（$BASE）"
           fi
 
@@ -378,9 +391,12 @@ jobs:
           CH_SUFFIX: ${{ needs.prep.outputs.channel_suffix }}
           PRE: ${{ needs.prep.outputs.prerelease }}
           WEBUI_TAG: ${{ needs.prep.outputs.webui_tag }}
-          # 「捆绑组件」表要用：三个仓库集成的版本在产物名里都看不到。
+          # 「捆绑组件」表要用：三个仓库集成的版本在产物名里都看不到，版本号再各带一个 release 页面链接。
           EXT_RUNTIME_VERSION: ${{ needs.prep.outputs.ext_runtime_version }}
           TRAY_VERSION: ${{ needs.prep.outputs.tray_version }}
+          WEBUI_REL: ${{ needs.prep.outputs.webui_release_url }}
+          EXT_REL: ${{ needs.prep.outputs.ext_runtime_release_url }}
+          TRAY_REL: ${{ needs.prep.outputs.tray_release_url }}
           # OCI 不进附件，只在下载表的 Linux 格里挂一枚徽章，靠它判断该不该出现。
           PACK_OCI: ${{ needs.prep.outputs.pack_oci }}
           # 手动触发时维护者填的发行说明（推送自动构建没有这个输入，恒为空）
@@ -401,20 +417,26 @@ jobs:
             esac
           done
 
-          # 三个捆绑仓库的版本号在产物 zip 里都看不到，单列一张表；托盘壳缺失时如实标注。
-          TRAY_CELL="${TRAY_VERSION:+\`$TRAY_VERSION\`}"
-          [ -n "$TRAY_CELL" ] || TRAY_CELL="（本次未捆绑）"
+          # 三个捆绑仓库的版本号在产物 zip 里都看不到，单列一张表；版本号点进各自的 release 页面。
+          link() {   # <版本> <release 页面>：页面缺失时退化成纯等宽版本号
+            if [ -n "$2" ]; then printf '[%s](%s)' "\`$1\`" "$2"; else printf '%s' "\`$1\`"; fi
+          }
+          WEBUI_CELL="$(link "$WEBUI_TAG" "$WEBUI_REL")"
+          EXT_CELL="$(link "$EXT_RUNTIME_VERSION" "$EXT_REL")"
+          # 托盘壳缺失时如实标注，这一格没有版本号也就没有链接。
+          TRAY_CELL="（本次未捆绑）"
+          [ -z "$TRAY_VERSION" ] || TRAY_CELL="$(link "$TRAY_VERSION" "$TRAY_REL")"
           BUNDLED_TABLE="| 捆绑组件 | 集成的版本 |
           |---|---|
-          | Suwayomi-WebUI | \`$WEBUI_TAG\` |
-          | Suwayomi-ext-runtime | \`$EXT_RUNTIME_VERSION\` |
+          | Suwayomi-WebUI | $WEBUI_CELL |
+          | Suwayomi-ext-runtime | $EXT_CELL |
           | Suwayomi-tray | $TRAY_CELL |"
 
           # 下载架构表（同 FlClash 的「Download based on your OS」）：只按实际收到的附件渲染，徽章直达下载地址。
           REL_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
           BADGE_HOST="https://img.shields.io/badge"   # 表格里每个格子都走 shields.io，提出来免得下面几行太长
-          # simple-icons 因商标下架了 windows 图标（logo=windows 静默失效），只能内嵌一份；base64 里的 + 在 query 里要写 %2B。
-          WIN_LOGO="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iI2ZmZiI%2BPHBhdGggZD0iTTAgMy40NSA5Ljc1IDIuMXY5LjQ1SDBWMy40NXptMTAuOTUtMS41TDI0IDB2MTEuNTVIMTAuOTVWMS45NXpNMCAxMi42aDkuNzV2OS4zTDAgMjAuNTVWMTIuNnptMTAuOTUgMEgyNFYyNGwtMTMuMDUtMS44VjEyLjZ6Ii8%2BPC9zdmc%2B"
+          # simple-icons 因商标下架了 windows 图标（logo=windows 静默失效），只能自绘内嵌（四格非倾斜 = Win11 形状）；base64 里的 + 要写 %2B。
+          WIN_LOGO="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iI2ZmZiI%2BPHBhdGggZD0iTTAgMGgxMS4zNzd2MTEuMzcySDB6bTEyLjYyMyAwSDI0djExLjM3MkgxMi42MjN6TTAgMTIuNjIzaDExLjM3N1YyNEgwem0xMi42MjMgMEgyNFYyNEgxMi42MjN6Ii8%2BPC9zdmc%2B"
           badge() {   # <形态> <架构> <底色> <图标> <文件名>
             printf '<a href="%s/%s"><img src="%s/%s-%s-%s.svg?logo=%s" alt="%s"></a><br>' \
               "$REL_URL" "$5" "$BADGE_HOST" "$1" "$2" "$3" "$4" "$5"

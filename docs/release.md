@@ -133,7 +133,7 @@
 |---|---|
 | 标题 | `## Suwayomi {VER} · {通道}`。 |
 | 手填说明 | 只有手动 dispatch 有（`release_notes` 输入）；自动 alpha 这一段恒为空。 |
-| 捆绑组件表 | webui / ext-runtime / tray 三个仓库各自集成的版本。 |
+| 捆绑组件表 | webui / ext-runtime / tray 三个仓库各自集成的版本，**版本号是指向该仓库 release 页面的链接**。 |
 | 下载架构表 | 「Download based on your OS」，一行一个 OS，格内 shields.io 徽章直达附件。 |
 
 - **两张表整体垫在最末**：三个捆绑版本号在产物 zip 里都看不到，是发布说明独有的信息；放末尾既不挡手填说明、又紧挨 changelog。
@@ -141,11 +141,12 @@
 
   | 捆绑组件 | 集成的版本 |
   |---|---|
-  | Suwayomi-WebUI | `r{code}` |
-  | Suwayomi-ext-runtime | `{V}` |
-  | Suwayomi-tray | `{V}`，解析不到时写「（本次未捆绑）」 |
+  | Suwayomi-WebUI | [`r{code}`](https://github.com/{owner}/Suwayomi-WebUI/releases/tag/r{code}) |
+  | Suwayomi-ext-runtime | [`{V}`](https://github.com/{owner}/Suwayomi-ext-runtime/releases/tag/v{V}) |
+  | Suwayomi-tray | [`{V}`](https://github.com/{owner}/Suwayomi-tray/releases/tag/v{V})，解析不到时写「（本次未捆绑）」（不带链接） |
 
   三者取制品的通道口径一致（release 取最新正式、alpha/beta 取最新构建），但这只在**挑制品**时起作用 —— 表里只写解析到的 tag，不带「最新构建 / 最新正式」之类的通道描述。推送触发的自动 alpha 用同一套渲染。
+- **链接地址不是手抄的**：三个解析步骤各自从资产 URL 反推（`https://github.com/{owner}/{repo}` + `/releases/tag/{tag}`），tag 直接取 URL 里那一段而不是重拼 `v{V}`（资产名里的版本号与 tag 不保证同形）。所以 fork 之后改了 `scripts/resolve-*.sh` 里的仓库 slug，链接会跟着走，不必再改 workflow。
 - 下载架构表的行序固定 **Windows → Linux → Android → macOS**（同族内先 x64 再 arm64、每个架构内先安装包再核心包再 `+jre`）：
 
   | OS | 格内徽章（形态 + 架构） |
@@ -158,7 +159,7 @@
   - **行只按实际收到的附件渲染**（命名规则见 `build.yml`），所以表里不会出现下不下来的链接。**只勾 OCI 时没有任何附件，表里就只剩 Linux 一行**（那枚 OCI 徽章）—— 镜像不进附件，这枚徽章是找到它的唯一入口。
   - 格内顺序是**显式固定**的：附件的字典序恰好把 `+jre` 排在核心包前、`arm64` 排在 `x64` 前，照遍历顺序渲染格子会乱。安装包（`.msi` / `-setup.exe`）进表的时机也在这里 —— 它们不被当成「另一种后缀的便携包」，而是按 `_MSI` / `_EXE` 单独占键、插在同架构核心包之前。
   - `MSI` / `Installer EXE` 两枚统一用**靛蓝**（`4a4e8f`）与青蓝的 `ZIP` 区分，一眼能看出这两枚是「装上去的」而不是解压即用。`EXE` 单看太含糊（zip 里也有 exe），所以徽章上写全 `Installer EXE`（shields 的下划线渲染成空格）；它指的是 `-setup.exe`（Burn bundle）而不是裸 exe。
-  - **Windows 徽章的图标是内嵌的**：simple-icons 因商标下架了 `windows`（`logo=windows` 静默失效，徽章只是少个图标，不报错），所以 `WIN_LOGO` 里塞了一份 base64 的自绘四格图标。同样的原因，别把 Windows 徽章改回 `logo=windows`；Linux / macOS / Android / Docker 的 `logo=linux|apple|android|docker` 都还在。
+  - **Windows 徽章的图标是内嵌的**：simple-icons 因商标下架了 `windows`（`logo=windows` 静默失效，徽章只是少个图标，不报错），所以 `WIN_LOGO` 里塞了一份 base64 的自绘图标 —— **Win11 形状的等宽四格**（轴对齐正方形，无透视；早先那版是带透视的倾斜四格）。同样的原因，别把 Windows 徽章改回 `logo=windows`；Linux / macOS / Android / Docker 的 `logo=linux|apple|android|docker` 都还在。
   - `+JRE` 里的加号在 shields.io 的 URL 里要写 `%2B`（`_` 渲染成空格，所以徽章文字是 `x64 +JRE`）。徽章的 `alt` 是文件名 / 镜像地址，图挂了也能看出该下哪个。
 - **没有「版本计数」输入框**：版本号一律由 `git rev-list --count HEAD` 推导（`versionCode = 计数 + 3000`）。早先那个可以手填覆盖计数的框已移除，避免产物名与真实提交数脱钩。
 
@@ -277,13 +278,13 @@ python .workbuddy/verify/release_inputs_check.py  # 输入顺序 + 发行说明�
 
 ```bash
 python .workbuddy/verify/workflows_check.py         # 四个 workflow：YAML 可解析 + 每个 run 块过 bash -n + 注释块 ≤ 1 行
-python .workbuddy/verify/release_inputs_check.py    # 输入顺序 + prep 形态开关 + 发行说明渲染（真跑两段 run 脚本，78 项）
+python .workbuddy/verify/release_inputs_check.py    # 输入顺序 + prep 形态开关 + 发行说明渲染（真跑 prep 的四段 run 脚本，105 项）
 python .workbuddy/verify/clear_dryrun.py            # gh 打桩 + 假 Release 列表，真跑 clear.yml 两个 run 块（9 个场景）
-python .workbuddy/verify/notes_preview.py           # 拿真渲染结果生成 GitHub 风格的 HTML 预览（改排版时肉眼核对）
+python .workbuddy/verify/notes_preview.py           # 拿真渲染结果生成 GitHub 风格的 HTML 预览（改排版时肉眼核对，含离线图标对照）
 ```
 
-- `release_inputs_check.py` 不只看渲染：它把 prep 的 `out` 步骤也真跑一遍（`git` / `curl` / `python3` 全打桩），断言 **auto 的五个形态开关与 dispatch 默认值逐项一致**、两条路径的矩阵一致、三个开关的独立性（只勾 `pack_exe` 放行）、以及两道守卫（`pack_msi`/`pack_exe` 缺 `pack_jre`、两种包都关）真的会红。
-- `notes_preview.py` 是给人看的（不做断言）：把真渲染结果转成 HTML 摆在 `notes_preview.html` 里，含「全形态 + 手填说明」「自动 alpha」「只勾 OCI」三个场景 —— 改排版时比读 `--notes` 的字面量快得多。
+- `release_inputs_check.py` 不只看渲染：它把 prep 的 `out` 步骤与**三个解析步骤**（`bash scripts/resolve-*.sh` 打成同名桩脚本交给真 bash 跑）都真跑一遍，断言 **auto 的五个形态开关与 dispatch 默认值逐项一致**、两条路径的矩阵一致、三个开关的独立性（只勾 `pack_exe` 放行）、两道守卫（`pack_msi`/`pack_exe` 缺 `pack_jre`、两种包都关）真的会红、以及捆绑组件表那三个 release 链接地址确实是从资产 URL 反推的。
+- `notes_preview.py` 是给人看的（不做断言）：把真渲染结果转成 HTML 摆在 `notes_preview.html` 里，含「全形态 + 手填说明」「自动 alpha」「只勾 OCI」三个场景 —— 改排版时比读 `--notes` 的字面量快得多。它开头还会把 `WIN_LOGO` 解出来内联一份，这样机器没网时也能看图标形状（徽章本身是 shields.io 的远程图片）。
 - 它比对的是**渲染后的整段说明**，所以动排版时它是唯一能提前发现「表被 markdown 当成延续行」这类问题的地方。
 - 打桩验不到 WiX 那一步（`pack_msi` / `pack_exe`）：`.wxs` 的验证是把真 WiX 装在本机、拿真 payload 跑 `wix build` + `wix msi validate` + `wix burn extract`，见「Windows 安装包」。
 - 平台专属代码路径（Windows 的 PE 分支、macOS 的 Mach-O 分支、Android 的 SDK 安装）在本地根本不会被执行 → 这类问题只能真跑 CI，或本地人为复现条件。

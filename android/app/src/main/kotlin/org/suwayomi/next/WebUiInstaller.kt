@@ -1,9 +1,5 @@
-//! 把打包进 assets 的 `webui.zip` 装到 `filesDir/webui`。
-//!
-//! **version.txt 是唯一判据**：桌面端 server 也只读 WebUI 根目录的 version.txt
-//! 决定「本地 WebUI 是哪个版本」（见 MEMORY「version.txt / about* 字段」）。
-//! 所以这里同样先只读 zip 里的 version.txt 做比较，一致就整体跳过解压 ——
-//! 每次启动都重解 40MB 既慢又白白磨损闪存。
+//! 把打包进 assets 的 `webui.zip` 装到 `filesDir/webui`。**version.txt 是唯一判据**
+//! （与桌面端同口径）：一致就整体跳过解压 —— 每次启动重解 40MB 既慢又白白磨损闪存。
 
 package org.suwayomi.next
 

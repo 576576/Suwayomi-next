@@ -1,13 +1,6 @@
-//! Application —— 进程级启动顺序都在这里，顺序不能换：
-//!
-//!   1. 先起扩展宿主（回环 HTTP）。**必须早于** server：server 启动时要连它做
-//!      `/health` 探测并拉 `/extensions`、`/sources`；晚起会得到「一个扩展都没有」
-//!      的空目录（server 不会自己重试）。
-//!   2. 再装 WebUI（assets/webui.zip → filesDir/webui），把目录交给 server。
-//!   3. 最后 `NativeServer.start(...)` 启动 Rust server（JNI，异步）。
-//!
-//! App 退到后台不主动停 server：Android 会按需回收进程，`onTerminate` 也不可靠。
-//! 需要真正停止时用 [shutdown]（例如设置页里的「退出」）。
+//! Application —— 进程级启动顺序都在这里，不能换：先起扩展宿主（server 启动时要连它做
+//! `/health` 探测并拉 `/extensions`，晚起会得到空目录且不重试），再装 WebUI，最后
+//! `NativeServer.start()`。退到后台不主动停 server，要停用 [shutdown]。
 
 package org.suwayomi.next
 
@@ -75,11 +68,8 @@ class SuwayomiApp : Application() {
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
     /**
-     * 与系统实际已装扩展对比，有变化才重扫 —— 由界面在回到前台时调用
-     * （[MainActivity.onResume]）。走系统安装器装的扩展只能靠重扫才能被宿主看见，
-     * 而系统安装器是对话框样式、宿主 Activity 不会 `onStop`，所以判据是
-     * 「已装扩展指纹变了」而不是生命周期事件。
-     *
+     * 与系统实际已装的扩展对比，有变化才重扫（[MainActivity.onResume] 调）；判据是
+     * 「已装扩展指纹变了」而不是生命周期事件 —— 系统安装器是对话框，宿主不会 `onStop`。
      * @return 有变化时返回重扫后的扩展数；无变化或宿主未启动返回 null。
      */
     @Synchronized

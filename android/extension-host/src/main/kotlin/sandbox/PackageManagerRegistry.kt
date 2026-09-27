@@ -18,12 +18,9 @@ import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 用 `PackageManager` 发现 `tachiyomi.extension` 特性的包，再用 dalvik 的
- * ClassLoader 把它们的 dex 装进**本进程**，实例化 `Source` / `SourceFactory`。
- *
- * 与 Mihon 的取舍不同之处：这里不做签名信任校验（没有 `TrustExtension` 那套
- * 数据库），也不过滤 NSFW —— 因为这套界面的使用者就是服务器自己，
- * 而扩展能否安装本身已经由系统安装器把过关。
+ * 用 `PackageManager` 发现 `tachiyomi.extension` 特性的包，再用 dalvik 的 ClassLoader 把它们
+ * 的 dex 装进**本进程**。与 Mihon 不同：不做签名信任校验，也不过滤 NSFW —— 使用者是服务器
+ * 自己，而「能不能装」已由系统安装器把过关。
  */
 class PackageManagerRegistry(private val context: Context) : SourceRegistry {
 
@@ -46,10 +43,9 @@ class PackageManagerRegistry(private val context: Context) : SourceRegistry {
     // ---- discovery ---------------------------------------------------------
 
     /**
-     * `@Synchronized`：重扫会被两条线程路径触发 —— 宿主 HTTP 的 `POST /reload`
-     * 与 App 侧「从系统安装器回来」的后台重扫，两者并发会撞坏 `nextExtensionId`
-     * 的分配（ClassLoader 本身是并发安全的，但这个计数器不是）。
-     * `reload()` 会回调 [scan]，Java 的同步块可重入，不会自锁。
+     * `@Synchronized`：重扫有两条线程路径（宿主 HTTP 的 `POST /reload` 与 App 侧后台重扫），
+     * 并发会撞坏 `nextExtensionId` 的分配（ClassLoader 本身并发安全，计数器不是）。`reload()`
+     * 会回调 [scan]，Java 同步块可重入，不会自锁。
      */
     @Synchronized
     fun scan() {
@@ -85,12 +81,9 @@ class PackageManagerRegistry(private val context: Context) : SourceRegistry {
         list.map { "${it.packageName}@${versionCodeOf(it)}" }.sorted().joinToString("|")
 
     /**
-     * 系统侧已装扩展的指纹，用来判断**要不要重扫**。
-     *
-     * 之所以用指纹而不是生命周期回调：Android 的系统安装器是个**对话框样式**的
-     * Activity，装扩展时宿主 Activity 只 `onPause` 不 `onStop`，靠"离开过 App"
-     * 这类闸门判断不了；而指纹比对不依赖任何时序，也顺带覆盖了从 Mihon / adb
-     * 装扩展的情况。
+     * 系统侧已装扩展的指纹，用来判断**要不要重扫**。用指纹而非生命周期回调：系统安装器是
+     * 对话框 Activity，装扩展时宿主只 `onPause` 不 `onStop`，「离开过 App」这类闸门判不了；
+     * 指纹比对不依赖时序，也顺带覆盖从 Mihon / adb 装扩展的情况。
      */
     fun installedSignature(): String = signatureOf(installedExtensions())
 
@@ -209,10 +202,9 @@ class PackageManagerRegistry(private val context: Context) : SourceRegistry {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) pkg.longVersionCode else pkg.versionCode.toLong()
 
     /**
-     * `tachiyomi.extension.nsfw` 的**值是 `true` 还是 `1` 不统一**（keiyoushi 的
-     * 扩展写的是整数 1）。`Bundle.getBoolean` 碰到 Integer 不会转换，而是打一条
-     * "expected Boolean but value was a java.lang.Integer" 警告后返回默认 false ——
-     * 结果就是 NSFW 扩展被静默当成 Safe。所以这里自己判类型。
+     * `tachiyomi.extension.nsfw` 的**值类型不统一**（keiyoushi 写整数 1）。`Bundle.getBoolean`
+     * 碰到 Integer 不转换，只打一条警告后返回默认 false —— NSFW 扩展会被静默当成 Safe，
+     * 所以这里自己判类型。
      */
     private fun nsfwFlag(meta: android.os.Bundle?): Int {
         val on = when (val v = meta?.get(METADATA_NSFW)) {

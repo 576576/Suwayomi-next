@@ -1,12 +1,6 @@
-//! Android 扩展宿主的对外门面。
-//!
-//! 职责：起一个只监听 127.0.0.1 的 HTTP 服务，把共享 `Router` 挂上去，
-//! 供同进程内的 Rust server（经 `SUWAYOMI_SANDBOX_URL`）调用。
-//!
-//! 之所以是「同进程回环 HTTP」而不是直接 JNI 回调：契约（`/health`、`/extensions`、
-//! `/sources`、`/source/{id}/…`）与 Rust 侧 `HttpSandboxFetcher` 已经在桌面被真实
-//! 扩展验证过，Android 直接复用，Rust 端一行都不用改；而且它可以脱离 Rust 单独
-//! 用 `adb shell curl` 调，排障成本低。见 docs/migration/ANDROID_IMPL.md D3。
+//! Android 扩展宿主的对外门面：起一个只监听 127.0.0.1 的 HTTP 服务，把共享 `Router`
+//! 挂上去供同进程的 Rust server 调用。之所以用「同进程回环 HTTP」而不是 JNI 回调，见
+//! `docs/migration/ANDROID_IMPL.md` §C3。
 
 package sandbox
 
@@ -32,10 +26,7 @@ object ExtensionHost {
     val port: Int get() = server?.boundPort ?: 0
 
     /**
-     * 启动扩展宿主。
-     *
-     * @param preferredPort 期望端口；被占用时由系统分配（用 [port] 读回真实值）。
-     * @return 实际监听端口。
+     * 启动扩展宿主。@param preferredPort 期望端口，被占用时由系统分配（用 [port] 读回）。
      */
     @Synchronized
     fun start(app: Application, preferredPort: Int): Int {
@@ -63,12 +54,8 @@ object ExtensionHost {
     }
 
     /**
-     * 与系统实际已装的扩展对比，**有变化才重扫**（App 每次回到前台调一次）。
-     *
-     * 加载 dex 是几百毫秒的活，不能每次切回前台都做；枚举 `PackageManager`
-     * 只是一次查询，代价可忽略。
-     *
-     * @return 有变化时返回重扫后的扩展数；无变化返回 null。
+     * 与系统实际已装的扩展对比，**有变化才重扫**：加载 dex 是几百毫秒的活，不能每次切回
+     * 前台都做（枚举 `PackageManager` 只是一次查询）。@return 无变化返回 null。
      */
     @Synchronized
     fun syncIfChanged(): Int? {

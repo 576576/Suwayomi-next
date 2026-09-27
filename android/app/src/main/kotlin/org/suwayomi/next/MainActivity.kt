@@ -1,17 +1,6 @@
-//! 主界面：一个全屏 WebView，指向同进程 server 的 127.0.0.1。
-//!
-//! 用裸 `android.app.Activity`：这里没有任何 AppCompat 特性依赖，少一层依赖就少
-//! 一层体积与启动开销。
-//!
-//! 除了「打开 WebUI」，本 Activity 还负责三件事：
-//!  * 扩展 APK 的入口 —— 用户在文件管理器里点开 APK、或在分享菜单里选 Suwayomi，
-//!    带 `ACTION_VIEW` / `ACTION_SEND` 进来，App 只把它转交系统安装器（见
-//!    ExtensionInstaller），自己不装；
-//!  * **等 server 真的开始监听**再加载 WebUI（见 [waitForServerThenLoad]）；
-//!  * WebView 的原生桥 —— 「编辑存储位置」时要唤起系统的目录授权对话框
-//!    （见 [DirectoryPicker]）；
-//!  * WebView 的 `WebChromeClient` —— `<input type="file">` 的文件选择器由宿主
-//!    代劳，「恢复备份」走的就是这条路（见 [FileChooser]）。
+//! 主界面：一个全屏 WebView，指向同进程 server 的 127.0.0.1；除了「打开 WebUI」，它还
+//! 代劳 WebView 做不了的事 —— 等 server 开始监听、扩展 APK 的入口（转交系统安装器），
+//! 以及三类要宿主出面才弹得出来的系统界面（[DirectoryPicker]/[FileChooser]/[DownloadSaver]）。
 
 package org.suwayomi.next
 
@@ -56,13 +45,13 @@ class MainActivity : Activity() {
     /** `<input type="file">` 的选择器（「恢复备份」）。 */
     private var fileChooser: FileChooser? = null
 
+    /** WebView 的下载落盘（「创建备份」）。 */
+    private var downloadSaver: DownloadSaver? = null
+
     /** 本页加载失败重试了几次（换页/重建会清零）。 */
     private var loadAttempts = 0
 
-    /**
-     * 加载代号：等 server 是异步的，期间用户可能又触发一次重建/重试。
-     * 代号对不上就丢弃那次等待的结果，避免旧任务把新 WebView 覆盖掉。
-     */
+    /** 加载代号：等 server 是异步的，代号对不上就丢弃那次等待的结果。 */
     private var loadGeneration = 0
 
     /** 等 server 起来之后再加载的那个 URL（`null` = 恢复上次的浏览位置）。 */
@@ -97,6 +86,7 @@ class MainActivity : Activity() {
 
         directoryPicker = DirectoryPicker(this, ::replyPickResult)
         fileChooser = FileChooser(this)
+        downloadSaver = DownloadSaver(this)
 
         // 重建（旋转/换主题）时恢复上次浏览的位置，否则 WebUI 每次重建都掉回书架首页
         pendingState = savedInstanceState
@@ -119,12 +109,7 @@ class MainActivity : Activity() {
         handleExtensionApk(intent)
     }
 
-    /**
-     * 回到前台时做两件事：
-     *  1. 扩展若被系统装/卸过就重扫一次（见 [SuwayomiApp.refreshExtensionsIfChanged]）；
-     *  2. 补一次「所有文件访问」的授权判断 —— 那个系统设置页不一定把结果回给
-     *     `onActivityResult`。
-     */
+    /** 回到前台：扩展若被系统装/卸过就重扫一次，并补一次「所有文件访问」的授权判断。 */
     override fun onResume() {
         super.onResume()
         directoryPicker?.resume()
@@ -142,6 +127,7 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         directoryPicker?.detach()
         fileChooser?.detach()
+        downloadSaver?.detach()
         // WebView 必须显式销毁：它是原生资源 + 持有 Activity 引用，交给 GC 会泄漏
         container?.removeAllViews()
         webView?.destroy()
@@ -169,10 +155,8 @@ class MainActivity : Activity() {
     }
 
     /**
-     * 注册/注销系统的返回回调。
-     *
-     * 只在 WebView 能回退时注册：不能回退就把手势交还给系统，才有预测式返回的关闭
-     * 动画。历史变化时（`doUpdateVisitedHistory`）重新同步一次。
+     * 注册/注销系统的返回回调：只在 WebView 能回退时注册，不能回退就交还给系统，
+     * 才有预测式返回的关闭动画。历史变化时（`doUpdateVisitedHistory`）重新同步。
      */
     private fun syncBackCallback() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
@@ -199,20 +183,15 @@ class MainActivity : Activity() {
     // ---- 目录选择（编辑存储位置）--------------------------------------------
 
     /**
-     * 原生桥给 WebUI 用。名字 `SuwayomiAndroid` 与
-     * `src/lib/platform/AndroidBridge.ts` 一一对应，改一处必须改另一处。
+     * 原生桥给 WebUI 用。名字 `SuwayomiAndroid` 与 `src/lib/platform/AndroidBridge.ts`
+     * 一一对应，改一处必须改另一处。
      */
     private inner class Bridge {
         /** 供 WebUI 判断「我是不是跑在 Android 宿主里」。 */
         @JavascriptInterface
         fun platform(): String = "android"
 
-        /**
-         * 唤起系统「使用此文件夹」授权对话框。
-         *
-         * 本方法跑在 WebView 的 JavaBridge 线程上，而起 Activity、读权限都要在主
-         * 线程，所以转一手。
-         */
+        /** 唤起系统「使用此文件夹」授权对话框。跑在 JavaBridge 线程上，转一手到主线程。 */
         @JavascriptInterface
         fun pickDirectory(requestId: String, initial: String) {
             runOnUiThread { directoryPicker?.request(requestId, initial) }
@@ -233,9 +212,9 @@ class MainActivity : Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        // 两个选择器的请求码分属不同段（DirectoryPicker 0x51xx / FileChooser 0x52xx），
-        // 谁认领都一样，不必怕吃掉对方的。
+        // 三个请求码分属 0x51xx（目录）、0x5201（选文件）、0x5202（存文件），谁认领都一样。
         if (fileChooser?.onActivityResult(requestCode, resultCode, data) == true) return
+        if (downloadSaver?.onActivityResult(requestCode, resultCode, data) == true) return
         directoryPicker?.onActivityResult(requestCode, resultCode, data)
     }
 
@@ -247,11 +226,8 @@ class MainActivity : Activity() {
     // ---- 扩展 APK ----------------------------------------------------------
 
     /**
-     * 把进来的扩展 APK 转交系统安装器。
-     *
-     * `ACTION_SEND`（分享菜单）带的是 `EXTRA_STREAM`，`ACTION_VIEW`（点开文件）
-     * 带的是 `data`；两者都需要 `content://`（FileProvider / DocumentsUI 给的
-     * 都是 content URI）—— `apkFromViewIntent` 负责落一份到 cacheDir。
+     * 把进来的扩展 APK 转交系统安装器（`ACTION_VIEW` 带 `data`、`ACTION_SEND` 带
+     * `EXTRA_STREAM`）。两者都是 `content://`，由 `apkFromViewIntent` 落一份到 cacheDir。
      */
     private fun handleExtensionApk(intent: Intent?) {
         intent ?: return
@@ -288,10 +264,8 @@ class MainActivity : Activity() {
     }
 
     /**
-     * 等 server 真的在监听，再加载 WebUI。
-     *
-     * `NativeServer.start()` 是异步的（JNI 返回 0 只代表已受理），建 HTTP 监听之前
-     * 还要连库、跑迁移、同步扩展，几秒起步。不等就 loadUrl 会连接被拒并停在白屏。
+     * 等 server 真的在监听再加载 WebUI。`NativeServer.start()` 是异步的（返回 0 只代表
+     * 已受理），建 HTTP 监听之前还要连库、跑迁移、同步扩展，几秒起步 —— 不等就白屏。
      */
     private fun waitForServerThenLoad() {
         val port = (application as SuwayomiApp).serverPort
@@ -342,10 +316,7 @@ class MainActivity : Activity() {
         waitForServerThenLoad()
     }
 
-    /**
-     * 渲染进程被杀之后**整套重建** WebView —— 这种情况下 `reload()` 救不回来，
-     * 只能 destroy 掉换一个新的。
-     */
+    /** 渲染进程被杀后**整套重建** WebView —— 这种情况 `reload()` 救不回来。 */
     private fun rebuildWebView() {
         val frame = container ?: return
         overlay?.let { frame.removeView(it) }
@@ -386,10 +357,7 @@ class MainActivity : Activity() {
         CookieManager.getInstance().setAcceptCookie(true)
         wv.addJavascriptInterface(Bridge(), BRIDGE_NAME)
         wv.webViewClient = object : WebViewClient() {
-            /**
-             * 只在本机 server 内部导航；其余交给系统浏览器 —— 扩展站点/下载链接
-             * 这样做登录态与下载器都能用上。
-             */
+            /** 只在本机 server 内部导航；其余交给系统浏览器（登录态与下载器都能用上）。 */
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val url = request.url
                 if (url.host == LOOPBACK || url.host == "localhost") return false
@@ -420,19 +388,15 @@ class MainActivity : Activity() {
                 }
             }
 
-            /**
-             * 渲染进程被杀 —— 返回 true 表示「我自己处理了」，否则系统会直接
-             * 杀掉整个 App（默认行为）。
-             */
+            /** 渲染进程被杀：返回 true = 「我自己处理了」，否则系统会杀掉整个 App。 */
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
                 Log.w(TAG, "render process gone (crashed=${detail.didCrash()}); rebuilding the WebView")
                 rebuildWebView()
                 return true
             }
         }
-        // `<input type="file">` 的选择器 WebView 不自己弹，要宿主代劳（见 [FileChooser]）。
-        // **不设这个客户端时，点击是静默无反应**：WebUI 的「恢复备份」正是点一个隐藏
-        // input（`Backup.tsx`），没有这里就永远弹不出选择器。
+        // `<input type="file">` 的选择器要宿主代劳（见 [FileChooser]）；不设这个客户端时
+        // 点击是**静默无反应**（「恢复备份」点不动的根因）。
         wv.webChromeClient = object : WebChromeClient() {
             override fun onShowFileChooser(
                 view: WebView,
@@ -448,6 +412,10 @@ class MainActivity : Activity() {
                 }
                 return chooser.show(filePathCallback, fileChooserParams)
             }
+        }
+        // 下载同理（见 [DownloadSaver]）：「创建备份」就是一次 `link.click()` 触发的下载。
+        wv.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+            downloadSaver?.start(url, userAgent, contentDisposition, mimeType)
         }
         return wv
     }

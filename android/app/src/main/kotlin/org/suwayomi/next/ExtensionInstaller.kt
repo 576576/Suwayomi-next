@@ -1,12 +1,6 @@
-//! 扩展的安装/卸载 —— 全部交给**系统安装器/卸载器**，本项目不写任何扩展文件。
-//!
-//! 与桌面的根本差别（docs/migration/ANDROID_IMPL.md D4）：
-//!  * 桌面：server 下载 APK 写进 `extensions/`，重启沙盒；
-//!  * Android：把 APK 落到 `cacheDir` 再用 FileProvider 交给系统安装器，
-//!    用户在系统界面确认后由 `PackageManager` 安装。卸载同理走 `ACTION_DELETE`。
-//!
-//! 这么做的收益是「扩展的所有权在系统」：Mihon/Komikku 之类装了或卸了扩展，
-//! 本 App 下一次 `/reload` 立刻能看到，不需要也不存在一份属于自己的副本。
+//! 扩展的安装/卸载全部交给**系统安装器/卸载器**，本项目不写任何扩展文件。
+//! 因此「扩展的所有权在系统」：Mihon/Komikku 装了或卸了扩展，下一次重扫立刻能看到。
+//! 与桌面的差别见 `docs/migration/ANDROID_IMPL.md` §C4。
 
 package org.suwayomi.next
 
@@ -28,10 +22,8 @@ object ExtensionInstaller {
     private const val IMPORT_DIR = "apk-import"
 
     /**
-     * 把 [apk] 交给系统安装器。
-     *
-     * @return true 表示已成功唤起（用户还要在系统界面点确认）；
-     *         false 表示缺少「安装未知来源」授权或没有安装器。
+     * 把 [apk] 交给系统安装器。返回 false = 缺少「安装未知来源」授权或没有安装器
+     * （前者顺手跳去授权页）。
      */
     fun install(context: Context, apk: File): Boolean {
         if (!apk.isFile || apk.length() == 0L) {
@@ -49,10 +41,8 @@ object ExtensionInstaller {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        // 本 App 自己也注册了 APK 的 VIEW filter（作为入口），不排除掉的话系统会弹
-        // 「打开方式」选择器，用户再点回 Suwayomi 就原地打转。显式挑一个不是自己的
-        // 处理者 —— `AndroidManifest` 里 `<queries>` 的 VIEW+apk intent 就是为此
-        // 让这次查询可见（Android 11+ 包可见性）。
+        // 本 App 自己也注册了 APK 的 VIEW filter，不排除掉会弹「打开方式」让用户原地
+        // 打转；`<queries>` 里那条 VIEW+apk 就是为让这次查询可见（Android 11+ 包可见性）。
         val installer = context.packageManager
             .queryIntentActivities(intent, 0)
             .firstOrNull { it.activityInfo.packageName != context.packageName }
@@ -105,14 +95,9 @@ object ExtensionInstaller {
     }
 
     /**
-     * 从 `ACTION_VIEW` / `ACTION_SEND` 拿到待安装的 APK，落一份到 `cacheDir`。
-     *
-     * 源一定是 `content://`（DocumentsUI、下载管理器、FileProvider 给的都是），
-     * 所以统一走 `contentResolver`。
-     *
-     * 目标放进独立子目录并加时间戳前缀，**不能直接用原名**：源文件有时就落在
-     * `cacheDir` 里（例如上一次导入的副本），同名会让 `outputStream()` 先把源
-     * 截断成 0 字节，复制出来的是空文件，而且是静默失败。
+     * 从 `ACTION_VIEW` / `ACTION_SEND` 拿到待安装的 APK，落一份到 `cacheDir`（源一定是
+     * `content://`，统一走 contentResolver）。目标加时间戳前缀**不能直接用原名**：源有时
+     * 就在 cacheDir 里，同名会把源截断成 0 字节，而且是静默失败。
      */
     fun apkFromViewIntent(activity: Activity, data: Uri?): File? {
         data ?: return null

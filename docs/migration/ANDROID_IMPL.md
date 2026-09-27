@@ -109,6 +109,7 @@ android/                     Android 宿主工程（独立 Gradle/AGP，不并�
                              + ExtensionInstaller（唤起系统安装器/卸载器，FileProvider 暴露 APK）
                              + DirectoryPicker（选目录，SAF + 全盘写权限）
                              + FileChooser（选文件，WebUI 的 <input type="file">）
+                             + DownloadSaver（存文件，WebUI 的 link.download）
   extension-host/            :extension-host —— 扩展宿主（PackageManager 发现 + ART 加载 + 回环 HTTP）
   build/ext-runtime-src/     由 android/scripts/fetch-ext-runtime-src.sh 下载展开，:extension-host 的源目录
     eu/kanade/tachiyomi/**   扩展 API 实现（HttpSource/ParsedHttpSource/network/model/Filter…）
@@ -203,7 +204,7 @@ REST 侧的 `/api/v1/extension/icon/{pkg}` 按 **磁盘缓存 → 沙盒 → 仓
 现在 JNI 入口经 `ServerOptions::cache_dir = Some(data_dir/cache)` 显式钉住，
 由 `AppPaths` 注入到各服务（没有进程级单例，见 RUST_STYLE_AUDIT.md §7 阶段 4-1）。
 
-### `<input type="file">`：WebView 不会自己弹选择器（「恢复备份」点不动的根因）
+### 选文件（`<input type="file">`）：WebView 不会自己弹选择器
 
 WebUI 的「恢复备份」是点一个**隐藏的** `<input type="file">`
 （`Suwayomi-WebUI/src/features/backup/screens/Backup.tsx` 里 `inputRef.current?.click()`）。
@@ -228,13 +229,45 @@ WebUI 的「恢复备份」是点一个**隐藏的** `<input type="file">`
   之后再点同一个 `<input type="file">` 都不会有反应，页面刷新前救不回来。所以
   「构不出 Intent」「没有 DocumentsUI」「用户取消」每一条分支都要走到 `onReceiveValue`。
   反过来，`onDestroy` 时**只丢引用、不回话**：WebView 马上就被 `destroy()` 了。
-- **请求码分段**：`DirectoryPicker` 占 `0x51xx`、`FileChooser` 占 `0x5201`，避免两边
-  将来各加一个请求码时撞车（`MainActivity.onActivityResult` 依次问两者）。
+- **请求码分段**：`DirectoryPicker` 占 `0x51xx`、`FileChooser` 占 `0x5201`、`DownloadSaver`
+  占 `0x5202`，避免两边将来各加一个请求码时撞车（`MainActivity.onActivityResult` 依次问三家）。
+- **跳转期间 Activity 被重建**（切深浅色会走 `uiMode` 重建，见 `AndroidManifest` 的
+  `configChanges` 注释）时，新实例的 `callback` 是空的，这次选择被静默丢弃 —— 用户重点一次
+  即可，不值得为它引入 `onRetainCustomNonConfigurationInstance`。
 
-**尚未修的同源缺口**：「创建备份」（`createBackup` 走 `link.download` + `link.click()`）
-在 WebView 里同样不会落盘 —— 那需要宿主实现 `setDownloadListener`（或在 WebUI 侧改用
-`blob:` + SAF 写入）。目前 `:app` 里没有 `setDownloadListener`，代码层面可确认这一点，
-但**尚未在真机/模拟器上验证过**表现。
+### 创建备份（`link.download` + `link.click()`）
+
+同一类缺口的另一半：「创建备份」拿到 `createBackup.url`（`/api/v1/backup/export/file`）后
+用 `link.download` + `link.click()` 触发一次下载。浏览器里浏览器自己存盘；WebView 同样把
+「下载」外包给宿主 —— 只有宿主设了 `setDownloadListener` 才会被通知，否则也是
+**静默无反应**（不抛异常、不回调、logcat 一行都没有）。
+
+修法落点 `android/app/src/main/kotlin/org/suwayomi/next/DownloadSaver.kt`：
+`onDownloadStart` → `ACTION_CREATE_DOCUMENT`（SAF 的「另存为」）让用户选落点 →
+拿到目标 `content://` 后**再回服务端取一次文件**写进去（下载是宿主发起的第二次请求，
+所以 cookie 与响应码都得自己管）。
+
+三个坑：
+
+- **必须带上 WebView 的 cookie。** 下载不会自动继承 WebView 的会话。设置页开了认证时
+  裸请求只拿到 302 登录页，照写不误的话落下来的是一个 HTML、后缀却是 `.tachibk`。
+  所以 `instanceFollowRedirects = false` 并断言 `HTTP 200` —— 拿到 302 就如实报错。
+  （`/api/v1/backup/export/file` 不在 `auth.rs` 的 `token_query_allowed` 白名单里，
+  只能靠 cookie。）
+- **备份其实被生成了两次。** mutation 里已经生成过一次，GET 时路由又跑一遍 `create_backup`。
+  桌面浏览器走的是同一条路（既有行为，本次未改）；真要省掉，得让 mutation 返回一次性
+  token 而不是直接给路径。
+- **文件名从 `Content-Disposition` 取。** 服务端发的是
+  `attachment; filename="org.suwayomi.next_<日期>_<时刻>.tachibk"`（与 autobackup / Mihon
+  命名一致），正好喂给 SAF 的 `EXTRA_TITLE`；取不到才退到 URL 末段。
+
+与「选文件」的分工值得记一笔：那个把 `content://` 交回 **WebView**，读盘由 WebView 按 URI 做，
+宿主不需要任何存储权限；这个由**宿主自己**读盘再写盘，所以失败模式也不同 —— 必须自己判定
+响应码，不能只看「文件写出来了没有」。
+
+`DownloadSaver` 只处理**宿主自己 server 的**下载：外链在 `shouldOverrideUrlLoading` 里就
+交给系统浏览器了。另外备份页那句「也可拖放备份文件到此」在触屏上没有意义，已改为不提案
+拖放的措辞（WebUI 仓 `src/i18n/locales/zh-Hans.po`）。
 
 ### 工具链版本（本地实测）
 
@@ -253,7 +286,8 @@ cmdline-tools，`:extension-host` 又还要 ext-runtime 的共享源码（下载
 （只对 `sandbox.ExtensionHost` 与 `androidx.core.content.FileProvider` 打桩，且断言桩与真货
 同形，真签名一改就红）。抓得住「用错 API / 类型不匹配 / `override` 没对上签名」，抓不住
 Android 运行时行为与资源链接 —— 后者只能靠 CI 的 `assembleRelease` 与真机。
-（`.workbuddy/` 是 gitignore 的，该脚本不入库。）
+同目录下还有 `.workbuddy/verify/android_kt_comment_check.py`：注释长度门禁（每块 ≤ 3 行）。
+（`.workbuddy/` 是 gitignore 的，这两个脚本都不入库。）
 
 ### 交叉编译的两个坑（已固化在构建脚本里）
 
@@ -268,6 +302,58 @@ Android 运行时行为与资源链接 —— 后者只能靠 CI 的 `assembleRe
 
 另有 NDK 目录的一个细节：Windows 上 `aarch64-linux-android26-clang` **无后缀那个文件也存在**
 （sh 脚本），但它不能被 `CreateProcess` 执行（os error 193），必须优先选 `.cmd` / `.exe`。
+
+### 实现要点归档（从代码注释搬来）
+
+`android/**/*.kt` 的注释硬约束是**每块内容行 ≤ 3**（由 `.workbuddy/verify/android_kt_comment_check.py`
+把关，不入库）：代码里只留结论，读起来一眼能扫过；理由与推演一律写在这一节。
+
+**`DirectoryPicker`：为什么除了 SAF 还要「所有文件访问」。** SAF 的授权是**按 URI** 的 ——
+它能让你用 `ContentResolver` 读写那个 URI，但对**普通 POSIX 路径**没有任何效力。而真正写盘的
+是同进程里的 Rust 库（`std::fs`），它只认路径。所以只挑目录是不够的：目录挑得动，一落盘就失败。
+API 30+ 走 `MANAGE_EXTERNAL_STORAGE`（`Environment.isExternalStorageManager()`），以下走
+`WRITE_EXTERNAL_STORAGE`；顺序必须是先要权限、再挑目录。
+
+**`MainActivity`：为什么用裸 `android.app.Activity`。** 界面就是一个全屏 WebView，没有任何
+AppCompat 特性依赖 —— 少一层依赖就少一层体积与启动开销（与 `:app` 刻意不引 Material/Compose
+同一个理由）。另外两处与生命周期相关的取舍：① 回前台时补一次扩展重扫 + 「所有文件访问」
+判断，因为那个系统授权页不一定把结果回给 `onActivityResult`（各家 ROM 行为不一）；
+② `onRenderProcessGone` 返回 `true` 并**整套重建** WebView —— 渲染进程被杀时 `reload()`
+救不回来，而返回（默认的）`false` 会让系统直接杀掉整个 App；重建期间靠 `loadGeneration`
+代号丢弃过期的等待结果，免得旧任务覆盖新 WebView。
+
+**`SuwayomiApp`：启动顺序不能换。** 扩展宿主 → WebUI 解压 → `NativeServer.start()`。
+扩展宿主必须**早于** server：server 启动时要连它做 `/health` 探测并拉 `/extensions`，
+晚起会得到「一个扩展都没有」的空目录（server 不会自己重试）。退到后台**不主动停 server**：
+Android 按需回收进程，`onTerminate` 根本不可靠；要停只能走设置页的「退出」→ `shutdown()`。
+
+**`NativeServer`：JNI 符号名是约定，不是配置。** 导出符号由
+`Java_org_suwayomi_next_NativeServer_*` 规则生成，与 `crates/suwayomi-android/src/lib.rs`
+一一对应 —— 类名/包名/方法名任何一处不一致都会变成 `UnsatisfiedLinkError`。`load()` 不写在
+`object` 的 `init` 里，是为了把 `loadLibrary` 的失败包成可上报的错误（`lastError`），
+而不是让它变成静态初始化异常。
+
+**`DalvikExtensionClassLoader`：为什么必须 delegate-last。** `PathClassLoader`（dalvik 默认）
+是**父优先**：把 `android.*` 交给 bootclasspath 是对的，对扩展自己的类也只是「先问父、
+父没有才回落」，行为上等价。真正需要子优先的场景是：**宿主自己也带了一份同名的第三方库**
+（okhttp 等），扩展内置的那份应当优先，否则版本错配。API 27 才有
+`DelegateLastClassLoader`，minSdk 26 因此需要一个 backport（`PathClassLoader` + 手写
+`loadClass` 的「已加载 → boot → 自己 → 父」顺序，与 Mihon 一致）。
+
+**`SimpleHttpServer`：为什么自己写一个。** Android 的 bootclasspath 里**没有**
+`com.sun.net.httpserver`（那是 JDK 的 `jdk.httpserver` 模块），桌面宿主那套用不了。自己写的
+这个只够本项目用：GET/POST + 按 `Content-Length` 读定长 body（`/inspect` 需要）、
+keep-alive（Rust 侧 reqwest 的连接池默认复用连接，一次请求一条连接会白搭一次 TCP 往返）、
+以及**只绑 127.0.0.1** —— 这是同进程通道，绝不能对外暴露扩展接口。契约与桌面完全一致
+（同一个 `sandbox.Router`），所以 Rust 侧的 `HttpSandboxFetcher` 不需要知道对端是 JVM 还是 ART。
+
+**`WebUiInstaller`：`version.txt` 是唯一判据。** 与桌面端 server 同口径（桌面也只读 WebUI
+根目录的 `version.txt`）。zip 里那份结尾带换行，直接比会永远不相等 —— 表现是每次启动都重解
+一遍 40MB，所以两边都 `trim` 后再比。解压是流式的（不把 40MB zip 读进内存），并防 zip slip。
+
+**`PackageManagerRegistry`：为什么不做签名校验。** 与 Mihon 的取舍不同：这里没有
+`TrustExtension` 那套数据库，也不过滤 NSFW —— 使用者就是服务器自己，而「能不能装」已经由
+系统安装器把过关。
 
 ## 5. 产物形态选项（`-core` / `+jre`）
 

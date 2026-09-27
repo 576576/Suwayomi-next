@@ -1,14 +1,6 @@
-//! 平台无关的极简 HTTP 服务器（Android 侧）。
-//!
-//! Android 的 bootclasspath 里**没有** `com.sun.net.httpserver`（那是 JDK 的
-//! jdk.httpserver 模块），所以桌面那套宿主用不了。这里用 `ServerSocket` 写一个
-//! 只够本项目用的 HTTP/1.1 服务端：
-//!  * 支持 GET / POST，读 `Content-Length` 定长的 body（`/inspect` 会用到）；
-//!  * 支持 keep-alive（Rust 侧 reqwest 的连接池默认复用连接）；
-//!  * 只监听 127.0.0.1 —— 这是一个**同进程回环**通道，不对外暴露。
-//!
-//! 契约与桌面完全一致（同一个 `sandbox.Router`），因此 Rust 侧的
-//! `HttpSandboxFetcher` 不需要知道对端是 JVM 还是 ART。
+//! 平台无关的极简 HTTP 服务器（Android 侧）：Android 的 bootclasspath 里没有
+//! `com.sun.net.httpserver`，桌面那套宿主用不了，只能用 `ServerSocket` 自己写 ——
+//! 支持 GET/POST 与 keep-alive，而且只绑 127.0.0.1（同进程回环通道）。
 
 package sandbox
 
@@ -23,10 +15,8 @@ import java.nio.charset.StandardCharsets
 import java.util.concurrent.Executors
 
 /**
- * 极简单线程 accept + 线程池处理的 HTTP 服务端。
- *
- * @param port 监听端口；传 0 让系统分配，之后用 [boundPort] 读取真实端口。
- * @param handler 处理函数（通常是 `Router::handle`）。
+ * 极简单线程 accept + 线程池处理的 HTTP 服务端。@param port 监听端口；传 0 让系统分配
+ * （之后用 [boundPort] 读真实端口）。@param handler 通常是 `Router::handle`。
  */
 class SimpleHttpServer(
     port: Int,

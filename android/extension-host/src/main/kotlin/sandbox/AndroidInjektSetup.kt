@@ -1,10 +1,6 @@
-//! Injekt bootstrap（Android 版）。
-//!
-//! 与桌面 ext-runtime 的同名函数做同一件事：把扩展需要的依赖注册进 Koin 全局
-//! 容器，再把 Injekt 的解析器换成 `KoinRegistrar`。区别在**依赖实例从哪来**：
-//! 桌面用的是 `SandboxApp`（假 Application + 内存 SharedPreferences），
-//! 这里直接用**真的** `Application` 与 `Context` —— 系统已经给了我们，
-//! 扩展拿到的偏好设置会真正落盘（这比桌面沙盒的行为更好，不是偏差）。
+//! Injekt bootstrap（Android 版）：与桌面 ext-runtime 的同名函数做同一件事，区别在依赖
+//! 实例直接用**真的** `Application` / `Context`（系统已经给了我们），所以扩展拿到的偏好
+//! 设置会真正落盘 —— 这比桌面沙盒更好，不是偏差。
 
 package sandbox
 

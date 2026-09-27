@@ -1,15 +1,6 @@
-//! 「编辑存储位置」在 Android 上走系统授权，不能靠手填路径。
-//!
-//! 两件事缺一不可：
-//!
-//!  1. **`ACTION_OPEN_DOCUMENT_TREE`** —— 用户挑目录，拿到 SAF tree URI，再映射回
-//!     真实文件系统路径（server 只认路径，不认 URI）。
-//!  2. **文件系统写权限** —— API 30+ 是「所有文件访问」（MANAGE_EXTERNAL_STORAGE），
-//!     以下走 READ/WRITE_EXTERNAL_STORAGE。写盘的是**同进程里的 Rust 库**，用的是
-//!     普通 POSIX 调用，SAF 的「按 URI 授权」对它无效：少了这一步，目录挑得动，
-//!     一落盘就失败。
-//!
-//! 顺序是先要权限、再挑目录。
+//! 「编辑存储位置」在 Android 上走系统授权，不能靠手填路径：先拿文件系统写权限，再用
+//! `ACTION_OPEN_DOCUMENT_TREE` 挑目录，并把 SAF 的 tree URI 映射回真实路径（server 只认
+//! 路径）。为什么非要有写权限见 `docs/migration/ANDROID_IMPL.md` §C1。
 
 package org.suwayomi.next
 
@@ -41,10 +32,8 @@ sealed interface PickResult {
 }
 
 /**
- * 目录选择器的活动状态机。
- *
- * 状态跟着 Activity 走：一次选择要跨两次 Activity 跳转（先系统设置页要权限，再
- * DocumentsUI 挑目录）。本 App 只有一个 Activity（`singleTask`）。
+ * 目录选择器的活动状态机 —— 一次选择要跨两次 Activity 跳转（先系统设置页要权限，再
+ * DocumentsUI 挑目录），状态只能挂在唯一的 Activity 上。
  */
 class DirectoryPicker(
     private val activity: Activity,
@@ -73,10 +62,8 @@ class DirectoryPicker(
     }
 
     /**
-     * `Activity.onResume` 里调用。
-     *
-     * 「所有文件访问」设置页不一定把结果回给 `onActivityResult`（各家 ROM 行为
-     * 不一），所以每次回到前台补一次判断。
+     * `Activity.onResume` 里调用：授权页不一定把结果回给 `onActivityResult`（各家 ROM
+     * 行为不一），所以每次回到前台补一次判断。
      */
     fun resume() {
         if (pending == null || pickerLaunched) return
@@ -128,10 +115,8 @@ class DirectoryPicker(
         }
 
     /**
-     * 「所有文件访问」授权页。
-     *
-     * 先试带包名的那种（直接跳到本 App 的开关），ROM 上不一定有，拿不到就退到
-     * 全局列表页。
+     * 「所有文件访问」授权页：先试带包名的（直接跳到本 App 的开关），ROM 上不一定有，
+     * 拿不到就退到全局列表页。
      */
     private fun openAllFilesAccessSettings() {
         val pkgUri = Uri.parse("package:${activity.packageName}")
@@ -233,16 +218,9 @@ class DirectoryPicker(
         private const val REQUEST_LEGACY_STORAGE = 0x5103
 
         /**
-         * SAF 的 tree URI → 真实路径。
-         *
-         * `com.android.externalstorage.documents` 的 document id 可解析：
-         * `content://com.android.externalstorage.documents/tree/primary%3ADownload%2FSuwayomi`
-         * 的 id 是 `primary:Download/Suwayomi` —— 冒号前是**卷标识**（内置存储是
-         * `primary`，外置卡是 uuid），冒号后是卷内相对路径。卷标识 → 挂载点从
-         * `StorageManager.storageVolumes` 查，不自己拼 `/storage/emulated/0`。
-         *
-         * **只对这个 provider 成立**：网盘类 provider 的 doc id 与文件路径无关，
-         * 只能回 null，由调用方提示用户换个位置。
+         * SAF 的 tree URI → 真实路径。`com.android.externalstorage.documents` 的 doc id 形如
+         * `primary:Download/Suwayomi`（冒号前是卷标识、后是卷内相对路径），卷标识到挂载点
+         * 从 `StorageManager` 查。**只对这个 provider 成立**，网盘类只能回 null。
          */
         fun treeUriToPath(context: Context, uri: Uri): String? {
             if (uri.authority != EXTERNAL_STORAGE_AUTHORITY) return null

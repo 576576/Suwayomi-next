@@ -101,12 +101,22 @@
 
   | 捆绑组件 | 集成的版本 |
   |---|---|
-  | Suwayomi-WebUI | `r{code}` — 最新正式 release / 最新构建（预发布） |
+  | Suwayomi-WebUI | `r{code}`；**只有 release 通道**才跟一句「— 最新正式 release」 |
   | Suwayomi-ext-runtime | `{V}` |
   | Suwayomi-tray | `{V}`，解析不到时写「（本次未捆绑）」 |
 
-  三者取制品的通道口径一致（release 取最新正式、alpha/beta 取最新构建），所以那句描述只跟在 WebUI 行后面；推送触发的自动 alpha 用的是同一张表。
-- 表格之后是标准行，**按实际产出渲染**：`pack_jre` 没勾就不写形态行，Android 行只列真正构建的 ABI，OCI 行只在勾了 `pack_oci` 时出现（镜像不进附件，这行是找到它的唯一入口）。
+  三者取制品的通道口径一致（release 取最新正式、alpha/beta 取最新构建）。那句通道描述只对 WebUI 行有意义，且**只有 release 通道才写** —— alpha/beta 的整条发布本身就是预发布，在行的末尾再标一次「预发布」是重复信息。推送触发的自动 alpha 用的是同一张表。
+- 紧接着是**下载架构表**（同 FlClash 的 "Download based on your OS"）：一行一个 OS，格内是 shields.io 徽章，点进去就是附件本身 —— 用户不必去 Assets 列表里逐个对架构。
+
+  | OS | 格内徽章（形态 + 架构） |
+  |---|---|
+  | Windows | `ZIP-x64`、`ZIP-x64 JRE`（勾了 arm64 就再多两个） |
+  | Linux | `tar.gz-x64`、`tar.gz-x64 JRE`… |
+  | macOS | 同 Linux，图标换成 apple |
+  | Android | `APK-x64` / `APK-arm64` |
+
+  **行只按实际收到的附件渲染**（命名规则见 `build.yml`：`Suwayomi-<VER><suffix>-<os>-<arch>[+jre].<zip|tar.gz|apk>`），所以表里不会出现下不下来的链接；**只勾 OCI 时没有附件，整张表不出现**（镜像地址仍在下一条标准行里）。格内顺序固定为「先 x64 再 arm64、先基线包再 `+jre`」——附件的字典序恰好是反的，直接照遍历顺序渲染格子会乱。徽章的 `alt` 就是文件名，图挂了也能看出该下哪个。
+- 两张表之后是标准行，**按实际产出渲染**：`pack_jre` 没勾就不写形态行，Android 行只列真正构建的 ABI，OCI 行只在勾了 `pack_oci` 时出现（镜像不进附件，这行是找到它的唯一入口）。
 - **没有「版本计数」输入框**：版本号一律由 `git rev-list --count HEAD` 推导（`versionCode = 计数 + 3000`）。早先那个可以手填覆盖计数的框已移除，避免产物名与真实提交数脱钩。
 
 ## 预发布清理（`clear.yml`）

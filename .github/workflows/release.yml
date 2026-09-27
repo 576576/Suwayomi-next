@@ -377,8 +377,8 @@ jobs:
           done
 
           case "$WEBUI_KIND" in
-            stable) WEBUI_DESC="最新正式 release" ;;
-            *)      WEBUI_DESC="最新构建（预发布）" ;;
+            stable) WEBUI_DESC=" — 最新正式 release" ;;
+            *)      WEBUI_DESC="" ;;
           esac
 
           # 三个捆绑仓库的版本号在产物 zip 里都看不到，单列一张表；托盘壳缺失时如实标注。
@@ -386,16 +386,80 @@ jobs:
           [ -n "$TRAY_CELL" ] || TRAY_CELL="（本次未捆绑）"
           BUNDLED_TABLE="| 捆绑组件 | 集成的版本 |
           |---|---|
-          | Suwayomi-WebUI | \`$WEBUI_TAG\` — $WEBUI_DESC |
+          | Suwayomi-WebUI | \`$WEBUI_TAG\`$WEBUI_DESC |
           | Suwayomi-ext-runtime | \`$EXT_RUNTIME_VERSION\` |
           | Suwayomi-tray | $TRAY_CELL |"
 
-          # 自动构建的说明只有这张表，标题与手动通道不同。
+          # 下载架构表（同 FlClash 的「Download based on your OS」）：只按实际收到的附件渲染，徽章直达下载地址。
+          REL_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          badge() {   # <形态> <架构> <底色> <图标> <文件名>
+            printf '<a href="%s/%s"><img src="https://img.shields.io/badge/%s-%s-%s.svg?logo=%s" alt="%s"></a><br>' \
+              "$REL_URL" "$5" "$1" "$2" "$3" "$4" "$5"
+          }
+          # 按「<平台>-<架构>[_JRE]」收进表再按固定顺序取：附件的字典序会把 +jre 排到基线包前、arm64 排到 x64 前。
+          declare -A DL_BADGE=()
+          for f in "${FILES[@]}"; do
+            n="$(basename "$f")"
+            REST="${n#Suwayomi-${VER}${CH_SUFFIX}-}"
+            case "$REST" in
+              android-arm64.apk) DL_BADGE[android-arm64]="$(badge APK arm64 168039 android "$n")"; continue ;;
+              android-x64.apk)   DL_BADGE[android-x64]="$(badge APK x64 168039 android "$n")"; continue ;;
+            esac
+            case "$REST" in
+              *.zip)    STEM="${REST%.zip}";    LABEL="ZIP" ;;
+              *.tar.gz) STEM="${REST%.tar.gz}"; LABEL="tar.gz" ;;
+              *) echo "跳过未识别的产物：$n"; continue ;;
+            esac
+            # 同一架构的基线包与 +jre 包共处一格，靠徽章右半边的「x64 / x64 JRE」区分。
+            JRE=""
+            case "$STEM" in *+jre) STEM="${STEM%+jre}"; JRE="_JRE" ;; esac
+            case "${STEM%-*}" in
+              windows) DL_BADGE["windows-${STEM##*-}$JRE"]="$(badge "$LABEL" "${STEM##*-}$JRE" 2d7d9a windows "$n")" ;;
+              linux)   DL_BADGE["linux-${STEM##*-}$JRE"]="$(badge "$LABEL" "${STEM##*-}$JRE" f84e29 linux "$n")" ;;
+              macos)   DL_BADGE["macos-${STEM##*-}$JRE"]="$(badge "$LABEL" "${STEM##*-}$JRE" 333333 apple "$n")" ;;
+              *) echo "跳过未知平台：$n" ;;
+            esac
+          done
+          dl_cell() {   # <平台> <显示名>：先 x64 再 arm64，先基线包再 +jre
+            local p="$1" name="$2" arch suf k cell=""
+            for arch in x64 arm64; do
+              for suf in "" _JRE; do
+                k="$p-$arch$suf"
+                [ -n "${DL_BADGE[$k]:-}" ] || continue
+                cell="$cell${DL_BADGE[$k]}"$'\n'
+              done
+            done
+            [ -n "$cell" ] || return 0
+            printf '<tr><td>%s</td><td>\n%s</td></tr>\n' "$name" "$cell"
+          }
+          DL_ROWS="$(dl_cell windows Windows)$(dl_cell linux Linux)$(dl_cell macos macOS)$(dl_cell android Android)"
+          DOWNLOAD_TABLE=""
+          if [ -n "$DL_ROWS" ]; then
+            DOWNLOAD_TABLE="**Download based on your OS:**
+
+          <table>
+              <thead align=left>
+                  <tr>
+                      <th>OS</th>
+                      <th>Download</th>
+                  </tr>
+              </thead>
+              <tbody align=left>
+          ${DL_ROWS}    </tbody>
+          </table>"
+          fi
+
+          # 自动构建的说明只有这两张表，标题与手动通道不同。
           if [ "$FLOW" = "auto" ]; then
+            AUTO_TAIL=""
+            if [ -n "$DOWNLOAD_TABLE" ]; then
+              # 两个换行：markdown 表格与紧随的段落之间必须留空行，否则表被当成延续行。
+              AUTO_TAIL=$'\n\n'"$DOWNLOAD_TABLE"
+            fi
             gh release create "$TAG" "${FILES[@]}" \
               --title "Suwayomi $VER (alpha)" \
               --notes "## Suwayomi $VER · alpha
-          $BUNDLED_TABLE" \
+          $BUNDLED_TABLE$AUTO_TAIL" \
               --prerelease \
               --generate-notes
             exit 0
@@ -404,6 +468,11 @@ jobs:
           # 标准行按实际产出渲染；表尾留一个空行，避免各家渲染器对「表格后直接接列表」处理不一致。
           BODY="$BUNDLED_TABLE
           "
+          if [ -n "$DOWNLOAD_TABLE" ]; then
+            BODY="$BODY
+          $DOWNLOAD_TABLE
+          "
+          fi
           if [ "$PACK_JRE" = "true" ]; then
             BODY="$BODY
           - 产物形态：默认包不打包 JRE，\`+jre\` 包额外含对应架构的裁剪 JRE（jlink）"

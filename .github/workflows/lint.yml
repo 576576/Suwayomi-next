@@ -81,4 +81,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: 测试
-        run: cargo test --workspace
+        # --no-fail-fast：默认 cargo test 在第一个失败的测试二进制处就收工，
+        # 后面的 target 一律不跑。这 20 个 DB 用例都是"从没真跑过"的状态，
+        # 一次只想拿到全部失败清单，而不是解一个冒一个。
+        run: cargo test --workspace --no-fail-fast

@@ -96,9 +96,9 @@ async fn load_settings(state: &GraphQLState) -> Option<(i32, PathBuf, suwayomi_c
     let settings = state.effective_settings().await;
     let frequency = settings.auto_backup_frequency;
     let folder = if settings.backup_path.trim().is_empty() {
-        state.data_dir.join("autobackup")
+        state.paths.data().join("autobackup")
     } else {
-        suwayomi_core::config::resolve_setting_path(&settings.backup_path, &state.data_dir)
+        suwayomi_core::config::resolve_setting_path(&settings.backup_path, &state.paths.data())
     };
     let flags = suwayomi_core::backup::BackupFlags {
         include_manga: settings.auto_backup_include_manga,

@@ -79,6 +79,8 @@ async fn main() -> anyhow::Result<()> {
     let options = ServerOptions {
         config: config_from_env(),
         data_dir: resolve_data_dir(),
+        // `None` → SUWAYOMI_CACHE_DIR / 发布布局推导（桌面有环境变量可用）
+        cache_dir: None,
         webui_dir: resolve_webui_dir(),
         // `None` → DbSettings::from_env()（SUWAYOMI_DB_BACKEND / SUWAYOMI_DATABASE_URL /
         // SUWAYOMI_SQLITE_PATH）；Android 宿主显式传 SQLite 路径（App 里没有 env）

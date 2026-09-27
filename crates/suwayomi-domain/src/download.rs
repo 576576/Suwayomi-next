@@ -7,11 +7,12 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock, RwLock};
 
 use tokio::sync::{Mutex, broadcast};
 
+use suwayomi_core::config::AppPaths;
 use suwayomi_core::db::Db;
 use suwayomi_core::models::now_epoch_secs;
 
@@ -19,28 +20,14 @@ use crate::source::{SourceBackend, SourceFetcher};
 use crate::sql::bind_placeholders;
 use std::fmt::Write as _;
 
-/// 下载根的显式覆盖（`downloadsPath` 设置，进程级）。服务端启动时与保存设置后写入。
-static DOWNLOADS_ROOT_OVERRIDE: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
-
 /// 同一章内并发拉取页面的上限。对 CDN 友好，比旧的串行循环快约 8×。
 const PAGE_FETCH_CONCURRENCY: usize = 8;
 
-/// 设置下载根。`None`/空串表示回到默认的 `<数据目录>/downloads`。
-pub fn set_downloads_root(path: Option<PathBuf>) {
-    let lock = DOWNLOADS_ROOT_OVERRIDE.get_or_init(|| RwLock::new(None));
-    if let Ok(mut guard) = lock.write() {
-        *guard = path.filter(|p| !p.as_os_str().is_empty());
-    }
-}
-
-/// 下载根：设置了 `downloadsPath` 就用它，否则 `<data_dir>/downloads`。
-pub fn downloads_root(data_dir: &Path) -> PathBuf {
-    if let Some(lock) = DOWNLOADS_ROOT_OVERRIDE.get()
-        && let Ok(guard) = lock.read()
-        && let Some(path) = guard.as_ref()
-    {
-        return path.clone();
-    }
+/// 下载根的默认落点：`<数据目录>/downloads`。
+///
+/// 实际生效的值由 [`AppPaths`] 持有（`downloadsPath` 设置可覆盖并在保存后立即
+/// 生效），[`DownloadManager`] 通过 `&AppPaths` 取用，不再有进程级单例。
+pub fn default_downloads_root(data_dir: &Path) -> PathBuf {
     data_dir.join("downloads")
 }
 
@@ -81,7 +68,8 @@ pub enum DownloadEvent {
 pub struct DownloadManager {
     db: Db,
     fetcher: SourceBackend,
-    data_dir: std::path::PathBuf,
+    /// 路径句柄（`downloadsPath` 设置可覆盖下载根；覆盖后立即生效）。
+    paths: AppPaths,
     client: reqwest::Client,
     server_base_url: String,
     queue: Arc<Mutex<VecDeque<DownloadJob>>>,
@@ -95,7 +83,7 @@ pub struct DownloadManager {
 }
 
 impl DownloadManager {
-    pub fn new(db: Db, fetcher: SourceBackend, data_dir: std::path::PathBuf) -> Self {
+    pub fn new(db: Db, fetcher: SourceBackend, paths: AppPaths) -> Self {
         let (tx, _) = broadcast::channel(128);
         let client = reqwest::Client::builder()
             .user_agent("Suwayomi-next/1.0")
@@ -106,7 +94,7 @@ impl DownloadManager {
         Self {
             db,
             fetcher,
-            data_dir,
+            paths,
             client,
             server_base_url: String::from("http://127.0.0.1:8090"),
             queue: Arc::new(Mutex::new(VecDeque::new())),
@@ -535,7 +523,7 @@ impl DownloadManager {
         let manga_dir = sanitize_file_name(&job.manga_title);
         let chapter_file = format!("{}.cbz", sanitize_file_name(&job.chapter_name));
 
-        let dir = downloads_root(&self.data_dir).join(&source_dir).join(&manga_dir);
+        let dir = self.paths.downloads().join(&source_dir).join(&manga_dir);
         std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {e}"))?;
         let cbz_path = dir.join(&chapter_file);
 
@@ -593,7 +581,7 @@ impl DownloadManager {
         if downloaded.is_empty() {
             // No page could be fetched — don't leave behind an empty manga
             // folder (or empty {Source} parent chain) in the downloads tree.
-            remove_empty_dir_ancestors(&dir, &downloads_root(&self.data_dir));
+            remove_empty_dir_ancestors(&dir, &self.paths.downloads());
             return Err(format!("no page image could be downloaded: {}", errors.join("; ")));
         }
         if !errors.is_empty() {
@@ -651,13 +639,12 @@ impl DownloadManager {
 // 匹配：目录名先对 manga.title，再以解析出的 manga.url 匹配该源所有语言变体
 // 的行；章节按 (manga,url) upsert 并标 is_downloaded。
 
-/// 用磁盘 data/downloads/ 对账数据库：让磁盘上已有（如备份导入或旧版本写的）
-/// 下载在 WebUI 显示「已下载」角标。
+/// 用磁盘 `{downloads}/` 对账数据库：让磁盘上已有（如备份导入或旧版本写的）
+/// 下载在 WebUI 显示「已下载」角标。`root` 由调用方给出（`AppPaths::downloads()`）。
 /// 布局：{downloads}/{SourceName} ({LANG})/{MangaTitle}/{Chapter}.cbz。
 /// 匹配：目录名先对 manga.title，再以解析出的 manga.url 匹配该源所有语言
 /// 变体的行；章节按 (manga,url) upsert 并标 is_downloaded。
-pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::error::Result<usize> {
-    let root = downloads_root(data_dir);
+pub async fn reconcile_downloads(db: &Db, root: &Path) -> crate::error::Result<usize> {
     // Older builds "downloaded" chapters by flipping is_downloaded without
     // ever storing an archive (real_url stays empty) — nothing to read
     // offline. Clear those stale markers so the chapters can be downloaded
@@ -724,7 +711,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
     let mut matched_mangas: std::collections::HashSet<i32> = std::collections::HashSet::new();
     let mut total_chapters = 0usize;
 
-    let Ok(source_dirs) = std::fs::read_dir(&root) else {
+    let Ok(source_dirs) = std::fs::read_dir(root) else {
         return Ok(0);
     };
     for source_entry in source_dirs.flatten() {
@@ -1006,7 +993,7 @@ pub async fn reconcile_downloads(db: &Db, data_dir: &std::path::Path) -> crate::
     // The downloads tree should only contain content-bearing folders (a CBZ
     // per chapter). Drop any empty directories left behind by failed runs or
     // earlier builds — deepest first, keeping the downloads root itself.
-    if let Ok(entries) = std::fs::read_dir(&root) {
+    if let Ok(entries) = std::fs::read_dir(root) {
         for entry in entries.flatten() {
             if entry.path().is_dir() {
                 prune_empty_dir_tree(&entry.path());
@@ -1169,6 +1156,12 @@ mod tests {
     use super::*;
     use suwayomi_core::db::Db;
 
+    /// 测试用路径句柄：数据根与缓存根都落在系统临时目录下。
+    fn test_paths() -> AppPaths {
+        let tmp = std::env::temp_dir();
+        AppPaths::new(tmp.clone(), tmp.join("cache"))
+    }
+
     async fn seed() -> Db {
         let db = Db::sqlite_in_memory().await.expect("connect");
         db.migrate().await.expect("migrate");
@@ -1195,7 +1188,7 @@ mod tests {
     #[tokio::test]
     async fn enqueue_dequeue_clear_roundtrip() {
         let db = seed().await;
-        let mgr = DownloadManager::new(db, SourceBackend::Stub, std::env::temp_dir());
+        let mgr = DownloadManager::new(db, SourceBackend::Stub, test_paths());
 
         mgr.enqueue_chapter(1).await.expect("enqueue");
         let jobs = mgr.snapshot().await;
@@ -1238,7 +1231,7 @@ mod tests {
         std::fs::create_dir_all(&manga_dir).unwrap();
         std::fs::write(manga_dir.join("Ch1.cbz"), b"x").unwrap();
 
-        let chapters = reconcile_downloads(&db, &data).await.expect("reconcile");
+        let chapters = reconcile_downloads(&db, &data.join("downloads")).await.expect("reconcile");
         assert!(chapters >= 1, "净化过的目录名没对上，处理了 {chapters} 个章节");
         let downloaded: Option<bool> = suwayomi_db::query_scalar("SELECT is_downloaded FROM chapter WHERE id = 1")
             .fetch_optional(db.pool())
@@ -1252,7 +1245,7 @@ mod tests {
     #[tokio::test]
     async fn enqueue_unknown_chapter_errors() {
         let db = seed().await;
-        let mgr = DownloadManager::new(db, SourceBackend::Stub, std::env::temp_dir());
+        let mgr = DownloadManager::new(db, SourceBackend::Stub, test_paths());
         let err = mgr.enqueue_chapter(999).await.unwrap_err();
         assert!(err.contains("not found"), "got: {err}");
     }
@@ -1260,7 +1253,7 @@ mod tests {
     #[tokio::test]
     async fn start_stop_marks_jobs_failed_with_stub_fetcher() {
         let db = seed().await;
-        let mgr = DownloadManager::new(db.clone(), SourceBackend::Stub, std::env::temp_dir());
+        let mgr = DownloadManager::new(db.clone(), SourceBackend::Stub, test_paths());
         let mut rx = mgr.subscribe();
 
         mgr.enqueue_chapter(1).await.expect("enqueue");

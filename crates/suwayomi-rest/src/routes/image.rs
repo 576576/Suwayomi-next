@@ -14,7 +14,6 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine;
 
 use crate::state::AppState;
-use suwayomi_core::config::cache_root;
 
 pub fn router() -> axum::Router<AppState> {
     axum::Router::new().route("/{b64}", axum::routing::get(proxy_image))
@@ -31,7 +30,7 @@ fn fnv1a64(s: &str) -> u64 {
     h
 }
 
-async fn proxy_image(State(_s): State<AppState>, Path(b64): Path<String>) -> Response {
+async fn proxy_image(State(s): State<AppState>, Path(b64): Path<String>) -> Response {
     let decoded =
         base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&b64).ok().and_then(|b| String::from_utf8(b).ok());
     let Some(url) = decoded else {
@@ -41,7 +40,7 @@ async fn proxy_image(State(_s): State<AppState>, Path(b64): Path<String>) -> Res
         return err_response(StatusCode::BAD_REQUEST, "http(s) only");
     }
 
-    let root = cache_root().join("images");
+    let root = s.paths.cache().join("images");
     let key = format!("{:016x}", fnv1a64(&url));
     let img_path = root.join(format!("{key}.img"));
     let mime_path = root.join(format!("{key}.mime"));

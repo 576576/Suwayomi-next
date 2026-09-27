@@ -4,6 +4,7 @@
 use async_graphql::{Context, Enum, InputObject, Object, SimpleObject};
 use std::collections::HashMap;
 
+use suwayomi_core::config::resolve_setting_path;
 use suwayomi_core::schema::TrackRecordRow;
 use suwayomi_domain::meta::{MetaService, MetaTable};
 use suwayomi_domain::sql::bind_placeholders;
@@ -1834,7 +1835,7 @@ impl MutationRootB4 {
         input: RebuildDownloadIndexInput,
     ) -> async_graphql::Result<RebuildDownloadIndexPayload> {
         let state = ctx.data::<GraphQLState>()?;
-        let chapters = suwayomi_domain::download::reconcile_downloads(&state.db, &state.data_dir)
+        let chapters = suwayomi_domain::download::reconcile_downloads(&state.db, &state.paths.downloads())
             .await
             .map_err(async_graphql::Error::from)?;
         tracing::info!("download index rebuilt: {chapters} chapter(s)");
@@ -1902,12 +1903,12 @@ impl MutationRootB4 {
         // 本地图源 / 下载目录保存后立即生效（不用重启）。`%APPDIR%` / `%DATADIR%`
         // 占位符以当前数据目录为基准展开；留空 = 回到各自的默认位置。
         if let Some(p) = input.settings.local_source_path.clone() {
-            let path = suwayomi_core::config::resolve_setting_path(&p, &state.data_dir);
-            suwayomi_domain::source::local::set_local_source_root(Some(path));
+            let path = resolve_setting_path(&p, &state.paths.data());
+            state.paths.set_local_sources(Some(path));
         }
         if let Some(p) = input.settings.downloads_path.clone() {
-            let path = suwayomi_core::config::resolve_setting_path(&p, &state.data_dir);
-            suwayomi_domain::download::set_downloads_root(Some(path));
+            let path = resolve_setting_path(&p, &state.paths.data());
+            state.paths.set_downloads(Some(path));
         }
         // 重算运行时配置：KOReader 冲突策略 / SyncYomi 开关由服务从 `state.config`
         // 读取，不刷新的话保存完只有设置页显示变了。

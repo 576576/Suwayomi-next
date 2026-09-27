@@ -78,7 +78,7 @@ async fn get_thumbnail(
         .filter(|u| !u.trim().is_empty())
         .ok_or_else(|| ApiError::NotFound(format!("manga {manga_id} has no thumbnail")))?;
 
-    let (bytes, ctype) = load_thumbnail(manga_id, &url)
+    let (bytes, ctype) = load_thumbnail(manga_id, &url, &s.paths.cache())
         .await
         .ok_or_else(|| ApiError::NotFound(format!("manga {manga_id} thumbnail unavailable")))?;
 
@@ -95,8 +95,8 @@ async fn get_thumbnail(
 }
 
 /// 封面字节：本地路径直接读，否则查缓存、再退到抓取。
-async fn load_thumbnail(manga_id: i32, url: &str) -> Option<(Vec<u8>, String)> {
-    let dir = suwayomi_core::config::cache_root().join("thumbnails");
+async fn load_thumbnail(manga_id: i32, url: &str, cache_root: &std::path::Path) -> Option<(Vec<u8>, String)> {
+    let dir = cache_root.join("thumbnails");
     let img_path = dir.join(format!("{manga_id}.img"));
     let mime_path = dir.join(format!("{manga_id}.mime"));
 

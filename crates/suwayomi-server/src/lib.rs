@@ -30,7 +30,7 @@ use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use suwayomi_core::auth::Principal;
-use suwayomi_core::config::ServerConfig;
+use suwayomi_core::config::{AppPaths, ServerConfig, default_cache_root, resolve_setting_path};
 use suwayomi_core::db::{Db, DbSettings};
 use suwayomi_domain::source::SourceBackend;
 use suwayomi_rest::AppState;
@@ -237,12 +237,12 @@ fn build_router(
 }
 
 /// 服务本地图源文件（封面/页面/归档内图片），防路径穿越
-async fn local_file(State(_state): State<AppState>, path: axum::extract::Path<String>) -> Response {
+async fn local_file(State(state): State<AppState>, path: axum::extract::Path<String>) -> Response {
     let rel = path.replace('\\', "/");
     if !suwayomi_rest::auth::is_safe_rel(&rel) || rel.contains("://") {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    let root = suwayomi_domain::source::local::local_source_root();
+    let root = state.paths.local_sources();
     // 拼接结果必须还在 root 之下：Windows 上带盘符的绝对路径会整体替换 base
     if !root.join(&rel).starts_with(&root) {
         return StatusCode::BAD_REQUEST.into_response();
@@ -256,7 +256,7 @@ async fn local_file(State(_state): State<AppState>, path: axum::extract::Path<St
     if let Some(name) = rel.strip_suffix("/cover.jpg")
         && !name.is_empty()
         && !name.contains('/')
-        && let Some(cover) = suwayomi_domain::source::local::local_cover(&root, name)
+        && let Some(cover) = suwayomi_domain::source::local::local_cover(&root, name, &state.paths.cache())
     {
         return read_image_response(&cover).await;
     }
@@ -399,29 +399,16 @@ fn blob_str(json: &serde_json::Value, key: &str) -> Option<String> {
     json.get(key).and_then(|v| v.as_str()).map(str::trim).filter(|p| !p.is_empty()).map(str::to_owned)
 }
 
-/// 把持久化的 localSourcePath（setSettings 存的 global_meta）还原到进程内
-/// 本地图源根目录 override，自定义目录重启后仍生效。
+/// 持久化的路径设置项（`setSettings` 存的 global_meta）→ 进程内实际路径。
 ///
 /// `%APPDIR%` / `%DATADIR%` 占位符在这里展开成实际路径（见
-/// `suwayomi_core::config::resolve_setting_path`）。
-fn load_local_source_path(blob: Option<&serde_json::Value>, data_dir: &std::path::Path) {
-    let Some(p) = blob.and_then(|json| blob_str(json, "localSourcePath")) else {
-        return;
-    };
-    let path = suwayomi_core::config::resolve_setting_path(&p, data_dir);
-    tracing::info!("local source path from settings: {} (from {})", path.display(), p);
-    suwayomi_domain::source::local::set_local_source_root(Some(path));
-}
-
-/// 持久化的 downloadsPath（WebUI「数据与存储 → 下载位置」）→ 进程内下载根 override。
-/// 留空 = 默认的 `<数据目录>/downloads`。
-fn load_downloads_path(blob: Option<&serde_json::Value>, data_dir: &std::path::Path) {
-    let Some(p) = blob.and_then(|json| blob_str(json, "downloadsPath")) else {
-        return;
-    };
-    let path = suwayomi_core::config::resolve_setting_path(&p, data_dir);
-    tracing::info!("downloads path from settings: {} (from {})", path.display(), p);
-    suwayomi_domain::download::set_downloads_root(Some(path));
+/// [`resolve_setting_path`]）。未设置（或留空）返回 `None`，由调用方决定默认值 ——
+/// `localSourcePath` 与 `downloadsPath` 都用这一份逻辑。
+fn setting_path(blob: Option<&serde_json::Value>, key: &str, data_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let raw = blob.and_then(|json| blob_str(json, key))?;
+    let path = resolve_setting_path(&raw, data_dir);
+    tracing::info!("{key} from settings: {} (from {raw})", path.display());
+    Some(path)
 }
 
 /// 持久化的数据目录（WebUI「数据与存储」页的「存储位置」）。
@@ -464,6 +451,10 @@ pub struct ServerOptions {
     pub config: ServerConfig,
     /// 用户数据根目录（backups/downloads/local 之下）。
     pub data_dir: std::path::PathBuf,
+    /// 缓存根的显式覆盖。`None` → 按 `SUWAYOMI_CACHE_DIR` / 发布布局推导
+    /// （[`default_cache_root`]）。Android 宿主没有环境变量可读，只能把
+    /// `<data>/cache` 直接传进来。
+    pub cache_dir: Option<std::path::PathBuf>,
     /// 静态 WebUI 目录（无 index.html 时回退内置占位页）。
     pub webui_dir: std::path::PathBuf,
     /// 显式数据库设置；`None` → 按 `SUWAYOMI_*` 环境变量解析（桌面路径）。
@@ -488,7 +479,7 @@ pub fn init_logging(default_filter: &str) {
 
 /// 启动服务直到收到关闭信号（Ctrl+C、`POST /api/v1/shutdown`，或 Android 宿主的停止调用）。
 pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
-    let ServerOptions { config, data_dir, webui_dir, db: db_settings, sandbox, shutdown } = opts;
+    let ServerOptions { config, data_dir, cache_dir, webui_dir, db: db_settings, sandbox, shutdown } = opts;
     tracing::info!(name = "Suwayomi (next)", version = VERSION, "starting");
     let settings = db_settings.unwrap_or_else(DbSettings::from_env);
     tracing::info!("database backend: {}", settings.describe());
@@ -522,9 +513,18 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
     let data_dir = load_data_dir_setting(settings_blob.as_ref(), data_dir);
     tracing::info!("data dir: {}", data_dir.display());
 
-    // 还原持久化的 localSourcePath / downloadsPath，重启后自定义目录仍生效
-    load_local_source_path(settings_blob.as_ref(), &data_dir);
-    load_downloads_path(settings_blob.as_ref(), &data_dir);
+    // 路径句柄：启动时解析一次，之后注入到各服务（不再是进程级单例）。
+    // 还原持久化的 localSourcePath / downloadsPath，重启后自定义目录仍生效；
+    // 没设置（或留空）时 `AppPaths` 自己回到默认位置（env / 发布布局 / 数据目录）。
+    let paths = AppPaths::new(data_dir, cache_dir.unwrap_or_else(default_cache_root));
+    tracing::info!("cache dir: {}", paths.cache().display());
+    paths.set_local_sources(setting_path(settings_blob.as_ref(), "localSourcePath", &paths.data()));
+    paths.set_downloads(setting_path(settings_blob.as_ref(), "downloadsPath", &paths.data()));
+    tracing::info!(
+        "local source dir: {} / downloads dir: {}",
+        paths.local_sources().display(),
+        paths.downloads().display()
+    );
 
     // 认证：模式解析失败直接不启动。静默退化成「无认证」比启动失败危险得多。
     let mut config = config;
@@ -595,7 +595,8 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
     // 既没有 extensions/ 目录也没有仓库索引，不同步的话 WebUI 扩展页恒为空。
     // 失败不阻塞启动：扩展不可用不影响书架/阅读等主功能。
     if let Some(base) = &sandbox_base {
-        let store = suwayomi_domain::extension_store::ExtensionStoreService::new(db.clone(), Some(base.clone()));
+        let store =
+            suwayomi_domain::extension_store::ExtensionStoreService::new(db.clone(), Some(base.clone()), paths.cache());
         match store.sync_sources().await {
             Ok(n) => tracing::info!("extension sync at startup: {n} source(s) registered"),
             Err(e) => tracing::warn!("extension sync at startup failed: {e}"),
@@ -603,15 +604,14 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
     }
 
     // 用磁盘 downloads/** 对账数据库（历史下载显示"已下载"角标）；失败不阻塞启动
-    let data_dir_path = data_dir;
-    if let Err(e) = suwayomi_domain::download::reconcile_downloads(&db, &data_dir_path).await {
+    if let Err(e) = suwayomi_domain::download::reconcile_downloads(&db, &paths.downloads()).await {
         tracing::warn!("downloads reconcile failed: {e}");
     }
 
     let update = suwayomi_domain::updater::UpdateManager::new(db.clone(), fetcher.clone());
     // REST 与 GraphQL 共用同一个追踪器句柄：登录态是从数据库读的，两个入口看到
     // 的东西必须一致，克隆出两个实例会让「其中一个刚登录」的状态不同步。
-    let oauth_config = resolve_trackers_config_file(&data_dir_path);
+    let oauth_config = resolve_trackers_config_file(&paths.data());
     let oauth_apps = suwayomi_domain::tracker::oauth::load_or_create(&oauth_config);
     let tracker = suwayomi_domain::tracker::TrackerManager::with_oauth(
         db.clone(),
@@ -627,7 +627,7 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
         tracker.clone(),
         sandbox_base.clone(),
         webui_dir.clone(),
-        data_dir_path.clone(),
+        paths.clone(),
     );
     // 持久化设置（`global_meta` 的 settings blob）盖到 env 基线上：KOReader 同步
     // 策略、SyncYomi 开关这类设置由服务在运行时读取，重启后必须生效。
@@ -645,7 +645,7 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
         tracker,
         sandbox_base,
         webui_dir.clone(),
-        data_dir_path.clone(),
+        paths,
     );
     // shutdown 通知通道：POST /api/v1/shutdown（或 Ctrl+C）触发优雅关闭，
     // 干净停掉数据库连接与沙盒子进程而非遗留孤儿

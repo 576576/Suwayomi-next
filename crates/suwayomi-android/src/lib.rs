@@ -135,9 +135,9 @@ fn start_inner(
         return 4;
     }
 
-    // Android 没有环境变量可设，缓存根必须显式钉住：否则 `cache_root()` 退化成
-    // 相对路径 `cache`，而进程 CWD 是 `/`，写 `/cache/…` 恒失败。
-    suwayomi_core::config::set_cache_root(data_dir.join("cache"));
+    // Android 没有环境变量可设，缓存根必须显式钉住：否则默认推导会退化成相对路径
+    // `cache`，而进程 CWD 是 `/`，写 `/cache/…` 恒失败。
+    let cache_dir = data_dir.join("cache");
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     {
@@ -162,6 +162,8 @@ fn start_inner(
             ..ServerConfig::default()
         },
         data_dir: data_dir.clone(),
+        // 宿主没有环境变量：缓存根直接给出（`data/cache`）
+        cache_dir: Some(cache_dir),
         webui_dir,
         // Android 上没有环境变量可用，数据库设置显式给出：固定在**启动时传入的**应用私有
         // 目录下（不走 suwayomi-db 的目录解析，因此不会随 WebUI「存储位置」设置漂移）。

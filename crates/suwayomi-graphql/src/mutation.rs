@@ -31,7 +31,7 @@ fn local_scan_signature(root: &std::path::Path) -> Option<String> {
     Some(sig)
 }
 
-fn cached_local_scan(root: &std::path::Path) -> Vec<suwayomi_core::source::SManga> {
+fn cached_local_scan(root: &std::path::Path, cache_root: &std::path::Path) -> Vec<suwayomi_core::source::SManga> {
     let sig = local_scan_signature(root);
     if let Some(sig) = &sig
         && let Ok(mut guard) = LOCAL_SCAN_CACHE.lock()
@@ -41,11 +41,11 @@ fn cached_local_scan(root: &std::path::Path) -> Vec<suwayomi_core::source::SMang
         {
             return list.clone();
         }
-        let list = suwayomi_domain::source::local::scan_local_source(root);
+        let list = suwayomi_domain::source::local::scan_local_source(root, cache_root);
         *guard = Some((sig.clone(), list.clone()));
         return list;
     }
-    suwayomi_domain::source::local::scan_local_source(root)
+    suwayomi_domain::source::local::scan_local_source(root, cache_root)
 }
 use crate::types::{
     CategoryMetaType, CategoryType, ChapterMetaType, ChapterType, GlobalMetaType, IncludeOrExclude, MangaMetaType,
@@ -1448,7 +1448,7 @@ impl MutationRoot {
             && let Ok(row) = fetch_manga_row(state, input.id).await
             && row.source == suwayomi_domain::source::LOCAL_SOURCE_ID
         {
-            let root = suwayomi_domain::source::local::local_source_root();
+            let root = state.paths.local_sources();
             if let Some(dir) = suwayomi_domain::source::local::local_manga_dir(&root, &row.url) {
                 let chapters = suwayomi_domain::source::local::scan_local_chapters(&dir);
                 upsert_local_chapters(state, row.id, &chapters, Some(&dir)).await?;
@@ -1575,12 +1575,13 @@ impl MutationRoot {
             // The scan is mtime-indexed — nothing to rescan/upsert when the
             // directory hasn't changed (library/browse open this on every
             // visit).
-            let root = suwayomi_domain::source::local::local_source_root();
+            let root = state.paths.local_sources();
+            let cache_root = state.paths.cache();
             let sig = local_scan_signature(&root);
             let cache_hit = sig
                 .as_ref()
                 .is_some_and(|s| LOCAL_SCAN_CACHE.lock().is_ok_and(|g| g.as_ref().is_some_and(|(cs, _)| cs == s)));
-            let mut mangas = cached_local_scan(&root);
+            let mut mangas = cached_local_scan(&root, &cache_root);
             if let Some(q) = input.query.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
                 let needle = q.to_lowercase();
                 mangas.retain(|m| m.title.to_lowercase().contains(&needle));
@@ -1826,7 +1827,7 @@ async fn seed_local_pages(
     chapter: &ChapterType,
 ) -> async_graphql::Result<()> {
     use suwayomi_domain::source::local as local_src;
-    let root = local_src::local_source_root();
+    let root = state.paths.local_sources();
     let Some(manga_dir) = local_src::local_manga_dir(&root, &manga_row.url) else {
         return Ok(());
     };

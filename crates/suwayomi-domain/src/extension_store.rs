@@ -220,12 +220,14 @@ pub struct ExtensionStoreService {
     /// Directory for dex2jar-converted jars (release layout: `bin/extensions`).
     jar_dir: PathBuf,
     /// 统一缓存根（`<发布根>/cache`），仓库索引缓存落在其 `extensions/index/` 下。
-    /// 单独持有而非每次调 `cache_root()`，测试才能注入独立目录（见 `with_dirs`）。
+    /// 由构造参数注入（`AppPaths::cache`），不读进程全局 —— 测试才能持有独立目录。
     cache_dir: PathBuf,
 }
 
 impl ExtensionStoreService {
-    pub fn new(db: Db, sandbox_base: Option<String>) -> Self {
+    /// `cache_dir` 由调用方显式给出（Android 宿主没有环境变量可读，
+    /// 只能把 `<data>/cache` 传进来）；扩展目录 / jar 目录仍按环境变量解析。
+    pub fn new(db: Db, sandbox_base: Option<String>, cache_dir: PathBuf) -> Self {
         let extensions_dir =
             std::env::var("SUWAYOMI_EXTENSIONS_DIR").map_or_else(|_| PathBuf::from("./extensions"), PathBuf::from);
         let jar_dir = std::env::var("SUWAYOMI_JAR_DIR").map_or_else(
@@ -236,21 +238,16 @@ impl ExtensionStoreService {
             },
             PathBuf::from,
         );
-        Self::with_dirs(db, sandbox_base, extensions_dir, jar_dir)
+        Self::with_dirs(db, sandbox_base, extensions_dir, jar_dir, cache_dir)
     }
 
     /// 显式指定扩展目录 / jar 目录 / 缓存根的构造器。
     ///
-    /// 测试专用：`new()` 从进程环境变量读取目录，而 `std::env::set_var` 在
-    /// Rust 2024 起是 `unsafe`（且多线程下修改进程环境本身就是数据竞争），
-    /// 并行测试还会互相覆盖 `SUWAYOMI_EXTENSIONS_DIR` / `SUWAYOMI_CACHE_DIR`。
-    /// 改为注入路径后，各测试持有独立临时目录，无需触碰环境变量。
-    pub fn with_dirs(db: Db, sandbox_base: Option<String>, extensions_dir: PathBuf, jar_dir: PathBuf) -> Self {
-        Self::with_cache_dir(db, sandbox_base, extensions_dir, jar_dir, suwayomi_core::config::cache_root())
-    }
-
-    /// 同 [`Self::with_dirs`]，但额外显式指定缓存根（`index_cache_path` 用）。
-    pub fn with_cache_dir(
+    /// 测试专用：`new()` 的扩展目录 / jar 目录来自进程环境变量，而
+    /// `std::env::set_var` 在 Rust 2024 起是 `unsafe`（且多线程下修改进程环境本身
+    /// 就是数据竞争），并行测试还会互相覆盖 `SUWAYOMI_EXTENSIONS_DIR`。改为注入
+    /// 路径后，各测试持有独立临时目录，无需触碰环境变量。
+    pub fn with_dirs(
         db: Db,
         sandbox_base: Option<String>,
         extensions_dir: PathBuf,
@@ -833,7 +830,7 @@ fn resolve_asset_url(base: &str, subdir: &str, value: &str) -> String {
 
 /// 仓库索引的本地缓存路径：`<cache>/extensions/index/index-<hash>.<ext>`，
 /// hash 取规范化 index URL 的哈希（跨刷新、跨重启稳定），ext 是 `pb` / `json`。
-/// 缓存根在发布根下的统一 `<发布根>/cache`（见 `suwayomi_core::config::cache_root`），
+/// 缓存根在发布根下的统一 `<发布根>/cache`（见 `suwayomi_core::config::AppPaths::cache`），
 /// 不在扩展目录里。
 fn index_cache_path(cache_dir: &Path, index_url: &str) -> PathBuf {
     let url = normalize_index_url(index_url);
@@ -906,7 +903,7 @@ mod tests {
     fn service_in(tmp: &Path, db: Db, sandbox_base: Option<String>) -> ExtensionStoreService {
         let extensions = tmp.join("extensions");
         std::fs::create_dir_all(&extensions).unwrap();
-        ExtensionStoreService::with_cache_dir(
+        ExtensionStoreService::with_dirs(
             db,
             sandbox_base,
             extensions,

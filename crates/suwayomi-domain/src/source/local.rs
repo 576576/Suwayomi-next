@@ -9,7 +9,6 @@
 //! 「最近更新」（Latest）列表按 [`local_latest_update_epoch`] 倒序。
 
 use std::path::{Path, PathBuf};
-use std::sync::{OnceLock, RwLock};
 
 use suwayomi_core::models::UpdateStrategy;
 use suwayomi_core::source::{SChapter, SManga, SourcePage};
@@ -19,44 +18,6 @@ pub const ARCHIVE_EXTS: &[&str] = &["zip", "cbz", "rar", "cbr", "epub"];
 
 /// Supported page image extensions for directory chapters.
 pub const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp", "avif", "heic"];
-
-/// Process-wide override for the local source root, set from the
-/// `localSourcePath` server setting (`set_settings`) or loaded at startup.
-static LOCAL_ROOT_OVERRIDE: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
-
-/// Point the local source at a custom directory (`localSourcePath` setting).
-/// `None`/empty resets to the default `<cwd>/data/local`.
-pub fn set_local_source_root(path: Option<PathBuf>) {
-    let lock = LOCAL_ROOT_OVERRIDE.get_or_init(|| RwLock::new(None));
-    if let Ok(mut guard) = lock.write() {
-        *guard = path.filter(|p| !p.as_os_str().is_empty());
-    }
-}
-
-/// 本地图源根目录。解析顺序：localSourcePath override → SUWAYOMI_LOCAL_SOURCE_DIR
-/// env（托盘 spawn 时 server cwd=data，默认会解析成 data/data/local）→ exe bin/
-/// 布局的发布根 data/local → cwd/data/local
-pub fn local_source_root() -> PathBuf {
-    if let Some(lock) = LOCAL_ROOT_OVERRIDE.get()
-        && let Ok(guard) = lock.read()
-        && let Some(path) = guard.as_ref()
-    {
-        return path.clone();
-    }
-    if let Ok(dir) = std::env::var("SUWAYOMI_LOCAL_SOURCE_DIR")
-        && !dir.is_empty()
-    {
-        return PathBuf::from(dir);
-    }
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-        && dir.file_name().is_some_and(|n| n == "bin")
-        && let Some(base) = dir.parent()
-    {
-        return base.join("data").join("local");
-    }
-    std::env::current_dir().unwrap_or_default().join("data").join("local")
-}
 
 /// Resolve the manga folder for a local manga url (the folder name) — used by
 /// chapter scanning / image serving.
@@ -539,7 +500,10 @@ fn parse_chapter_number(name: &str, fallback: f32) -> f32 {
 }
 
 /// Scan `local/` and produce the SManga list (one entry per subdirectory).
-pub fn scan_local_source(root: &Path) -> Vec<SManga> {
+///
+/// `cache_root` 是统一缓存根（`AppPaths::cache`）：目录里没有 `cover.jpg` 的漫画
+/// 靠缓存里的虚拟封面决定给不给 thumbnailUrl。
+pub fn scan_local_source(root: &Path, cache_root: &Path) -> Vec<SManga> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
     };
@@ -571,7 +535,7 @@ pub fn scan_local_source(root: &Path) -> Vec<SManga> {
         // 两种封面共用同一个 URL：目录里的 `cover.jpg`，或（没有它时）用最新一章的
         // 第一张图片在缓存目录里生成的封面——由 `/local/{name}/cover.jpg` 这条路由
         // 统一解析。
-        let thumbnail_url = local_cover_available(root, &name).then(|| format!("/local/{name}/cover.jpg"));
+        let thumbnail_url = local_cover_available(root, &name, cache_root).then(|| format!("/local/{name}/cover.jpg"));
         let status = details
             .as_ref()
             .and_then(|d| d.status.as_deref())
@@ -646,8 +610,8 @@ pub fn local_latest_update_epoch(manga_dir: &Path) -> i64 {
 }
 
 /// 生成封面在缓存根下的目录（`<cache>/local`）。
-pub fn local_cover_cache_dir() -> PathBuf {
-    suwayomi_core::config::cache_root().join("local")
+pub fn local_cover_cache_dir(cache_root: &Path) -> PathBuf {
+    cache_root.join("local")
 }
 
 /// 本地漫画的封面文件（绝对路径）：
@@ -656,7 +620,7 @@ pub fn local_cover_cache_dir() -> PathBuf {
 ///   返回缓存文件——`local/` 里的内容一个字节都不改。
 ///
 /// 没有可用图片（空目录、章节目录里没有图片、归档打不开）返回 `None`。
-pub fn local_cover(root: &Path, manga_name: &str) -> Option<PathBuf> {
+pub fn local_cover(root: &Path, manga_name: &str, cache_root: &Path) -> Option<PathBuf> {
     let dir = root.join(manga_name);
     if !dir.is_dir() {
         return None;
@@ -665,12 +629,12 @@ pub fn local_cover(root: &Path, manga_name: &str) -> Option<PathBuf> {
     if real.is_file() {
         return Some(real);
     }
-    generated_cover(&dir, &local_cover_cache_dir())
+    generated_cover(&dir, &local_cover_cache_dir(cache_root))
 }
 
 /// 该漫画是否能拿到封面——只判断，不生成、不写盘。`scan_local_source` 用它决定
 /// 给不给 thumbnailUrl：拿不到就不给，前端出占位图，而不是挂一个必然 404 的地址。
-pub fn local_cover_available(root: &Path, manga_name: &str) -> bool {
+pub fn local_cover_available(root: &Path, manga_name: &str, cache_root: &Path) -> bool {
     let dir = root.join(manga_name);
     if !dir.is_dir() {
         return false;
@@ -678,7 +642,7 @@ pub fn local_cover_available(root: &Path, manga_name: &str) -> bool {
     if dir.join("cover.jpg").is_file() {
         return true;
     }
-    let cache_dir = local_cover_cache_dir();
+    let cache_dir = local_cover_cache_dir(cache_root);
     let key = cover_cache_key(&dir);
     if IMAGE_EXTS.iter().any(|ext| cache_dir.join(format!("{key}.{ext}")).is_file()) {
         return true;
@@ -833,7 +797,7 @@ mod tests {
         std::fs::create_dir_all(manga.join("ch01")).unwrap();
         std::fs::write(tmp.join(".hidden"), b"x").unwrap();
 
-        let mangas = scan_local_source(&tmp);
+        let mangas = scan_local_source(&tmp, &tmp.join("cache"));
         assert_eq!(mangas.len(), 1);
         assert_eq!(mangas[0].title, "T");
         assert_eq!(mangas[0].author.as_deref(), Some("A"));
@@ -885,7 +849,7 @@ mod tests {
         assert_eq!(chapters[0].date_upload, 1_594_958_203);
 
         // manga-level enrichment when no details.json exists
-        let mangas = scan_local_source(&tmp);
+        let mangas = scan_local_source(&tmp, &tmp.join("cache"));
         assert_eq!(mangas[0].title, "Work JP");
         assert_eq!(mangas[0].artist.as_deref(), Some("Pochi"));
         assert!(mangas[0].genre.as_deref().unwrap().contains("Series"));
@@ -949,7 +913,7 @@ mod tests {
         let manga = tmp.join("M");
         std::fs::create_dir_all(&manga).unwrap();
         std::fs::write(manga.join("cover.jpg"), b"cover").unwrap();
-        assert_eq!(local_cover(&tmp, "M"), Some(manga.join("cover.jpg")));
+        assert_eq!(local_cover(&tmp, "M", &tmp.join("cache")), Some(manga.join("cover.jpg")));
         std::fs::remove_dir_all(&tmp).ok();
     }
 

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use suwayomi_core::auth::AuthContext;
-use suwayomi_core::config::RuntimeConfig;
+use suwayomi_core::config::{AppPaths, RuntimeConfig};
 use suwayomi_core::db::Db;
 use suwayomi_domain::category::CategoryService;
 use suwayomi_domain::category::category_manga::CategoryMangaService;
@@ -48,6 +48,8 @@ pub struct AppState {
     pub sandbox_base: Option<String>,
     /// Bundled WebUI static directory (SPA hosting; empty = disabled).
     pub webui_dir: std::path::PathBuf,
+    /// 进程内各根目录（数据 / 缓存 / 下载 / 本地图源），与 GraphQL 侧共享同一句柄。
+    pub paths: AppPaths,
 }
 
 impl AppState {
@@ -61,7 +63,7 @@ impl AppState {
         tracker: TrackerManager,
         sandbox_base: Option<String>,
         webui_dir: std::path::PathBuf,
-        data_dir: std::path::PathBuf,
+        paths: AppPaths,
     ) -> Self {
         let manga = MangaService::new(db.clone(), fetcher.clone());
         let chapter = ChapterService::new(db.clone(), fetcher.clone()).with_tracker(tracker.clone());
@@ -70,8 +72,8 @@ impl AppState {
         let library = LibraryService::new(db.clone(), manga.clone());
         let manga_list = MangaListService::new(db.clone(), fetcher.clone());
         let page = PageService::new(db.clone());
-        let download = DownloadManager::new(db.clone(), fetcher.clone(), data_dir);
-        let extension_store = ExtensionStoreService::new(db.clone(), sandbox_base.clone());
+        let download = DownloadManager::new(db.clone(), fetcher.clone(), paths.clone());
+        let extension_store = ExtensionStoreService::new(db.clone(), sandbox_base.clone(), paths.cache());
         Self {
             db,
             config: config.into(),
@@ -90,6 +92,7 @@ impl AppState {
             extension_store,
             sandbox_base,
             webui_dir,
+            paths,
         }
     }
 }

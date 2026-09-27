@@ -1431,7 +1431,7 @@ impl QueryRoot {
     /// Mirrors `aboutServer()` — full payload.
     async fn about_server(&self, ctx: &Context<'_>) -> AboutServerPayload {
         let state = ctx.data::<GraphQLState>();
-        let data_dir = state.as_ref().map(|s| s.data_dir.to_string_lossy().to_string()).unwrap_or_default();
+        let data_dir = state.as_ref().map(|s| s.paths.data().to_string_lossy().to_string()).unwrap_or_default();
         let sandbox_base = state.as_ref().ok().and_then(|s| s.sandbox_base.clone());
         let jvm = fetch_sandbox_jvm_info(sandbox_base.as_deref()).await;
         // 「上次自动备份时间」——由 autobackup 任务写入 global_meta；从未跑过为 0。

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use suwayomi_core::auth::AuthContext;
-use suwayomi_core::config::{RuntimeConfig, ServerConfig};
+use suwayomi_core::config::{AppPaths, RuntimeConfig, ServerConfig};
 use suwayomi_core::db::Db;
 use suwayomi_domain::category::CategoryService;
 use suwayomi_domain::category::category_manga::CategoryMangaService;
@@ -52,8 +52,9 @@ pub struct GraphQLState {
     pub extension_store: ExtensionStoreService,
     /// WebUI static dir — version check reads `<dir>/version.txt`, updates swap the dir.
     pub webui_dir: std::path::PathBuf,
-    /// User data root (backups/downloads/local source live under it).
-    pub data_dir: std::path::PathBuf,
+    /// 进程内各根目录（数据 / 缓存 / 下载 / 本地图源）。显式注入，无全局单例：
+    /// `data_dir` / `downloads` / `localSourcePath` 都由它给出，改设置后即时可见。
+    pub paths: AppPaths,
     /// JVM sandbox base URL (e.g. `http://127.0.0.1:8091`) — aboutServer JVM info.
     pub sandbox_base: Option<String>,
     /// In-memory results of finished backup restores (`restoreStatus(id:)`).
@@ -72,7 +73,7 @@ impl GraphQLState {
         tracker: TrackerManager,
         sandbox_base: Option<String>,
         webui_dir: std::path::PathBuf,
-        data_dir: std::path::PathBuf,
+        paths: AppPaths,
     ) -> Self {
         let manga = MangaService::new(db.clone(), fetcher.clone());
         let chapter = ChapterService::new(db.clone(), fetcher.clone()).with_tracker(tracker.clone());
@@ -81,11 +82,11 @@ impl GraphQLState {
         let library = LibraryService::new(db.clone(), manga.clone());
         let manga_list = MangaListService::new(db.clone(), fetcher.clone());
         let page = PageService::new(db.clone());
-        let download = DownloadManager::new(db.clone(), fetcher, data_dir.clone());
+        let download = DownloadManager::new(db.clone(), fetcher, paths.clone());
         let runtime = RuntimeConfig::new(config.clone());
         let koreader = KoreaderSyncService::new(db.clone(), runtime.clone());
         let sync_yomi = SyncYomiService::new(db.clone(), runtime.clone());
-        let extension_store = ExtensionStoreService::new(db.clone(), sandbox_base.clone());
+        let extension_store = ExtensionStoreService::new(db.clone(), sandbox_base.clone(), paths.cache());
         Self {
             db,
             config: runtime,
@@ -105,7 +106,7 @@ impl GraphQLState {
             sync_yomi,
             extension_store,
             webui_dir,
-            data_dir,
+            paths,
             sandbox_base,
             backup_restores: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         }

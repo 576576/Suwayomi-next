@@ -72,7 +72,7 @@ async fn list(State(s): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
 async fn icon(State(s): State<AppState>, Path(pkg): Path<String>) -> ApiResult<axum::response::Response> {
     let pkg = checked_pkg_name(&pkg)?.to_string();
     // 磁盘缓存：<cache>/extensions/icons/{pkg}.{png|jpg|webp}（按内容类型定扩展名）
-    let cache_dir = crate::routes::cache_root().join("extensions").join("icons");
+    let cache_dir = s.paths.cache().join("extensions").join("icons");
 
     // 缓存命中同样要过魔数，否则写坏的文件会一直命中。
     let mut bytes: Option<Vec<u8>> = None;

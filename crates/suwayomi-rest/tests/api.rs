@@ -67,7 +67,10 @@ async fn setup() -> Option<(Router, suwayomi_db::Db)> {
         tracker,
         None,
         std::path::PathBuf::new(),
-        std::env::temp_dir(),
+        {
+            let tmp = std::env::temp_dir();
+            suwayomi_core::config::AppPaths::new(tmp.clone(), tmp.join("cache"))
+        },
     );
     Some((api_v1_router().with_state(state), pool))
 }

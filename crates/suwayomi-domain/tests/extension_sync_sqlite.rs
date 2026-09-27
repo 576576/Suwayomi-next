@@ -94,7 +94,7 @@ fn tmp_root() -> PathBuf {
 fn service_in(tmp: &Path, db: Db, base: String) -> ExtensionStoreService {
     let extensions = tmp.join("extensions");
     std::fs::create_dir_all(&extensions).expect("create extensions dir");
-    ExtensionStoreService::with_cache_dir(db, Some(base), extensions, tmp.join("bin/extensions"), tmp.join("cache"))
+    ExtensionStoreService::with_dirs(db, Some(base), extensions, tmp.join("bin/extensions"), tmp.join("cache"))
 }
 
 /// 建表 —— 走与生产一致的迁移，顺带保证 SQL 在 SQLite 方言下可用。

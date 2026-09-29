@@ -146,6 +146,8 @@ Kotlin 版使用 H2 数据库文件（JVM 专有格式，Rust 无法直读），
 
 - 导出（流式 gzip protobuf）：`GET /api/v1/backup/export`
 - 导出文件：`GET /api/v1/backup/export/file`（`org.suwayomi.next_<ts>.tachibk`）
+  - 两者的内容开关都走 query：`?includeManga=false&includeChapters=false…`（键同 GraphQL
+    `PartialBackupFlagsInput`，缺省全选）
 - 导入：`POST /api/v1/backup/import`（body 为 gzip 备份）
 
 ## OPDS / KOReader

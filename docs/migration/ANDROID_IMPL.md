@@ -254,9 +254,10 @@ WebUI 的「恢复备份」是点一个**隐藏的** `<input type="file">`
   所以 `instanceFollowRedirects = false` 并断言 `HTTP 200` —— 拿到 302 就如实报错。
   （`/api/v1/backup/export/file` 不在 `auth.rs` 的 `token_query_allowed` 白名单里，
   只能靠 cookie。）
-- **备份其实被生成了两次。** mutation 里已经生成过一次，GET 时路由又跑一遍 `create_backup`。
-  桌面浏览器走的是同一条路（既有行为，本次未改）；真要省掉，得让 mutation 返回一次性
-  token 而不是直接给路径。
+- **开关在下载 url 的 query 里，字节只在 GET 那一次生成。** `createBackup.url` 形如
+  `/api/v1/backup/export/file?includeManga=true&includeChapters=false&…`（键同 GraphQL
+  `PartialBackupFlagsInput`，未给的键按默认全选）；宿主必须整条 url 带上，只取路径就等于
+  按默认值导出，用户取消的勾选会静默失效。
 - **文件名从 `Content-Disposition` 取。** 服务端发的是
   `attachment; filename="org.suwayomi.next_<日期>_<时刻>.tachibk"`（与 autobackup / Mihon
   命名一致），正好喂给 SAF 的 `EXTRA_TITLE`；取不到才退到 URL 末段。

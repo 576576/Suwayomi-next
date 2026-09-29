@@ -3,11 +3,12 @@
 
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use serde_json::json;
+use std::collections::HashMap;
 
 use suwayomi_api::AppState;
 
@@ -21,9 +22,15 @@ pub fn backup_router() -> Router<AppState> {
         .route("/validate/file", post(backup_validate_file))
 }
 
+/// 导出内容开关：GraphQL `createBackup` 把它们编进下载 URL 的 query，缺省全选。
+fn export_flags(query: &HashMap<String, String>) -> suwayomi_core::backup::BackupFlags {
+    suwayomi_core::backup::BackupFlags::from_query_pairs(query.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+}
+
 /// Mirrors `protobufExport`: streams the gzipped protobuf backup as the body.
-async fn backup_export(State(state): State<AppState>) -> Response {
-    match suwayomi_core::backup::create_backup(state.db.pool(), suwayomi_core::backup::BackupFlags::default()).await {
+async fn backup_export(State(state): State<AppState>, Query(query): Query<HashMap<String, String>>) -> Response {
+    let flags = export_flags(&query);
+    match suwayomi_core::backup::create_backup(state.db.pool(), flags).await {
         Ok(bytes) => ([(axum::http::header::CONTENT_TYPE, "application/octet-stream")], bytes).into_response(),
         Err(e) => {
             tracing::error!(%e, "backup export failed");
@@ -33,12 +40,16 @@ async fn backup_export(State(state): State<AppState>) -> Response {
 }
 
 /// Mirrors `protobufExportFile`: same payload, advertised as an attachment.
-async fn backup_export_file(State(state): State<AppState>) -> Response {
-    match suwayomi_core::backup::create_backup(state.db.pool(), suwayomi_core::backup::BackupFlags::default()).await {
+async fn backup_export_file(
+    State(state): State<AppState>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let flags = export_flags(&query);
+    match suwayomi_core::backup::create_backup(state.db.pool(), flags).await {
         Ok(bytes) => {
-            // Mirror the autobackup / Mihon naming scheme so the downloaded
-            // file sits naturally next to real backups in data/autobackup:
-            // org.suwayomi.next_2026-08-30_01-44.tachibk (local time).
+            // Mirror the autobackup / Mihon naming scheme
+            // (org.suwayomi.next_2026-08-30_01-44.tachibk, local time): saving
+            // the download next to data/autobackup keeps one naming for both.
             let filename = format!("org.suwayomi.next_{}.tachibk", chrono::Local::now().format("%Y-%m-%d_%H-%M"));
             let content_disposition = format!("attachment; filename=\"{filename}\"");
             (

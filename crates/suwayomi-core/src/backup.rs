@@ -73,7 +73,75 @@ impl BackupFlags {
             include_server_settings: p.include_server_settings.unwrap_or(d.include_server_settings),
         }
     }
+
+    /// 字段按 [`BACKUP_FLAG_QUERY_KEYS`] 的顺序展开。
+    fn to_array(self) -> [bool; 7] {
+        [
+            self.include_manga,
+            self.include_categories,
+            self.include_chapters,
+            self.include_tracking,
+            self.include_history,
+            self.include_client_data,
+            self.include_server_settings,
+        ]
+    }
+
+    /// [`to_array`](Self::to_array) 的逆操作。
+    fn from_array(values: [bool; 7]) -> Self {
+        Self {
+            include_manga: values[0],
+            include_categories: values[1],
+            include_chapters: values[2],
+            include_tracking: values[3],
+            include_history: values[4],
+            include_client_data: values[5],
+            include_server_settings: values[6],
+        }
+    }
+
+    /// 编成手动备份下载 URL 的 query 串（`GET /api/v1/backup/export/file?…`）。
+    ///
+    /// 开关只经 URL 传递，生成端（GraphQL `createBackup`）与消费端（REST 下载）
+    /// 都走这里：两端各写一份键名，就会出现「URL 丢开关、导出内容恒为全选」。
+    pub fn to_query_string(&self) -> String {
+        BACKUP_FLAG_QUERY_KEYS
+            .iter()
+            .zip(self.to_array())
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join("&")
+    }
+
+    /// 解析下载 URL 的 query；缺键或值不是布尔时沿用默认值（全选）。
+    pub fn from_query_pairs<'a>(pairs: impl IntoIterator<Item = (&'a str, &'a str)>) -> Self {
+        let mut values = Self::default().to_array();
+        for (key, value) in pairs {
+            let Ok(value) = value.parse::<bool>() else {
+                continue;
+            };
+            let Some(index) = BACKUP_FLAG_QUERY_KEYS.iter().position(|known| *known == key) else {
+                continue;
+            };
+            if let Some(slot) = values.get_mut(index) {
+                *slot = value;
+            }
+        }
+        Self::from_array(values)
+    }
 }
+
+/// 手动备份下载 URL 里承载开关的键名（camelCase，与 GraphQL
+/// `PartialBackupFlagsInput` 的字段同名），顺序与 [`BackupFlags::to_array`] 一致。
+const BACKUP_FLAG_QUERY_KEYS: [&str; 7] = [
+    "includeManga",
+    "includeCategories",
+    "includeChapters",
+    "includeTracking",
+    "includeHistory",
+    "includeClientData",
+    "includeServerSettings",
+];
 
 // 恢复时「查找现有行」用的宽行类型：列多但只作一次性比对，抽别名避免 clippy
 // `type_complexity` 噪音，也让 SELECT 与解构处的形状一目了然。
@@ -1206,5 +1274,43 @@ mod tests {
             .await
             .expect("src");
         assert_eq!(src_name.as_deref(), Some("source-999"));
+    }
+
+    /// 开关与 query 键必须一一对应：错位会让某个勾选静默失效（导出内容仍按默认值）。
+    /// 断言用 true/false 交替的取值，任何两个键调换都会让字面量对不上。
+    #[test]
+    fn backup_flags_query_round_trips() {
+        let flags = BackupFlags {
+            include_manga: false,
+            include_categories: true,
+            include_chapters: false,
+            include_tracking: true,
+            include_history: false,
+            include_client_data: true,
+            include_server_settings: false,
+        };
+        let query = flags.to_query_string();
+
+        assert_eq!(
+            query,
+            "includeManga=false&includeCategories=true&includeChapters=false&includeTracking=true\
+             &includeHistory=false&includeClientData=true&includeServerSettings=false"
+        );
+
+        let parsed =
+            BackupFlags::from_query_pairs(query.split('&').map(|pair| pair.split_once('=').expect("key=value")));
+        assert_eq!(parsed.to_array(), flags.to_array());
+    }
+
+    /// 手敲 URL、老客户端不带 query 时，缺键的开关沿用默认值（全选）。
+    #[test]
+    fn backup_flags_query_missing_keys_default() {
+        let parsed = BackupFlags::from_query_pairs([("includeManga", "false"), ("nope", "false")]);
+        assert!(!parsed.include_manga);
+        assert!(parsed.include_categories);
+        assert!(parsed.include_server_settings);
+
+        let invalid = BackupFlags::from_query_pairs([("includeManga", "1")]);
+        assert!(invalid.include_manga, "非布尔值不改变默认");
     }
 }

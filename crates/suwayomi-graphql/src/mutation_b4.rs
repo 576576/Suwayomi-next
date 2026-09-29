@@ -1252,19 +1252,14 @@ impl MutationRootB4 {
 
     // ---- Backup ----
 
-    async fn create_backup(
-        &self,
-        ctx: &Context<'_>,
-        input: CreateBackupInput,
-    ) -> async_graphql::Result<CreateBackupPayload> {
-        let state = ctx.data::<crate::state::GraphQLState>()?;
-        // Gzipped Mihon protobuf backup; the client downloads it from the
-        // REST export/file endpoint.
+    async fn create_backup(&self, input: CreateBackupInput) -> async_graphql::Result<CreateBackupPayload> {
+        // 备份字节由 REST 端点在被请求的那一刻生成（`GET /api/v1/backup/export/file`）：
+        // WebUI 要先让用户选好另存为位置再取数据，在这儿预生成是白跑一遍。本 mutation
+        // 只负责把开关编进 URL —— 少了这一步，下载端拿不到开关，只能按默认值（全选）导出。
         let flags = suwayomi_core::backup::BackupFlags::from_partial(&backup_flags(input.flags.as_ref()));
-        suwayomi_core::backup::create_backup(state.db.pool(), flags).await.map_err(async_graphql::Error::from)?;
         Ok(CreateBackupPayload {
             client_mutation_id: input.client_mutation_id,
-            url: "/api/v1/backup/export/file".to_string(),
+            url: format!("/api/v1/backup/export/file?{}", flags.to_query_string()),
         })
     }
 

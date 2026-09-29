@@ -99,21 +99,40 @@
 
 | 文件 | 出什么 | 开关 | 说明 |
 |---|---|---|---|
-| `Suwayomi.wxs` | `<BASE>.msi` | `pack_msi`（默认 ☑） | payload 是 `dist/<BASE>+jre/` 整棵树（846 个文件 / 79 MB），外加开始菜单快捷方式。 |
-| `Suwayomi.Bundle.wxs` | `<BASE>-setup.exe` | `pack_exe`（默认 ⬜） | Burn bundle，链里只有上面那个 msi，UI 用 WixStdBA 的 `hyperlinkLicense` 主题。 |
+| `Suwayomi.wxs` | `<BASE>.msi` | `pack_msi`（默认 ☑） | payload 是 `dist/<BASE>+jre/` 整棵树（846 个文件 / 79 MB）；界面是 WixUI 的标准向导（欢迎 → 许可 → 安装目录 → 快捷方式 → 确认 → 进度 → 完成），文案中文。 |
+| `Suwayomi.UI.wxs` | — | — | 向导序列：官方 `WixUI_InstallDir` 的副本 + 插入「快捷方式」页。**必须和 `Suwayomi.wxs` 一起传给 `wix build`**，否则它的 `UIRef` 找不到（`WIX0094`）。 |
+| `Suwayomi.Bundle.wxs` | `<BASE>-setup.exe` | `pack_exe`（默认 ⬜） | Burn bundle，链里只有上面那个 msi。BA 用 `WixInternalUIBootstrapperApplication`：它自身没有界面，直接把 msi 的向导当成整个安装流程，所以 setup.exe 打开的也是同一套多页向导，而不是 WixStdBA 那种「许可 + 安装」挤在一页、安装路径折叠进 Options 的形态。它要求链里只有一个非永久包、且必须是带完整安装/维护界面的 `MsiPackage`。 |
+| `License.rtf` | — | — | 许可页正文（MPL-2.0），由仓库根 `LICENSE` 生成。 |
+| `loc/WixUI_zh-CN.wxl` | — | — | WixUI 全部对话框的中文文案，取自 WiX 官方本地化文件（561 条字符串），不必自己翻译。 |
+| `Bitmaps/{banner,dialog}.bmp` | — | — | 向导的品牌位图（493×58 / 493×312，24bpp），由 `.workbuddy/verify/make_installer_bitmaps.py` 生成。 |
 
 - **两个开关互不隐含，但 exe 的构建隐含 msi 的构建**：那个步骤的 `if` 是 `(pack_msi || pack_exe)`，进去先无条件打 msi + 跑 ICE，再按 `pack_exe` 决定要不要裹成 bundle；最后进附件的列表按开关拼（`pack_msi=false` 时 msi 只是构建出来给 bundle 用，不发）。
 
-- **安装范围是「默认用户目录 + 向导可选」**：`Package/@Scope="perUserOrMachine"`（ALLUSERS=2 + MSIINSTALLPERUSER=1）。默认装 `%LOCALAPPDATA%\Programs\Suwayomi`，管理员在向导里能改选「所有用户」。配 `<SetDirectory Id="INSTALLFOLDER" Value="[PerUserProgramFilesFolder]Suwayomi" Condition="MSIINSTALLPERUSER" />` 让路径跟着范围走 —— 别写死 `ProgramFiles64Folder`，普通用户对它没有写权限。
+- **安装范围是「默认用户目录 + 向导可选」**：`Package/@Scope="perUserOrMachine"`（ALLUSERS=2 + MSIINSTALLPERUSER=1）。默认装 `%LOCALAPPDATA%\Programs\Suwayomi`，管理员在向导里能改选「所有用户」。
+- **路径跟着范围走是 Windows Installer 自带的，不要再写 `SetDirectory` 去改 `INSTALLFOLDER`**：per-user 安装下它自己把 `ProgramFiles64Folder` 解析成 `%LOCALAPPDATA%\Programs`（安装日志里的 `PROPERTY CHANGE: Adding INSTALLFOLDER property` 就能看到这一步），per-machine 下才是 `C:\Program Files`。而 `SetDirectory` 的 `Value` 是格式化字符串，引用包内**没有 Directory 行**的目录 id（例如 WiX 的 `PerUserProgramFilesFolder`）只会解析成空串 → `INSTALLFOLDER` 退化成裸名 `Suwayomi` → 安装报 **1606「无法访问网络位置 Suwayomi」**、空转约 100 秒才中止。**ICE 查不出这类问题**，只能真装一次。
+- **产品身份是 `Package/@ProductCode`，不是 `Package/@Id`**：`Id` 必须是标识符（只能放 `Suwayomi.Next` 这类），要固定的产品码得写在 `ProductCode` 属性上。WiX 默认每次构建现生成 ProductCode，那样**双击同一个包不会被认成「已安装」**，走的是首次安装 + MajorUpgrade 卸载重装，用户永远看不到修改/卸载页。所以 `build.yml` 按 `MSI_VERSION` 算出一个稳定的 ProductCode 再 `-d` 传进来；跨版本换 ProductCode 是对的，由 `MajorUpgrade` 用 UpgradeCode + 版本号接管。UpgradeCode 显式写死在 `.wxs` 里，不能动。
+- **许可页与安装目录页各由一个属性驱动**：`<WixVariable Id="WixUILicenseRtf" Value="$(LicenseRtf)" />` 把 RTF 灌进 `LicenseAgreementDlg`，接受复选框闸住「下一步」；`WIXUI_INSTALLDIR` 指向 `INSTALLFOLDER`，`InstallDirDlg` 改的才是这个目录。
+- **快捷方式是可选功能**：向导在「安装目录」之后插一页勾选框（默认勾选），落点是 `Feature Id="Shortcuts"` —— 勾选走 `AddLocal`、取消走 `Remove`（都挂在 `ShortcutDlg` 的 Next 上）。快捷方式不能当 key path，所以那个组件配一个 `HKMU` 注册表值当 key path，好跟着安装范围走。
+- **插页必须复制官方序列，不能"追加覆盖"**：`Publish` 是控制事件表的记录，追加一条同 `(Dialog, Control, Event)` 的记录会和内置那条**同时触发**（两个 `NewDialog` 都发出去），条件盖不住它。所以照官方 `WixUI_InstallDir.wxs` 抄一份、改 id，并把 `InstallDirDlg.Next` 与 `VerifyReadyDlg.Back` 的目标改到新页；新页只在 `NOT Installed` 出现，维护模式仍走原路径（免得看到不反映现状的勾选状态）。
+- **v7 的两条 schema 约束**：`<Dialog>` 不能挂在 `<Fragment>` 下，要放进 `<UI>`；`<Dialog>` 内也不能再嵌 `<Publish>`，导航事件一律写在 `<UI>` 层（控件自身的事件如 `Cancel→SpawnDialog` 除外）。
+- **`ARPNOMODIFY` 是 WixUI_InstallDir 自己设的**（官方源文件里就是一条 `<Property Id="ARPNOMODIFY" Value="1" />`），它会去掉「程序和功能」里的"更改"、并禁掉维护页的"修改"。我们有自己的可选功能，所以复制序列时**没有**带上这条。
+- **WixUI 的序列 id 带架构后缀**：官方是 `WixUI_InstallDir_X64` / `_A64`，我们自己的副本同理（`Suwayomi_InstallDir_$(UiArch)`）。裸名是私有的，引用它报 `WIX0094`；`build.yml` 里按 `matrix.jre_arch` 算出 `UI_ARCH` 再用 `-d` 传进 `.wxs`。
+- **中文要同时给 `-culture zh-CN` 和 `-loc <绝对路径>`**：只给 `-loc` 时字符串匹配不上，各页会静默退回扩展内建的英文。新页自己的文案是字面中文，没走 loc。
+- **图标分几层，只有一部分可控**：
+  - `<BASE>.msi` **文件本身**在资源管理器里的图标**改不了**：msi 不是 PE，Windows 按 `.msi` 扩展名取图标，包内没法指定（要改只能动 `HKCR\.msi\DefaultIcon`，会波及整机所有 msi）。
+  - `setup.exe` 用 `<Bundle IconSourceFile="$(IconFile)">` 嵌项目图标；不写就是 Burn 自带的单帧 32×32 默认图标。
+  - 「程序和功能」列表与向导标题用 `Icon` 表 + `ARPPRODUCTICON`。
+  - 向导的横幅/大图用 `WixUIBannerBmp` / `WixUIDialogBmp` 两个 `WixVariable` 覆盖。两张源图与各自控件的纵横比都一致（横幅 493×58 → 控件 370×44；大图 493×312 → 控件 370×234），MSI 是整幅等比缩放，不会拉伸。**但大图右侧必须留白**：用到它的那几个对话框（`WelcomeDlg` / `ExitDialog` / `PrepareDlg` / `ResumeDlg` / `FatalError` / `UserExit`）的标题与说明都从 `X=135` 对话单位起排，换算回源图是 x≈180，所以图形只占左侧 164 px、其余纯白 —— WixUI 官方默认图也正是这个版式（实测：非白像素的列范围恰好 `0..163`）。横幅则是左侧 x<310 会被标题/描述压住，装饰只放最右。
+- **`icon.ico` 不要补 16/20/24 小帧**：那几帧是 512 源 32:1 压榨出来的，AA 过渡过宽反而更糊，删掉交给 Explorer 从 32px 帧缩放更清楚（见 `.workbuddy/memory/2026-09-04.md`）。安装包沿用同一个 ico。
 - **msi 只装程序、不带数据目录**：托盘的数据目录解析是「设置里的 `data_dir` 优先，否则 `base_dir()/data`」。装进 `Program Files` 后普通用户对那里没有写权限，首次启动会失败；而把数据塞进用户目录又会和绿色版两份数据打架。所以安装包就是「换个地方解压 + 建快捷方式」，数据目录仍按用户原来的习惯走（首次启动时托盘自己按可写位置建）。
 - **版本号必须是数字点分**：`major < 256`、`minor < 256`、`build < 65536`。alpha 的 `r{code}` 与 `versionCode` 都不合法（`ICE24`），所以跟 beta/release 同款取 `3.$((COUNT/100)).$((COUNT%100))`。
 - **两条硬约束**（都踩过）：
   - 产物**不能叫 `setup.exe`**：WiX `WIX0388` —— Windows 会为这个名字加载兼容性 shim，可被 DLL 劫持。所以叫 `-setup.exe`。
   - `Files@Include` 里裸 `**` 是**相对 .wxs 所在目录**展开的，必须用命名 bindpath `!(bindpath.payload)\**`；而 `-b` 传相对路径同样以 .wxs 所在目录为基准 → 一律给 `pwd -W` 出来的绝对 Windows 路径。传错只会静默收进几个文件（当年 msi 只有 1.9 MB）。
-- **扩展 id 与 NuGet 包名不一致**：包名是 `WixToolset.Bal.wixext`，包内 dll 与扩展 id 都是 `WixToolset.BootstrapperApplications.wixext`。用包名装 `extension list` 会显示 `(damaged)`。另外 `-g`/`--global` 的短名是 `-g`，没有 `-global`。
+- **扩展 id 与 NuGet 包名不一致**：Bal 扩展的包名是 `WixToolset.Bal.wixext`，包内 dll 与扩展 id 都是 `WixToolset.BootstrapperApplications.wixext`，用包名装 `extension list` 会显示 `(damaged)`。UI 扩展没有这个问题（包名与 id 都是 `WixToolset.UI.wixext`）。另外 `-g`/`--global` 的短名是 `-g`，没有 `-global`。
 - **v7 强制 OSMF EULA**：所有 `wix` 子命令都要 `--acceptEula wix7`，漏了直接 `WIX7015` 失败。
-- 静态校验跑在 CI 里：`wix msi validate`（ICE）。**ICE57 在这个场景是误报**（它没考虑 ALLUSERS），改用**广告快捷方式**（`Shortcut Advertise="yes"`，挂在托盘 exe 的 `File` 下）让 key path 落在 exe 上；快捷方式上再显式写 `Icon` 会触发 ICE50（扩展名要和 key file 一致），索性不写、由 Windows 从 exe 取图标。
-- 本地产物核对手段：`wix burn extract` 看 bundle 里嵌了什么、`wix msi decompile` 数实际收集的 File、`wix msi validate` 跑 ICE。
+- 静态校验跑在 CI 里：`wix msi validate`（ICE），其中 **ICE57 定向抑制**（`-sice ICE57`）：快捷方式组件用 `HKMU` 注册表值当 key path 以跟随安装范围，而 ICE57 不认 `perUserOrMachine` 这种 configurable scope，一律判成 per-user 与 per-machine 混用。未抑制时它只多报这一条（`Component 'ShortcutLinks' has both per-user data and a keypath that can be either per-user or per-machine.`），其余 ICE 照跑。
+- 本地产物核对手段：`wix burn extract` 看 bundle 里嵌了什么、`wix msi decompile` 数实际收集的 File 与 `Dialog` 表里的向导页、`.workbuddy/verify/msi_binary_dump.py` 导出 `Binary` 表核对位图/图标有没有真被替换（`Binary` 流在 msi 里是 MSZIP 压缩存的，直接按 BMP 头扫文件字节找不到，得走 `MsiRecordReadStream`）、`wix msi validate` 跑 ICE。**这些全是静态检查，验不出"装不装得上"** —— 发版前还要真装一次。
 
 ## OCI 镜像（`pack_oci`）
 

@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- WixUI_InstallDir 序列的副本，在「安装目录」与「确认安装」之间插入一页快捷方式选项。
+
+     Publish 是控制事件表的记录：追加一条与内置项同 (Dialog, Control, Event) 的记录会和它同时触发
+     （两个 NewDialog 都发出去），条件盖不住；而插页又必须改写 InstallDirDlg 的 Next 与
+     VerifyReadyDlg 的 Back。所以整份复制官方 WixUI_InstallDir.wxs，改 id 与跳转目标后再引用。
+
+     v7 的两条硬约束：
+       - <Dialog> 不能挂在 <Fragment> 下，必须放进 <UI>；<Dialog> 内也不能再嵌 <Publish>，
+         导航事件一律写在 <UI> 层（控件自身的事件如 Cancel→SpawnDialog 除外）。
+       - 序列 id 要带架构后缀（_X64 / _A64），裸名是私有的（WIX0094）。
+
+     新页只在首次安装出现；维护模式（Installed）仍走 InstallDirDlg → VerifyReadyDlg 原路径，
+     免得用户看到不反映现状的勾选状态。 -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment>
+    <UI Id="Suwayomi_InstallDir_$(UiArch)">
+      <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
+      <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
+      <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+
+      <DialogRef Id="BrowseDlg" />
+      <DialogRef Id="DiskCostDlg" />
+      <DialogRef Id="ErrorDlg" />
+      <DialogRef Id="FatalError" />
+      <DialogRef Id="FilesInUse" />
+      <DialogRef Id="MsiRMFilesInUse" />
+      <DialogRef Id="PrepareDlg" />
+      <DialogRef Id="ProgressDlg" />
+      <DialogRef Id="ResumeDlg" />
+      <DialogRef Id="UserExit" />
+
+      <Publish Dialog="BrowseDlg" Control="OK" Event="CheckTargetPath" Value="[WIXUI_INSTALLDIR]" Order="1" />
+
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
+
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="LicenseAgreementDlg" Condition="NOT Installed" />
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Condition="Installed AND PATCH" />
+
+      <Publish Dialog="LicenseAgreementDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" />
+      <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg" Condition="LicenseAccepted = &quot;1&quot;" />
+
+      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="LicenseAgreementDlg" />
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="CheckTargetPath" Value="[WIXUI_INSTALLDIR]" Order="1" />
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="SetTargetPath" Value="[WIXUI_INSTALLDIR]" Order="3" />
+      <Publish Dialog="InstallDirDlg" Control="ChangeFolder" Property="_BrowseProperty" Value="[WIXUI_INSTALLDIR]" Order="1" />
+      <Publish Dialog="InstallDirDlg" Control="ChangeFolder" Event="SpawnDialog" Value="BrowseDlg" Order="2" />
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="ShortcutDlg" Order="4" Condition="NOT Installed" />
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="5" Condition="Installed" />
+
+      <Publish Dialog="BrowseDlg" Control="OK" Event="SetTargetPath" Value="[_BrowseProperty]" Order="3" />
+      <Publish Dialog="BrowseDlg" Control="OK" Event="EndDialog" Value="Return" Order="4" />
+
+      <Publish Dialog="ShortcutDlg" Control="Back" Event="NewDialog" Value="InstallDirDlg" Order="1" />
+      <Publish Dialog="ShortcutDlg" Control="Next" Event="AddLocal" Value="Shortcuts" Order="1" Condition="INSTALL_SHORTCUTS = &quot;1&quot;" />
+      <Publish Dialog="ShortcutDlg" Control="Next" Event="Remove" Value="Shortcuts" Order="2" Condition="INSTALL_SHORTCUTS &lt;&gt; &quot;1&quot;" />
+      <Publish Dialog="ShortcutDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="3" />
+
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="ShortcutDlg" Order="1" Condition="NOT Installed" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2" Condition="Installed AND NOT PATCH" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2" Condition="Installed AND PATCH" />
+
+      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg" />
+
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg" />
+
+      <UIRef Id="WixUI_Common" />
+
+      <!-- 本页文案是字面中文，不走 loc（安装包只做中文）。
+           控件顺序与间距照抄官方 InstallDirDlg，两侧用同一套 Banner/Bottom 线。 -->
+      <Dialog Id="ShortcutDlg" Width="370" Height="270" Title="[ProductName] 安装程序">
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)" />
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="选择安装完成后要创建的快捷方式。" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="200" Height="15" Transparent="yes" NoPrefix="yes" Text="快捷方式" />
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="373" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="373" Height="0" />
+
+        <Control Id="ShortcutCheckBox" Type="CheckBox" X="20" Y="80" Width="320" Height="17"
+                 Property="INSTALL_SHORTCUTS" CheckBoxValue="1"
+                 Text="创建桌面与开始菜单快捷方式" />
+      </Dialog>
+    </UI>
+  </Fragment>
+</Wix>

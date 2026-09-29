@@ -1,19 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Suwayomi 的 Windows 安装器（Burn bundle）：把上一步的 msi 包在里面。这样做的唯一
-     目的是**让安装者在 UI 里挑安装范围** —— WixStdBA 的内置主题在选项页自带
-     「仅我 / 所有用户」一对单选按钮（靠 WixBundleAuthoredScope 判断是否为双用途包），
-     Burn 把选择通过 Plan 传给 msi 的 MSIINSTALLPERUSER。构建时多带一个扩展：
-       wix build packaging/windows/Suwayomi.Bundle.wxs -acceptEula wix7 \
-         -ext WixToolset.BootstrapperApplications.wixext \
-         -d Version=<数字点分版本> -d MsiPath=<上一步的 msi> -o <输出 exe>
-     注意产物**不能**叫 setup.exe：WiX 会以 WIX0388 拒绝（Windows 会为这个名字加载兼容性
-     shim，可被 DLL 劫持），所以产物名是 Suwayomi-<版本>-<目标>-setup.exe。 -->
+<!-- Suwayomi 的 Windows 安装器（Burn bundle）：把上一步的 msi 包在里面。
+     BA 用 WixInternalUIBootstrapperApplication —— 它自身没有界面，直接把链里那个 msi 的向导
+     当成整个安装流程（首屏即 msi 的欢迎页）。它要求链里只能有一个非永久包、且必须是带完整
+     安装/维护界面的 MsiPackage。
+     构建命令见 build.yml。产物不能叫 setup.exe：WiX 会以 WIX0388 拒绝（Windows 会为这个名字
+     加载兼容性 shim，可被 DLL 劫持），所以产物名是 Suwayomi-<版本>-<目标>-setup.exe。 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
-  <Bundle Name="Suwayomi" Version="$(Version)" Manufacturer="Suwayomi" Id="Suwayomi.Next.Bundle">
+  <!-- IconSourceFile 嵌进 exe 的图标资源：不写的话资源管理器与任务栏显示的是 Burn 自带的默认图标。 -->
+  <Bundle Name="Suwayomi" Version="$(Version)" Manufacturer="Suwayomi" Id="Suwayomi.Next.Bundle"
+          IconSourceFile="$(IconFile)">
     <BootstrapperApplication>
-      <!-- LicenseUrl 置空即隐藏欢迎页的许可链接（这个产品没有单独的许可页）。 -->
-      <bal:WixStandardBootstrapperApplication Theme="hyperlinkLicense" LicenseUrl="" />
+      <bal:WixInternalUIBootstrapperApplication />
     </BootstrapperApplication>
     <Chain>
       <MsiPackage SourceFile="$(MsiPath)" />

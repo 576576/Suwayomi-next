@@ -1,31 +1,47 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Suwayomi 的 Windows 安装包（msi）。由 build.yml 在 Windows 上调用：
-       wix build packaging/windows/Suwayomi.wxs -acceptEula wix7 -arch <x64|arm64> \
-         -b "<+jre 包的解包目录>" -d Version=<数字点分版本> -d IconFile=<ico> \
-         -d HasTray=<yes|no> -o <输出 msi>
-     设计取舍见 docs/release.md 的「Windows 安装包（msi / setup.exe）」：
-     Scope 用 perUserOrMachine（默认装用户目录，免提权且数据目录可写；装 Program Files
-     需要显式传 MSIINSTALLPERUSER=0）；快捷方式必须是**广告快捷方式**并让 key path 落在
-     exe 自己身上，否则 ICE57 会对「HKMU key path + 开始菜单」误报。 -->
+<!-- Suwayomi 的 Windows 安装包（msi）。界面是 WixUI 的标准向导（欢迎 → 许可 → 安装目录 →
+     快捷方式 → 确认 → 进度 → 完成），序列定义在 Suwayomi.UI.wxs，中文文案取自
+     packaging/windows/loc/WixUI_zh-CN.wxl。构建命令见 build.yml。 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <!-- ProductCode 由构建方按 MSI 版本确定性派生后 -d 传入（**不是** Id：Id 必须是标识符，
+       产品身份由 ProductCode 属性承载）。每次构建现生成的话，双击同一个包不会被认成"已安装"，
+       走的是首次安装而不是修改/卸载。UpgradeCode 必须与历史产物一致，否则 MajorUpgrade 认不出旧版本。 -->
   <Package Name="Suwayomi" Manufacturer="Suwayomi" Version="$(Version)" Id="Suwayomi.Next"
+           ProductCode="$(ProductCode)"
+           UpgradeCode="{899FE7C6-992E-5C87-AE74-AFC44E57DAD2}"
            Scope="perUserOrMachine" Compressed="yes">
     <MediaTemplate EmbedCab="yes" />
-    <!-- 控制面板「程序和功能」里的图标。快捷方式不指定 Icon：广告快捷方式的图标必须
-         与 key file 同源（ICE50），交给 Windows 从托盘 exe 里取。 -->
+    <!-- 控制面板「程序和功能」里的图标；向导各页的标题图标也取它。 -->
     <Icon Id="AppIcon" SourceFile="$(IconFile)" />
     <Property Id="ARPPRODUCTICON" Value="AppIcon" />
 
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                   DowngradeErrorMessage="A newer version of Suwayomi is already installed. Uninstall it first." />
+
+    <!-- 许可页正文与安装目录页的落点，各由一个变量/属性驱动。 -->
+    <WixVariable Id="WixUILicenseRtf" Value="$(LicenseRtf)" />
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+
+    <!-- 向导顶部的横幅与欢迎/完成页的大图（493x58 / 493x312，24bpp BMP）。 -->
+    <WixVariable Id="WixUIBannerBmp" Value="$(BannerBmp)" />
+    <WixVariable Id="WixUIDialogBmp" Value="$(DialogBmp)" />
+
+    <!-- 快捷方式页复选框的值（勾着=1）。必须 Secure，否则 UI 序列里设置的值带不到执行序列。 -->
+    <Property Id="INSTALL_SHORTCUTS" Value="1" Secure="yes" />
+
+    <!-- 安装范围由 Scope 决定，路径不用自己算：per-user 安装时 Windows Installer 自己把
+         ProgramFiles64Folder 解析成 %LOCALAPPDATA%\Programs，per-machine 时才是 C:\Program Files。
+         **不要写 SetDirectory 去改 INSTALLFOLDER**：它的 Value 是格式化字符串，引用包内没有
+         Directory 行的目录 id（例如 WiX 的 PerUserProgramFilesFolder）只会解析成空串，
+         INSTALLFOLDER 退化成裸名 Suwayomi，安装报 1606「无法访问网络位置 Suwayomi」并空转约 100 秒。
+         ICE 查不出这类问题，只能真装一次。 -->
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Suwayomi" />
     </StandardDirectory>
-    <!-- per-user 时改指 %LOCALAPPDATA%\Programs\Suwayomi（PerUserProgramFilesFolder 是
-         WiX v6 新增的标准目录）；MSIINSTALLPERUSER 由 Scope=perUserOrMachine 默认置 1。 -->
-    <SetDirectory Id="INSTALLFOLDER" Value="[PerUserProgramFilesFolder]Suwayomi" Condition="MSIINSTALLPERUSER" />
-
     <StandardDirectory Id="ProgramMenuFolder">
       <Directory Id="AppMenuFolder" Name="Suwayomi" />
     </StandardDirectory>
+    <StandardDirectory Id="DesktopFolder" />
 
     <Feature Id="Main">
       <ComponentGroupRef Id="Payload" />
@@ -33,6 +49,19 @@
       <ComponentRef Id="TrayExe" />
       <?endif?>
     </Feature>
+
+    <!-- 快捷方式独立成一个 Feature，向导上的复选框才能用 AddLocal/Remove 决定装不装。
+         没有托盘壳时它没有组件，但仍要定义 —— Suwayomi.UI.wxs 里引用了这个名字。 -->
+    <Feature Id="Shortcuts" Title="快捷方式" Level="1">
+      <?if $(HasTray) = "yes" ?>
+      <ComponentRef Id="ShortcutLinks" />
+      <?endif?>
+    </Feature>
+
+    <!-- 序列 id 带架构后缀（Suwayomi_InstallDir_X64 / _A64）；定义见 Suwayomi.UI.wxs。 -->
+    <UI>
+      <UIRef Id="Suwayomi_InstallDir_$(UiArch)" />
+    </UI>
   </Package>
 
   <Fragment>
@@ -52,11 +81,19 @@
 
   <?if $(HasTray) = "yes" ?>
   <Fragment>
-    <!-- 托盘壳单独成组件，只为挂那条广告快捷方式（它的 key path 是 exe 文件本身）。 -->
     <Component Id="TrayExe" Directory="INSTALLFOLDER" Guid="{8B3F1D42-6C57-4E9A-9F21-3D0C7A5E1B04}">
-      <File Id="TrayExe" Source="!(bindpath.payload)\suwayomi.exe" KeyPath="yes">
-        <Shortcut Id="AppShortcut" Directory="AppMenuFolder" Name="Suwayomi" Advertise="yes" />
-      </File>
+      <File Id="TrayExe" Source="!(bindpath.payload)\suwayomi.exe" KeyPath="yes" />
+    </Component>
+
+    <!-- 快捷方式不能当 key path，所以配一个注册表值；Root 用 HKMU 跟安装范围走。
+         这条会让 ICE57 报「per-user 与 per-machine 数据混用」—— 它不认 perUserOrMachine 这种
+         configurable scope，是误报，CI 里对这条定向抑制（见 build.yml 的 -sice）。 -->
+    <Component Id="ShortcutLinks" Directory="DesktopFolder" Guid="{4E7B1C58-9A3D-4F62-8B05-2C6E9D4A7F31}">
+      <RegistryValue Root="HKMU" Key="Software\Suwayomi" Name="Shortcuts" Type="integer" Value="1" KeyPath="yes" />
+      <Shortcut Id="DesktopLink" Directory="DesktopFolder" Name="Suwayomi"
+                Target="[INSTALLFOLDER]suwayomi.exe" WorkingDirectory="INSTALLFOLDER" />
+      <Shortcut Id="StartMenuLink" Directory="AppMenuFolder" Name="Suwayomi"
+                Target="[INSTALLFOLDER]suwayomi.exe" WorkingDirectory="INSTALLFOLDER" />
       <RemoveFolder Id="RemoveAppMenuFolder" Directory="AppMenuFolder" On="uninstall" />
     </Component>
   </Fragment>

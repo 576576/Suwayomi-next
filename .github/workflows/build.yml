@@ -255,20 +255,41 @@ jobs:
           # bindpath 与 -d 的相对路径都以 .wxs 所在目录为基准（不是 cwd），所以这里一律给 Windows 绝对路径。
           PAYLOAD_DIR="$(cd "$PAYLOAD" && pwd -W)"
           ICON_DIR="$(cd assets/images && pwd -W)"
+          RTF_FILE="$(cd packaging/windows && pwd -W)/License.rtf"
+          LOC_FILE="$(cd packaging/windows/loc && pwd -W)/WixUI_zh-CN.wxl"
+          BMP_DIR="$(cd packaging/windows/Bitmaps && pwd -W)"
           HAS_TRAY="no"; [ -f "$PAYLOAD/suwayomi.exe" ] && HAS_TRAY="yes"
+          # 序列 id 带架构后缀（Suwayomi_InstallDir_X64 / _A64），裸名是私有的，引用它报 WIX0094。
+          UI_ARCH="X64"
+          if [ "$ARCH" = "arm64" ]; then UI_ARCH="A64"; fi
+          # ProductCode 对同一个 MSI_VERSION 必须稳定：msi 靠它认「已安装的是同一个产品」，
+          # 每次现生成的话，双击同一个包会被当成首次安装，用户看不到修改/卸载。跨版本换 ProductCode
+          # 是对的，由 MajorUpgrade 用 UpgradeCode + 版本号接管。
+          HASH="$(printf 'Suwayomi.Next/%s' "$MSI_VERSION" | md5sum | cut -c1-32 | tr 'a-z' 'A-Z')"
+          PRODUCT_CODE="{${HASH:0:8}-${HASH:8:4}-${HASH:12:4}-${HASH:16:4}-${HASH:20:12}}"
 
           dotnet tool install --global wix --version 7.0.0
           export PATH="$PATH:$HOME/.dotnet/tools"
           # Bal 扩展的包名是 WixToolset.Bal.wixext，但内部 dll 与扩展 id 都是 WixToolset.BootstrapperApplications.wixext，用包名装会被判 damaged。
           wix extension add -g --acceptEula wix7 WixToolset.BootstrapperApplications.wixext
+          wix extension add -g --acceptEula wix7 WixToolset.UI.wixext
 
           MSI="dist/${BASE}.msi"
-          wix build packaging/windows/Suwayomi.wxs --acceptEula wix7 -arch "$ARCH" \
+          # UI 扩展提供向导的对话框定义，Suwayomi.UI.wxs 提供序列（要一起构建，否则它的 UIRef 找不到），
+          # -loc 提供中文文案（只给 -loc 而漏了 -culture 时各页会退回英文）。
+          wix build packaging/windows/Suwayomi.wxs packaging/windows/Suwayomi.UI.wxs \
+            --acceptEula wix7 -arch "$ARCH" \
+            -ext WixToolset.UI.wixext -culture zh-CN -loc "$LOC_FILE" \
             -b "payload=$PAYLOAD_DIR" -d Version="$MSI_VERSION" \
+            -d ProductCode="$PRODUCT_CODE" \
             -d IconFile="$ICON_DIR/icon.ico" -d HasTray="$HAS_TRAY" \
+            -d UiArch="$UI_ARCH" -d LicenseRtf="$RTF_FILE" \
+            -d BannerBmp="$BMP_DIR/banner.bmp" -d DialogBmp="$BMP_DIR/dialog.bmp" \
             -pdbtype none -o "$MSI"
           # ICE 是静态一致性校验，能提前抓到 per-user/per-machine 混用与 key path 之类的问题。
-          wix msi validate "$MSI" --acceptEula wix7
+          # ICE57 定向抑制：快捷方式组件用 HKMU 的注册表值当 key path 以跟随安装范围，而 ICE57 不认
+          # perUserOrMachine 这种 configurable scope，一律判成 per-user 与 per-machine 混用。其余 ICE 照跑。
+          wix msi validate "$MSI" --acceptEula wix7 -sice ICE57
 
           FILES=()
           if [ "${{ inputs.pack_msi }}" = "true" ]; then FILES+=("$MSI"); fi
@@ -277,7 +298,8 @@ jobs:
             SETUP="dist/${BASE}-setup.exe"
             wix build packaging/windows/Suwayomi.Bundle.wxs --acceptEula wix7 \
               -ext WixToolset.BootstrapperApplications.wixext \
-              -d Version="$MSI_VERSION" -d MsiPath="$MSI" -pdbtype none -o "$SETUP"
+              -d Version="$MSI_VERSION" -d MsiPath="$MSI" -d IconFile="$ICON_DIR/icon.ico" \
+              -pdbtype none -o "$SETUP"
             FILES+=("$SETUP")
           fi
 

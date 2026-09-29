@@ -504,6 +504,8 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
     // 路径句柄：启动时解析一次，之后注入到各服务（不再是进程级单例）。
     // 还原持久化的 localSourcePath / downloadsPath，重启后自定义目录仍生效；
     // 没设置（或留空）时回到数据根下的默认位置（`<data>/local`、`<data>/downloads`）。
+    // backupPath 不在这条链上：它不进 `AppPaths`，由自动备份任务每次跑之前现读设置、
+    // 现算路径（默认 `<data>/autobackup`，见 `autobackup::load_settings`）。
     let paths = AppPaths::new(data_dir, appdata);
     tracing::info!("cache dir: {}", paths.cache().display());
     paths.set_local_sources(setting_path(settings_blob.as_ref(), "localSourcePath", &paths.data()));

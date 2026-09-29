@@ -92,6 +92,7 @@ async fn create_backup_file(
 }
 
 /// 自动备份周期、目录与内容开关，取自当前有效设置（与 `settings` 查询同一份装配）。
+/// 目录每次现算，不走 `AppPaths`（未设置时默认 `<data>/autobackup`）。
 async fn load_settings(state: &GraphQLState) -> Option<(i32, PathBuf, suwayomi_core::backup::BackupFlags)> {
     let settings = state.effective_settings().await;
     let frequency = settings.auto_backup_frequency;

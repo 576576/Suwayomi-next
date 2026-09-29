@@ -1432,6 +1432,7 @@ impl QueryRoot {
     async fn about_server(&self, ctx: &Context<'_>) -> AboutServerPayload {
         let state = ctx.data::<GraphQLState>();
         let data_dir = state.as_ref().map(|s| s.paths.data().to_string_lossy().to_string()).unwrap_or_default();
+        let appdata_dir = state.as_ref().map(|s| s.paths.appdata().to_string_lossy().to_string()).unwrap_or_default();
         let sandbox_base = state.as_ref().ok().and_then(|s| s.sandbox_base.clone());
         let jvm = fetch_sandbox_jvm_info(sandbox_base.as_deref()).await;
         // 「上次自动备份时间」——由 autobackup 任务写入 global_meta；从未跑过为 0。
@@ -1439,7 +1440,7 @@ impl QueryRoot {
             Ok(state) => crate::autobackup::last_auto_backup_at(state).await,
             Err(_) => 0,
         };
-        AboutServerPayload::current(&data_dir, jvm, last_auto_backup_at)
+        AboutServerPayload::current(&data_dir, &appdata_dir, jvm, last_auto_backup_at)
     }
 }
 

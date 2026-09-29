@@ -43,7 +43,7 @@ data/          用户数据：downloads/ autobackup/ local/
 | --- | --- | --- |
 | `SUWAYOMI_PORT` | `8090` | HTTP 端口 |
 | `SUWAYOMI_IP` | `0.0.0.0` | 监听地址 |
-| `SUWAYOMI_DATA_DIR` | exe 上级 `data/` | 数据目录（下载/本地图源/自动备份之下；也可在 WebUI 的「数据与存储 → 存储位置」里改） |
+| `SUWAYOMI_DATA_DIR` | exe 上级 `data/` | 数据目录：`downloads/`、`local/`、`autobackup/` 三个子目录都在它之下，都没有各自的变量；也可在 WebUI 的「数据与存储 → 存储位置」里改 |
 | `SUWAYOMI_APPDATA_DIR` | exe 上级 `appdata/` | **程序自身状态的唯一可写根**：`cache/`、`db/`、`settings/`、`extensions/{apk,bin}` 全在它下面。缓存 / 库 / 设置 / 扩展**没有**各自的目录变量 |
 | `SUWAYOMI_DB_BACKEND` | `sqlite` | 后端：`sqlite` / `postgres` |
 | `SUWAYOMI_DATABASE_URL` | （空） | PostgreSQL 连接串（设置后自动改用外部 PostgreSQL，如 `postgres://user:pass@host:5432/db`） |

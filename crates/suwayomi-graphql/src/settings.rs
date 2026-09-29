@@ -662,10 +662,13 @@ pub struct AboutServerPayload {
     /// 发布根（exe 在 `bin/` 下时是它的上级）。Suwayomi-next 扩展字段：设置里可以填
     /// `%APPDIR%` 占位符，WebUI 要用它把占位符还原成能直接用的绝对路径。
     pub app_dir: String,
+    /// appdata 根（缓存 / 库 / 设置 / 扩展的父目录）。Suwayomi-next 扩展字段：WebUI
+    /// 「数据与存储」页只读展示 —— 它决定数据库放在哪，改不了也存不进库里。
+    pub appdata_dir: String,
 }
 
 impl AboutServerPayload {
-    pub fn current(data_dir: &str, jvm: JvmInfo, last_auto_backup_at: i64) -> Self {
+    pub fn current(data_dir: &str, appdata_dir: &str, jvm: JvmInfo, last_auto_backup_at: i64) -> Self {
         let os_name = std::env::consts::OS.to_string();
         let arch = std::env::consts::ARCH.to_string();
         // 真实构建类型：编译期常量（core/build.rs 由 CI 注入的
@@ -693,6 +696,7 @@ impl AboutServerPayload {
             data_dir: data_dir.to_string(),
             last_auto_backup_at: LongString(last_auto_backup_at),
             app_dir: suwayomi_core::config::app_root().to_string_lossy().to_string(),
+            appdata_dir: appdata_dir.to_string(),
         }
     }
 }

@@ -63,10 +63,10 @@ macOS WKWebView），不捆绑浏览器运行时；无 WebView 时回退系统�
 2. **命令行方式**：直接运行 `bin/suwayomi-server`（`-v` 显示版本与仓库地址）。
 3. **添加扩展仓库**：WebUI 扩展页添加仓库索引 URL（支持 Mihon `index.pb` 与
    Tachiyomi `index.json`，如 keiyoushi），刷新后在线安装扩展。
-4. **扩展安装**：APK 下载到 `extensions/`，由 JVM 沙盒 dex2jar 转换并加载，
-   转换 jar 落在 `bin/extensions/`，源自动注册进数据库。卸载时两者一并清理。
+4. **扩展安装**：APK 下载到 `appdata/extensions/apk/`，由 JVM 沙盒 dex2jar 转换并加载，
+   转换 jar 落在 `appdata/extensions/bin/`，源自动注册进数据库。卸载时两者一并清理。
 5. **端口**：默认 8090；启动时若被占用自动顺延。与桌面壳同用时以托盘设置为准。
-6. **日志**：`cache/logs/` 下 server/tray/sandbox 三个日志文件，排查问题优先看这里。
+6. **日志**：`appdata/cache/logs/` 下 server/tray/sandbox 三个日志文件，排查问题优先看这里。
 
 ## 仓库结构
 
@@ -91,8 +91,19 @@ docs/                文档（api/、graphql/、migration/、en/、release.md、
 
 ## 数据库后端
 
-- **默认**：本地 SQLite 文件（`db/suwayomi.db`，可用 `SUWAYOMI_DB_DIR` 换目录、`SUWAYOMI_SQLITE_PATH` 换整个路径）
+- **默认**：本地 SQLite 文件（`appdata/db/suwayomi.db`）
 - **备选**：外部 PostgreSQL（设 `SUWAYOMI_DB_BACKEND=postgres` + `SUWAYOMI_DATABASE_URL`，如 `postgres://user:pass@host:5432/db`）
+
+程序自身产生的东西（缓存、库、设置、扩展 APK 与转换产物）都在**一个可写根**
+`SUWAYOMI_APPDATA_DIR`（默认 exe 上级的 `appdata/`）之下，这四项没有各自的目录变量：
+
+```
+appdata/
+  cache/     缩略图 / 图片 / 仓库索引 / logs/
+  db/        suwayomi.db 与 session.key
+  settings/  追踪器凭据与源偏好
+  extensions/{apk,bin}   扩展 APK 与 dex2jar 产物
+```
 
 数据库文件**刻意不放在数据目录里**：数据目录（`SUWAYOMI_DATA_DIR`，也可在 WebUI 的
 「设置 → 数据与存储 → 存储位置」里改）是用户随时可以换的一项，而设置本身就存在这个库
@@ -113,23 +124,23 @@ server 可启动一个 JVM 沙盒进程，通过 HTTP 契约驱动真实 Mihon/T
 OUT="$(bash scripts/resolve-ext-runtime.sh 30.1.0)"
 curl -fsSL -o ext-runtime.jar "$(printf '%s' "$OUT" | sed -n 's/^url=//p')"
 
-# 2) 把扩展 APK 放入目录（默认 ./extensions，或用 SUWAYOMI_EXTENSIONS_DIR 指定）
+# 2) 把扩展 APK 放进 <appdata>/extensions/apk（appdata 根用 SUWAYOMI_APPDATA_DIR 指定）
 # 3) 启动 server 并启用 sandbox
 SUWAYOMI_SANDBOX_JAR=ext-runtime.jar \
 SUWAYOMI_SANDBOX_PORT=8091 \
-SUWAYOMI_EXTENSIONS_DIR=/path/to/extensions \
+SUWAYOMI_APPDATA_DIR=/var/lib/suwayomi/appdata \
 SUWAYOMI_SANDBOX_PROXY=127.0.0.1:7890 \   # 可选：HTTP 代理
 ./target/release/suwayomi-server
 ```
 
-环境变量：`SUWAYOMI_SANDBOX_JAR`（启用沙盒）、`SUWAYOMI_SANDBOX_PORT`（默认 8091）、`SUWAYOMI_EXTENSIONS_DIR`（默认 ./extensions）、`SUWAYOMI_JAR_DIR`（转换 jar 目录，默认 `<extensions>/../bin/extensions`）、`SUWAYOMI_SANDBOX_PROXY`（可选 HTTP 代理）。未配置时回退内置 `StubFetcher`。
+环境变量：`SUWAYOMI_SANDBOX_JAR`（启用沙盒）、`SUWAYOMI_SANDBOX_PORT`（默认 8091）、`SUWAYOMI_APPDATA_DIR`（唯一的可写根，沙盒子进程继承它并自行派生扩展目录 `extensions/apk`、转换 jar 目录 `extensions/bin` 与 `settings/`）、`SUWAYOMI_SANDBOX_PROXY`（可选 HTTP 代理）。未配置时回退内置 `StubFetcher`。
 
 ## 扩展安装与源管理
 
 扩展从**仓库索引**在线安装，装完自动把源注册进数据库，前后端通用：
 
-- **仓库**：`extension_store` 表存 `index_url`（支持 v1 数组与 keiyoushi v2 对象格式；v1 里的 `code`/`version`/数字 `nsfw`/相对 apk 路径这些旧版写法都认）。`POST /api/v1/extension/refresh`（或 GraphQL `fetchExtensions`）拉取索引并 upsert `extension` 表（apkUrl/版本/NSFW 等）。索引下载后写本地缓存 `extensions/index/index-<hash>.<pb|json>`（`<hash>` 取 index URL 的哈希），仓库不可达时自动回退缓存。
-- **安装/更新/卸载**：`GET /api/v1/extension/install/{pkgName}`、`/update/{pkgName}`、`/uninstall/{pkgName}`（GraphQL 对应 `updateExtension`/`updateExtensions` patch）。安装下载 APK 到 `SUWAYOMI_EXTENSIONS_DIR`（缺省 `./extensions`，命名 `tachiyomi-{lang}.{pkg}-v{ver}.apk`），触发 JVM sandbox 热加载（`/reload`），随后把 `/sources` 的稳定源 id（扩展 `Source.getId()`）upsert 进 `source` 表。
+- **仓库**：`extension_store` 表存 `index_url`（支持 v1 数组与 keiyoushi v2 对象格式；v1 里的 `code`/`version`/数字 `nsfw`/相对 apk 路径这些旧版写法都认）。`POST /api/v1/extension/refresh`（或 GraphQL `fetchExtensions`）拉取索引并 upsert `extension` 表（apkUrl/版本/NSFW 等）。索引下载后写本地缓存 `appdata/cache/extensions/index/index-<hash>.<pb|json>`（`<hash>` 取 index URL 的哈希），仓库不可达时自动回退缓存。
+- **安装/更新/卸载**：`GET /api/v1/extension/install/{pkgName}`、`/update/{pkgName}`、`/uninstall/{pkgName}`（GraphQL 对应 `updateExtension`/`updateExtensions` patch）。安装下载 APK 到 `<appdata>/extensions/apk`（命名 `tachiyomi-{lang}.{pkg}-v{ver}.apk`），触发 JVM sandbox 热加载（`/reload`），随后把 `/sources` 的稳定源 id（扩展 `Source.getId()`）upsert 进 `source` 表。
 - **外部 APK**：GraphQL `installExternalExtension`（multipart 上传）走 sandbox `/inspect` 解析元数据后安装。
 - **代理**：仓库/APK 下载复用 `SUWAYOMI_SANDBOX_PROXY` 代理设置。
 

@@ -172,6 +172,10 @@ jobs:
           python3 -c "import zipfile; zipfile.ZipFile('webui.zip').extractall('$STAGE/webui')"
           rm -f webui.zip
           mkdir -p "$STAGE/data/autobackup" "$STAGE/data/downloads" "$STAGE/data/local"
+          # appdata 树先建出来：缓存/库/设置/扩展都挂在这个根下（MSIX 与 per-machine
+          # 安装时会整根外指，这里建好省得首启现造）。
+          mkdir -p "$STAGE/appdata/cache/logs" "$STAGE/appdata/db" "$STAGE/appdata/settings" \
+            "$STAGE/appdata/extensions/apk" "$STAGE/appdata/extensions/bin"
 
           zip_dir() {
             powershell -Command "Compress-Archive -Path '$1' -DestinationPath '$2' -Force"

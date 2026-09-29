@@ -18,17 +18,17 @@ curl -X POST http://localhost:8090/api/v1/backup/import --data-binary @backup.ta
 导出（用于反向迁移或日常备份）：`GET /api/v1/backup/export`。
 
 导入目标后端由 `SUWAYOMI_DB_BACKEND` / `SUWAYOMI_DATABASE_URL` 决定：不设 → 本地
-SQLite（`<数据库目录>/suwayomi.db`，目录默认是 exe 上级的 `db/`）；`SUWAYOMI_DB_BACKEND=postgres` 或设置
+SQLite（`<appdata>/db/suwayomi.db`，appdata 根默认是 exe 上级的 `appdata/`）；`SUWAYOMI_DB_BACKEND=postgres` 或设置
 `SUWAYOMI_DATABASE_URL` → 外部 PostgreSQL（`postgres://user:pass@host:5432/db`）。
 
 ## 相关环境变量
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `SUWAYOMI_DB_DIR` | exe 上级 `db/` | 数据库目录（与数据目录分开：数据目录是能在 WebUI 里改的设置项，库不能跟着它走） |
-| `SUWAYOMI_SQLITE_PATH` | `<数据库目录>/suwayomi.db` | SQLite 数据库文件 |
+| `SUWAYOMI_APPDATA_DIR` | exe 上级 `appdata/` | 程序自身状态的唯一可写根，库固定落在其 `db/` 之下 |
 | `SUWAYOMI_DB_BACKEND` | `sqlite` | 后端（`sqlite` / `postgres`） |
 | `SUWAYOMI_DATABASE_URL` | （空） | PostgreSQL 连接串 |
 
-旧版本把库放在 `<数据目录>/suwayomi.db`；升级后第一次启动会自动把它搬到数据库目录
-（新位置已有库时不覆盖）。
+库的位置没有独立的环境变量：要挪库就挪整个 `appdata/`。目录布局变化是**破坏性的**
+—— 从更早的布局（发布根下的 `db/`，或 `<数据目录>/suwayomi.db`）升级时不会自动搬运，
+把旧库手动拷到 `<appdata>/db/suwayomi.db` 即可（`-wal` / `-shm` 一并带上）。

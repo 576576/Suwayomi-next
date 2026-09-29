@@ -31,7 +31,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use suwayomi_api::AppState;
 use suwayomi_core::auth::Principal;
-use suwayomi_core::config::{AppPaths, ServerConfig, default_cache_root, resolve_setting_path};
+use suwayomi_core::config::{AppPaths, ServerConfig, appdata_db, resolve_appdata_dir, resolve_setting_path};
 use suwayomi_core::db::{Db, DbSettings};
 use suwayomi_domain::source::SourceBackend;
 
@@ -116,31 +116,15 @@ pub fn resolve_data_dir() -> std::path::PathBuf {
 
 /// 追踪器 OAuth 应用凭据文件：`SUWAYOMI_TRACKERS_CONFIG` → `<settings 目录>/trackers.json`。
 ///
-/// settings 目录优先取 `SUWAYOMI_SETTINGS_DIR`（沙盒写源偏好用的是同一个变量、同一个
-/// 目录），其次按扩展目录的上一级推（与沙盒的默认规则一致），最后落在数据根的上一级
-/// —— Android 没有环境变量可用，只有 `data_dir`，靠最后一条。
-pub fn resolve_trackers_config_file(data_dir: &std::path::Path) -> std::path::PathBuf {
+/// settings 目录由 appdata 根派生（`<appdata>/settings`），沙盒写的源偏好落在同一个
+/// 目录 —— 两边必须是同一份，否则 WebUI 里配的源偏好在扩展侧读不到。
+pub fn resolve_trackers_config_file(settings_dir: &std::path::Path) -> std::path::PathBuf {
     if let Ok(file) = std::env::var("SUWAYOMI_TRACKERS_CONFIG")
         && !file.trim().is_empty()
     {
         return std::path::PathBuf::from(file);
     }
-    resolve_settings_dir(data_dir).join("trackers.json")
-}
-
-fn resolve_settings_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
-    if let Ok(dir) = std::env::var("SUWAYOMI_SETTINGS_DIR")
-        && !dir.trim().is_empty()
-    {
-        return std::path::PathBuf::from(dir);
-    }
-    if let Ok(ext) = std::env::var("SUWAYOMI_EXTENSIONS_DIR")
-        && let Some(parent) = std::path::Path::new(&ext).parent()
-        && !parent.as_os_str().is_empty()
-    {
-        return parent.join("settings");
-    }
-    data_dir.parent().map_or_else(|| std::path::PathBuf::from("settings"), |base| base.join("settings"))
+    settings_dir.join("trackers.json")
 }
 
 /// 扩展沙盒 jar：`SUWAYOMI_SANDBOX_JAR` → exe 同级/../bin 的 ext-runtime.jar（发布布局）
@@ -418,7 +402,7 @@ fn setting_path(blob: Option<&serde_json::Value>, key: &str, data_dir: &std::pat
 /// `SUWAYOMI_DATA_DIR` 进来，env 优先的话这个设置项就永远是死的。
 ///
 /// 这一项之所以能存进库里，是因为**数据库文件不在数据目录下**
-/// （见 `suwayomi_db::config::default_db_dir`）。
+/// （见 [`ServerOptions::appdata_dir`]）。
 fn load_data_dir_setting(blob: Option<&serde_json::Value>, fallback: std::path::PathBuf) -> std::path::PathBuf {
     let Some(dir) = blob.and_then(|json| blob_str(json, "dataDir")) else {
         return fallback;
@@ -451,10 +435,10 @@ pub struct ServerOptions {
     pub config: ServerConfig,
     /// 用户数据根目录（backups/downloads/local 之下）。
     pub data_dir: std::path::PathBuf,
-    /// 缓存根的显式覆盖。`None` → 按 `SUWAYOMI_CACHE_DIR` / 发布布局推导
-    /// （[`default_cache_root`]）。Android 宿主没有环境变量可读，只能把
-    /// `<data>/cache` 直接传进来。
-    pub cache_dir: Option<std::path::PathBuf>,
+    /// appdata 根的显式覆盖：缓存 / 数据库 / 设置 / 扩展四项都从它派生。
+    /// `None` → `SUWAYOMI_APPDATA_DIR` / 发布布局推导（[`resolve_appdata_dir`]）。
+    /// Android 宿主没有环境变量可读，只能把应用私有目录直接传进来。
+    pub appdata_dir: Option<std::path::PathBuf>,
     /// 静态 WebUI 目录（无 index.html 时回退内置占位页）。
     pub webui_dir: std::path::PathBuf,
     /// 显式数据库设置；`None` → 按 `SUWAYOMI_*` 环境变量解析（桌面路径）。
@@ -479,9 +463,13 @@ pub fn init_logging(default_filter: &str) {
 
 /// 启动服务直到收到关闭信号（Ctrl+C、`POST /api/v1/shutdown`，或 Android 宿主的停止调用）。
 pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
-    let ServerOptions { config, data_dir, cache_dir, webui_dir, db: db_settings, sandbox, shutdown } = opts;
+    let ServerOptions { config, data_dir, appdata_dir, webui_dir, db: db_settings, sandbox, shutdown } = opts;
     tracing::info!(name = "Suwayomi (next)", version = VERSION, "starting");
-    let settings = db_settings.unwrap_or_else(DbSettings::from_env);
+    // appdata 根要先定：库就落在它下面，而库里存着 `dataDir` 设置 —— 数据目录
+    // 反过来依赖库，所以两者的解析顺序不能倒过来。
+    let appdata = appdata_dir.unwrap_or_else(resolve_appdata_dir);
+    tracing::info!("appdata dir: {}", appdata.display());
+    let settings = db_settings.unwrap_or_else(|| DbSettings::from_env(&appdata_db(&appdata)));
     tracing::info!("database backend: {}", settings.describe());
     let db = Db::connect(&settings).await?;
     db.migrate().await?;
@@ -507,7 +495,7 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
     let settings_blob = load_settings_blob(&db).await;
 
     // 存储位置（dataDir）同样从设置里读 —— 数据库文件不在这个目录下，所以它
-    // 可以被随便改而不影响设置本身（见 suwayomi_db::config::default_db_dir）
+    // 可以被随便改而不影响设置本身（库在 appdata 根之下，见上面 `appdata`）
     //
     // 先定数据目录：下面两项的 `%DATADIR%` 占位符都以它为准。
     let data_dir = load_data_dir_setting(settings_blob.as_ref(), data_dir);
@@ -516,7 +504,7 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
     // 路径句柄：启动时解析一次，之后注入到各服务（不再是进程级单例）。
     // 还原持久化的 localSourcePath / downloadsPath，重启后自定义目录仍生效；
     // 没设置（或留空）时 `AppPaths` 自己回到默认位置（env / 发布布局 / 数据目录）。
-    let paths = AppPaths::new(data_dir, cache_dir.unwrap_or_else(default_cache_root));
+    let paths = AppPaths::new(data_dir, appdata);
     tracing::info!("cache dir: {}", paths.cache().display());
     paths.set_local_sources(setting_path(settings_blob.as_ref(), "localSourcePath", &paths.data()));
     paths.set_downloads(setting_path(settings_blob.as_ref(), "downloadsPath", &paths.data()));
@@ -527,9 +515,9 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
     );
 
     // 认证：模式解析失败直接不启动。静默退化成「无认证」比启动失败危险得多。
+    // 会话密钥与库同目录（`session.key`），库换地方时它跟着走。
     let mut config = config;
-    let (auth, secret_source) =
-        auth_setup::resolve(&config, settings_blob.as_ref(), &suwayomi_db::config::default_db_dir())?;
+    let (auth, secret_source) = auth_setup::resolve(&config, settings_blob.as_ref(), &paths.db())?;
     config.auth_mode = auth.mode.as_str().to_string();
     config.auth_username = auth.username.clone();
     config.auth_password = auth.password.clone();
@@ -550,7 +538,7 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
     match sandbox {
         SandboxMode::Spawn { jar, port } => {
             let jar_str = jar.to_string_lossy().into_owned();
-            match suwayomi_domain::source::sandbox::SandboxProcess::start(&jar_str, &port).await {
+            match suwayomi_domain::source::sandbox::SandboxProcess::start(&jar_str, &port, &paths.appdata()).await {
                 Ok(p) => {
                     tracing::info!("jvm sandbox connected at 127.0.0.1:{port} (jar: {jar_str})");
                     sandbox_guard = Some(p);
@@ -592,11 +580,16 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
     // 仓库索引行，手工放进 extensions/ 的 APK 永远进不了库）+ 注册 source 行。
     //
     // Android 上这一步是**唯一**的入库路径 —— 扩展装在系统里（PackageManager），
-    // 既没有 extensions/ 目录也没有仓库索引，不同步的话 WebUI 扩展页恒为空。
+    // 既没有扩展目录也没有仓库索引，不同步的话 WebUI 扩展页恒为空。
     // 失败不阻塞启动：扩展不可用不影响书架/阅读等主功能。
     if let Some(base) = &sandbox_base {
-        let store =
-            suwayomi_domain::extension_store::ExtensionStoreService::new(db.clone(), Some(base.clone()), paths.cache());
+        let store = suwayomi_domain::extension_store::ExtensionStoreService::new(
+            db.clone(),
+            Some(base.clone()),
+            paths.extensions(),
+            paths.extensions_bin(),
+            paths.cache(),
+        );
         match store.sync_sources().await {
             Ok(n) => tracing::info!("extension sync at startup: {n} source(s) registered"),
             Err(e) => tracing::warn!("extension sync at startup failed: {e}"),
@@ -611,7 +604,7 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
     let update = suwayomi_domain::updater::UpdateManager::new(db.clone(), fetcher.clone());
     // REST 与 GraphQL 共用同一个追踪器句柄：登录态是从数据库读的，两个入口看到
     // 的东西必须一致，克隆出两个实例会让「其中一个刚登录」的状态不同步。
-    let oauth_config = resolve_trackers_config_file(&paths.data());
+    let oauth_config = resolve_trackers_config_file(&paths.settings());
     let oauth_apps = suwayomi_domain::tracker::oauth::load_or_create(&oauth_config);
     let tracker = suwayomi_domain::tracker::TrackerManager::with_oauth(
         db.clone(),

@@ -7,25 +7,30 @@ use serde::{Deserialize, Serialize};
 
 mod paths;
 
-/// 进程内各根目录的显式句柄（数据 / 缓存 / 下载 / 本地图源）。
+/// 进程内各根目录的显式句柄（数据 / appdata / 下载 / 本地图源）。
 ///
 /// 取代原先的三处进程级单例：路径在启动时解析一次，之后经构造参数注入到
 /// `GraphQLState` / `AppState` / `DownloadManager` / `ExtensionStoreService`，
 /// 不再有 `set_*_root()` 这种隐式全局写入口。
 pub use paths::AppPaths;
+/// appdata 根之下的两个子目录，供**在 `AppPaths` 构造之前**就要用到的场景：
+/// 打开数据库之前先要知道库落在哪，拉起沙盒之前先要知道日志写哪。
+pub use paths::{appdata_db, appdata_logs};
 
-/// `SUWAYOMI_CACHE_DIR` 环境变量名（缓存根的第二优先级来源）。
-pub const CACHE_DIR_ENV: &str = "SUWAYOMI_CACHE_DIR";
-
-/// 缓存根的默认解析：`SUWAYOMI_CACHE_DIR` > `<发布根>/cache` > `./cache`。
-/// 内分子目录（extensions/icons、extensions/index、thumbnails 等）。发布布局
-/// bin/suwayomi-server.exe 时根 = exe 的上级；否则退回当前工作目录。
+/// `SUWAYOMI_APPDATA_DIR` 环境变量名：appdata 根，**唯一**的目录级覆盖入口。
 ///
-/// 最终值由调用方装进 [`AppPaths::new`] 后注入 —— Android 宿主没有环境变量，
-/// 走 [`crate::config::AppPaths`] 时直接把 `<data>/cache` 传进来即可。
-pub fn default_cache_root() -> std::path::PathBuf {
-    if let Ok(dir) = std::env::var(CACHE_DIR_ENV)
-        && !dir.is_empty()
+/// 缓存 / 数据库 / 设置 / 扩展四项都从它派生（见 [`AppPaths`]），各自都没有环境
+/// 变量 —— 把可写根整个外指只需要设这一个。
+pub const APPDATA_DIR_ENV: &str = "SUWAYOMI_APPDATA_DIR";
+
+/// appdata 根的解析：`SUWAYOMI_APPDATA_DIR` > `<发布根>/appdata` > `./appdata`。
+///
+/// 发布布局（bin/suwayomi-server.exe）时根 = exe 的上级；否则退回相对路径，与
+/// 数据目录同形。最终值由调用方装进 [`AppPaths::new`] 后注入 —— Android 宿主
+/// 没有环境变量，直接把应用私有目录传进去即可。
+pub fn resolve_appdata_dir() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var(APPDATA_DIR_ENV)
+        && !dir.trim().is_empty()
     {
         return std::path::PathBuf::from(dir);
     }
@@ -34,9 +39,9 @@ pub fn default_cache_root() -> std::path::PathBuf {
         && dir.file_name().is_some_and(|n| n == "bin")
         && let Some(base) = dir.parent()
     {
-        return base.join("cache");
+        return base.join("appdata");
     }
-    std::path::PathBuf::from("cache")
+    std::path::PathBuf::from("appdata")
 }
 
 /// 设置里可用的目录占位符（大小写不敏感，只能出现在开头）：

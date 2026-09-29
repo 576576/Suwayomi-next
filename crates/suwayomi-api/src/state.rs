@@ -80,7 +80,13 @@ impl AppState {
         let library = LibraryService::new(db.clone(), manga.clone());
         let manga_list = MangaListService::new(db.clone(), fetcher.clone());
         let page = PageService::new(db.clone());
-        let extension_store = ExtensionStoreService::new(db.clone(), sandbox_base.clone(), paths.cache());
+        let extension_store = ExtensionStoreService::new(
+            db.clone(),
+            sandbox_base.clone(),
+            paths.extensions(),
+            paths.extensions_bin(),
+            paths.cache(),
+        );
         Self {
             db,
             config: config.into(),

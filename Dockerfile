@@ -14,8 +14,10 @@
 #   /opt/suwayomi/bin/ext-runtime.jar
 #   /opt/suwayomi/jre/                 （扩展跑在 JVM 里，缺了就没有任何来源）
 #   /opt/suwayomi/webui/
-# 数据目录单独在 /data（VOLUME）；SQLite 库也在卷内（/data/db），不跟着数据目录走
-# —— 数据目录是 WebUI 里可以随时改的设置项，库跟着它走就会把设置本身弄丢。
+# 数据目录在 /data（VOLUME）；程序自身产生的状态（缓存 / 库 / 设置 / 扩展）在 appdata
+# 根之下 —— 这里钉成 /data/appdata，整根都落在卷里，容器重建不会丢。库的位置由这个
+# 环境变量固定，不跟着数据目录设置走：数据目录是 WebUI 里随时能改的一项，库跟着它走
+# 就会把设置本身弄丢。
 #
 # 本地构建：
 #   docker build -t suwayomi-next --build-arg WEBUI_URL=<WebUI zip 地址> .
@@ -116,14 +118,16 @@ COPY --from=webui   /webui                                        /opt/suwayomi/
 
 # 三个路径都显式钉住：默认解析规则能猜对（exe 在 bin/ 下），但容器里写死更省事，
 # 也避免将来有人改了 exe 的位置就把 webui 与数据目录一起带偏。
-# SUWAYOMI_DB_DIR 必须钉在卷内：不钉的话库会落到 WORKDIR（/opt/suwayomi/db），
-# 那是**镜像层**，容器一重建书架就没了。
+# SUWAYOMI_APPDATA_DIR 必须钉在卷内：不钉的话缓存/库/设置/扩展会落到 WORKDIR
+# （/opt/suwayomi/appdata），那是**镜像层**，容器一重建书架就没了。
 ENV SUWAYOMI_WEBUI_DIR=/opt/suwayomi/webui \
     SUWAYOMI_DATA_DIR=/data \
-    SUWAYOMI_DB_DIR=/data/db \
+    SUWAYOMI_APPDATA_DIR=/data/appdata \
     SUWAYOMI_PORT=8090 \
     SUWAYOMI_IP=0.0.0.0
-RUN mkdir -p /data/db /data/autobackup /data/downloads /data/local
+RUN mkdir -p /data/appdata/cache /data/appdata/db /data/appdata/settings \
+        /data/appdata/extensions/apk /data/appdata/extensions/bin \
+        /data/autobackup /data/downloads /data/local
 VOLUME ["/data"]
 EXPOSE 8090
 ENTRYPOINT ["/opt/suwayomi/bin/suwayomi-server"]

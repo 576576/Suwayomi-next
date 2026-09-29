@@ -79,11 +79,11 @@ async fn main() -> anyhow::Result<()> {
     let options = ServerOptions {
         config: config_from_env(),
         data_dir: resolve_data_dir(),
-        // `None` → SUWAYOMI_CACHE_DIR / 发布布局推导（桌面有环境变量可用）
-        cache_dir: None,
+        // `None` → SUWAYOMI_APPDATA_DIR / 发布布局推导（桌面有环境变量可用）
+        appdata_dir: None,
         webui_dir: resolve_webui_dir(),
-        // `None` → DbSettings::from_env()（SUWAYOMI_DB_BACKEND / SUWAYOMI_DATABASE_URL /
-        // SUWAYOMI_SQLITE_PATH）；Android 宿主显式传 SQLite 路径（App 里没有 env）
+        // `None` → DbSettings::from_env()（SUWAYOMI_DB_BACKEND / SUWAYOMI_DATABASE_URL）；
+        // Android 宿主显式传 SQLite 路径（App 里没有 env）
         db: None,
         sandbox,
         // 桌面没有「宿主」：靠 Ctrl+C 与 POST /api/v1/shutdown 关闭

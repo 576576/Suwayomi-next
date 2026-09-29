@@ -73,29 +73,32 @@ systems without a WebView fall back to the system browser.
 3. **Add extension repos**: on the WebUI extensions page, add an index URL
    (Mihon `index.pb` or Tachiyomi `index.json`, e.g. keiyoushi), then refresh
    and install extensions online.
-4. **Install extensions**: the APK is downloaded into `extensions/`, converted
-   by the JVM sandbox (dex2jar) and loaded; the converted jar lands in
-   `bin/extensions/` and the sources are registered in the database. Uninstall
-   cleans up both.
+4. **Install extensions**: the APK is downloaded into `<appdata>/extensions/apk`,
+   converted by the JVM sandbox (dex2jar) and loaded; the converted jar lands in
+   `<appdata>/extensions/bin` and the sources are registered in the database.
+   Uninstall cleans up both.
 5. **Port**: defaults to 8090 with automatic fallback when occupied; when used
    with the desktop shell, the tray settings take precedence.
-6. **Logs**: `cache/logs/` holds `server.log`, `tray.log`, `sandbox.log` —
+6. **Logs**: `<appdata>/cache/logs/` holds `server.log`, `tray.log`,
+   `sandbox.log` —
    check these first when debugging.
 
 ## Repository layout
 
 ```
 crates/
-  suwayomi-core/     domain models + schema + database layer
-  suwayomi-domain/   business logic
-  suwayomi-rest/     REST API v1
-  suwayomi-graphql/  GraphQL API
-  suwayomi-opds/     OPDS
-  suwayomi-server/   server entry point
+  suwayomi-db-macros/ proc-macro (#[derive(FromRow)])
+  suwayomi-db/        dual-backend database layer (SQLite default / PostgreSQL)
+  suwayomi-core/      domain models + table row types + build-time version info
+  suwayomi-domain/    business logic (the only layer that speaks HTTP outward)
+  suwayomi-api/       shared API layer: AppState + site-wide auth middleware
+  suwayomi-rest/      REST API v1
+  suwayomi-graphql/   GraphQL API
+  suwayomi-opds/      OPDS (KOReader and friends)
+  suwayomi-server/    server entry point (assembly + static hosting + JVM sandbox)
+  suwayomi-android/   JNI cdylib (ships the whole server inside the Android APK)
 android/             Android host project (separate Gradle/AGP build, not
                      merged into the main project)
-suwayomi-tray/       desktop shell (Tauri 2; separate workspace, not part of
-                     the main workspace; Windows/Linux)
 migrations/          SQL migrations (incl. pg-only/: SyncYomi triggers)
 scripts/             CI/helper scripts (resolve-webui.sh / unzip_any.py, …)
 assets/              icons & screenshots (images/, screenshots/)
@@ -103,12 +106,19 @@ docs/                docs (api/, graphql/, migration/, en/, release.md,
                      user-guide.md)
 ```
 
+The desktop shell (Tauri 2) lives in its own repository,
+[576576/Suwayomi-tray](https://github.com/576576/Suwayomi-tray).
+
 ## Database backends
 
-- **Default**: a local SQLite file (`db/suwayomi.db`); point it elsewhere with
-  `SUWAYOMI_DB_DIR` (directory) or `SUWAYOMI_SQLITE_PATH` (full path)
+- **Default**: a local SQLite file (`appdata/db/suwayomi.db`)
 - **External**: set `SUWAYOMI_DB_BACKEND=postgres` plus `SUWAYOMI_DATABASE_URL`,
   e.g. `postgres://user:pass@host:5432/db`
+
+Everything the program writes for itself (cache, database, settings, extension
+APK + converted jars) lives under a single writable root, `SUWAYOMI_APPDATA_DIR`
+(default `appdata/` next to the executable). There is deliberately **no**
+per-directory override for those four.
 
 The database file deliberately lives **outside** the data directory: the data
 directory (`SUWAYOMI_DATA_DIR`, also editable in the WebUI under
@@ -134,22 +144,21 @@ module whitelist that tracks the sandbox code); here we just fetch the asset for
 OUT="$(bash scripts/resolve-ext-runtime.sh 30.1.0)"
 curl -fsSL -o ext-runtime.jar "$(printf '%s' "$OUT" | sed -n 's/^url=//p')"
 
-# 2) Put extension APKs into a directory (default ./extensions, or set
-#    SUWAYOMI_EXTENSIONS_DIR)
+# 2) Drop extension APKs into <appdata>/extensions/apk
 # 3) Start the server with the sandbox enabled
 SUWAYOMI_SANDBOX_JAR=ext-runtime.jar \
 SUWAYOMI_SANDBOX_PORT=8091 \
-SUWAYOMI_EXTENSIONS_DIR=/path/to/extensions \
+SUWAYOMI_APPDATA_DIR=/var/lib/suwayomi/appdata \
 SUWAYOMI_SANDBOX_PROXY=127.0.0.1:7890 \   # optional: HTTP proxy
 ./target/release/suwayomi-server
 ```
 
 Environment: `SUWAYOMI_SANDBOX_JAR` (enables the sandbox),
-`SUWAYOMI_SANDBOX_PORT` (default 8091), `SUWAYOMI_EXTENSIONS_DIR` (default
-`./extensions`), `SUWAYOMI_JAR_DIR` (converted-jar dir, default
-`<extensions>/../bin/extensions`), `SUWAYOMI_SANDBOX_PROXY` (optional HTTP
-proxy). Without a configured sandbox the server falls back to the built-in
-`StubFetcher`.
+`SUWAYOMI_SANDBOX_PORT` (default 8091), `SUWAYOMI_APPDATA_DIR` (single writable
+root — the sandbox child inherits it and derives the extension dir
+`extensions/apk`, the converted-jar dir `extensions/bin` and `settings/` from
+it), `SUWAYOMI_SANDBOX_PROXY` (optional HTTP proxy). Without a configured
+sandbox the server falls back to the built-in `StubFetcher`.
 
 ## Extension installs & source management
 
@@ -161,11 +170,11 @@ registered in the database automatically, shared across the UI and the API:
   numeric `nsfw` and relative apk paths are accepted too). `POST
   /api/v1/extension/refresh` (or GraphQL `fetchExtensions`) fetches the index
   and upserts the `extension` table (apkUrl/version/NSFW etc.). Indexes are
-  cached as `extensions/index/index-<hash>.<pb|json>` (`<hash>` of the index
-  URL) and fall back to the cache when the repo is unreachable.
+  cached as `<appdata>/cache/extensions/index/index-<hash>.<pb|json>` (`<hash>`
+  of the index URL) and fall back to the cache when the repo is unreachable.
 - **Install/update/uninstall**: `GET /api/v1/extension/{install|update|uninstall}/{pkgName}`
   (GraphQL `updateExtension`/`updateExtensions` patches). Installing downloads
-  the APK into `SUWAYOMI_EXTENSIONS_DIR` (default `./extensions`, named
+  the APK into `<appdata>/extensions/apk` (named
   `tachiyomi-{lang}.{pkg}-v{ver}.apk`), hot-reloads the JVM sandbox (`/reload`)
   and upserts the stable source ids from `/sources` (extension `Source.getId()`)
   into the `source` table.

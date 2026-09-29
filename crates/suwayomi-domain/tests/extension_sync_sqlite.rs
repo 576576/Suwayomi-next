@@ -92,9 +92,9 @@ fn tmp_root() -> PathBuf {
 
 /// 独立临时目录的 service（不改进程环境变量，测试可并行）。
 fn service_in(tmp: &Path, db: Db, base: String) -> ExtensionStoreService {
-    let extensions = tmp.join("extensions");
+    let extensions = tmp.join("extensions").join("apk");
     std::fs::create_dir_all(&extensions).expect("create extensions dir");
-    ExtensionStoreService::with_dirs(db, Some(base), extensions, tmp.join("bin/extensions"), tmp.join("cache"))
+    ExtensionStoreService::new(db, Some(base), extensions, tmp.join("extensions/bin"), tmp.join("cache"))
 }
 
 /// 建表 —— 走与生产一致的迁移，顺带保证 SQL 在 SQLite 方言下可用。
@@ -203,7 +203,7 @@ async fn local_apk_on_disk_keeps_row_installed() {
     .execute(db.pool())
     .await
     .expect("insert repo row");
-    let mut f = std::fs::File::create(tmp.join("extensions").join(apk_name)).expect("create apk file");
+    let mut f = std::fs::File::create(tmp.join("extensions").join("apk").join(apk_name)).expect("create apk file");
     f.write_all(b"not a real apk").expect("write apk");
 
     // 沙盒这次一个扩展都没加载
@@ -215,7 +215,7 @@ async fn local_apk_on_disk_keeps_row_installed() {
         .fetch_one(db.pool())
         .await
         .unwrap();
-    assert!(inst, "APK 还在 extensions/ 里，保持已安装");
+    assert!(inst, "APK 还在扩展目录里，保持已安装");
 
     let _ = std::fs::remove_dir_all(&tmp);
 }

@@ -7,11 +7,30 @@ GraphQL / REST / OPDS 接口与 Mihon 扩展体系兼容，默认**零外部依�
 ## 快速开始
 
 ```bash
-# 直接运行（默认端口 8090；工作数据存 ./data/，SQLite 库存 ./db/suwayomi.db）
+# 直接运行（默认端口 8090；工作数据存 ./data/，SQLite 库存 ./appdata/db/suwayomi.db）
 cargo run --release -p suwayomi-server
 # 或使用已构建二进制
 ./target/release/suwayomi-server
 ```
+
+发布布局（`bin/suwayomi-server` 与 `suwayomi.exe` 同级）下目录是这样分的：
+
+```
+suwayomi.exe
+bin/           程序本体（server + ext-runtime.jar）
+jre/  webui/   捆绑运行时与 WebUI
+appdata/       程序自身产生的状态 —— 唯一需要可写的根
+  cache/       缩略图 / 图片 / 仓库索引 / 本地封面 / logs/
+  db/          suwayomi.db 与 session.key
+  settings/    追踪器凭据与源偏好
+  extensions/
+    apk/       安装的扩展 APK
+    bin/       dex2jar 转换产物
+data/          用户数据：downloads/ autobackup/ local/
+```
+
+把整个 `appdata/` 挪走只需要一个环境变量（见下）：安装目录不可写时（per-machine
+安装）靠它把可写根外指到别处。
 
 - WebUI：`http://localhost:8090`（托管目录，见下）
 - GraphQL：`http://localhost:8090/api/graphql`
@@ -25,8 +44,7 @@ cargo run --release -p suwayomi-server
 | `SUWAYOMI_PORT` | `8090` | HTTP 端口 |
 | `SUWAYOMI_IP` | `0.0.0.0` | 监听地址 |
 | `SUWAYOMI_DATA_DIR` | exe 上级 `data/` | 数据目录（下载/本地图源/自动备份之下；也可在 WebUI 的「数据与存储 → 存储位置」里改） |
-| `SUWAYOMI_DB_DIR` | exe 上级 `db/` | 数据库目录（**与数据目录分开**，见下） |
-| `SUWAYOMI_SQLITE_PATH` | `<数据库目录>/suwayomi.db` | SQLite 数据库文件路径（显式指定时不做旧库迁移） |
+| `SUWAYOMI_APPDATA_DIR` | exe 上级 `appdata/` | **程序自身状态的唯一可写根**：`cache/`、`db/`、`settings/`、`extensions/{apk,bin}` 全在它下面。缓存 / 库 / 设置 / 扩展**没有**各自的目录变量 |
 | `SUWAYOMI_DB_BACKEND` | `sqlite` | 后端：`sqlite` / `postgres` |
 | `SUWAYOMI_DATABASE_URL` | （空） | PostgreSQL 连接串（设置后自动改用外部 PostgreSQL，如 `postgres://user:pass@host:5432/db`） |
 | `SUWAYOMI_AUTH_MODE` | `DISABLED` | 认证模式：`DISABLED` / `BASIC_AUTH` / `SIMPLE_LOGIN` / `UI_LOGIN` |
@@ -34,14 +52,15 @@ cargo run --release -p suwayomi-server
 | `SUWAYOMI_JWT_AUDIENCE` | `suwayomi-server-api` | JWT 的 `aud` 声明 |
 | `SUWAYOMI_JWT_TOKEN_EXPIRY` | `5m` | 访问令牌有效期（也接受 `PT5M` 这类 ISO-8601 写法） |
 | `SUWAYOMI_JWT_REFRESH_EXPIRY` | `60d` | 刷新令牌有效期 |
-| `SUWAYOMI_SESSION_SECRET` | — | 会话 cookie 与 JWT 的签名密钥；未设置时首次启动生成 `<数据库目录>/session.key` |
+| `SUWAYOMI_SESSION_SECRET` | — | 会话 cookie 与 JWT 的签名密钥；未设置时首次启动生成 `<appdata>/db/session.key` |
 | `SUWAYOMI_AUTH_COOKIE_SECURE` | — | 设为 `1` 时给会话 cookie 加 `Secure`（仅 HTTPS 反代后开启） |
 | `SUWAYOMI_SANDBOX_JAR` | — | JVM 扩展沙盒 jar 路径（未设置则扩展源不可用） |
 | `SUWAYOMI_SANDBOX_PORT` | `8091` | 沙盒 HTTP 端口 |
-| `SUWAYOMI_EXTENSIONS_DIR` | `./extensions` | 扩展 APK 目录（只放 APK） |
-| `SUWAYOMI_JAR_DIR` | `<extensions>/../bin/extensions` | dex2jar 转换产物 jar 目录 |
-| `SUWAYOMI_SETTINGS_DIR` | `<扩展目录>/../settings` | 设置目录（沙盒的源偏好与追踪器凭据都在这里） |
-| `SUWAYOMI_TRACKERS_CONFIG` | `<设置目录>/trackers.json` | 追踪器 OAuth 应用凭据文件（见下） |
+| `SUWAYOMI_TRACKERS_CONFIG` | `<appdata>/settings/trackers.json` | 追踪器 OAuth 应用凭据文件（见下） |
+
+扩展沙盒是 server 拉起的子进程，它只从 server 继承 `SUWAYOMI_APPDATA_DIR` 一个目录
+变量，扩展目录 / dex2jar 产物目录 / 设置目录由它自己按同一套子路径派生 —— 两侧永远
+指向同一份，不需要（也不能）分别配置。
 
 ## 认证
 
@@ -149,7 +168,7 @@ docker build -t suwayomi-next --build-arg WEBUI_URL=<zip 地址> .
 docker run -p 8090:8090 -v suwayomi-data:/data suwayomi-next
 ```
 
-数据与 SQLite 库都持久化在 `/data`（工作数据在 `/data`，库在 `/data/db/suwayomi.db`）。要连外部 PostgreSQL：
+数据与 SQLite 库都持久化在 `/data`（工作数据在 `/data`，库在 `/data/appdata/db/suwayomi.db`）。要连外部 PostgreSQL：
 
 ```bash
 docker run -p 8090:8090   -e SUWAYOMI_DB_BACKEND=postgres   -e SUWAYOMI_DATABASE_URL=postgres://user:pass@host:5432/db suwayomi-next

@@ -514,31 +514,19 @@ fn resolve_java(jar_path: &str) -> std::path::PathBuf {
 }
 
 /// Builds the `java -jar` command for the sandbox (no-window on Windows,
-/// JVM output redirected into `logs/sandbox.log` when `SUWAYOMI_LOGS_DIR` is set).
-fn spawn_java(jar_path: &str, port: &str) -> std::io::Result<std::process::Child> {
+/// JVM output redirected into `<appdata>/cache/logs/sandbox.log`).
+///
+/// 子进程只拿一个目录旋钮 `SUWAYOMI_APPDATA_DIR`，扩展目录 / dex2jar 产物目录 /
+/// 设置目录由 ext-runtime 自己按同一套子路径派生（见 Main.kt）—— 两边必须落在
+/// 同一份根上，否则 WebUI 里配的源偏好在扩展侧读不到。
+fn spawn_java(jar_path: &str, port: &str, appdata: &std::path::Path) -> std::io::Result<std::process::Child> {
     let java = resolve_java(jar_path);
     let mut cmd = std::process::Command::new(java);
     // JVM 默认不走代理（java.net.useSystemProxies=false）——用户本地 Clash 等
     // 设置了系统代理时扩展请求仍直连外网而失败。显式开启系统代理；显式
     // SUWAYOMI_SANDBOX_PROXY 仍优先（NetworkHelper 的 builder.proxy 覆盖）。
     cmd.arg("-Djava.net.useSystemProxies=true").arg("-jar").arg(jar_path).env("SUWAYOMI_SANDBOX_PORT", port);
-    // Pass through the extensions directory (default ./extensions) and an
-    // optional outbound proxy (e.g. Clash) for geo-blocked sources.
-    let ext_dir = std::env::var("SUWAYOMI_EXTENSIONS_DIR").unwrap_or_else(|_| "./extensions".to_string());
-    cmd.env("SUWAYOMI_EXTENSIONS_DIR", &ext_dir);
-    // Converted jars always go to <extensions>/../bin/extensions by default
-    // (release layout keeps only APKs under extensions/), overridable with
-    // SUWAYOMI_JAR_DIR. Computed unconditionally — the sandbox must never
-    // fall back to writing dex2jar output into the APK dir.
-    if let Ok(jar_dir) = std::env::var("SUWAYOMI_JAR_DIR") {
-        cmd.env("SUWAYOMI_JAR_DIR", jar_dir);
-    } else {
-        let ext = std::path::Path::new(&ext_dir);
-        let jar_dir = ext
-            .parent()
-            .map_or_else(|| std::path::PathBuf::from("bin/extensions"), |p| p.join("bin").join("extensions"));
-        cmd.env("SUWAYOMI_JAR_DIR", jar_dir);
-    }
+    cmd.env(suwayomi_core::config::APPDATA_DIR_ENV, appdata);
     if let Ok(proxy) = std::env::var("SUWAYOMI_SANDBOX_PROXY") {
         cmd.env("SUWAYOMI_SANDBOX_PROXY", proxy);
     }
@@ -555,14 +543,9 @@ fn spawn_java(jar_path: &str, port: &str) -> std::io::Result<std::process::Child
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    let stdio = std::env::var("SUWAYOMI_LOGS_DIR").map_or_else(
-        |_| None,
-        |dir| {
-            let dir = std::path::PathBuf::from(dir);
-            let _ = std::fs::create_dir_all(&dir);
-            std::fs::OpenOptions::new().create(true).append(true).open(dir.join("sandbox.log")).ok()
-        },
-    );
+    let logs = suwayomi_core::config::appdata_logs(appdata);
+    let _ = std::fs::create_dir_all(&logs);
+    let stdio = std::fs::OpenOptions::new().create(true).append(true).open(logs.join("sandbox.log")).ok();
     match stdio {
         Some(f) => {
             let clone = f.try_clone().ok();
@@ -590,7 +573,9 @@ pub struct SandboxProcess {
 }
 
 impl SandboxProcess {
-    pub async fn start(jar_path: &str, port: &str) -> Result<Self> {
+    /// `appdata` 与 server 共用同一个根（见 `AppPaths::appdata`）：沙盒据此自行
+    /// 派生扩展目录 / dex2jar 产物目录 / 设置目录，日志也写在它的 `cache/logs` 下。
+    pub async fn start(jar_path: &str, port: &str, appdata: &std::path::Path) -> Result<Self> {
         // A sandbox JVM left over from a previous server run (e.g. after a
         // jar upgrade + server restart) may still own `port`. Our health
         // probe would hit that stale instance and pass, silently keeping the
@@ -606,7 +591,8 @@ impl SandboxProcess {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
         }
-        let mut child = spawn_java(jar_path, port).map_err(|e| DomainError::Sandbox(format!("spawn sandbox: {e}")))?;
+        let mut child =
+            spawn_java(jar_path, port, appdata).map_err(|e| DomainError::Sandbox(format!("spawn sandbox: {e}")))?;
         let base = format!("http://127.0.0.1:{port}");
         let fetcher = HttpSandboxFetcher::new(base.clone());
         // wait for health with retries (up to ~15s); bail if OUR child died
@@ -624,7 +610,8 @@ impl SandboxProcess {
             return Err(DomainError::Sandbox(format!("sandbox did not become healthy on {base}")));
         }
         let child = std::sync::Arc::new(std::sync::Mutex::new(Some(child)));
-        let monitor = Self::spawn_monitor(child.clone(), fetcher.clone(), jar_path.to_string(), port.to_string());
+        let monitor =
+            Self::spawn_monitor(child.clone(), fetcher.clone(), jar_path.to_string(), port.to_string(), appdata);
         Ok(Self { child, fetcher, monitor })
     }
 
@@ -635,7 +622,10 @@ impl SandboxProcess {
         fetcher: HttpSandboxFetcher,
         jar: String,
         port: String,
+        appdata: &std::path::Path,
     ) -> tokio::task::JoinHandle<()> {
+        // 重启也要用同一个 appdata 根：子进程环境按原样重建
+        let appdata = appdata.to_path_buf();
         tokio::spawn(async move {
             let mut fails: u32 = 0;
             loop {
@@ -662,7 +652,7 @@ impl SandboxProcess {
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 }
                 // respawn and wait for health
-                match spawn_java(&jar, &port) {
+                match spawn_java(&jar, &port, &appdata) {
                     Ok(c) => {
                         let mut ok = false;
                         for _ in 0..50 {

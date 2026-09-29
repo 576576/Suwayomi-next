@@ -185,8 +185,8 @@ pub struct SettingsType {
     #[graphql(deprecation = "Removed - prefer authUsername")]
     pub basic_auth_username: String,
     /// 数据（存储位置）目录；留空 = 用默认目录。改动重启后生效。
-    /// **数据库文件不在这里** —— 它在 `<安装根>/db`（见
-    /// `suwayomi_db::config::default_db_dir`），所以这个目录可以随便换而不会把设置本身弄丢。
+    /// **数据库文件不在这里** —— 它在 appdata 根下的 `db/`（见
+    /// `suwayomi_core::config::AppPaths::db`），所以这个目录可以随便换而不会把设置本身弄丢。
     pub data_dir: String,
     pub database_password: String,
     pub database_type: GraphqlDatabaseType,

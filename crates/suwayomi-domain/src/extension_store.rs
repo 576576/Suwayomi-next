@@ -217,37 +217,18 @@ pub struct ExtensionStoreService {
     http: Client,
     sandbox: Option<HttpSandboxFetcher>,
     extensions_dir: PathBuf,
-    /// Directory for dex2jar-converted jars (release layout: `bin/extensions`).
+    /// Directory for dex2jar-converted jars (`<appdata>/extensions/bin`).
     jar_dir: PathBuf,
-    /// 统一缓存根（`<发布根>/cache`），仓库索引缓存落在其 `extensions/index/` 下。
+    /// 统一缓存根（`<appdata>/cache`），仓库索引缓存落在其 `extensions/index/` 下。
     /// 由构造参数注入（`AppPaths::cache`），不读进程全局 —— 测试才能持有独立目录。
     cache_dir: PathBuf,
 }
 
 impl ExtensionStoreService {
-    /// `cache_dir` 由调用方显式给出（Android 宿主没有环境变量可读，
-    /// 只能把 `<data>/cache` 传进来）；扩展目录 / jar 目录仍按环境变量解析。
-    pub fn new(db: Db, sandbox_base: Option<String>, cache_dir: PathBuf) -> Self {
-        let extensions_dir =
-            std::env::var("SUWAYOMI_EXTENSIONS_DIR").map_or_else(|_| PathBuf::from("./extensions"), PathBuf::from);
-        let jar_dir = std::env::var("SUWAYOMI_JAR_DIR").map_or_else(
-            |_| {
-                extensions_dir
-                    .parent()
-                    .map_or_else(|| PathBuf::from("bin/extensions"), |p| p.join("bin").join("extensions"))
-            },
-            PathBuf::from,
-        );
-        Self::with_dirs(db, sandbox_base, extensions_dir, jar_dir, cache_dir)
-    }
-
-    /// 显式指定扩展目录 / jar 目录 / 缓存根的构造器。
-    ///
-    /// 测试专用：`new()` 的扩展目录 / jar 目录来自进程环境变量，而
-    /// `std::env::set_var` 在 Rust 2024 起是 `unsafe`（且多线程下修改进程环境本身
-    /// 就是数据竞争），并行测试还会互相覆盖 `SUWAYOMI_EXTENSIONS_DIR`。改为注入
-    /// 路径后，各测试持有独立临时目录，无需触碰环境变量。
-    pub fn with_dirs(
+    /// 扩展 APK 目录 / dex2jar 产物目录 / 缓存根全部由调用方给出 —— 三者都从
+    /// appdata 根派生（`AppPaths::extensions` / `extensions_bin` / `cache`）。
+    /// 这里不读进程环境，各测试才能持有自己的临时目录而不互相覆盖。
+    pub fn new(
         db: Db,
         sandbox_base: Option<String>,
         extensions_dir: PathBuf,
@@ -906,13 +887,7 @@ mod tests {
     fn service_in(tmp: &Path, db: Db, sandbox_base: Option<String>) -> ExtensionStoreService {
         let extensions = tmp.join("extensions");
         std::fs::create_dir_all(&extensions).unwrap();
-        ExtensionStoreService::with_dirs(
-            db,
-            sandbox_base,
-            extensions,
-            tmp.join("bin").join("extensions"),
-            tmp.join("cache"),
-        )
+        ExtensionStoreService::new(db, sandbox_base, extensions, tmp.join("extensions").join("bin"), tmp.join("cache"))
     }
 
     /// Serves canned HTTP responses for one request then closes.

@@ -2,3 +2,11 @@
 # 导致 crates.io 下载失败。关闭吊销检查（仅影响 Windows schannel；Linux CI 不使用该选项）。
 [http]
 check-revoke = false
+
+# gnullvm 目标默认动态链 libunwind，产物必须额外带一份 libunwind.dll 才能启动；
+# 改成静态链（连同 CRT），让产物自包含。
+[target.x86_64-pc-windows-gnullvm]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-gnullvm]
+rustflags = ["-C", "target-feature=+crt-static"]

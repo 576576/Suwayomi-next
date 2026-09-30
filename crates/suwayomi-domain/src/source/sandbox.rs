@@ -532,9 +532,6 @@ impl SourceFetcher for HttpSandboxFetcher {
 /// `requested` 上探多少个端口找空位；只用来躲开占用，不做全端口扫描。
 const SANDBOX_PORT_TRIES: u16 = 32;
 
-#[cfg(not(windows))]
-fn kill_port_listener(_port: u16) {}
-
 fn port_bindable(port: u16) -> bool {
     std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).is_ok()
 }

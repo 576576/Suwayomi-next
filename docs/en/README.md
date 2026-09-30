@@ -4,7 +4,7 @@
 
 ![128x128](../../assets/images/128x128.png)
 
-A Rust implementation of the [Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server/), fully compatible with the existing Tachiyomi data model, the GraphQL/REST/OPDS APIs and the Mihon extension ecosystem — everything except the extension runtime layer is written in Rust. This project is a reference implementation of the API, not a fork of the original [Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server).
+An independently developed server (Rust) with a desktop tray, referencing [Mihon](https://github.com/mihonapp/mihon) and [Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server/): it keeps the existing Tachiyomi data model, the GraphQL/REST/OPDS APIs and the Mihon extension ecosystem compatible, and everything except the extension runtime layer (the JVM sandbox) is written in Rust. This is an independent project, not a fork of [Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server).
 
 ![page-setting](../../assets/screenshots/page-setting.png)
 
@@ -14,7 +14,7 @@ Implemented: core data model & database layer, business logic (domain),
 REST API v1, GraphQL API, OPDS, downloads / library updates / backups / trackers
 / KOReader·SyncYomi sync, a JVM extension sandbox, a Tauri desktop shell and
 the release CI. REST v1 and GraphQL schema baselines live under `docs/agent/`;
-behaviour is compatible with the original Suwayomi.
+behaviour is compatible with Suwayomi-Server.
 
 ## Quick start (from source)
 

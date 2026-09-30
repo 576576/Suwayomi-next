@@ -1,7 +1,7 @@
 # MSIX 方案（评估与计划）
 
-> 本文是**调研结论 + 分阶段计划**，不含实现。所有外部约束标注了来源；第 7 节单独列出
-> 「我没有实机验证过、动手前必须先验」的项。
+> 本文是**调研结论 + 分阶段计划**，其中已落地的部分标了「已落地 <日期>」。所有外部约束标注了
+> 来源；第 7 节单独列出「我没有实机验证过、动手前必须先验」的项。
 
 ## 0. 结论先行
 
@@ -19,7 +19,8 @@ Store / winget 上架；**不是 msi / setup.exe 的替代**。
 
 1. **运行时往安装目录写数据**：MSIX 的安装目录只读且被锁死。原来的布局把
    `settings/` `db/` `cache/` `extensions/` `logs/` `data/` 全放在 exe 同级 → 直接挂。
-   **server 侧已改造完**（四项收敛到 `appdata/` 一个可写根，见 2.1），剩下托盘决定这个根落在哪。
+   **两侧都已改造**：server 侧四项收敛到 `appdata/` 一个可写根，托盘侧按 2.1 定这两个根
+   （预置已落地，写探测待做）。
 2. **签名**：MSIX 不签名就没法给普通用户装（`-AllowUnsigned` 只对开了开发者模式的机器有效，
    且带可执行内容的包还需要管理员）。**已定：走 SignPath Foundation 的免费 OSS 签名**
    （第 5 节）。选它的直接理由是许可证形态正好落在它的准入条件里 —— MPL-2.0 是 OSI 认可许可、
@@ -72,30 +73,30 @@ MSIX 装完，包内文件只读且被 OS 锁死（防篡改）。所以可写�
 
 `webui\` 是只读用途（server 只是静态托管），留包内没问题。
 
-**剩下的只有一件事**：托盘决定这个根落在哪。默认是 exe 同级的 `appdata/`，而 per-machine
-（msi「所有用户」）与 MSIX 下那里不可写。定两个信息来源，**预置优先、探测兜底**：
+**剩下的只有一件事**：托盘决定这两个根落在哪。默认是 exe 同级的 `appdata/` 与 `data/`，而
+per-machine（msi「所有用户」）与 MSIX 下安装目录不可写。定两个信息来源，**预置优先、探测兜底**：
 
-1. **安装包预置**（per-machine 的 msi / setup.exe）：随包落一份
-   `<安装根>\appdata\settings\tray.json`，把两个根直接指到用户目录（见下方）。
-2. **写探测**（绿色版 zip / MSIX / 预置缺失时）：探 exe 同级能不能写，不能写就落
-   `%LOCALAPPDATA%\Suwayomi`。
+1. **安装包预置**（per-machine 的 msi / setup.exe）—— **已落地 2026-09-30**（见下）；
+2. **写探测**（绿色版 zip / MSIX / 预置缺失时）—— **未落地**，见第 6 节 P0。
 
-两条都收敛到同一个可写根，`webui\` 仍取包内；根定下来之后由 `server_env()` 显式传给 server。
-用**运行期预置 + 写探测**而不是编译期开关，一份托盘产物同时适配 msi / 绿色版 / msix 三个渠道。
+`webui\` 恒取包内（只读资源，不参与外指）；根定下来之后由 `server_env()` 显式传给 server。
 
 `Suwayomi-tray/src/main.rs` 现在的形态：
 
-- `base_dir()` —— exe 同级，`data_dir_of()` 的兜底基于它；
-- `appdata_dir()` —— `SUWAYOMI_APPDATA_DIR` 优先，否则 `base_dir()/appdata`；
-  `settings_path()`（`<appdata>/settings/tray.json`）与 `logs_dir()`
-  （`<appdata>/logs`）都由它派生；
+- `base_dir()` —— exe 同级，两个根的默认值都基于它；
+- `appdata_dir()` —— `SUWAYOMI_APPDATA_DIR` → 预置的 `appdataDir` → `base_dir()/appdata`；
+  `settings_path()`（`<appdata>/settings/tray.json`）与 `logs_dir()`（`<appdata>/logs`）
+  都由它派生；
+- `data_dir_of()` —— 设置里的 `dataDir` → 预置的 `dataDir` → `base_dir()/data`；
 - `server_env()` —— 显式传 `SUWAYOMI_APPDATA_DIR` / `SUWAYOMI_DATA_DIR` /
   `SUWAYOMI_WEBUI_DIR`（根既然能变，就必须显式传；下载 / 本地图源 / 自动备份都在
   data 根之下，没有各自的环境变量）。
 
 #### 预置托盘设置文件（per-machine 的 msi / setup.exe）
 
-安装包随包落一份 `<安装根>\appdata\settings\tray.json`，内容即两个根：
+**已落地 2026-09-30**。源文件 `packaging/windows/tray.preset.json`，由 WiX 组件 `TrayPreset`
+装到 `[INSTALLFOLDER]appdata\settings\tray.json`（源文件名带 `.preset` 后缀以示它不是一份用户
+设置，装进包里叫 `tray.json`）。内容即两个根：
 
 ```json
 {
@@ -104,31 +105,37 @@ MSIX 装完，包内文件只读且被 OS 锁死（防篡改）。所以可写�
 }
 ```
 
-- 源文件放 `packaging/windows/tray.preset.json`，由 WiX 组件安装到
-  `[INSTALLFOLDER]appdata\settings\tray.json`，**条件 `ALLUSERS = 1`** —— per-user 安装下
-  `<安装根>` 本身就是 `%LOCALAPPDATA%\Programs\Suwayomi`、可写，预置反而多一层。
+- 组件条件：
+  ```
+  ALLUSERS = 1 OR (ALLUSERS = 2 AND NOT MSIINSTALLPERUSER)
+  ```
+  两条都要写：`Scope="perUserOrMachine"` 下 MSI 先把 ALLUSERS 置 2，再按 MSIINSTALLPERUSER 把它
+  **重置**为 1（per-machine）或空串（per-user），所以 per-machine 的正规判据是 `ALLUSERS = 1`；
+  后半条覆盖"重置尚未发生"的取值。per-user 恒为 `ALLUSERS = 2 + MSIINSTALLPERUSER = 1`，
+  两条都落空 —— 那种安装下 `<安装根>` 本身就是 `%LOCALAPPDATA%\Programs\Suwayomi`、可写，
+  装了这份预置反而会把数据挪到别处。
 - 路径**写环境变量、不写死绝对路径**：per-machine 安装由管理员执行，写死就等于把数据落到
-  管理员的用户目录。`%VAR%` 由托盘在运行期展开，每个用户拿到自己的那两个目录。
+  管理员的用户目录。`%VAR%` 由托盘在运行期展开，每个用户拿到自己的那两个目录；查不到的变量名、
+  空名字、落单的 `%` 一律按"这一项没设置"处理（照原样用会真的建出一个叫 `%FOO%` 的目录）。
 - `data` 落在 `…\Pictures\Suwayomi` 而不是 `Pictures` 根：`downloads\` / `local\` /
   `autobackup\` 三棵子树不该散进用户的图片目录。
-- 预置文件只是**默认值**：设置仍写 `<解析出的 appdata 根>\settings\tray.json`，用户改过之后
-  以那份为准。`SettingsPatch` 带 `deny_unknown_fields`，所以旧托盘读到带 `appdataDir` 的
-  预置文件会整份解析失败、回落全默认 —— 预置文件只随同一份产物发布，不单独投放给旧版本。
-- 托盘因此要多两处能力，都还没做：
-  1. `appdata_dir()` 在 `SUWAYOMI_APPDATA_DIR` 之外还能认预置文件里的 `appdataDir`。
-     预置文件本身就放在默认位置（`<exe 同级>\appdata\settings\`），不存在「要知道根才能读到根」的循环；
-  2. `appdataDir` / `dataDir` 支持 `%VAR%` 展开，展开后仍含未定义变量的值按未设置处理
-     （否则会真的建出一个叫 `%FOO%` 的目录）。
+- 预置是**默认层**不是用户设置：设置仍写 `<解析出的 appdata 根>\settings\tray.json`，
+  用户改过之后以那份为准。托盘里两个根的优先级都是「设置 > 预置 > 内置默认」，预置里写的值
+  不会被回写进用户设置文件。
+- **`appdataDir` 只可能来自预置文件**：预置固定放 `<exe 同级>\appdata\settings\`，不存在
+  "要知道根才能读到根"的循环；用户设置文件里出现同名键无效。
+- 托盘侧的两处能力（认 `appdataDir`、`%VAR%` 展开）与断言在 `Suwayomi-tray` 仓，预置文件本身
+  在本仓 —— 两边的路径契约（`appdata/settings/tray.json`）由 `ci_pack_check.py` 第 8 节看着。
 
-**前提：现在装不出 per-machine。** 实测 `Suwayomi-3.2.13-windows-x64.msi` 的 `Dialog` 表里没有
+**前提：向导里选不出 per-machine。** 实测 `Suwayomi-3.2.13-windows-x64.msi` 的 `Dialog` 表里没有
 `InstallScopeDlg`（只有 `InstallDirDlg` / `ShortcutDlg`），属性是 `ALLUSERS=2` +
 `MSIINSTALLPERUSER=1` —— 向导**恒装 per-user**，per-machine 只能靠
-`msiexec /i … MSIINSTALLPERUSER=""` 命令行。要走「msi 里选全局」，得先把官方那页「安装范围」
-接进 `Suwayomi.UI.wxs` 的序列（`WixUI_zh-CN.wxl` 里 `InstallScopeDlg*` 的中文文案已齐全）。
+`msiexec /i … MSIINSTALLPERUSER=""` 命令行。**已定（2026-09-30）：不补范围页** —— 组件条件靠 MSI
+对 ALLUSERS 的重置判定，不依赖向导页，所以两条路都拿得到预置文件。`WixUI_zh-CN.wxl` 里
+`InstallScopeDlg*` 的中文文案仍在，将来真要加页不必重译。
 
-**独立价值**：这条修好之后，per-machine 的 msi（装进 `C:\Program Files`）也一并受益 ——
-`release.md` 里那条「普通用户对 Program Files 没有写权限、首次启动会失败」的坑会一起消失。
-**所以它值得先做，与 MSIX 是否上无关。**
+**独立价值**：`release.md` 里那条「普通用户对 Program Files 没有写权限、首次启动会失败」的坑，
+per-machine 档由预置文件消掉、绿色版与 MSIX 交给写探测 —— 与 MSIX 是否上无关。
 
 ### 2.2 包标识与完整性
 
@@ -256,7 +263,7 @@ SignPath Foundation，`AppxManifest` 的 `Publisher` 也必须写成它的证书
 - **msi / setup.exe 可以顺带一起签。** 它们现在完全未签名，签了立刻消掉安装时的 SmartScreen 警告，
   比 MSIX 更早见效，也是把 CI 接线跑通的最简形态。
 - **要签哪些 PE 必须显式列出，不能通配。** `jre/**` 下的 `java.exe` 是 Temurin 的二进制，
-  条款禁止用本项目的订阅去签上游 OSS 的二进制（允许的只是「把它们放进签名包」，例如 MSI 安装器）。
+  条款禁止用本项目的订阅去签第三方 OSS 的二进制（允许的只是「把它们放进签名包」，例如 MSI 安装器）。
   本项目要签的只有 `suwayomi.exe` 与 `bin/suwayomi-server.exe`。
 
 另有一条 MSIX 专属约束：`hash-algorithm` 不支持 `sha1`，且必须与 `AppxBlockMap.xml` 里的一致
@@ -282,7 +289,7 @@ SignPath Foundation，`AppxManifest` 的 `Publisher` 也必须写成它的证书
 两者已在**待签名的形态上**发布过，签完立刻消掉安装警告，也是把 CI 接线跑通的最短路径；
 MSIX 排其后，先在 P1 以未签名形态发一次（见 5.1、第 6 节）。
 
-### 5.3 fork 条款：以「与 Kotlin 版兼容 + 保留许可与署名」立论
+### 5.3 fork 条款：不适用（本项目是独立项目）
 
 条款对「签一份上游软件的修改版」另有条件，字面上需**全部**满足：
 
@@ -290,21 +297,19 @@ MSIX 排其后，先在 P1 以未签名形态发一次（见 5.1、第 6 节）�
 > - your project visibly uses a fork of the upstream project, e.g. using GitHub's fork feature
 > - the release branches you use for signing are based on upstream branches that are usually signed
 
-两条按字面对不上：上游 `Suwayomi/Suwayomi-Server`（同为 MPL-2.0）**不发布签名构建** ——
-它的 workflow 里没有任何 signtool / SignPath 引用，发布资产（含 `windows-x64.msi`）全部未签名；
-本仓在 GitHub 上也不是 fork（`fork: false`、无 parent）。
+**这一节对本项目不适用（已定 2026-09-30）**：本项目是**独立项目** —— 没有上游，与
+`Suwayomi/Suwayomi-Server` 之间没有 fork 关系（GitHub 元数据 `fork: false`、无 parent），
+只是参考了 Mihon（`mihonapp/mihon`）与 Suwayomi-Server，在数据模型与 GraphQL / REST / OPDS
+接口上与后者兼容。被签的是本仓源码构建出来的产物，不涉及「别人项目的修改版」，条款那三条
+因此没有适用对象。
 
-**申请材料按「与 Kotlin 版兼容 + 保留许可与署名」陈述（已定 2026-09-30）**：
+申请材料里同时陈述许可与署名：采用 Suwayomi Project 相关代码的部分，**原样保留 MPL-2.0 的许可
+与署名** —— 版权与许可通知（MPL 的 Exhibit A 形态）在 `README.md` 的「许可证」一节与
+`docs/en/README.md` 的「License」一节，署名仍是 `Copyright (C) Contributors to the Suwayomi
+project`，未改写、未删除；MPL-2.0 要求的正是保留许可与署名。
 
-- 本项目与 Kotlin 版（上游 `Suwayomi/Suwayomi-Server`）**兼容**：同一套数据模型、GraphQL / REST /
-  OPDS 接口与 Mihon 扩展体系，客户端与既有工具链不必区分两者；
-- 采用 Suwayomi Project 相关代码的部分，**原样保留 MPL-2.0 的许可与署名** —— 版权与许可通知
-  （MPL 的 Exhibit A 形态）在 `README.md` 的「许可证」一节与 `docs/en/README.md` 的「License」
-  一节，署名仍是 `Copyright (C) Contributors to the Suwayomi project`，未改写、未删除。
-  MPL-2.0 只要求保留许可与署名、不要求 fork 关系，这一层是成立且可核查的。
-
-**不再论证「独立重写」** —— 那是判断而非事实，材料里越少越好。这一条能否通过仍由 SignPath 判定，
-是方案里唯一不能自行关闭的不确定项。
+这一条最终仍由 SignPath 判定，但本项目在这里没有需要解释的矛盾：既不是 fork，也没有拿别人的
+构建产物去签。
 
 ### 5.4 硬性要求：三条会变成实际工作量的
 
@@ -352,10 +357,12 @@ MSIX 排其后，先在 P1 以未签名形态发一次（见 5.1、第 6 节）�
 
 **P0 —— 不依赖 SignPath 审批，可以现在做**
 
-- 托盘运行时目录改造（2.1 的剩余部分）：认预置文件里的 `appdataDir` + `%VAR%` 展开、
-  写探测兜底落 `%LOCALAPPDATA%\Suwayomi`，并把 `SUWAYOMI_APPDATA_DIR` 显式传给 server。
-- msi 的 per-machine 档（2.1）：给向导接上安装范围页，并随包落 `tray.preset.json`
-  （组件条件 `ALLUSERS = 1`）。不做这一步，「msi 里选全局」根本没有入口。
+- ~~托盘认预置文件里的 `appdataDir` + `%VAR%` 展开~~ —— **已落地 2026-09-30**（`Suwayomi-tray`：
+  两个根的优先级、展开的失败语义、预置路径契约都有断言）。
+- ~~随包落 `tray.preset.json`（组件条件按安装范围）~~ —— **已落地 2026-09-30**（`Suwayomi.wxs` +
+  `build.yml` 的 `-d PresetJson`；本机 `wix build` + ICE 已过，条件与落点核对见 2.1）。
+- **写探测兜底**（2.1 的第 2 条来源，未落地）：探 exe 同级能不能写，不能写就把两个根落到
+  `%LOCALAPPDATA%\Suwayomi`。绿色版被放进 `Program Files`、以及 MSIX 包内都需要它。
 - 版本元数据注入（2.6）：`suwayomi.exe` 与 `bin/suwayomi-server.exe` 在构建期写入项目名与发布版本。
   它与 MSIX 无关，是签名本身的前置条件。
 - 手工出一份未签名 msix，本机用开发者模式 + `Add-AppxPackage -AllowUnsigned` 装一次，
@@ -372,8 +379,9 @@ MSIX 排其后，先在 P1 以未签名形态发一次（见 5.1、第 6 节）�
 **P2 —— 申请 SignPath 并接进 CI**
 
 - 申请前补齐 5.4 的三条：项目主页 / 下载页上的 "Code signing policy"、两侧 MFA、Approver 角色。
-- 提申请（仓库 URL + 下载页 URL + 描述 + 许可证）：fork 条款按 5.3 的口径陈述 —— 与 Kotlin 版
-  兼容、并原样保留采用 Suwayomi Project 代码部分的 MPL-2.0 许可与署名。
+- 提申请（仓库 URL + 下载页 URL + 描述 + 许可证）：按 5.3 陈述 —— 本项目是独立项目、与
+  Suwayomi-Server 没有 fork 关系，被签产物全部由本仓源码构建；同时声明采用 Suwayomi Project
+  代码的部分原样保留 MPL-2.0 许可与署名。
 - 通过后建 project / artifact configuration / signing policy / trusted build system，
   取 4 个 slug 与 organization id。
 - **先签 msi / setup.exe**（已发布、格式最简单），接线跑通后再签 MSIX。
@@ -409,19 +417,24 @@ MSIX 排其后，先在 P1 以未签名形态发一次（见 5.1、第 6 节）�
    以及 SignPath 的 file metadata restriction 是否接受这套值。
 9. **SmartScreen 的实际表现**：证书主体是 SignPath Foundation 的共享证书，首次下载是否仍有警告
    要实测 —— OV 证书的声誉是逐步建立的，不能假设"签了就一定没有警告"。
-10. **per-machine 的 msi 真装一次**：范围页选「所有用户」后，`tray.preset.json` 是否真落到
-   `<安装根>\appdata\settings\tray.json`（条件 `ALLUSERS = 1`），托盘是否按它换根，以及
-   `%VAR%` 展开出的是**当前用户**的 `%LOCALAPPDATA%` / `%USERPROFILE%` 而不是安装管理员的。
-   条件类问题 ICE 一律查不出（同 `release.md` 里 `SetDirectory` 那条），只能真装。
-11. **范围页接进序列后 `ALLUSERS` 的实际取值**：`ALLUSERS=2` + `MSIINSTALLPERUSER=1` 是 WiX 给
-   `Scope="perUserOrMachine"` 的默认组合，加页之后要核对两种选择各自落到的属性组合对不对。
+10. **per-machine 的 msi 真装一次**（**需要管理员**）：`msiexec /i … MSIINSTALLPERUSER=""` 之后，
+   `tray.preset.json` 是否真落到 `<安装根>\appdata\settings\tray.json`（组件条件见 2.1），托盘是否
+   按它换根，以及 `%VAR%` 展开出的是**当前用户**的 `%LOCALAPPDATA%` / `%USERPROFILE%` 而不是
+   安装管理员的。条件类问题 ICE 一律查不出（同 `release.md` 里 `SetDirectory` 那条），只能真装；
+   而本机沙箱里 msiexec 跑不起来（日志为空、进程挂住），必须在不带沙箱的终端里跑。
+11. **反向那一半：默认的 per-user 安装里，`<安装根>\appdata\settings\tray.json` 不该出现**。
+   它一旦出现就说明条件判错 —— 那时托盘会照着预置把用户已有的 `appdata` / `data` 挪到别处。
+   同一次真装可以顺手看一眼。
+12. **命令行的 per-machine 路径本身**：`MSIINSTALLPERUSER=""` 是否真能让 MSI 走 per-machine
+   （落 `C:\Program Files`），还是必须显式 `ALLUSERS=1`。组件条件两条写法都覆盖，但装到哪要用
+   实际落点核对。
 
 ---
 
 ## 8. 与现有渠道的关系
 
-- **msi / setup.exe 保留**：向导里的安装位置、快捷方式开关、安装范围是明确需求，MSIX 给不了。
-  per-machine 档还要随包落预置托盘设置（2.1），把 appdata / data 两个根指到用户目录 ——
+- **msi / setup.exe 保留**：向导里的安装位置、快捷方式开关是明确需求，MSIX 给不了。
+  per-machine 档随包落预置托盘设置（2.1，已落地），把 appdata / data 两个根指到用户目录 ——
   否则装进 `C:\Program Files` 后普通用户写不了，首次启动就会失败。
   它们也会一起上签名（5.1）—— 那是 SignPath 落地的第一步，不依赖 MSIX 的任何进展。
 - **绿色版 zip 不变**（zip 不参与 Authenticode 签名）。

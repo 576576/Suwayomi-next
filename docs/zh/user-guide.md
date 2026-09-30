@@ -112,8 +112,8 @@ GraphQL 的 `login` / `refreshToken`，不需要这两个页面。
 ## 追踪器登录
 
 五个追踪器（MyAnimeList / AniList / Kitsu / Shikimori / Bangumi）登录时用的是**应用级**
-OAuth 凭据。首次启动会在设置目录下生成 `trackers.json`（默认值 = 上游 Suwayomi 注册的
-应用；Bangumi 授权页上显示的应用所有者就是上游的注册者）：
+OAuth 凭据。首次启动会在设置目录下生成 `trackers.json`（默认值 = Suwayomi 项目注册的
+应用；Bangumi 授权页上显示的应用所有者就是那个注册者）：
 
 ```json
 {
@@ -129,7 +129,7 @@ OAuth 凭据。首次启动会在设置目录下生成 `trackers.json`（默认�
   落到这个文件、也立刻用在新登录与刷新上。等价的改法是直接编辑这个文件再重启服务端。
 - 想用自己的应用：到站点开发者页注册（Bangumi 是 <https://bgm.tv/dev/app/create>），把
   `clientId` / `clientSecret` 填进去。`redirectUri` 可以继续沿用
-  `https://suwayomi.org/tracker-oauth`——它是上游网站上的一个转发页，把授权码原样转回
+  `https://suwayomi.org/tracker-oauth`——它是 Suwayomi 网站上的一个转发页，把授权码原样转回
   本机 WebUI，不要求归你所有；换成自己的回调地址时必须同时在站点应用里登记。
   **界面里留空 = 回到内置默认值**（不是「不配置」）。
 - **缺键用内置默认值补齐**，所以只写要改的站点即可；文件已存在就**永不重写**（只有设置页

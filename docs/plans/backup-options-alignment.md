@@ -6,12 +6,12 @@
 
 核对基准：
 
-| 上游 | commit | 关键文件 |
+| 参考实现 | commit | 关键文件 |
 | --- | --- | --- |
 | Mihon | `866d045` | `app/src/main/java/eu/kanade/tachiyomi/data/backup/create/BackupOptions.kt` |
-| 上游 Suwayomi | `dba836b` | `server/server-config/src/main/kotlin/suwayomi/tachidesk/manga/impl/backup/BackupFlags.kt` |
+| Suwayomi-Server | `dba836b` | `server/server-config/src/main/kotlin/suwayomi/tachidesk/manga/impl/backup/BackupFlags.kt` |
 
-术语约定：下文**上游 Suwayomi**（或简称「上游」）= `Suwayomi/Suwayomi-Server`（Kotlin 版），
+术语约定：下文**Suwayomi-Server**（或简称「Kotlin 版」）= `Suwayomi/Suwayomi-Server`，
 本仓与它在数据模型与接口上兼容，当前的 `PartialBackupFlagsInput` 七字段就照抄自它；**Mihon** = `mihonapp/mihon`，
 是备份格式（`.tachibk` 的 proto）与选项集的权威来源。两者对「选项」的定义并不相同。
 
@@ -28,7 +28,7 @@
 
 ---
 
-## 1. 上游 Mihon 的完整选项集
+## 1. Mihon 的完整选项集
 
 `BackupOptions`（`BackupOptions.kt:6`）共 10 项，分两组
 （`libraryOptions` / `settingsOptions`），默认值与**灰化依赖**如下：
@@ -78,7 +78,7 @@ Mihon 顶层的 proto 结构（`models/Backup.kt`），本仓缺三个 tag：
 > 本节是动手前的快照，用于说明改动量；落地情况见 §7。
 
 GraphQL `PartialBackupFlagsInput`（`crates/suwayomi-graphql/src/mutation_b4.rs:372`）7 项，
-与上游 Suwayomi 逐字一致。**但导出侧只有 4 项真正生效**
+与 Suwayomi-Server 逐字一致。**但导出侧只有 4 项真正生效**
 （`crates/suwayomi-core/src/backup.rs::build_backup`）：
 
 | 本仓 flag | 导出侧实际效果 | 依据 |
@@ -149,7 +149,7 @@ WHERE in_library = FALSE
 ### 3.3 图源设置（`sourceSettings`）
 
 Mihon 落 105（`sourceKey` + 扁平 `key/value` 列表），`sourceKey` = `source.preferenceKey()`。
-上游 Suwayomi 的实现是 `"source_$id"`（`eu/kanade/tachiyomi/source/ConfigurableSource.kt:21`）。
+Suwayomi-Server 的实现是 `"source_$id"`（`eu/kanade/tachiyomi/source/ConfigurableSource.kt:21`）。
 
 本仓**没有服务端的图源设置存储**：`SandboxClient::source_preferences`
 （`crates/suwayomi-domain/src/source/sandbox.rs:209`）只是向沙盒要
@@ -160,7 +160,7 @@ Mihon 落 105（`sourceKey` + 扁平 `key/value` 列表），`sourceKey` = `sour
 
 1. 沙盒新增 `GET /source/{id}/preferences/raw`，返回 `SharedPreferences.all` 的扁平 key/value；
 2. 服务端为每个 `ConfigurableSource` 取一份，`sourceKey` 用 `source_<id>`
-   （与上游 Suwayomi 的 `preferenceKey()` 一致，`eu/kanade/tachiyomi/source/ConfigurableSource.kt:21`）；
+   （与 Suwayomi-Server 的 `preferenceKey()` 一致，`eu/kanade/tachiyomi/source/ConfigurableSource.kt:21`）；
 3. 写入 105 号段。空列表的源不进备份（对齐 Mihon 的 `.filter { it.prefs.isNotEmpty() }`）。
 
 被否的备选是「把 `PreferenceScreen` JSON 原样塞进 900x 号段」：只动本仓，但与 Mihon 不互通，
@@ -187,17 +187,17 @@ Mihon 用 key 前缀 `__PRIVATE_` 过滤。本仓可映射的敏感项有两处�
 | 事项 | 约定 |
 | --- | --- |
 | GraphQL | `PartialBackupFlagsInput` 新增 `includeAppSettings: Option<bool>`，默认 `true` |
-| 旧字段 | `includeClientData` / `includeServerSettings` 保留但标 `@deprecated`（不删：上游客户端与旧 WebUI 仍在传），解析时任一为 `true` 即 `appSettings = true` |
+| 旧字段 | `includeClientData` / `includeServerSettings` 保留但标 `@deprecated`（不删：旧客户端与旧 WebUI 仍在传），解析时任一为 `true` 即 `appSettings = true` |
 | proto 承载 | 9001 `serverSettings`（服务端设置）+ 9000 `meta`（客户端 meta）；**不填 Mihon 的 104** |
 | 边界 | 进 9001 的项排除 `auth_username` / `auth_password`（归 `privateSettings`）与 `ip` / `port`（恢复到另一台机器会直接改网络监听地址） |
 
 不填 104 的理由：104 是客户端 SharedPreferences 的键值形态，本仓的服务端设置是结构化的 9001，
-要写进 104 得另定一套键名映射、且与 Mihon 的真实键也对不上；上游 Suwayomi 同样没填
+要写进 104 得另定一套键名映射、且与 Mihon 的真实键也对不上；Suwayomi-Server 同样没填
 （它的 proto 顶层就是 1/2/101/9000/9001，`impl/backup/proto/models/Backup.kt`）。
 若要求与 Mihon 的 104 双向互通，需单独定键名映射，不在本次范围。
 
 后端兑现这个开关的内容：9001 现在恒为 `None`（`backup.rs:966`）、9000 恒为空 map（`:965`）。
-「服务端设置」落在 `server_settings` 表，「客户端数据」对应上游的 `manga_meta` / `chapter_meta` /
+「服务端设置」落在 `server_settings` 表，「客户端数据」对应 Suwayomi-Server 的 `manga_meta` / `chapter_meta` /
 `category_meta` / `source_meta` / `global_meta` 五张表 —— 本仓都有表，只是没填进备份。
 本轮一并实现这两处填充（否则开关名实不符）；若要缩范围，可先只做字段与 UI，填充另开一轮。
 

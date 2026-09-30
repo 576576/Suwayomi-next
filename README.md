@@ -4,7 +4,7 @@
 
 ![128x128](./assets/images/128x128.png)
 
-[Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server/) 的 Rust 实现，并完善了桌面托盘。保持既有 Tachiyomi 数据结构、GraphQL/REST/OPDS 接口、Mihon 扩展体系完全兼容，除扩展运行层外均由Rust实现。本项目是API参考的实现，并非原 [Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server) 的分支。
+独立实现的服务端（Rust）与桌面托盘，参考 [Mihon](https://github.com/mihonapp/mihon) 与 [Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server/)：保持既有 Tachiyomi 数据结构、GraphQL/REST/OPDS 接口、Mihon 扩展体系兼容，除扩展运行层（JVM 沙盒）外均由 Rust 实现。本项目是独立项目，不是 [Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server) 的 fork。
 
 ![page-setting](./assets/screenshots/page-setting.png)
 
@@ -12,7 +12,7 @@
 
 已实现：核心数据模型与数据库层、业务逻辑（domain）、REST API v1、GraphQL API、OPDS、
 下载/更新/备份/Tracker/KOReader·SyncYomi 同步、JVM 扩展沙盒、Tauri 桌面壳与发布 CI。
-REST v1 与 GraphQL schema 基线见 `docs/agent/rest-api.md`、`docs/agent/graphql.md`，行为与原版 Suwayomi 兼容。
+REST v1 与 GraphQL schema 基线见 `docs/agent/rest-api.md`、`docs/agent/graphql.md`，行为与 Suwayomi-Server 兼容。
 
 ## 快速开始（源码构建）
 

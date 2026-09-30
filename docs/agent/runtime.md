@@ -9,7 +9,7 @@
 | `<appdata>/cache` | server | 统一缓存根：扩展图标（`extensions/icons`）、图片代理（`images`）、缩略图、扩展仓库索引、本地封面 |
 | `<appdata>/logs` | server / 托盘 | `server.log`（托盘托管的会话）、`sandbox.log`（JVM 的 stdout/stderr 重定向）、`tray.log` |
 | `<appdata>/db` | server | SQLite 库 `suwayomi.db`、`session.key` |
-| `<appdata>/settings` | server + 沙盒 | `trackers.json`（服务端）、`source_<id>.properties`（沙盒写的源偏好） |
+| `<appdata>/settings` | server + 沙盒 + 托盘 | `trackers.json`（服务端）、`source_<id>.properties`（沙盒写的源偏好）、`tray.json`（托盘设置；per-machine 安装下这份是安装包预置的） |
 | `<appdata>/extensions/apk` | 扩展安装流程 | 被沙盒扫描加载的扩展 APK |
 | `<appdata>/extensions/bin` | 沙盒 | dex2jar 产物，不参与加载扫描 |
 | `<data>/downloads` | server | CBZ 等下载产物；被 `downloadsPath` 设置整体替换 |
@@ -18,7 +18,7 @@
 
 - Rust 侧的唯一定义点是 `crates/suwayomi-core/src/config/paths.rs` 的 `AppPaths`（子目录名字面量也在那里）。
 - **两侧各有一套同名子路径**，改动必须同步：沙盒按 `SUWAYOMI_APPDATA_DIR` 自行派生 `extensions/apk`、`extensions/bin`、`settings`（`ext-runtime/src/main/kotlin/sandbox/Main.kt`）；对不上就各写一半。
-- `appdata` 根只有 `SUWAYOMI_APPDATA_DIR` 一个旋钮，它下面的子目录**没有各自的环境变量**，全由根派生（`SUWAYOMI_DATA_DIR` 同理只给 data 根）。
+- `appdata` 根只有 `SUWAYOMI_APPDATA_DIR` 一个环境变量，它下面的子目录**没有各自的环境变量**，全由根派生（`SUWAYOMI_DATA_DIR` 同理只给 data 根）；环境变量之外还有一层安装包预置的默认值，见下。
 - 库在 appdata 下、不在 data 下：挪 `data/` 不会动到库与设置。
 
 ## 目录树模板
@@ -37,11 +37,31 @@
 - `.gitignore` 的 `data/` 与 `extensions` 是任意层级模式，会连模板一起吃掉 —— 两处 `!assets/templates/directory/...` 例外不能删（少一条会有半棵树进不了 Git，`git status` 只显示被跟踪的那半）。
 - `.dockerignore` 的同名规则是 `/` 前缀的根层匹配，不能改成 `**/` 形式，否则构建上下文里的模板会被一起排掉、`COPY` 直接失败。
 
+## 两个根怎么定
+
+两个根都可以外指，**托盘是唯一的解析者**（解析结果由 `server_env()` 显式传给 server，server 不再自己推导）：
+
+| 根 | 优先级（左高右低） |
+|---|---|
+| appdata | `SUWAYOMI_APPDATA_DIR` → 预置的 `appdataDir` → `<exe 同级>/appdata` |
+| data | 托盘设置里的 `dataDir` → 预置的 `dataDir` → `<exe 同级>/data` |
+
+- **预置文件**：per-machine 的 msi / setup.exe 随包落 `<安装根>\appdata\settings\tray.json`
+  （源文件 `packaging/windows/tray.preset.json`，WiX 组件按安装范围条件投放），内容就是这两个根。
+  值写的是 `%LOCALAPPDATA%` / `%USERPROFILE%` 这类环境变量，由托盘在运行期展开 —— 那种安装由
+  管理员执行，写死绝对路径就等于把数据落到管理员的用户目录。
+- 预置是**默认层**：设置里显式写过的一律优先，预置的值也不会被回写进用户设置文件。
+- 展开只认进程环境里存在的变量；查不到的名字、空名字、落单的 `%` 一律按「这一项没设置」处理
+  （照原样用会建出一个叫 `%FOO%` 的目录）。
+- `webui/` 不参与外指：只读资源，恒在 exe 同级。
+- **写探测还没做**（见 `../plans/msix-plan.md` 的 P0）：绿色版被放进 `Program Files`、以及 MSIX
+  包内时两个根都不可写，目前只能靠预置这一条来源。
+
 ## 端口
 
 | 端口 | 归属 | 定义点 | 说明 |
 |---|---|---|---|
-| **4567** | server HTTP | `ServerConfig::default().port`（`suwayomi-core/src/config.rs`）；`SUWAYOMI_PORT` 覆盖 | 与上游一致的默认值 |
+| **4567** | server HTTP | `ServerConfig::default().port`（`suwayomi-core/src/config.rs`）；`SUWAYOMI_PORT` 覆盖 | 与 Suwayomi-Server 一致的默认值 |
 | **4568** | 沙盒（ext-runtime JVM） | `DEFAULT_SANDBOX_PORT`（`suwayomi-domain/src/source/sandbox.rs`）；`SUWAYOMI_SANDBOX_PORT` 覆盖 | 托盘恒传一个 ≠ server 的值 |
 | 4569 | 沙盒兜底默认 | `ext-runtime/.../sandbox/Main.kt` | 只有裸跑 `ext-runtime.jar` 又不传 env 时用到；Rust 侧总会显式传值，所以与 4568 不一致也不影响发布形态 |
 | 4567…4567+32 | 托盘自动档的嗅探范围 | `PORT_SNIFF_TRIES`（Suwayomi-tray） | 从默认端口起找首个能绑的 |

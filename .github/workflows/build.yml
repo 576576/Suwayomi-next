@@ -260,9 +260,11 @@ jobs:
           # bindpath 与 -d 的相对路径都以 .wxs 所在目录为基准（不是 cwd），所以这里一律给 Windows 绝对路径。
           PAYLOAD_DIR="$(cd "$PAYLOAD" && pwd -W)"
           ICON_DIR="$(cd assets/images && pwd -W)"
-          RTF_FILE="$(cd packaging/windows && pwd -W)/License.rtf"
+          PACKAGING_DIR="$(cd packaging/windows && pwd -W)"
+          RTF_FILE="$PACKAGING_DIR/License.rtf"
           LOC_FILE="$(cd packaging/windows/loc && pwd -W)/WixUI_zh-CN.wxl"
-          BMP_DIR="$(cd packaging/windows/Bitmaps && pwd -W)"
+          BMP_DIR="$PACKAGING_DIR/Bitmaps"
+          PRESET_JSON="$PACKAGING_DIR/tray.preset.json"
           HAS_TRAY="no"; [ -f "$PAYLOAD/suwayomi.exe" ] && HAS_TRAY="yes"
           # 序列 id 带架构后缀（Suwayomi_InstallDir_X64 / _A64），裸名是私有的，引用它报 WIX0094。
           UI_ARCH="X64"
@@ -290,6 +292,7 @@ jobs:
             -d IconFile="$ICON_DIR/icon.ico" -d HasTray="$HAS_TRAY" \
             -d UiArch="$UI_ARCH" -d LicenseRtf="$RTF_FILE" \
             -d BannerBmp="$BMP_DIR/banner.bmp" -d DialogBmp="$BMP_DIR/dialog.bmp" \
+            -d PresetJson="$PRESET_JSON" \
             -pdbtype none -o "$MSI"
           # ICE 是静态一致性校验，能提前抓到 per-user/per-machine 混用与 key path 之类的问题。
           # ICE57 定向抑制：快捷方式组件用 HKMU 的注册表值当 key path 以跟随安装范围，而 ICE57 不认

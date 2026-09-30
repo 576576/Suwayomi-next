@@ -36,7 +36,15 @@
          INSTALLFOLDER 退化成裸名 Suwayomi，安装报 1606「无法访问网络位置 Suwayomi」并空转约 100 秒。
          ICE 查不出这类问题，只能真装一次。 -->
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="Suwayomi" />
+      <Directory Id="INSTALLFOLDER" Name="Suwayomi">
+        <!-- 预置托盘设置的落点，必须与托盘解析出的路径逐字一致（`<exe 同级>\appdata\settings\tray.json`）。
+             payload 里这两层是空目录（目录树模板只放 .gitkeep），harvest 不为空目录生成 Directory 行，
+             所以这里显式声明；反过来，哪天 payload 的 appdata/ 下真的有了文件，这里就会多出一条
+             同名的 Directory 行。 -->
+        <Directory Id="PresetAppdataDir" Name="appdata">
+          <Directory Id="PresetSettingsDir" Name="settings" />
+        </Directory>
+      </Directory>
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder">
       <Directory Id="AppMenuFolder" Name="Suwayomi" />
@@ -47,6 +55,7 @@
       <ComponentGroupRef Id="Payload" />
       <?if $(HasTray) = "yes" ?>
       <ComponentRef Id="TrayExe" />
+      <ComponentRef Id="TrayPreset" />
       <?endif?>
     </Feature>
 
@@ -83,6 +92,22 @@
   <Fragment>
     <Component Id="TrayExe" Directory="INSTALLFOLDER" Guid="{8B3F1D42-6C57-4E9A-9F21-3D0C7A5E1B04}">
       <File Id="TrayExe" Source="!(bindpath.payload)\suwayomi.exe" KeyPath="yes" />
+    </Component>
+
+    <!-- per-machine 安装落在 `Program Files`，普通用户对那里没有写权限，托盘首次启动建不出
+         两个根。随包落一份预置托盘设置，把 appdata 根与数据根都指到用户目录：路径写环境变量
+         （`%LOCALAPPDATA%` / `%USERPROFILE%`），由托盘在运行期展开，于是每个用户拿到自己的那两个。
+
+         安装范围判据写两条：`Scope="perUserOrMachine"` 下 MSI 把 ALLUSERS 置 2，再按
+         MSIINSTALLPERUSER 把它**重置**为 1（per-machine）或空串（per-user），所以 per-machine 的
+         正规判据是 `ALLUSERS = 1`；`ALLUSERS = 2 AND NOT MSIINSTALLPERUSER` 覆盖重置之前的取值。
+         per-user 恒为 `ALLUSERS = 2 + MSIINSTALLPERUSER = 1`，两条都落空 —— 那种安装下
+         `<安装根>` 本身可写，装了这份预置反而会把数据挪到别处。 -->
+    <Component Id="TrayPreset" Directory="PresetSettingsDir"
+               Guid="{ABF0468E-C6DE-4D74-9F4E-A3B99E77B55A}"
+               Condition="ALLUSERS = 1 OR (ALLUSERS = 2 AND NOT MSIINSTALLPERUSER)">
+      <!-- 源文件名带 .preset 后缀以示它不是一份用户设置；装进包里必须叫 tray.json。 -->
+      <File Id="TrayPresetJson" Source="$(PresetJson)" Name="tray.json" KeyPath="yes" />
     </Component>
 
     <!-- 快捷方式不能当 key path，所以配一个注册表值；Root 用 HKMU 跟安装范围走。

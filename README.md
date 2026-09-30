@@ -43,6 +43,8 @@ Suwayomi-next是一个漫画阅读器项目，支持基于Tachiyomi拓展的插�
 | 扩展运行时 | [Suwayomi-ext-runtime](https://github.com/576576/Suwayomi-ext-runtime) |
 | 默认前端   | [576576/Suwayomi-WebUI](https://github.com/576576/Suwayomi-WebUI) |
 
+仓库组件结构如下：
+
 ![Suwayomi-next 组件结构](./assets/images/project-struct-simple.png)
 
 产物的目录结构如下：
@@ -52,8 +54,8 @@ suwayomi             桌面托盘
 bin/				 发行产物二进制
   ├─ suwayomi-server   服务器
   └─ ext-runtime.jar   扩展运行时
-webui/               Suwayomi-WebUI 构建产物（随发布捆绑，可选）
-jre/                 JRE 运行时依赖（可选）
+webui/               Suwayomi-WebUI 构建产物（随发布捆绑）
+jre/                 裁剪后的 JRE（随发布捆绑，供 ext-runtime.jar 使用）
 
 <data>/              数据目录（Tachiyomi 兼容）
   local/			 本地图源
@@ -85,91 +87,171 @@ GitHub Release 提供解压/安装即用的平台包。
 
    > 注意：自行构建的产物中Setup exe/msi(x)不含仓库特定的签名，可能需要自行配置
 
-### Windows
+### 本地构建
+
+#### Windows
 
 > 支持架构：`x64` | `arm64`
 
-需要 **Rust stable**（MSVC 工具链，`x86_64-pc-windows-msvc`）、**Git** 与 **Visual Studio 生成工具**（C++ 桌面开发）。只跑服务端有这些就够：
+环境依赖:
+
+- **Rust**：stable 工具链，1.91+
+
+  - 宿主目标 `x86_64-pc-windows-msvc` | `aarch64-pc-windows-msvc`
+
+    Visual Studio 生成工具：提供 MSVC 链接器与 Windows SDK
+
+  - 宿主目标 `x86_64-pc-windows-gnullvm` | `aarch64-pc-windows-gnullvm`
+
+    LLVM/Clang工具链：提供llvm-mingw 或 MSYS2 CLANG64
+
+- **Git**：克隆仓库及提供git bash
+
+- **JDK 25+**：构建扩展运行时与裁剪 JRE
+
+- **Node 24.20+、pnpm 11**：构建 WebUI
 
 ```bash
-git clone https://github.com/576576/Suwayomi-next && cd Suwayomi-next
-cargo run --release -p suwayomi-server
+# 使用Git bash(或任何兼容bash)
+git clone https://github.com/576576/Suwayomi-next         Suwayomi-next
+git clone https://github.com/576576/Suwayomi-tray         tray
+git clone https://github.com/576576/Suwayomi-ext-runtime  ext-runtime
+git clone https://github.com/576576/Suwayomi-WebUI        WebUI
+
+# 四个组件都是发布布局的固定组成部分，缺一件最后就归位不成
+cd Suwayomi-next  && cargo build --release -p suwayomi-server  # → target/release/suwayomi-server.exe
+cd ../tray        && cargo build --release                     # → target/release/suwayomi.exe
+cd ../ext-runtime && ./gradlew jar                             # → build/libs/ext-runtime.jar
+cd ../WebUI       && pnpm i && pnpm build                      # → build/
+
+# 按发布布局归位，最终产物目录Suwayomi-build
+cd ../
+mkdir -p Suwayomi-build/bin
+cp Suwayomi-next/target/release/suwayomi-server.exe Suwayomi-build/bin
+cp tray/target/release/suwayomi.exe Suwayomi-build/
+cp ext-runtime/build/libs/ext-runtime.jar Suwayomi-build/bin
+cp -r WebUI/build Suwayomi-build/webui
+cp -r Suwayomi-next/assets/templates/directory/. Suwayomi-build/ && find Suwayomi-build -name .gitkeep -delete
+
+# 可选：打包裁剪jre：x64|aarch64
+bash ext-runtime/scripts/make-jre.sh windows x64 Suwayomi-build/jre
+ls Suwayomi-build/
 ```
-
-要完整产物（托盘 + 扩展运行时 + WebUI），把另外三个仓库克隆到同级再各自构建：
-
-```bash
-git clone https://github.com/576576/Suwayomi-tray        ../Suwayomi-tray
-git clone https://github.com/576576/Suwayomi-ext-runtime ../Suwayomi-ext-runtime
-git clone https://github.com/576576/Suwayomi-WebUI       ../Suwayomi-WebUI
-
-cargo build --release -p suwayomi-server                # → target/release/suwayomi-server.exe
-bash ../Suwayomi-tray/build-tray.sh                     # → ../Suwayomi-tray/target/release/suwayomi.exe
-(cd ../Suwayomi-ext-runtime && ./gradlew jar)           # → build/libs/ext-runtime.jar（需 JDK 25）
-(cd ../Suwayomi-WebUI && pnpm i && pnpm build)          # → build/（需 Node ≥ 24.20、pnpm 11）
-```
-
-再按发布布局归位（`bin/` 放服务端与扩展运行时，托盘与 `webui/` 在根）：
-
-```bash
-mkdir -p dist/bin
-cp target/release/suwayomi-server.exe dist/bin/
-cp ../Suwayomi-tray/target/release/suwayomi.exe dist/
-cp ../Suwayomi-ext-runtime/build/libs/ext-runtime.jar dist/bin/
-cp -r ../Suwayomi-WebUI/build dist/webui
-cp -r assets/templates/directory/. dist/ && find dist -name .gitkeep -delete
-```
-
-`jre/` 是可选的：打了它沙盒就不再依赖系统 JDK —— 用
-`bash ../Suwayomi-ext-runtime/scripts/make-jre.sh windows x64 <目录>` 生成 JRE，放到 `dist/jre/`。
-不打时沙盒按 `JAVA_HOME` → `PATH` 上的 `java` 找（也可以用 `SUWAYOMI_JAVA` 指定）。
 
 仓库根的 **`build.bat`** 是上面这些的一键版：它**不**构建另外三仓，而是拉各自的 Release 资产来组装
 （只需 cargo / git / curl / Python / PowerShell，不需要 JDK 与 Node），产物在 `target\artifacts\`。
 
-### Linux
+#### Linux
 
 > 支持架构：`x64` | `arm64`
 
-```bash
-sudo apt-get install -y build-essential pkg-config libssl-dev perl   # Debian / Ubuntu
-git clone https://github.com/576576/Suwayomi-next && cd Suwayomi-next
-cargo build --release -p suwayomi-server
-```
+环境依赖:
 
-`pkg-config` + `libssl-dev` 是 `reqwest` 用系统 OpenSSL 的编译期依赖，`perl` 供 `openssl-sys` 的构建脚本使用。`x64` 与 `arm64` 各自在对应架构的机器上原生构建（CI 的 arm64 用的是 `ubuntu-24.04-arm` runner）。
-
-服务端自带 Web 界面，浏览器访问 `:4567` 即可；托盘是可选件 —— 它是 Tauri 2 应用，另需 Tauri 在 Linux 上的系统依赖（WebKitGTK、libappindicator 等），见 Tauri 官方前置说明。
-
-### macOS
-
-> 支持架构：`x64`@Deprecated | `arm64`
+- **Rust**：stable 工具链，1.91+
+  - 宿主目标：`x86_64-unknown-linux-gnu` | `aarch64-unknown-linux-gnu`
+- **编译依赖**：`pkg-config`、`libssl-dev`、`perl`，其中 `perl` 供构建脚本使用
+- **托盘依赖**：`libwebkit2gtk-4.1-dev`、`libayatana-appindicator3-dev`、`librsvg2-dev`、`libxdo-dev`
+- **Git**：克隆仓库
+- **JDK 25+**：构建扩展运行时与裁剪 JRE
+- **Node 24.20+、pnpm 11**：构建 WebUI
 
 ```bash
-xcode-select --install      # 命令行工具：clang 与系统库
-git clone https://github.com/576576/Suwayomi-next && cd Suwayomi-next
-cargo build --release -p suwayomi-server
+# 系统依赖（下面给的是 Debian/Ubuntu 系的包名）
+sudo apt-get install -y pkg-config libssl-dev perl \
+  libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+
+git clone https://github.com/576576/Suwayomi-next         Suwayomi-next
+git clone https://github.com/576576/Suwayomi-tray         tray
+git clone https://github.com/576576/Suwayomi-ext-runtime  ext-runtime
+git clone https://github.com/576576/Suwayomi-WebUI        WebUI
+
+# 四个组件都是发布布局的固定组成部分，缺一件最后就归位不成
+cd Suwayomi-next  && cargo build --release -p suwayomi-server  # → target/release/suwayomi-server
+cd ../tray        && cargo build --release                     # → target/release/suwayomi
+cd ../ext-runtime && ./gradlew jar                             # → build/libs/ext-runtime.jar
+cd ../WebUI       && pnpm i && pnpm build                      # → build/
+
+# 按发布布局归位，最终产物目录Suwayomi-build
+cd ../
+mkdir -p Suwayomi-build/bin
+cp Suwayomi-next/target/release/suwayomi-server Suwayomi-build/bin
+cp tray/target/release/suwayomi Suwayomi-build/
+cp ext-runtime/build/libs/ext-runtime.jar Suwayomi-build/bin
+cp -r WebUI/build Suwayomi-build/webui
+cp -r Suwayomi-next/assets/templates/directory/. Suwayomi-build/ && find Suwayomi-build -name .gitkeep -delete
+
+# 可选：打包裁剪jre：x64|aarch64
+bash ext-runtime/scripts/make-jre.sh linux x64 Suwayomi-build/jre
+ls Suwayomi-build/
 ```
 
-托盘（Tauri 2）在 macOS 上用系统 WebView（WKWebView），不需要额外的 WebView 依赖。`x64` 已弃用，新构建请用 `arm64`。
+#### macOS
 
-### Android
+> 支持架构：`arm64` | @Deprecated `x64`
+
+环境依赖:
+
+- **Rust**：stable 工具链，1.91+
+  - 宿主目标 `aarch64-apple-darwin` | @Deprecated `x86_64-apple-darwin`
+- **Xcode Command Line Tools**：提供 clang 与 macOS SDK（`xcode-select --install`）
+- **Git**：克隆仓库
+- **JDK 25+**：构建扩展运行时与裁剪 JRE
+- **Node 24.20+、pnpm 11**：构建 WebUI
+
+```bash
+git clone https://github.com/576576/Suwayomi-next         Suwayomi-next
+git clone https://github.com/576576/Suwayomi-tray         tray
+git clone https://github.com/576576/Suwayomi-ext-runtime  ext-runtime
+git clone https://github.com/576576/Suwayomi-WebUI        WebUI
+
+# 四个组件都是发布布局的固定组成部分，缺一件最后就归位不成
+cd Suwayomi-next  && cargo build --release -p suwayomi-server  # → target/release/suwayomi-server
+cd ../tray        && cargo build --release                     # → target/release/suwayomi
+cd ../ext-runtime && ./gradlew jar                             # → build/libs/ext-runtime.jar
+cd ../WebUI       && pnpm i && pnpm build                      # → build/
+
+# 按发布布局归位，最终产物目录Suwayomi-build
+cd ../
+mkdir -p Suwayomi-build/bin
+cp Suwayomi-next/target/release/suwayomi-server Suwayomi-build/bin
+cp tray/target/release/suwayomi Suwayomi-build/
+cp ext-runtime/build/libs/ext-runtime.jar Suwayomi-build/bin
+cp -r WebUI/build Suwayomi-build/webui
+cp -r Suwayomi-next/assets/templates/directory/. Suwayomi-build/ && find Suwayomi-build -name .gitkeep -delete
+
+# 可选：打包裁剪jre：x64|aarch64
+bash ext-runtime/scripts/make-jre.sh mac aarch64 Suwayomi-build/jre
+ls Suwayomi-build/
+```
+
+#### Android
 
 > 支持架构：`x64` | `arm64`
 
-宿主工程在 `android/`（独立 Gradle/AGP 工程，不并入 Cargo workspace）。需要 **Rust**（带 Android target）、**JDK 25**，以及 Android SDK 的 `platforms;android-37.0` 与 `ndk;28.2.13676358`：
+环境依赖:
+
+- **Rust**：stable 工具链，1.91+
+  - Android 目标 (`rustup target add aarch64-linux-android x86_64-linux-android`)
+- **Android SDK**：`platforms;android-37.0` 与 `ndk;28.2.13676358`
+  - 配置环境变量 `ANDROID_HOME`、`ANDROID_NDK_HOME` 指到它们
+- **JDK 25+**：Gradle 9 与 AGP 9.2.1
+- **Node 24.20+、pnpm 11**：构建 WebUI
+- **Git、python3、curl**：取扩展共享源码、打包 assets
+- 交叉编译的两个坑与工具链版本表见 **`docs/agent/android.md`**
 
 ```bash
+# 先准备一份 WebUI 构建产物，放到与 Suwayomi-next 同级的 WebUI/
+# （package-webui.sh 也接受从 Release 下载的 webui zip）
+git clone https://github.com/576576/Suwayomi-WebUI ../WebUI
+(cd ../WebUI && pnpm i && pnpm build)
+
+# ABI=arm64|x86_64|all
 ABI=arm64 bash android/scripts/build-rust.sh      # server → cdylib → app/src/main/jniLibs/arm64-v8a/
-bash android/scripts/fetch-ext-runtime-src.sh     # :extension-host 用的 ext-runtime 共享源码
-bash android/scripts/package-webui.sh             # WebUI 产物 → app/src/main/assets/webui.zip
+bash android/scripts/fetch-ext-runtime-src.sh     # 下载 :extension-host 用的 ext-runtime 共享源码部分
+bash android/scripts/package-webui.sh ../WebUI/build  # WebUI 产物 → app/src/main/assets/webui.zip
 cd android && ./gradlew :app:assembleRelease --no-daemon
 # → android/app/build/outputs/apk/release/app-release.apk
 ```
-
-`ABI` 取 `arm64`（默认，发布用）、`x86_64`（模拟器）或 `all`；`package-webui.sh` 不带参数时自动找
-`../Suwayomi-WebUI/build`。没配 release keystore 时回退 AGP 的 debug key，跨次覆盖安装前需先卸载。
-形态差异、交叉编译的两个坑与工具链版本表见 **`docs/agent/android.md`**。
 
 ## 仓库结构
 
@@ -196,8 +278,8 @@ docs/                文档（zh/ 中文、en/ 英文、agent/ 给维护者与 A
 - **默认**：内建 `rheos-tokio-rusqlite` crate
   - `<appdata>/db/suwayomi.db`
 - **备选**：外部 PostgreSQL 连接
-  - `SUWAYOMI_DB_BACKEND=postgres`
-  - `SUWAYOMI_DB_URL=postgres://user:pass@host:5432/db`
+  - `SUWAYOMI_DB_BACKEND=postgres`（**只有它决定后端**，别的取值一律落 SQLite）
+  - `SUWAYOMI_DB_URL=postgres://user:pass@host:5432/db`（只说 PostgreSQL 在哪，设了它不会换来后端）
 
 程序自身产生的东西（缓存、库、设置、扩展 APK 与转换产物）都在**一个可写根**
 `SUWAYOMI_APPDATA_DIR`（以下简称 `<appdata>`）下，这四项没有各自的目录变量：
@@ -210,12 +292,6 @@ docs/                文档（zh/ 中文、en/ 英文、agent/ 给维护者与 A
   settings/  追踪器凭据与图源偏好
   extensions/{apk,bin}   扩展 APK 与 dex2jar 产物
 ```
-
-数据库文件**刻意不放在数据目录里**：数据目录（`SUWAYOMI_DATA_DIR`，也可在 WebUI 的
-「设置 → 数据与存储 → 存储位置」里改）是用户随时可以换的一项，而设置本身就存在这个库
-里 —— 库跟着数据目录走的话，一改目录就把设置弄丢了。
-
-环境变量：`SUWAYOMI_SANDBOX_JAR`（启用沙盒）、`SUWAYOMI_SANDBOX_PORT`（默认 4568）、`SUWAYOMI_APPDATA_DIR`（唯一的可写根，沙盒子进程继承它并自行派生扩展目录 `extensions/apk`、转换 jar 目录 `extensions/bin` 与 `settings/`）、`SUWAYOMI_SANDBOX_PROXY`（可选 HTTP 代理）。未配置时回退内置 `StubFetcher`。
 
 ## 关键文档
 

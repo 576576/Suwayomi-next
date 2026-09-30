@@ -88,7 +88,7 @@
 | `+jre` | 同左，stem 追加 `+jre`：`Suwayomi-{VER}[-beta]-{TGT}+jre.zip` |
 | 安装包 | `Suwayomi-{VER}[-beta]-{TGT}.msi` / `Suwayomi-{VER}[-beta]-{TGT}-setup.exe` |
 | Android | `Suwayomi-{VER}[-beta]-android-arm64.apk` / `-android-x64.apk`（跑系统 ART，不用 JRE） |
-| OCI | 镜像 tag `{VER}[-beta]`，只推 GHCR、不进附件 |
+| OCI | 镜像 tag `{VER}[-beta]`；release / beta 另打 `latest`，只推 GHCR、不进附件 |
 
 - 自动 alpha（推 main）固定 `windows-x64 + linux-x64`，所以它出的就是这两份 `+jre` 包，外加 Windows 的 msi（`pack_exe` 默认关，所以不出 setup.exe）。
 - 只勾 Android 时桌面矩阵为空数组、`build` job 直接跳过；**只勾 OCI 时两个矩阵都空**，Release 会没有任何附件 —— 这是允许的，`publish` 里的附件列表用数组拼（裸 `artifacts/*` 在空目录下不展开，会把那个字面量当文件名传给 `gh`）。
@@ -141,7 +141,7 @@
 ## OCI 镜像（`pack_oci`）
 
 - 与桌面矩阵**完全独立**的一份构建：`oci` job 自己从源码编 server、自己 gradle 打沙盒 jar、自己 jlink 一个 JRE，内容与桌面包基本一致，但**不含托盘壳**（容器里没有 GUI，也没有 webkit2gtk/appindicator，装进去只是个跑不起来的死文件）。
-- 镜像名 `ghcr.io/<owner>/<repo>`，标签 = 产物名那套规则（`{VER}[-beta]`），另推 `-amd64` / `-arm64` 两个单架构标签；`oci_manifest` job 再用 `docker buildx imagetools create` 合成多架构 manifest 覆盖主标签。**两个架构各跑在同架构 runner 上**（`ubuntu-latest` / `ubuntu-24.04-arm`）：jlink 不能跨平台，用 QEMU 模拟只是把同一件错事做得更慢。
+- 镜像名 `ghcr.io/<owner>/<repo>`，标签 = 产物名那套规则（`{VER}[-beta]`），另推 `-amd64` / `-arm64` 两个单架构标签；`oci_manifest` job 再用 `docker buildx imagetools create` 合成多架构 manifest 覆盖主标签 —— release / beta 通道在这一步**额外 `-t "${IMAGE}:latest"`**，alpha 不打（它每次 push 都出，`latest` 会乱跳）。**两个架构各跑在同架构 runner 上**（`ubuntu-latest` / `ubuntu-24.04-arm`）：jlink 不能跨平台，用 QEMU 模拟只是把同一件错事做得更慢。
 - **镜像不进 Release 附件**，所以发布说明里没有它的文字行 —— 它是下载架构表 **Linux 格末尾那枚 `OCI` 徽章**（`pack_oci` 勾上才出现），点进去是包页面。这是找到镜像地址的唯一入口。
 - **权限链**：被调工作流的权限不能超过调用方 —— `release.yml` 的 `build` job 必须显式给 `packages: write`，`build.yml` 的 `oci` / `oci_manifest` 两个 job 也给同一组。漏了的表现是「build 时 push 403」，而且**只在勾了 OCI 的那次才暴露**。
 - **推之前先冒烟**：`docker/build-push-action` 只 `load: true`，冒烟通过才 `docker push`。冒烟两段：① `--version` + `jre/bin/java -version` + `ldd` 查缺库 + 三件套（webui / 沙盒 jar / jre）在位；② 真起容器等 HTTP 有响应。第一段能抓到「缺 `libssl3t64`」这类问题 —— Linux 的 server 动态链接 `libssl.so.3`（`default-tls` 只对 android 换成 rustls），缺它连 `--version` 都起不来。

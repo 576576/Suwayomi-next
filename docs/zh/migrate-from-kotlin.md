@@ -17,9 +17,9 @@ curl -X POST http://localhost:4567/api/v1/backup/import --data-binary @backup.ta
 
 导出（用于反向迁移或日常备份）：`GET /api/v1/backup/export`。
 
-导入目标后端由 `SUWAYOMI_DB_BACKEND` / `SUWAYOMI_DATABASE_URL` 决定：不设 → 本地
+导入目标后端由 `SUWAYOMI_DB_BACKEND` / `SUWAYOMI_DB_URL` 决定：不设 → 本地
 SQLite（`<appdata>/db/suwayomi.db`，appdata 根默认是 exe 上级的 `appdata/`）；`SUWAYOMI_DB_BACKEND=postgres` 或设置
-`SUWAYOMI_DATABASE_URL` → 外部 PostgreSQL（`postgres://user:pass@host:5432/db`）。
+`SUWAYOMI_DB_URL` → 外部 PostgreSQL（`postgres://user:pass@host:5432/db`）。
 
 ## 相关环境变量
 
@@ -27,7 +27,7 @@ SQLite（`<appdata>/db/suwayomi.db`，appdata 根默认是 exe 上级的 `appdat
 | --- | --- | --- |
 | `SUWAYOMI_APPDATA_DIR` | exe 上级 `appdata/` | 程序自身状态的唯一可写根，库固定落在其 `db/` 之下 |
 | `SUWAYOMI_DB_BACKEND` | `sqlite` | 后端（`sqlite` / `postgres`） |
-| `SUWAYOMI_DATABASE_URL` | （空） | PostgreSQL 连接串 |
+| `SUWAYOMI_DB_URL` | （空） | PostgreSQL 连接串 |
 
 库的位置没有独立的环境变量：要挪库就挪整个 `appdata/`。目录布局变化是**破坏性的**
 —— 从更早的布局（发布根下的 `db/`，或 `<数据目录>/suwayomi.db`）升级时不会自动搬运，

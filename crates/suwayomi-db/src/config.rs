@@ -1,10 +1,10 @@
 //! Backend configuration and its environment resolution.
 //!
 //! The server used to pick between "embedded Oliphaunt" and "external
-//! PostgreSQL" purely by whether `SUWAYOMI_DATABASE_URL` was set. Now the
-//! default is a local SQLite file and PostgreSQL is the explicit alternative,
-//! so an explicit switch (`SUWAYOMI_DB_BACKEND`) is honoured first and the URL
-//! is the fallback signal for backwards compatibility.
+//! PostgreSQL" purely by whether a connection URL was set. Now the default is a
+//! local SQLite file and PostgreSQL is the explicit alternative, so an explicit
+//! switch (`SUWAYOMI_DB_BACKEND`) is honoured first and the URL is the fallback
+//! signal for backwards compatibility.
 
 use std::path::{Path, PathBuf};
 
@@ -13,7 +13,10 @@ use crate::backend::BackendKind;
 /// Environment variable selecting the backend explicitly (`sqlite`|`postgres`).
 pub const ENV_BACKEND: &str = "SUWAYOMI_DB_BACKEND";
 /// Environment variable holding the PostgreSQL connection URL.
-pub const ENV_DATABASE_URL: &str = "SUWAYOMI_DATABASE_URL";
+pub const ENV_URL: &str = "SUWAYOMI_DB_URL";
+/// Pre-rename name of the URL variable. Still honoured so a deployment that sets it keeps
+/// using PostgreSQL instead of silently falling back to SQLite.
+pub const ENV_URL_LEGACY: &str = "SUWAYOMI_DATABASE_URL";
 /// Name of the SQLite database file (the directory comes from the appdata root,
 /// see `AppPaths::db`).
 pub const SQLITE_FILE_NAME: &str = "suwayomi.db";
@@ -42,18 +45,17 @@ impl DbSettings {
 
     /// Resolves settings from the environment.
     ///
-    /// * `SUWAYOMI_DB_BACKEND=postgres` → PostgreSQL (URL from
-    ///   `SUWAYOMI_DATABASE_URL`).
+    /// * `SUWAYOMI_DB_BACKEND=postgres` → PostgreSQL (URL from `SUWAYOMI_DB_URL`).
     /// * `SUWAYOMI_DB_BACKEND=sqlite` → SQLite even when a URL is set.
-    /// * neither → PostgreSQL when `SUWAYOMI_DATABASE_URL` is set (the old
-    ///   behaviour), SQLite otherwise.
+    /// * neither → PostgreSQL when a URL is set (the old behaviour), SQLite
+    ///   otherwise.
     ///
     /// The SQLite file is always `<db_dir>/suwayomi.db`. `db_dir` is supplied by
     /// the caller (the appdata root's `db/`, or the Android host's private dir) —
     /// the database location has no environment variable of its own.
     pub fn from_env(db_dir: &Path) -> Self {
         let backend = std::env::var(ENV_BACKEND).ok().map(|v| v.trim().to_ascii_lowercase());
-        let url = std::env::var(ENV_DATABASE_URL).unwrap_or_default();
+        let url = resolve_url();
         let kind = match backend.as_deref() {
             Some("postgres" | "postgresql") => BackendKind::Postgres,
             Some("sqlite") => BackendKind::Sqlite,
@@ -76,6 +78,22 @@ impl DbSettings {
             BackendKind::Postgres => format!("external PostgreSQL at {}", self.url),
         }
     }
+}
+
+/// `SUWAYOMI_DB_URL`, falling back to the pre-rename `SUWAYOMI_DATABASE_URL` (with a warning).
+fn resolve_url() -> String {
+    if let Ok(v) = std::env::var(ENV_URL)
+        && !v.trim().is_empty()
+    {
+        return v;
+    }
+    if let Ok(v) = std::env::var(ENV_URL_LEGACY)
+        && !v.trim().is_empty()
+    {
+        tracing::warn!("{ENV_URL_LEGACY} is deprecated; use {ENV_URL} instead");
+        return v;
+    }
+    String::new()
 }
 
 #[cfg(test)]

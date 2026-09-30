@@ -113,7 +113,7 @@ The desktop shell (Tauri 2) lives in its own repository,
 ## Database backends
 
 - **Default**: a local SQLite file (`appdata/db/suwayomi.db`)
-- **External**: set `SUWAYOMI_DB_BACKEND=postgres` plus `SUWAYOMI_DATABASE_URL`,
+- **External**: set `SUWAYOMI_DB_BACKEND=postgres` plus `SUWAYOMI_DB_URL`,
   e.g. `postgres://user:pass@host:5432/db`
 
 Everything the program writes for itself (cache, database, settings, extension

@@ -55,7 +55,7 @@ pub fn config_from_env() -> ServerConfig {
     if let Ok(v) = std::env::var("SUWAYOMI_IP") {
         cfg.ip = v;
     }
-    if let Ok(v) = std::env::var("SUWAYOMI_DATABASE_URL") {
+    if let Ok(v) = std::env::var("SUWAYOMI_DB_URL") {
         cfg.database_url = v;
     }
     if let Ok(v) = std::env::var("SUWAYOMI_AUTH_MODE") {

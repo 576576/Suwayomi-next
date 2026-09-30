@@ -538,12 +538,18 @@ jobs:
         env:
           IMAGE: ghcr.io/${{ github.repository }}
           TAG: ${{ inputs.version_name }}${{ inputs.channel_suffix }}
+          CHANNEL: ${{ inputs.channel }}
         run: |
           IMAGE="${IMAGE,,}"
           # 两个单架构标签都在才合成，缺一个就明确失败。
           docker buildx imagetools inspect "${IMAGE}:${TAG}-amd64" >/dev/null
           docker buildx imagetools inspect "${IMAGE}:${TAG}-arm64" >/dev/null
-          docker buildx imagetools create \
-            -t "${IMAGE}:${TAG}" \
-            "${IMAGE}:${TAG}-amd64" "${IMAGE}:${TAG}-arm64"
+          # release / beta 同时打 latest；alpha 是每次 push 都出的预发布，不该占 latest。
+          if [ "$CHANNEL" = "release" ] || [ "$CHANNEL" = "beta" ]; then
+            docker buildx imagetools create -t "${IMAGE}:${TAG}" -t "${IMAGE}:latest" \
+              "${IMAGE}:${TAG}-amd64" "${IMAGE}:${TAG}-arm64"
+          else
+            docker buildx imagetools create -t "${IMAGE}:${TAG}" \
+              "${IMAGE}:${TAG}-amd64" "${IMAGE}:${TAG}-arm64"
+          fi
           docker buildx imagetools inspect "${IMAGE}:${TAG}"

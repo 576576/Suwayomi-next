@@ -5,7 +5,7 @@
 //!   no subprocess: the database is a single file next to the data directory.
 //! * **Optional** — an external PostgreSQL server through `tokio-postgres`
 //!   behind a `deadpool` pool, selected with `SUWAYOMI_DB_BACKEND=postgres` or
-//!   by setting `SUWAYOMI_DATABASE_URL`.
+//!   by setting `SUWAYOMI_DB_URL`.
 //!
 //! Callers write ordinary SQL with `?` placeholders and go through the same
 //! builders the tree already used with sqlx:

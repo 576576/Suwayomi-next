@@ -47,7 +47,7 @@ data/          用户数据：downloads/ autobackup/ local/
 | `SUWAYOMI_DATA_DIR` | exe 上级 `data/` | 数据目录：`downloads/`、`local/`、`autobackup/` 三个子目录都在它之下，都没有各自的变量；也可在 WebUI 的「数据与存储 → 存储位置」里改 |
 | `SUWAYOMI_APPDATA_DIR` | exe 上级 `appdata/` | **程序自身状态的唯一可写根**：`cache/`、`db/`、`settings/`、`extensions/{apk,bin}` 全在它下面。缓存 / 库 / 设置 / 扩展**没有**各自的目录变量 |
 | `SUWAYOMI_DB_BACKEND` | `sqlite` | 后端：`sqlite` / `postgres` |
-| `SUWAYOMI_DATABASE_URL` | （空） | PostgreSQL 连接串（设置后自动改用外部 PostgreSQL，如 `postgres://user:pass@host:5432/db`） |
+| `SUWAYOMI_DB_URL` | （空） | PostgreSQL 连接串（设置后自动改用外部 PostgreSQL，如 `postgres://user:pass@host:5432/db`） |
 | `SUWAYOMI_AUTH_MODE` | `DISABLED` | 认证模式：`DISABLED` / `BASIC_AUTH` / `SIMPLE_LOGIN` / `UI_LOGIN` |
 | `SUWAYOMI_AUTH_USERNAME` / `SUWAYOMI_AUTH_PASSWORD` | — | 认证凭据（用户名与密码都不能为空，否则服务端拒绝启动） |
 | `SUWAYOMI_JWT_AUDIENCE` | `suwayomi-server-api` | JWT 的 `aud` 声明 |
@@ -158,10 +158,10 @@ Kotlin 版使用 H2 数据库文件（JVM 专有格式，Rust 无法直读），
 
 ## Docker
 
-官方镜像在 GHCR（`linux/amd64` 与 `linux/arm64` 多架构），标签与发布版本一致：alpha 为 `r<提交数>`、release/beta 为 `3.y.z`。**没有 `latest` 标签**，请显式指定：
+官方镜像在 GHCR（`linux/amd64` 与 `linux/arm64` 多架构），标签与发布版本一致：alpha 为 `r<提交数>`、release/beta 为 `3.y.z`（beta 带 `-beta`）。`release` / `beta` 通道同时打 `latest`，`alpha` 不打：
 
 ```bash
-docker run -p 4567:4567 -v suwayomi-data:/data ghcr.io/576576/suwayomi-next:r3226
+docker run -p 4567:4567 -v suwayomi-data:/data ghcr.io/576576/suwayomi-next:latest
 ```
 
 本地构建（`WEBUI_URL` 指向 Suwayomi-WebUI 的 release zip，不传则镜像不含 WebUI）：
@@ -174,7 +174,7 @@ docker run -p 4567:4567 -v suwayomi-data:/data suwayomi-next
 数据与 SQLite 库都持久化在 `/data`（工作数据在 `/data`，库在 `/data/appdata/db/suwayomi.db`）。要连外部 PostgreSQL：
 
 ```bash
-docker run -p 4567:4567   -e SUWAYOMI_DB_BACKEND=postgres   -e SUWAYOMI_DATABASE_URL=postgres://user:pass@host:5432/db suwayomi-next
+docker run -p 4567:4567   -e SUWAYOMI_DB_BACKEND=postgres   -e SUWAYOMI_DB_URL=postgres://user:pass@host:5432/db suwayomi-next
 ```
 
 ## 已知限制

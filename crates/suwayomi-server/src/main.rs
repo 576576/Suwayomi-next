@@ -84,7 +84,7 @@ async fn main() -> anyhow::Result<()> {
         // `None` → SUWAYOMI_APPDATA_DIR / 发布布局推导（桌面有环境变量可用）
         appdata_dir: None,
         webui_dir: resolve_webui_dir(),
-        // `None` → DbSettings::from_env()（SUWAYOMI_DB_BACKEND / SUWAYOMI_DATABASE_URL）；
+        // `None` → DbSettings::from_env()（SUWAYOMI_DB_BACKEND / SUWAYOMI_DB_URL）；
         // Android 宿主显式传 SQLite 路径（App 里没有 env）
         db: None,
         sandbox,

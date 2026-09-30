@@ -158,7 +158,7 @@
 | 手填说明 | 只有手动 dispatch 有（`release_notes` 输入）；自动 alpha 这一段恒为空。 |
 | 捆绑组件表 | webui / ext-runtime / tray 三个仓库各自集成的版本，**版本号是指向该仓库 release 页面的链接**。 |
 | 下载架构表 | 「Download based on your OS」，一行一个 OS，格内 shields.io 徽章直达附件。 |
-| 签名政策 | 固定一段：Windows 安装包由 SignPath.io 免费签名、证书由 SignPath Foundation 签发，链到 README 的 Code signing policy 与 `PRIVACY.md`。SignPath 的条款要求**下载 / release 页上**也出现这段（标题或链接文字用 "Code signing policy"），所以每个 release 都带 —— 与产物本身是否已签名无关。 |
+| 签名政策 | 固定一段：Windows 安装包由 SignPath.io 免费签名、证书由 SignPath Foundation 签发，链到 `CODE_SIGNING_POLICY.md` 与 `PRIVACY.md`（链接文字用 "Code signing policy"）。SignPath 的条款要求**下载 / release 页上**也出现这段（标题或链接文字用 "Code signing policy"），所以每个 release 都带 —— 与产物本身是否已签名无关。 |
 
 - **两张表整体垫在最末**：三个捆绑版本号在产物 zip 里都看不到，是发布说明独有的信息；放末尾既不挡手填说明、又紧挨 changelog。
 - UI 上是**单行**输入框，要分段就写字面量 `\n`，`publish` 里用 `printf '%b'` 还原（`\r` 直接去掉）。手填说明与两张表之间会补空行 —— 表格前必须空行，否则 markdown 表被当成上一段的延续行。

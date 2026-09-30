@@ -31,7 +31,8 @@ Store / winget 上架；**不是 msi / setup.exe 的替代**。
 - **PE 版本元数据**：SignPath 的 artifact configuration 强制要求被签的二进制带版本资源，且
   product name / product version 由构建统一注入。现状是托盘与 server 都停在 `0.1.0`（见 2.6）。
 - **一份 "Code signing policy"**：条款要求项目主页与下载页上有这一节（见 5.4）——
-  **已落地 2026-09-30**：`README.md` 与 `docs/en/README.md` 各有一节 `## Code signing policy`，
+  **已落地 2026-09-30**：`CODE_SIGNING_POLICY.md` 是政策全文，`README.md` 与
+  `docs/en/README.md` 各有一节 `## Code signing policy`（页面上直接列出角色，并指向该文件），
   `PRIVACY.md` 是随附的隐私政策，release 说明里也固定带一段（`release.yml` 的 `SIGNING_NOTE`）。
 - **人工审批 + 全程 MFA**：每次签名请求都要 Approver 在 SignPath 上点批准，发不出全自动流水线。
 
@@ -282,7 +283,7 @@ SignPath Foundation，`AppxManifest` 的 `Publisher` 也必须写成它的证书
 | 无恶意代码 | ✅ |
 | 活跃维护 | ✅ |
 | **已在待签名的形态上发布过** | ⚠️ msi / setup.exe 已发布；**MSIX 尚未发布过，需先发一次未签名版** |
-| 功能有文档（下载页 / 商店条目） | ✅ README 有「Release 包结构与用法」；Code signing policy 与隐私声明**已落地 2026-09-30**（5.4）。⚠️ 仓库 `homepage` 仍为空 —— 条款没明写这一项，补上只是让「下载页」更好找 |
+| 功能有文档（下载页 / 商店条目） | ✅ README 有「Release 包结构与用法」；Code signing policy（独立文件 + 两个 README 各一节）与隐私声明**已落地 2026-09-30**（5.4）。⚠️ 仓库 `homepage` 仍为空 —— 条款没明写这一项，补上只是让「下载页」更好找 |
 | 全体成员双因素认证 | ⚠️ 需在 GitHub 与 SignPath 两侧都开 MFA |
 | 签名团队 = 开发维护团队、拥有仓库 | ✅ |
 | 只签自己构建的二进制、构建可验证 | ✅ GitHub Actions（SignPath 的 trusted build system） |
@@ -321,9 +322,11 @@ project`，未改写、未删除；MPL-2.0 要求的正是保留许可与署名�
   - 团队角色与成员（Authors / Reviewers / Approvers）；
   - 隐私声明 —— 链接隐私政策，或写 "This program will not transfer any information to other
     networked systems unless specifically requested by the user or the person installing or operating it"。
-- **落点**（2026-09-30）：`README.md` / `docs/en/README.md` 的 `## Code signing policy` 一节
-  （那句英文原文、三个角色、隐私声明链接、被签范围）；`PRIVACY.md` 是中英双语的隐私政策；
-  release 说明里的 `SIGNING_NOTE` 让下载页也带 "Code signing policy" 字样。三项相互印证。
+- **落点**（2026-09-30）：`CODE_SIGNING_POLICY.md` 是中英双语的政策全文（那句英文原文、角色表、
+  被签范围、审批流程、隐私链接）；`README.md` / `docs/en/README.md` 的 `## Code signing policy`
+  一节**在页面上直接保留**那句原文与角色表（条款要的是内容出现在页面上，不只是链过去），并指向
+  政策全文；`PRIVACY.md` 是随附的隐私政策；release 说明里的 `SIGNING_NOTE` 让下载页也带
+  "Code signing policy" 字样并链到政策全文。四处相互印证。
 - **每次签名请求都要人工审批**（Approver 在 SignPath 控制台上批准）。自动构建可以照常出未签名产物，
   但签名那一步必须有人点 —— 不存在全自动的签名流水线。
 - **MFA**：GitHub 与 SignPath 两侧都要开。

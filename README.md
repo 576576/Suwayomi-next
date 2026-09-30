@@ -207,7 +207,8 @@ SignPath Foundation。
 明确要求 —— 所有对外请求都由你的操作触发。
 
 签名接入之前发布的产物是未签名的（`msi` / `setup.exe` 目前如此），产物在
-[Releases](https://github.com/576576/Suwayomi-next/releases)。
+[Releases](https://github.com/576576/Suwayomi-next/releases)。完整政策（角色、被签范围、
+审批流程）见 [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md)。
 
 ## 许可证
 

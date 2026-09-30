@@ -249,7 +249,9 @@ other networked systems unless specifically requested by the user or the person 
 operating it.
 
 Artifacts published before signing is wired up are unsigned (currently true for `msi` /
-`setup.exe`); see [Releases](https://github.com/576576/Suwayomi-next/releases).
+`setup.exe`); see [Releases](https://github.com/576576/Suwayomi-next/releases). The full policy
+(roles, signed scope, approval flow) is in
+[CODE_SIGNING_POLICY.md](../../CODE_SIGNING_POLICY.md).
 
 ## License
 

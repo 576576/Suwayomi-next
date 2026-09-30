@@ -43,7 +43,7 @@ Suwayomi-next是一个漫画阅读器项目，支持基于Tachiyomi拓展的插�
 | 扩展运行时 | [Suwayomi-ext-runtime](https://github.com/576576/Suwayomi-ext-runtime) |
 | 默认前端   | [576576/Suwayomi-WebUI](https://github.com/576576/Suwayomi-WebUI) |
 
-![Suwayomi-next 组件结构](./assets/images/project-struct.png)
+![Suwayomi-next 组件结构](./assets/images/project-struct-simple.png)
 
 产物的目录结构如下：
 

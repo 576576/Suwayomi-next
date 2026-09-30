@@ -91,9 +91,9 @@ per-machine（msi「所有用户」）与 MSIX 下安装目录不可写。定两
   `settings_path()`（`<appdata>/settings/tray.json`）与 `logs_dir()`（`<appdata>/logs`）
   都由它派生；
 - `data_dir_of()` —— 设置里的 `dataDir` → 预置的 `dataDir` → `base_dir()/data`；
-- `server_env()` —— 显式传 `SUWAYOMI_APPDATA_DIR` / `SUWAYOMI_DATA_DIR` /
-  `SUWAYOMI_WEBUI_DIR`（根既然能变，就必须显式传；下载 / 本地图源 / 自动备份都在
-  data 根之下，没有各自的环境变量）。
+- `server_env()` —— 显式传 `SUWAYOMI_APPDATA_DIR` / `SUWAYOMI_DATA_DIR`（两个根既然能变，
+  就必须显式传；下载 / 本地图源 / 自动备份都在 data 根之下，没有各自的环境变量）。
+  `webui\` 不用传：它在 exe 同级 `bin/` 的上一级，server 按发布布局自己找得到。
 
 #### 预置托盘设置文件（per-machine 的 msi / setup.exe）
 

@@ -1,10 +1,10 @@
 //! Backend configuration and its environment resolution.
 //!
-//! The server used to pick between "embedded Oliphaunt" and "external
-//! PostgreSQL" purely by whether a connection URL was set. Now the default is a
-//! local SQLite file and PostgreSQL is the explicit alternative, so an explicit
-//! switch (`SUWAYOMI_DB_BACKEND`) is honoured first and the URL is the fallback
-//! signal for backwards compatibility.
+//! The default is a local SQLite file; PostgreSQL is the explicit alternative
+//! selected by `SUWAYOMI_DB_BACKEND`. `SUWAYOMI_DB_URL` only says *where*
+//! PostgreSQL is — a URL on its own never changes the backend, so a leftover
+//! variable in a deployment's environment cannot silently point the server at
+//! another database.
 
 use std::path::{Path, PathBuf};
 
@@ -43,22 +43,21 @@ impl DbSettings {
     /// Resolves settings from the environment.
     ///
     /// * `SUWAYOMI_DB_BACKEND=postgres` → PostgreSQL (URL from `SUWAYOMI_DB_URL`).
-    /// * `SUWAYOMI_DB_BACKEND=sqlite` → SQLite even when a URL is set.
-    /// * neither → PostgreSQL when a URL is set (the old behaviour), SQLite
-    ///   otherwise.
+    /// * anything else, including unset → SQLite.
     ///
     /// The SQLite file is always `<db_dir>/suwayomi.db`. `db_dir` is supplied by
     /// the caller (the appdata root's `db/`, or the Android host's private dir) —
     /// the database location has no environment variable of its own.
     pub fn from_env(db_dir: &Path) -> Self {
-        let backend = std::env::var(ENV_BACKEND).ok().map(|v| v.trim().to_ascii_lowercase());
+        let backend = std::env::var(ENV_BACKEND).ok();
+        let kind = kind_from(backend.as_deref());
         let url = resolve_url();
-        let kind = match backend.as_deref() {
-            Some("postgres" | "postgresql") => BackendKind::Postgres,
-            Some("sqlite") => BackendKind::Sqlite,
-            _ if !url.is_empty() => BackendKind::Postgres,
-            _ => BackendKind::Sqlite,
-        };
+        if kind == BackendKind::Sqlite && !url.is_empty() {
+            tracing::warn!("{ENV_URL} is set but {ENV_BACKEND} is not `postgres`; ignoring the URL");
+        }
+        if kind == BackendKind::Postgres && url.is_empty() {
+            tracing::warn!("{ENV_BACKEND}=postgres but {ENV_URL} is empty; there is nothing to connect to");
+        }
         Self { kind, path: db_dir.join(SQLITE_FILE_NAME), url }
     }
 
@@ -77,6 +76,16 @@ impl DbSettings {
     }
 }
 
+/// `SUWAYOMI_DB_BACKEND` → backend. Anything but an explicit `postgres` /
+/// `postgresql` (including unset, empty and unknown words) means SQLite: a
+/// typo'd switch must not silently move the library to another database.
+fn kind_from(backend: Option<&str>) -> BackendKind {
+    match backend.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+        Some("postgres" | "postgresql") => BackendKind::Postgres,
+        _ => BackendKind::Sqlite,
+    }
+}
+
 /// `SUWAYOMI_DB_URL`, trimmed; empty when unset.
 fn resolve_url() -> String {
     std::env::var(ENV_URL).unwrap_or_default().trim().to_owned()
@@ -87,10 +96,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn explicit_backend_wins_over_a_url() {
-        // env access is process-global; keep the test to pure parsing helpers.
+    fn each_backend_maps_to_its_dialect() {
         assert_eq!(BackendKind::Sqlite.dialect(), crate::dialect::Dialect::Sqlite);
         assert_eq!(BackendKind::Postgres.dialect(), crate::dialect::Dialect::Postgres);
+    }
+
+    #[test]
+    fn the_backend_comes_from_the_switch_and_nothing_else() {
+        assert_eq!(kind_from(Some("postgres")), BackendKind::Postgres);
+        assert_eq!(kind_from(Some("POSTGRESQL")), BackendKind::Postgres);
+        assert_eq!(kind_from(Some(" postgres ")), BackendKind::Postgres);
+        assert_eq!(kind_from(Some("sqlite")), BackendKind::Sqlite);
+        // 写错的后端名与未设置同路：一个 typo 不该把库换到别处
+        assert_eq!(kind_from(Some("mysql")), BackendKind::Sqlite);
+        assert_eq!(kind_from(Some("")), BackendKind::Sqlite);
+        assert_eq!(kind_from(None), BackendKind::Sqlite);
     }
 
     #[test]

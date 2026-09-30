@@ -3,6 +3,10 @@
 //! 优先级：环境变量 → 设置（`global_meta['settings']` blob，WebUI 写的那份）
 //! → `ServerConfig` 默认值。改完设置必须重启才生效（与 `dataDir` 同构），
 //! 所以设置页只需要把值存下来，不必热更新运行中的进程。
+//!
+//! 只有**模式与凭据**有环境变量：容器部署没法点设置页，凭据得能从外面传。
+//! JWT 的 `aud` 与两个时长没有环境变量 —— 设置页能改，多一条 env 通道只会多一处
+//! 与设置不一致的来源。
 
 use std::path::Path;
 use std::sync::Arc;
@@ -17,27 +21,16 @@ pub fn resolve(
     blob: Option<&serde_json::Value>,
     db_dir: &Path,
 ) -> anyhow::Result<(AuthContext, SecretSource)> {
-    let mode = AuthMode::parse(&pick("SUWAYOMI_AUTH_MODE", blob, "authMode", &config.auth_mode))
+    let mode = AuthMode::parse(&pick(Some("SUWAYOMI_AUTH_MODE"), blob, "authMode", &config.auth_mode))
         .map_err(|e| anyhow::anyhow!("{e} (SUWAYOMI_AUTH_MODE / settings.authMode)"))?;
 
-    let username = pick("SUWAYOMI_AUTH_USERNAME", blob, "authUsername", &config.auth_username);
-    let password = pick("SUWAYOMI_AUTH_PASSWORD", blob, "authPassword", &config.auth_password);
-    let jwt_audience = pick("SUWAYOMI_JWT_AUDIENCE", blob, "jwtAudience", &config.jwt_audience);
+    let username = pick(Some("SUWAYOMI_AUTH_USERNAME"), blob, "authUsername", &config.auth_username);
+    let password = pick(Some("SUWAYOMI_AUTH_PASSWORD"), blob, "authPassword", &config.auth_password);
+    let jwt_audience = pick(None, blob, "jwtAudience", &config.jwt_audience);
 
-    let token_ttl = duration_setting(
-        "SUWAYOMI_JWT_TOKEN_EXPIRY",
-        blob,
-        "jwtTokenExpiry",
-        &config.jwt_token_expiry,
-        Duration::from_mins(5),
-    );
-    let refresh_ttl = duration_setting(
-        "SUWAYOMI_JWT_REFRESH_EXPIRY",
-        blob,
-        "jwtRefreshExpiry",
-        &config.jwt_refresh_expiry,
-        Duration::from_hours(1440),
-    );
+    let token_ttl = duration_setting(None, blob, "jwtTokenExpiry", &config.jwt_token_expiry, Duration::from_mins(5));
+    let refresh_ttl =
+        duration_setting(None, blob, "jwtRefreshExpiry", &config.jwt_refresh_expiry, Duration::from_hours(1440));
 
     let cookie_secure = matches!(
         std::env::var("SUWAYOMI_AUTH_COOKIE_SECURE").unwrap_or_default().trim().to_lowercase().as_str(),
@@ -68,8 +61,10 @@ pub fn resolve(
     ))
 }
 
-fn pick(env_key: &str, blob: Option<&serde_json::Value>, blob_key: &str, fallback: &str) -> String {
-    if let Ok(value) = std::env::var(env_key)
+/// 设置项 → `ServerConfig` 默认值；`env_key` 给了就先看环境变量。
+fn pick(env_key: Option<&str>, blob: Option<&serde_json::Value>, blob_key: &str, fallback: &str) -> String {
+    if let Some(key) = env_key
+        && let Ok(value) = std::env::var(key)
         && !value.trim().is_empty()
     {
         return value.trim().to_string();
@@ -83,7 +78,7 @@ fn pick(env_key: &str, blob: Option<&serde_json::Value>, blob_key: &str, fallbac
 }
 
 fn duration_setting(
-    env_key: &str,
+    env_key: Option<&str>,
     blob: Option<&serde_json::Value>,
     blob_key: &str,
     fallback: &str,

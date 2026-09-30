@@ -3,7 +3,7 @@
 #
 # 用法：
 #   android/scripts/package-webui.sh <webui 目录 或 .zip>
-#   android/scripts/package-webui.sh                # 自动找 ../Suwayomi-WebUI/build
+#   android/scripts/package-webui.sh                # 自动找 $WEBUI_SRC 或 ../Suwayomi-WebUI/build
 #
 # 为什么单独打包成 assets 里的 zip 而不是直接放进 assets/ 目录：
 #  * assets 里的文件是逐条目打开的，几十个文件会让 AssetManager 索引很大；
@@ -24,7 +24,7 @@ PY="$(command -v python3 || command -v python)"
 
 SRC="${1:-}"
 if [[ -z "$SRC" ]]; then
-  for cand in "${SUWAYOMI_WEBUI_DIR:-}" "$REPO_ROOT/../Suwayomi-WebUI/build"; do
+  for cand in "${WEBUI_SRC:-}" "$REPO_ROOT/../Suwayomi-WebUI/build"; do
     if [[ -n "$cand" && -d "$cand" ]]; then SRC="$cand"; break; fi
   done
 fi

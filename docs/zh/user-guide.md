@@ -46,14 +46,10 @@ data/          用户数据：downloads/ autobackup/ local/
 | `SUWAYOMI_IP` | `0.0.0.0` | 监听地址 |
 | `SUWAYOMI_DATA_DIR` | exe 上级 `data/` | 数据目录：`downloads/`、`local/`、`autobackup/` 三个子目录都在它之下，都没有各自的变量；也可在 WebUI 的「数据与存储 → 存储位置」里改 |
 | `SUWAYOMI_APPDATA_DIR` | exe 上级 `appdata/` | **程序自身状态的唯一可写根**：`cache/`、`db/`、`settings/`、`extensions/{apk,bin}` 全在它下面。缓存 / 库 / 设置 / 扩展**没有**各自的目录变量 |
-| `SUWAYOMI_WEBUI_DIR` | exe 同级的 `webui/` | 捆绑 WebUI 目录（不含 `index.html` 时忽略该项） |
-| `SUWAYOMI_DB_BACKEND` | `sqlite` | 后端：`sqlite` / `postgres` |
-| `SUWAYOMI_DB_URL` | （空） | PostgreSQL 连接串（设置后自动改用外部 PostgreSQL，如 `postgres://user:pass@host:5432/db`） |
+| `SUWAYOMI_DB_BACKEND` | `sqlite` | 数据库后端：`sqlite`（本地单文件）/ `postgres`。**只有它决定后端** |
+| `SUWAYOMI_DB_URL` | （空） | PostgreSQL 连接串，如 `postgres://user:pass@host:5432/db`；只在 `SUWAYOMI_DB_BACKEND=postgres` 时生效 |
 | `SUWAYOMI_AUTH_MODE` | `DISABLED` | 认证模式：`DISABLED` / `BASIC_AUTH` / `SIMPLE_LOGIN` / `UI_LOGIN` |
 | `SUWAYOMI_AUTH_USERNAME` / `SUWAYOMI_AUTH_PASSWORD` | — | 认证凭据（用户名与密码都不能为空，否则服务端拒绝启动） |
-| `SUWAYOMI_JWT_AUDIENCE` | `suwayomi-server-api` | JWT 的 `aud` 声明 |
-| `SUWAYOMI_JWT_TOKEN_EXPIRY` | `5m` | 访问令牌有效期（也接受 `PT5M` 这类 ISO-8601 写法） |
-| `SUWAYOMI_JWT_REFRESH_EXPIRY` | `60d` | 刷新令牌有效期 |
 | `SUWAYOMI_SESSION_SECRET` | — | 会话 cookie 与 JWT 的签名密钥；未设置时首次启动生成 `<appdata>/db/session.key` |
 | `SUWAYOMI_AUTH_COOKIE_SECURE` | — | 设为 `1` 时给会话 cookie 加 `Secure`（仅 HTTPS 反代后开启） |
 | `SUWAYOMI_SANDBOX_JAR` | — | JVM 扩展沙盒 jar 路径（未设置则扩展源不可用） |
@@ -61,7 +57,11 @@ data/          用户数据：downloads/ autobackup/ local/
 | `SUWAYOMI_SANDBOX_PORT` | `4568` | 沙盒 HTTP 端口。桌面壳会自己挑一个可用的传进来 |
 | `SUWAYOMI_SANDBOX_PROXY` | （空） | 沙盒与扩展下载走的 HTTP 代理 |
 | `SUWAYOMI_SANDBOX_URL` | （空） | 已在运行的扩展宿主基址（如 Android 宿主 App）；设了就不再自己拉沙盒 |
-| `SUWAYOMI_TRACKERS_CONFIG` | `<appdata>/settings/trackers.json` | 追踪器 OAuth 应用凭据文件（见下） |
+
+JWT 的 `aud` 与两个令牌有效期不在这张表里：它们是**设置里**的 `jwtAudience` /
+`jwtTokenExpiry` / `jwtRefreshExpiry`（WebUI 的服务器设置页），与 `dataDir` 一样
+存库、重启后生效。捆绑 WebUI 的目录同样不可配：server 按发布布局在 exe 同级的
+`webui/` 与它上一级的 `webui/` 里找，两处都没有才回退到内置占位页。
 
 扩展沙盒是 server 拉起的子进程，它只从 server 继承 `SUWAYOMI_APPDATA_DIR` 一个目录
 变量，扩展目录 / dex2jar 产物目录 / 设置目录由它自己按同一套子路径派生 —— 两侧永远
@@ -155,7 +155,8 @@ curl -X POST http://localhost:4567/api/v1/backup/validate --data-binary @backup.
 curl -X POST http://localhost:4567/api/v1/backup/import --data-binary @backup.tachibk
 ```
 
-导入目标后端由 `SUWAYOMI_DB_BACKEND` / `SUWAYOMI_DB_URL` 决定（见上）。
+导入写到哪个库由 `SUWAYOMI_DB_BACKEND` 决定；选 PostgreSQL 时连接串取自
+`SUWAYOMI_DB_URL`（见上）。
 
 ## 备份
 

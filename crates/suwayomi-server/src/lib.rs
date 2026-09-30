@@ -46,7 +46,9 @@ pub const VERSION_CODE: &str = suwayomi_core::version::VERSION_CODE;
 pub const VERSION_COUNT: &str = suwayomi_core::version::VERSION_COUNT;
 
 pub fn config_from_env() -> ServerConfig {
-    // Rust 后端只支持 PostgreSQL
+    // `database_type` 是参考实现 schema 里的展示字段（设置页与调试信息会读它），
+    // 真实后端由 `DbSettings::from_env()` 决定 —— 两者的接线见
+    // docs/agent/plans/database-settings.md。
     let mut cfg =
         ServerConfig { database_type: suwayomi_core::config::DatabaseType::Postgresql, ..ServerConfig::default() };
     if let Ok(v) = std::env::var("SUWAYOMI_PORT") {
@@ -67,31 +69,22 @@ pub fn config_from_env() -> ServerConfig {
     if let Ok(v) = std::env::var("SUWAYOMI_AUTH_PASSWORD") {
         cfg.auth_password = v;
     }
-    if let Ok(v) = std::env::var("SUWAYOMI_JWT_AUDIENCE") {
-        cfg.jwt_audience = v;
-    }
-    if let Ok(v) = std::env::var("SUWAYOMI_JWT_TOKEN_EXPIRY") {
-        cfg.jwt_token_expiry = v;
-    }
-    if let Ok(v) = std::env::var("SUWAYOMI_JWT_REFRESH_EXPIRY") {
-        cfg.jwt_refresh_expiry = v;
-    }
     cfg
 }
 
-/// 解析捆绑 WebUI 目录：`SUWAYOMI_WEBUI_DIR` → exe 同级 webui/（都不含 index.html 返回空）
+/// 解析捆绑 WebUI 目录：exe 同级 `webui/` → exe 上级 `webui/` → 空（用内置占位页）。
+///
+/// 两档都要有：发布布局把 server 放在 `bin/`、WebUI 放在**与 `bin/` 同级**的
+/// `webui/`，所以只看 exe 同级的目录会漏；而 `cargo run` 出来的 exe 在
+/// `target/<profile>/` 下，上一级同样查不到东西，最后落回占位页。
 pub fn resolve_webui_dir() -> std::path::PathBuf {
-    let from_env = std::env::var("SUWAYOMI_WEBUI_DIR")
-        .map_or_else(|_| std::path::PathBuf::from("webui"), std::path::PathBuf::from);
-    if from_env.join("index.html").is_file() {
-        return from_env;
-    }
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {
-        let cand = dir.join("webui");
-        if cand.join("index.html").is_file() {
-            return cand;
+        for cand in [dir.join("webui"), dir.join("..").join("webui")] {
+            if cand.join("index.html").is_file() {
+                return cand;
+            }
         }
     }
     std::path::PathBuf::new()
@@ -114,16 +107,12 @@ pub fn resolve_data_dir() -> std::path::PathBuf {
     std::path::PathBuf::from("data")
 }
 
-/// 追踪器 OAuth 应用凭据文件：`SUWAYOMI_TRACKERS_CONFIG` → `<settings 目录>/trackers.json`。
+/// 追踪器 OAuth 应用凭据文件：`<settings 目录>/trackers.json`。
 ///
 /// settings 目录由 appdata 根派生（`<appdata>/settings`），沙盒写的源偏好落在同一个
-/// 目录 —— 两边必须是同一份，否则 WebUI 里配的源偏好在扩展侧读不到。
+/// 目录 —— 两边必须是同一份，否则 WebUI 里配的源偏好在扩展侧读不到。文件位置因此
+/// 没有自己的环境变量：指偏了只有一半进程读得到它。
 pub fn resolve_trackers_config_file(settings_dir: &std::path::Path) -> std::path::PathBuf {
-    if let Ok(file) = std::env::var("SUWAYOMI_TRACKERS_CONFIG")
-        && !file.trim().is_empty()
-    {
-        return std::path::PathBuf::from(file);
-    }
     settings_dir.join("trackers.json")
 }
 

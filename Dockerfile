@@ -116,12 +116,12 @@ COPY --from=sandbox /out/ext-runtime.jar                          /opt/suwayomi/
 COPY --from=jre     /jre/jre                                      /opt/suwayomi/jre
 COPY --from=webui   /webui                                        /opt/suwayomi/webui
 
-# 三个路径都显式钉住：默认解析规则能猜对（exe 在 bin/ 下），但容器里写死更省事，
-# 也避免将来有人改了 exe 的位置就把 webui 与数据目录一起带偏。
+# 两个数据根显式钉在卷内：默认解析规则能猜对，但容器里写死更省事。
+# WebUI 不需要钉 —— server 按发布布局在 exe 同级的 `bin/` 与它的上一级找 `webui/`，
+# 而下一行正是把它放在 `/opt/suwayomi/webui`。
 # SUWAYOMI_APPDATA_DIR 必须钉在卷内：不钉的话缓存/库/设置/扩展会落到 WORKDIR
 # （/opt/suwayomi/appdata），那是**镜像层**，容器一重建书架就没了。
-ENV SUWAYOMI_WEBUI_DIR=/opt/suwayomi/webui \
-    SUWAYOMI_DATA_DIR=/data \
+ENV SUWAYOMI_DATA_DIR=/data \
     SUWAYOMI_APPDATA_DIR=/data/appdata \
     SUWAYOMI_PORT=4567 \
     SUWAYOMI_IP=0.0.0.0

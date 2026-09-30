@@ -271,11 +271,11 @@ fn session_ttl() -> Duration {
     Duration::from_mins(30)
 }
 
-/// 解析时长配置（`SUWAYOMI_JWT_TOKEN_EXPIRY` / 设置里的 `jwtTokenExpiry` 等）。
+/// 解析时长配置（设置里的 `jwtTokenExpiry` / `jwtRefreshExpiry` 等）。
 ///
 /// 同时接受简写（`5m` / `30s` / `2h` / `60d` / 裸秒数 `300`）与 ISO-8601
-/// （`PT5M` / `P60D` / `PT1H30M`）——环境变量里写简写更顺手，而 GraphQL 的
-/// `Duration` 标量序列化出来是 ISO，两条路进的是同一个解析函数。
+/// （`PT5M` / `P60D` / `PT1H30M`）：`ServerConfig` 的默认值是简写，而 GraphQL 的
+/// `Duration` 标量进出都是 ISO，两条路进的是同一个解析函数。
 ///
 /// 不支持月/年：`P1M` 是 1 个月而不是 1 分钟（ISO 的日期段里 `M` 是月），
 /// 猜错就是数量级错误，所以直接判非法。下限 1 秒，避免写出 0 导致一签发就过期。

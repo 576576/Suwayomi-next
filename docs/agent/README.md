@@ -12,7 +12,7 @@
 | `rest-api.md` | REST API v1 端点基线：逐条对照 Suwayomi-Server（Kotlin 版）的方法、路径、参数、状态码 |
 | `android.md` | Android 宿主工程：与桌面的形态差别、ART 内加载扩展、安装/卸载、WebView 的两个缺口、工具链与交叉编译 |
 
-方案与计划（调研结论、分阶段安排、落地情况）在 `../plans/`。
+方案与计划（调研结论、分阶段安排、落地情况）在 `plans/`。
 
 ## 维护约定
 

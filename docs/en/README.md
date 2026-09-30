@@ -2,11 +2,11 @@
 
 [简体中文](../../README.md) | English
 
-![128x128](../../assets/images/128x128.png)
+![128x128](../../assets/images/icons/128x128.png)
 
 An independently developed server (Rust) with a desktop tray, referencing [Mihon](https://github.com/mihonapp/mihon) and [Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server/): it keeps the existing Tachiyomi data model, the GraphQL/REST/OPDS APIs and the Mihon extension ecosystem compatible, and everything except the extension runtime layer (the JVM sandbox) is written in Rust. This is an independent project, not a fork of [Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server).
 
-![page-setting](../../assets/screenshots/page-setting.png)
+![page-setting](../../assets/images/page-setting.png)
 
 ## What's implemented
 
@@ -102,7 +102,8 @@ crates/
 android/             Android host project (separate Gradle/AGP build, not
                      merged into the main project)
 scripts/             CI/helper scripts (resolve-webui.sh / unzip_any.py, …)
-assets/              icons & screenshots (images/, screenshots/)
+assets/              images (icons, screenshots, structure diagram) &
+                     directory-tree templates (templates/)
 docs/                docs (zh/ Chinese, en/ English, agent/ for maintainers
                      and AI)
 ```

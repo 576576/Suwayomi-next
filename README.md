@@ -2,11 +2,11 @@
 
 简体中文 | [English](docs/en/README.md)
 
-![128x128](./assets/images/128x128.png)
+![128x128](./assets/images/icons/128x128.png)
 
 Suwayomi-next是一个漫画阅读器项目，支持基于Tachiyomi拓展的插件系统，并提供现代化和跨平台的一体式桌面阅读/服务客户端分离阅读体验。本项目的实现有赖于对[Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server)和[Mihon](https://github.com/mihonapp/mihon)的参考。
 
-![page-setting](./assets/screenshots/page-setting.png)
+![page-setting](./assets/images/page-setting.png)
 
 ## 使用方法
 
@@ -43,32 +43,7 @@ Suwayomi-next是一个漫画阅读器项目，支持基于Tachiyomi拓展的插�
 | 扩展运行时 | [Suwayomi-ext-runtime](https://github.com/576576/Suwayomi-ext-runtime) |
 | 默认前端   | [576576/Suwayomi-WebUI](https://github.com/576576/Suwayomi-WebUI) |
 
-
-
-```mermaid
-graph TD
-    subgraph next ["Suwayomi-next（本仓 Rust workspace）"]
-        direction TB
-        server["suwayomi-server<br>入口：装配 + 静态托管 + 起沙盒"]
-        apis["suwayomi-rest / suwayomi-graphql / suwayomi-opds<br>接口层"]
-        api["suwayomi-api<br>AppState + 全站认证中间件"]
-        domain["suwayomi-domain<br>业务逻辑（唯一对外发 HTTP 的一层）"]
-        core["suwayomi-core<br>领域模型 / 配置 / 认证"]
-        db["suwayomi-db<br>双后端数据库层"]
-        dbm["suwayomi-db-macros<br>proc-macro"]
-        server --> apis --> api --> domain --> core --> db --> dbm
-    end
-    android["suwayomi-android<br>JNI cdylib（随 APK 分发）"]
-    tray["Suwayomi-tray<br>桌面托盘"]
-    ext["ext-runtime.jar<br>JVM 扩展沙盒"]
-    webui["Suwayomi-WebUI<br>默认前端"]
-    android --> next
-    tray --> next
-    next --> ext
-    webui --> next
-```
-
-
+![Suwayomi-next 组件结构](./assets/images/project-struct.png)
 
 产物的目录结构如下：
 
@@ -199,10 +174,10 @@ cd android && ./gradlew :app:assembleRelease --no-daemon
 ## 仓库结构
 
 ```
-crates/              各 Rust crate（依赖关系见上面的结构图）
+crates/              各 Rust crate（分层见上面的结构图）
 android/             Android 宿主工程（独立 Gradle/AGP 构建，不并入主工程）
 scripts/             CI/辅助脚本（resolve-webui.sh / unzip_any.py 等）
-assets/              图标与截图（images/、screenshots/）
+assets/              图片（images/：图标、截图、结构图）与目录树模板（templates/）
 docs/                文档（zh/ 中文、en/ 英文、agent/ 给维护者与 AI）
 ```
 

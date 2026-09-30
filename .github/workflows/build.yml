@@ -259,7 +259,7 @@ jobs:
           MSI_VERSION="3.$((COUNT / 100)).$((COUNT % 100))"
           # bindpath 与 -d 的相对路径都以 .wxs 所在目录为基准（不是 cwd），所以这里一律给 Windows 绝对路径。
           PAYLOAD_DIR="$(cd "$PAYLOAD" && pwd -W)"
-          ICON_DIR="$(cd assets/images && pwd -W)"
+          ICON_DIR="$(cd assets/images/icons && pwd -W)"
           PACKAGING_DIR="$(cd packaging/windows && pwd -W)"
           RTF_FILE="$PACKAGING_DIR/License.rtf"
           LOC_FILE="$(cd packaging/windows/loc && pwd -W)/WixUI_zh-CN.wxl"

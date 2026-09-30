@@ -206,7 +206,7 @@ Windows 资源、拿的是 Cargo 包版本。要做的是**在构建期注入**�
 |---|---|
 | `packaging/windows/AppxManifest.xml` | manifest 模板，构建时替换 `Version` / `Publisher` / `DisplayName` |
 | `packaging/windows/msix/Assets/*.png` | `Square44x44Logo` / `Square150x150Logo` / `StoreLogo`，均为透明底 PNG |
-| `.workbuddy/verify/make_msix_assets.py` | 从 `assets/images/icon.png` 生成上面几张（沿用 `make_installer_bitmaps.py` 的写法） |
+| `.workbuddy/verify/make_msix_assets.py` | 从 `assets/images/icons/icon.png` 生成上面几张（沿用 `make_installer_bitmaps.py` 的写法） |
 | `packaging/windows/Suwayomi.appinstaller` | 可选，自动更新用；只有签名之后才有意义 |
 
 AppxManifest 的骨架（full trust 桌面应用）：

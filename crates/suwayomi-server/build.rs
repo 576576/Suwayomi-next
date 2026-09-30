@@ -47,7 +47,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=SUWAYOMI_VERSION_COUNT");
     println!("cargo:rerun-if-env-changed=SUWAYOMI_VERSION_NAME");
 
-    // Windows: embed the executable icon (generated from assets/images/icon.png).
+    // Windows: embed the executable icon (generated from assets/images/icons/icon.png).
     //
     // 两道判据缺一不可，各管一件事：
     // - `#[cfg(windows)]` 管**编译**：build script 的 cfg 是**宿主**平台，而 winres 就
@@ -58,7 +58,7 @@ fn main() {
     //   resource file when target_env is gnu or msvc"。
     #[cfg(windows)]
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
-        let icon = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/images/icon.ico");
+        let icon = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/images/icons/icon.ico");
         let mut res = winres::WindowsResource::new();
         res.set_icon(&icon.to_string_lossy());
         if let Err(e) = res.compile() {

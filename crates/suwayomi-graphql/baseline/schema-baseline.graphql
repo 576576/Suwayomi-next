@@ -410,7 +410,7 @@ type CreateCategoryPayload {
 scalar Cursor
 
 enum DatabaseType {
-  H2
+  RUSQLITE
   POSTGRESQL
 }
 

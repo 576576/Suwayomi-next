@@ -94,10 +94,13 @@ pub fn resolve_setting_path(value: &str, data_dir: &std::path::Path) -> std::pat
     std::path::PathBuf::from(value)
 }
 
-/// Mirrors `graphql/types/DatabaseType.kt`
+/// 数据库后端（GraphQL 的 `DatabaseType`）。
+///
+/// 参考实现的枚举里第一项是 `H2`（JVM 专有文件格式，本仓读不了），这里换成实际
+/// 存在的 `RUSQLITE`：留着 `H2` 就等于在设置页给一个点了必然报错的选项。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DatabaseType {
-    H2,
+    Rusqlite,
     Postgresql,
 }
 
@@ -200,7 +203,7 @@ impl Default for ServerConfig {
             // bind 报 10013）里：桌面由托盘启动前嗅探并顺延（见 Suwayomi-tray），
             // 独立运行由下面监听循环的自顺延兜底。
             port: 4567,
-            database_type: DatabaseType::H2,
+            database_type: DatabaseType::Rusqlite,
             database_url: String::new(),
             database_username: String::new(),
             database_password: String::new(),
@@ -271,7 +274,9 @@ impl ServerConfig {
         }
         if let Some(v) = text(blob, "databaseType") {
             self.database_type = match v.as_str() {
-                "H2" => DatabaseType::H2,
+                // 认不出的值（含旧表单里已删掉的 H2）保持原样：它只驱动显示，
+                // 真实后端由 `SUWAYOMI_DB_BACKEND` 决定
+                "RUSQLITE" => DatabaseType::Rusqlite,
                 "POSTGRESQL" => DatabaseType::Postgresql,
                 _ => self.database_type,
             };

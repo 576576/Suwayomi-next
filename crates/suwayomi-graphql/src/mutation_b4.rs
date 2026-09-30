@@ -2191,7 +2191,7 @@ fn partial_settings_to_json(s: &PartialSettingsTypeInput) -> serde_json::Value {
     put!(
         "databaseType",
         s.database_type.map(|v| match v {
-            GraphqlDatabaseType::H2 => "H2",
+            GraphqlDatabaseType::Rusqlite => "RUSQLITE",
             GraphqlDatabaseType::Postgresql => "POSTGRESQL",
         })
     );

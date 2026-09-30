@@ -50,7 +50,7 @@ pub fn config_from_env() -> ServerConfig {
     // 真实后端由 `DbSettings::from_env()` 决定 —— 两者的接线见
     // docs/agent/plans/database-settings.md。
     let mut cfg =
-        ServerConfig { database_type: suwayomi_core::config::DatabaseType::Postgresql, ..ServerConfig::default() };
+        ServerConfig { database_type: suwayomi_core::config::DatabaseType::Rusqlite, ..ServerConfig::default() };
     if let Ok(v) = std::env::var("SUWAYOMI_PORT") {
         cfg.port = v.parse().unwrap_or(cfg.port);
     }

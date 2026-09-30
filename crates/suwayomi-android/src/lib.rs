@@ -159,7 +159,7 @@ fn start_inner(
             port,
             // `database_type` 是 Kotlin 时代遗留的对外字段（WebUI 设置页会显示），
             // 与真实后端无关；这里与桌面 config_from_env() 保持一致。
-            database_type: suwayomi_core::config::DatabaseType::Postgresql,
+            database_type: suwayomi_core::config::DatabaseType::Rusqlite,
             ..ServerConfig::default()
         },
         data_dir: data_dir.clone(),

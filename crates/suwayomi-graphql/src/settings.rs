@@ -39,14 +39,14 @@ impl AuthMode {
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(name = "DatabaseType")]
 pub enum GraphqlDatabaseType {
-    H2,
+    Rusqlite,
     Postgresql,
 }
 
 impl From<CoreDatabaseType> for GraphqlDatabaseType {
     fn from(t: CoreDatabaseType) -> Self {
         match t {
-            CoreDatabaseType::H2 => Self::H2,
+            CoreDatabaseType::Rusqlite => Self::Rusqlite,
             CoreDatabaseType::Postgresql => Self::Postgresql,
         }
     }
@@ -455,7 +455,7 @@ impl SettingsType {
         self.data_dir = ov_str(o, "dataDir", self.data_dir.clone());
         self.database_password = ov_str(o, "databasePassword", self.database_password.clone());
         self.database_type = match o.get("databaseType").and_then(Value::as_str) {
-            Some("H2") => GraphqlDatabaseType::H2,
+            Some("RUSQLITE") => GraphqlDatabaseType::Rusqlite,
             Some("POSTGRESQL") => GraphqlDatabaseType::Postgresql,
             _ => self.database_type,
         };

@@ -7,10 +7,12 @@
 | 文件 | 内容 |
 |---|---|
 | `release.md` | 发布流程与 CI 约定：通道/版本、产物形态开关、Windows 安装包（WiX）、OCI 镜像、发布说明渲染、预发布清理、CI 改动的本地验证 |
+| `msix-plan.md` | MSIX 渠道：与 msi 的语义差别（安装位置 / 快捷方式 / 安装范围三条不可选）、安装目录只读带来的运行时约束、签名路线（SignPath Foundation 的准入条件与硬性要求）、分阶段计划 |
 | `runtime.md` | 运行时目录与端口：`data/`·`appdata/` 两棵树的归属与写入者、目录树模板的四个消费点、全部端口的定义点与顺延规则 |
 | `graphql.md` | GraphQL schema 基线：359 个类型定义的对照口径、与 Kotlin 版的差分、WebUI 侧 codegen 的来源约束 |
 | `rest-api.md` | REST API v1 端点基线：逐条对照上游 Kotlin 版的方法、路径、参数、状态码 |
 | `android.md` | Android 宿主工程：与桌面的形态差别、ART 内加载扩展、安装/卸载、WebView 的两个缺口、工具链与交叉编译 |
+| `backup-options-alignment.md` | 备份选项对齐 Mihon：10 个选项的语义与灰化依赖、proto 104/105/106 的取舍、恢复侧 `in_library` 的语义、落地情况 |
 
 ## 维护约定
 

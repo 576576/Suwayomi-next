@@ -110,7 +110,7 @@
 
 - **两个开关互不隐含，但 exe 的构建隐含 msi 的构建**：那个步骤的 `if` 是 `(pack_msi || pack_exe)`，进去先无条件打 msi + 跑 ICE，再按 `pack_exe` 决定要不要裹成 bundle；最后进附件的列表按开关拼（`pack_msi=false` 时 msi 只是构建出来给 bundle 用，不发）。
 
-- **安装范围是「默认用户目录 + 向导可选」**：`Package/@Scope="perUserOrMachine"`（ALLUSERS=2 + MSIINSTALLPERUSER=1）。默认装 `%LOCALAPPDATA%\Programs\Suwayomi`，管理员在向导里能改选「所有用户」。
+- **安装范围是「默认用户目录 + 可选」**：`Package/@Scope="perUserOrMachine"`（ALLUSERS=2 + MSIINSTALLPERUSER=1）。默认装 `%LOCALAPPDATA%\Programs\Suwayomi`。**向导里没有范围页** —— 实测 3.2.13 的 `Dialog` 表只有 `InstallDirDlg` / `ShortcutDlg`，所以装出来恒是 per-user，per-machine 只能靠命令行 `msiexec /i … MSIINSTALLPERUSER=""`；接上官方那页的做法见 `../plans/msix-plan.md` 的 2.1。
 - **路径跟着范围走是 Windows Installer 自带的，不要再写 `SetDirectory` 去改 `INSTALLFOLDER`**：per-user 安装下它自己把 `ProgramFiles64Folder` 解析成 `%LOCALAPPDATA%\Programs`（安装日志里的 `PROPERTY CHANGE: Adding INSTALLFOLDER property` 就能看到这一步），per-machine 下才是 `C:\Program Files`。而 `SetDirectory` 的 `Value` 是格式化字符串，引用包内**没有 Directory 行**的目录 id（例如 WiX 的 `PerUserProgramFilesFolder`）只会解析成空串 → `INSTALLFOLDER` 退化成裸名 `Suwayomi` → 安装报 **1606「无法访问网络位置 Suwayomi」**、空转约 100 秒才中止。**ICE 查不出这类问题**，只能真装一次。
 - **产品身份是 `Package/@ProductCode`，不是 `Package/@Id`**：`Id` 必须是标识符（只能放 `Suwayomi.Next` 这类），要固定的产品码得写在 `ProductCode` 属性上。WiX 默认每次构建现生成 ProductCode，那样**双击同一个包不会被认成「已安装」**，走的是首次安装 + MajorUpgrade 卸载重装，用户永远看不到修改/卸载页。所以 `build.yml` 按 `MSI_VERSION` 算出一个稳定的 ProductCode 再 `-d` 传进来；跨版本换 ProductCode 是对的，由 `MajorUpgrade` 用 UpgradeCode + 版本号接管。UpgradeCode 显式写死在 `.wxs` 里，不能动。
 - **许可页与安装目录页各由一个属性驱动**：`<WixVariable Id="WixUILicenseRtf" Value="$(LicenseRtf)" />` 把 RTF 灌进 `LicenseAgreementDlg`，接受复选框闸住「下一步」；`WIXUI_INSTALLDIR` 指向 `INSTALLFOLDER`，`InstallDirDlg` 改的才是这个目录。
@@ -126,7 +126,7 @@
   - 「程序和功能」列表与向导标题用 `Icon` 表 + `ARPPRODUCTICON`。
   - 向导的横幅/大图用 `WixUIBannerBmp` / `WixUIDialogBmp` 两个 `WixVariable` 覆盖。两张源图与各自控件的纵横比都一致（横幅 493×58 → 控件 370×44；大图 493×312 → 控件 370×234），MSI 是整幅等比缩放，不会拉伸。**但大图右侧必须留白**：用到它的那几个对话框（`WelcomeDlg` / `ExitDialog` / `PrepareDlg` / `ResumeDlg` / `FatalError` / `UserExit`）的标题与说明都从 `X=135` 对话单位起排，换算回源图是 x≈180，所以图形只占左侧 164 px、其余纯白 —— WixUI 官方默认图也正是这个版式（实测：非白像素的列范围恰好 `0..163`）。横幅则是左侧 x<310 会被标题/描述压住，装饰只放最右。
 - **`icon.ico` 不要补 16/20/24 小帧**：那几帧是 512 源 32:1 压榨出来的，AA 过渡过宽反而更糊，删掉交给 Explorer 从 32px 帧缩放更清楚（见 `.workbuddy/memory/2026-09-04.md`）。安装包沿用同一个 ico。
-- **msi 只装程序、不带数据目录**：托盘的数据目录解析是「设置里的 `data_dir` 优先，否则 `base_dir()/data`」。装进 `Program Files` 后普通用户对那里没有写权限，首次启动会失败；而把数据塞进用户目录又会和绿色版两份数据打架。所以安装包就是「换个地方解压 + 建快捷方式」，数据目录仍按用户原来的习惯走（首次启动时托盘自己按可写位置建）。
+- **msi 只装程序、不带数据目录**：托盘的目录解析是「设置里的 `data_dir` 优先，否则 `base_dir()/data`」，`appdata` 根同理落在 exe 同级。装进 `Program Files` 后普通用户对那里没有写权限，首次启动会失败；而把数据塞进用户目录又会和绿色版两份数据打架。所以安装包就是「换个地方解压 + 建快捷方式」，两个根仍按用户原来的习惯走。**per-machine 档要另配一份预置托盘设置**（`appdata` / `data` 都指到用户目录），未落地，方案见 `../plans/msix-plan.md` 的 2.1。
 - **版本号必须是数字点分**：`major < 256`、`minor < 256`、`build < 65536`。alpha 的 `r{code}` 与 `versionCode` 都不合法（`ICE24`），所以跟 beta/release 同款取 `3.$((COUNT/100)).$((COUNT%100))`。
 - **两条硬约束**（都踩过）：
   - 产物**不能叫 `setup.exe`**：WiX `WIX0388` —— Windows 会为这个名字加载兼容性 shim，可被 DLL 劫持。所以叫 `-setup.exe`。

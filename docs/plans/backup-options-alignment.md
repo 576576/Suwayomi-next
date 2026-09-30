@@ -11,8 +11,8 @@
 | Mihon | `866d045` | `app/src/main/java/eu/kanade/tachiyomi/data/backup/create/BackupOptions.kt` |
 | 上游 Suwayomi | `dba836b` | `server/server-config/src/main/kotlin/suwayomi/tachidesk/manga/impl/backup/BackupFlags.kt` |
 
-术语约定：下文**上游 Suwayomi**（或简称「上游」）= `Suwayomi/Suwayomi-Server`，是本仓 fork 的来源，
-当前的 `PartialBackupFlagsInput` 七字段就照抄自它；**Mihon** = `mihonapp/mihon`，
+术语约定：下文**上游 Suwayomi**（或简称「上游」）= `Suwayomi/Suwayomi-Server`（Kotlin 版），
+本仓与它在数据模型与接口上兼容，当前的 `PartialBackupFlagsInput` 七字段就照抄自它；**Mihon** = `mihonapp/mihon`，
 是备份格式（`.tachibk` 的 proto）与选项集的权威来源。两者对「选项」的定义并不相同。
 
 ---

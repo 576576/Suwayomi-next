@@ -1,5 +1,5 @@
 -- =====================================================================
--- SyncYomi triggers — SQLite port of `migrations/pg-only/0002_sync_functions.sql`
+-- SyncYomi triggers — SQLite port of `../postgres/0003_sync_functions.sql`
 -- + `0002_sync_triggers.sql`.
 --
 -- SQLite has no PL/pgSQL, and a BEFORE trigger cannot modify NEW, so every

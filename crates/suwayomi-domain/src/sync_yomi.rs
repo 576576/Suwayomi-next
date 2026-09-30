@@ -9,7 +9,7 @@
 
 use prost::Message;
 use reqwest::Client;
-use suwayomi_core::backup::{Backup, BackupFlags, create_backup_proto, restore_backup_proto};
+use suwayomi_core::backup::{Backup, BackupFlags, BackupInputs, create_backup_proto, restore_backup_proto};
 use suwayomi_core::config::{RuntimeConfig, ServerConfig};
 use suwayomi_core::db::Db;
 
@@ -156,7 +156,7 @@ impl SyncYomiService {
             return Err(DomainError::Source("SyncYomi not configured (syncYomiHost / syncYomiApiKey)".into()));
         }
         let flags = build_backup_flags(&self.config.snapshot());
-        let _local = create_backup_proto(self.db.pool(), flags)
+        let _local = create_backup_proto(self.db.pool(), flags, BackupInputs::default())
             .await
             .map_err(|e| DomainError::Source(format!("backup: {e}")))?;
         let (remote, etag) = self.pull().await?;
@@ -170,7 +170,7 @@ impl SyncYomiService {
                 .await
                 .map_err(|e| DomainError::Source(format!("restore: {e}")))?;
         }
-        let merged = create_backup_proto(self.db.pool(), flags)
+        let merged = create_backup_proto(self.db.pool(), flags, BackupInputs::default())
             .await
             .map_err(|e| DomainError::Source(format!("backup: {e}")))?;
         let pushed_count = merged.backup_manga.len();
@@ -191,9 +191,11 @@ impl SyncYomiService {
     }
 }
 
-/// SyncYomi 自己那套内容开关（`syncData*`），对应上游 `SyncManager` 构造的
-/// `BackupFlags`：`includeClientData` / `includeServerSettings` 固定为 false ——
-/// 客户端数据与服务端设置不应该被推到远端。
+/// SyncYomi 自己那套内容开关（`syncData*`）。
+///
+/// 只推作品/分类/章节/追踪/历史这五类库数据，其余一律关：应用设置（含服务端设置）
+/// 是机器局部的，扩展商店与图源设置是这台机器的安装状态，敏感设置含凭据。
+/// `include_read_entries` 也关 —— 同步只搬「在库」的作品，与引入该开关之前一致。
 fn build_backup_flags(cfg: &ServerConfig) -> BackupFlags {
     BackupFlags {
         include_manga: cfg.sync_data_manga,
@@ -201,8 +203,11 @@ fn build_backup_flags(cfg: &ServerConfig) -> BackupFlags {
         include_chapters: cfg.sync_data_chapters,
         include_tracking: cfg.sync_data_tracking,
         include_history: cfg.sync_data_history,
-        include_client_data: false,
-        include_server_settings: false,
+        include_read_entries: false,
+        include_app_settings: false,
+        include_extension_stores: false,
+        include_source_settings: false,
+        include_private_settings: false,
     }
 }
 

@@ -1,6 +1,6 @@
 // :extension-host —— Android 侧扩展宿主。
 //
-// 与桌面 ext-runtime 的关系（见 docs/migration/ANDROID_IMPL.md D2/D3）：
+// 与桌面 ext-runtime 的关系（见 docs/agent/android.md C2/C3）：
 //  * **共享**：ext-runtime 发布的共享源码包，展开到 `android/build/ext-runtime-src`
 //    —— `eu.kanade.tachiyomi.**`
 //    接口实现、SourceDriver、Router、JSON 契约。同一份源码，两端编译。

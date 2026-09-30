@@ -27,10 +27,22 @@ fn export_flags(query: &HashMap<String, String>) -> suwayomi_core::backup::Backu
     suwayomi_core::backup::BackupFlags::from_query_pairs(query.iter().map(|(k, v)| (k.as_str(), v.as_str())))
 }
 
+/// 导出用的输入：服务端设置取自当前生效配置，图源设置问沙盒要。
+///
+/// 两个导出端点共用同一份装配 —— 各写一份的话，会出现「附件下载带设置、内联流不带」
+/// 这种只在某一条路径上成立的差异。
+async fn export_inputs(
+    state: &AppState,
+) -> (suwayomi_core::config::ServerConfig, Vec<suwayomi_core::backup::BackupSourcePreferences>) {
+    (state.config.snapshot(), state.fetcher.backup_source_preferences().await)
+}
+
 /// Mirrors `protobufExport`: streams the gzipped protobuf backup as the body.
 async fn backup_export(State(state): State<AppState>, Query(query): Query<HashMap<String, String>>) -> Response {
     let flags = export_flags(&query);
-    match suwayomi_core::backup::create_backup(state.db.pool(), flags).await {
+    let (config, source_preferences) = export_inputs(&state).await;
+    let inputs = suwayomi_core::backup::BackupInputs { server_config: Some(&config), source_preferences };
+    match suwayomi_core::backup::create_backup(state.db.pool(), flags, inputs).await {
         Ok(bytes) => ([(axum::http::header::CONTENT_TYPE, "application/octet-stream")], bytes).into_response(),
         Err(e) => {
             tracing::error!(%e, "backup export failed");
@@ -40,12 +52,11 @@ async fn backup_export(State(state): State<AppState>, Query(query): Query<HashMa
 }
 
 /// Mirrors `protobufExportFile`: same payload, advertised as an attachment.
-async fn backup_export_file(
-    State(state): State<AppState>,
-    Query(query): Query<HashMap<String, String>>,
-) -> Response {
+async fn backup_export_file(State(state): State<AppState>, Query(query): Query<HashMap<String, String>>) -> Response {
     let flags = export_flags(&query);
-    match suwayomi_core::backup::create_backup(state.db.pool(), flags).await {
+    let (config, source_preferences) = export_inputs(&state).await;
+    let inputs = suwayomi_core::backup::BackupInputs { server_config: Some(&config), source_preferences };
+    match suwayomi_core::backup::create_backup(state.db.pool(), flags, inputs).await {
         Ok(bytes) => {
             // Mirror the autobackup / Mihon naming scheme
             // (org.suwayomi.next_2026-08-30_01-44.tachibk, local time): saving
@@ -74,6 +85,8 @@ async fn backup_import(State(state): State<AppState>, body: Bytes) -> Response {
         .await
     {
         Ok(summary) => {
+            // 图源设置住扩展自己的 JVM 存储里，core 够不着，恢复后交回沙盒写。
+            state.fetcher.apply_source_preferences(&summary.source_preferences).await;
             ([(axum::http::header::CONTENT_TYPE, "application/json")], summary_json(&summary, &[])).into_response()
         }
         Err(e) => {

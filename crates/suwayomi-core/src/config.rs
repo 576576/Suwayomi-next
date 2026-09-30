@@ -196,9 +196,10 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             ip: "0.0.0.0".into(),
-            // Windows 上 4501-4900 常被 Hyper-V 动态保留（bind 报 10013），
-            // 默认 8090 避开该区间；Docker 镜像内仍用 4567（Linux 无此问题）。
-            port: 8090,
+            // 与上游一致。该值落在 Windows 的 Hyper-V 动态保留区（4501-4900，
+            // bind 报 10013）里：桌面由托盘启动前嗅探并顺延（见 Suwayomi-tray），
+            // 独立运行由下面监听循环的自顺延兜底。
+            port: 4567,
             database_type: DatabaseType::H2,
             database_url: String::new(),
             database_username: String::new(),
@@ -417,13 +418,13 @@ mod tests {
         fn addr(s: &str) -> std::net::SocketAddr {
             s.parse().expect("socket addr")
         }
-        // 配置的端口不可用、监听自顺延到 8091：基址必须跟着走（此前写死 8090）
-        assert_eq!(server_base_url(addr("0.0.0.0:8091")), "http://127.0.0.1:8091");
+        // 配置的端口不可用、监听自顺延到 4568：基址必须跟着走
+        assert_eq!(server_base_url(addr("0.0.0.0:4568")), "http://127.0.0.1:4568");
         // 通配 v6 回落到回环 v6；IPv6 字面量要加方括号，否则会被当成端口分隔
         assert_eq!(server_base_url(addr("[::]:4901")), "http://[::1]:4901");
         // 绑定在具体地址上时原样用它——此刻该地址才是可达的，回环反而可能没监听
         assert_eq!(server_base_url(addr("192.168.1.5:18090")), "http://192.168.1.5:18090");
-        assert_eq!(server_base_url(addr("[fe80::1]:8090")), "http://[fe80::1]:8090");
+        assert_eq!(server_base_url(addr("[fe80::1]:4567")), "http://[fe80::1]:4567");
     }
 
     #[test]

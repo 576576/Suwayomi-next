@@ -2,13 +2,17 @@
 //! Each stream emits an initial snapshot then follows its live broadcast
 //! channel (download / update / sync events).
 
+use std::collections::{HashMap, HashSet};
+
 use async_graphql::{Context, InputObject, SimpleObject, Subscription};
 use futures::StreamExt;
 use futures::stream::{self, Stream};
 
 use suwayomi_domain::download::DownloadEvent;
 
-use crate::mutation_b4::{DownloadUpdates, LibraryUpdateStatus};
+use crate::mutation_b4::{
+    DownloadState, DownloadType, DownloadUpdate, DownloadUpdateType, DownloadUpdates, LibraryUpdateStatus,
+};
 use crate::query::UpdateStatusPayload;
 
 #[derive(SimpleObject, Clone)]
@@ -73,7 +77,10 @@ impl SubscriptionRoot {
             Err(_) => return futures::stream::empty().boxed(),
         };
         let rx = state.download.subscribe();
-        futures::stream::unfold((state, rx), |(state, mut rx)| async move {
+        // 上一条事件发出去的队列，用来算差量。空 map = 客户端手上什么都没有，
+        // 此时整条队列都算新增。
+        let prev: HashMap<i32, DownloadType> = HashMap::new();
+        futures::stream::unfold((state, rx, prev), |(state, mut rx, mut prev)| async move {
             loop {
                 match rx.recv().await {
                     Ok(event) => {
@@ -83,13 +90,16 @@ impl SubscriptionRoot {
                             state.download.set_progress(chapter_id, progress);
                         }
                         let status = crate::mutation_b4::download_status(&state).await.ok()?;
+                        let updates = diff_download_updates(&prev, &status.queue);
+                        prev = status.queue.iter().map(|d| (d.chapter.id, d.clone())).collect();
                         return Some((
                             DownloadUpdates {
                                 initial: Some(status.queue),
                                 omitted_updates: false,
                                 state: status.state,
+                                updates,
                             },
-                            (state.clone(), rx),
+                            (state.clone(), rx, prev),
                         ));
                     }
                     // 落后于广播只是丢事件；match 已是循环体末尾，等价于 continue。
@@ -156,4 +166,52 @@ impl SubscriptionRoot {
     async fn update_status_changed(&self, _ctx: &Context<'_>) -> impl Stream<Item = UpdateStatusPayload> {
         stream::once(async { UpdateStatusPayload::idle() })
     }
+}
+
+/// 两条队列快照之间的差量，对应上游 `DownloadUpdates.updates`。
+///
+/// 队伍里没有的按 `Dequeued` 报（WebUI 据此从缓存里删），新出现的按 `Queued`，
+/// 其余按状态 / 进度 / 位置变化取对应类型。**没变化的不发** —— 每次事件都把整条
+/// 队列当更新推一遍，客户端的增量合并逻辑会被反复触发。
+fn diff_download_updates(prev: &HashMap<i32, DownloadType>, current: &[DownloadType]) -> Vec<DownloadUpdate> {
+    let update =
+        |download: &DownloadType, r#type: DownloadUpdateType| DownloadUpdate { download: download.clone(), r#type };
+
+    let mut updates = Vec::new();
+    let mut seen = HashSet::with_capacity(current.len());
+    for item in current {
+        let id = item.chapter.id;
+        seen.insert(id);
+        let Some(before) = prev.get(&id) else {
+            updates.push(update(item, DownloadUpdateType::Queued));
+            continue;
+        };
+        let kind = if before.state != item.state {
+            Some(match item.state {
+                DownloadState::Finished => DownloadUpdateType::Finished,
+                DownloadState::Error => DownloadUpdateType::Error,
+                DownloadState::Queued | DownloadState::Downloading => DownloadUpdateType::Progress,
+            })
+        } else if before.progress != item.progress {
+            Some(DownloadUpdateType::Progress)
+        } else if before.position != item.position {
+            Some(DownloadUpdateType::Position)
+        } else {
+            None
+        };
+        if let Some(kind) = kind {
+            updates.push(update(item, kind));
+        }
+    }
+
+    // 按 id 排序再发：HashMap 的迭代顺序不定，同一份队列会产出不同顺序的 updates，
+    // 让事件流无法逐字节比对。
+    let mut removed: Vec<i32> = prev.keys().copied().filter(|id| !seen.contains(id)).collect();
+    removed.sort_unstable();
+    for id in removed {
+        if let Some(item) = prev.get(&id) {
+            updates.push(update(item, DownloadUpdateType::Dequeued));
+        }
+    }
+    updates
 }

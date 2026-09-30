@@ -1,11 +1,11 @@
 name: Lint
 
-# 质量门禁：格式 / 静态检查 / 测试，每次 push 与 PR 都跑（背景见 docs/release.md）。
+# 质量门禁：格式 / 静态检查 / 测试。
+#
+# **不跟 push / PR**：由 release.yml 在调用 build 之前作为一个 job 调起（`workflow_call`），
+# 所以发布链路上没有任何一道能绕过它；只跑它一个用 workflow_dispatch（背景见 docs/agent/release.md）。
 on:
-  push:
-    branches-ignore:
-      - "gh-pages"
-  pull_request:
+  workflow_call:
   workflow_dispatch:
 
 env:

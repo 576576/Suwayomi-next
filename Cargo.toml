@@ -20,11 +20,12 @@ members = [
 #                    （测试允许 panic，见各 crate 根部的 `#![cfg_attr(test, allow(...))]`）。
 #   阶段 3（本次）——控制流函数式化。下面这组 lint 是这一阶段的实际交付：每一条都
 #                    已经全 workspace 归零，所以可以直接进 CI 的 `-D warnings`。
-#                    仍旧没开的（属于后续 P2 盘子，不属于"控制流"）：
-#                    `cast_possible_truncation`/`cast_possible_wrap`/`cast_sign_loss`、
-#                    `cast_precision_loss`、`doc_markdown`、`must_use_candidate`、
-#                    `missing_errors_doc`、`unused_async`/`unused_async_trait_impl`、
-#                    `too_many_lines` —— 数量与处置见 docs/migration/RUST_STYLE_AUDIT.md §7。
+#                    仍旧没开的：`cast_possible_truncation`/`cast_possible_wrap`/
+#                    `cast_sign_loss`、`cast_precision_loss`、`doc_markdown`、
+#                    `must_use_candidate`、`missing_errors_doc`、
+#                    `unused_async`/`unused_async_trait_impl`、`too_many_lines` ——
+#                    清零要动大量签名或拆函数，与"控制流函数式化"不同批，暂不进
+#                    `-D warnings`。
 [workspace.lints.rust]
 unsafe_code = "warn"
 rust_2018_idioms = "warn"

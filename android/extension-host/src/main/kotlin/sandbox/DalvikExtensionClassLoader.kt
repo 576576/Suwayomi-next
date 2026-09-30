@@ -1,6 +1,6 @@
 //! 加载扩展 APK 的 dalvik ClassLoader（照搬 Mihon 的做法），用 `DelegateLastClassLoader`
 //! 是为了**子加载器优先**：宿主自己也带了 okhttp 之类的库，扩展内置的那份应当优先。
-//! API 27 才有它，26 走下面的 backport；详见 `docs/migration/ANDROID_IMPL.md` §C2。
+//! API 27 才有它，26 走下面的 backport；详见 `docs/agent/android.md` §C2。
 
 package sandbox
 

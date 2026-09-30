@@ -1,5 +1,7 @@
 //! Schema migrations, embedded at compile time so the binary never needs a
-//! `migrations/` directory at runtime.
+//! `migrations/` directory at runtime. They live in this crate's `migrations/`,
+//! one directory per backend (`postgres/` / `sqlite/`), and each file name
+//! matches the `version` string it is registered under.
 //!
 //! Each backend has its own list: PostgreSQL takes the original SQL verbatim
 //! (baseline + increment + the PL/pgSQL sync functions/triggers), SQLite takes
@@ -58,45 +60,33 @@ const ADVISORY_LOCK_KEY: i64 = 728_232_364;
 /// Default backend — the translated baseline already carries `alt_titles`, so
 /// there is no separate increment step.
 const SQLITE_MIGRATIONS: &[Migration] = &[
-    Migration {
-        version: "0001_schema_baseline",
-        sql: include_str!("../../../migrations/sqlite/0001_schema_baseline.sql"),
-    },
-    Migration { version: "0002_sync_triggers", sql: include_str!("../../../migrations/sqlite/0002_sync_triggers.sql") },
-    Migration {
-        version: "0003_add_source_flags",
-        sql: include_str!("../../../migrations/sqlite/0003_add_source_flags.sql"),
-    },
-    Migration {
-        version: "0004_add_source_urls",
-        sql: include_str!("../../../migrations/sqlite/0004_add_source_urls.sql"),
-    },
+    Migration { version: "0001_schema_baseline", sql: include_str!("../migrations/sqlite/0001_schema_baseline.sql") },
+    Migration { version: "0002_sync_triggers", sql: include_str!("../migrations/sqlite/0002_sync_triggers.sql") },
+    Migration { version: "0003_add_source_flags", sql: include_str!("../migrations/sqlite/0003_add_source_flags.sql") },
+    Migration { version: "0004_add_source_urls", sql: include_str!("../migrations/sqlite/0004_add_source_urls.sql") },
     Migration {
         version: "0005_add_tracker_credentials",
-        sql: include_str!("../../../migrations/sqlite/0005_add_tracker_credentials.sql"),
+        sql: include_str!("../migrations/sqlite/0005_add_tracker_credentials.sql"),
     },
 ];
 
 /// PostgreSQL — same files the server used before the dual-backend split.
 const POSTGRES_MIGRATIONS: &[Migration] = &[
-    Migration { version: "0001_schema_baseline", sql: include_str!("../../../migrations/0001_schema_baseline.sql") },
+    Migration { version: "0001_schema_baseline", sql: include_str!("../migrations/postgres/0001_schema_baseline.sql") },
     Migration {
         version: "0002_add_manga_alt_titles",
-        sql: include_str!("../../../migrations/0002_add_manga_alt_titles.sql"),
+        sql: include_str!("../migrations/postgres/0002_add_manga_alt_titles.sql"),
     },
+    Migration { version: "0003_sync_functions", sql: include_str!("../migrations/postgres/0003_sync_functions.sql") },
+    Migration { version: "0004_sync_triggers", sql: include_str!("../migrations/postgres/0004_sync_triggers.sql") },
     Migration {
-        version: "0003_sync_functions",
-        sql: include_str!("../../../migrations/pg-only/0002_sync_functions.sql"),
+        version: "0005_add_source_flags",
+        sql: include_str!("../migrations/postgres/0005_add_source_flags.sql"),
     },
-    Migration {
-        version: "0004_sync_triggers",
-        sql: include_str!("../../../migrations/pg-only/0002_sync_triggers.sql"),
-    },
-    Migration { version: "0005_add_source_flags", sql: include_str!("../../../migrations/0005_add_source_flags.sql") },
-    Migration { version: "0006_add_source_urls", sql: include_str!("../../../migrations/0006_add_source_urls.sql") },
+    Migration { version: "0006_add_source_urls", sql: include_str!("../migrations/postgres/0006_add_source_urls.sql") },
     Migration {
         version: "0007_add_tracker_credentials",
-        sql: include_str!("../../../migrations/0007_add_tracker_credentials.sql"),
+        sql: include_str!("../migrations/postgres/0007_add_tracker_credentials.sql"),
     },
 ];
 

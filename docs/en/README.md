@@ -13,20 +13,20 @@ A Rust implementation of the [Suwayomi-Server](https://github.com/Suwayomi/Suway
 Implemented: core data model & database layer, business logic (domain),
 REST API v1, GraphQL API, OPDS, downloads / library updates / backups / trackers
 / KOReader·SyncYomi sync, a JVM extension sandbox, a Tauri desktop shell and
-the release CI. REST v1 and GraphQL schema baselines live in `docs/api/` and
-`docs/graphql/`; behaviour is compatible with the original Suwayomi.
+the release CI. REST v1 and GraphQL schema baselines live under `docs/agent/`;
+behaviour is compatible with the original Suwayomi.
 
 ## Quick start (from source)
 
 ```bash
-# Build & run (default port 8090, local SQLite database, zero external
-# dependencies; falls back to a higher port if 8090 is taken)
+# Build & run (default port 4567, local SQLite database, zero external
+# dependencies; falls back to a higher port if 4567 is taken)
 cargo run --release -p suwayomi-server
 ```
 
-- WebUI: `http://localhost:8090`
+- WebUI: `http://localhost:4567`
 - GraphQL: `/api/graphql` · REST: `/api/v1` · OPDS: `/api/opds/v1.2` (KOReader)
-- Full configuration: **`../user-guide.md`**
+- Full configuration: **`../zh/user-guide.md`**
 
 ## Release package layout & usage
 
@@ -77,9 +77,10 @@ systems without a WebView fall back to the system browser.
    converted by the JVM sandbox (dex2jar) and loaded; the converted jar lands in
    `<appdata>/extensions/bin` and the sources are registered in the database.
    Uninstall cleans up both.
-5. **Port**: defaults to 8090 with automatic fallback when occupied; when used
-   with the desktop shell, the tray settings take precedence.
-6. **Logs**: `<appdata>/cache/logs/` holds `server.log`, `tray.log`,
+5. **Port**: defaults to 4567 with automatic fallback when occupied; the desktop
+   shell picks a free port up front (4567 sits in the range Windows sometimes
+   reserves for Hyper-V) and its settings take precedence.
+6. **Logs**: `<appdata>/logs/` holds `server.log`, `tray.log`,
    `sandbox.log` —
    check these first when debugging.
 
@@ -88,7 +89,8 @@ systems without a WebView fall back to the system browser.
 ```
 crates/
   suwayomi-db-macros/ proc-macro (#[derive(FromRow)])
-  suwayomi-db/        dual-backend database layer (SQLite default / PostgreSQL)
+  suwayomi-db/        dual-backend database layer (SQLite default / PostgreSQL;
+                      SQL migrations live in its migrations/)
   suwayomi-core/      domain models + table row types + build-time version info
   suwayomi-domain/    business logic (the only layer that speaks HTTP outward)
   suwayomi-api/       shared API layer: AppState + site-wide auth middleware
@@ -99,11 +101,10 @@ crates/
   suwayomi-android/   JNI cdylib (ships the whole server inside the Android APK)
 android/             Android host project (separate Gradle/AGP build, not
                      merged into the main project)
-migrations/          SQL migrations (incl. pg-only/: SyncYomi triggers)
 scripts/             CI/helper scripts (resolve-webui.sh / unzip_any.py, …)
 assets/              icons & screenshots (images/, screenshots/)
-docs/                docs (api/, graphql/, migration/, en/, release.md,
-                     user-guide.md)
+docs/                docs (zh/ Chinese, en/ English, agent/ for maintainers
+                     and AI)
 ```
 
 The desktop shell (Tauri 2) lives in its own repository,
@@ -147,14 +148,14 @@ curl -fsSL -o ext-runtime.jar "$(printf '%s' "$OUT" | sed -n 's/^url=//p')"
 # 2) Drop extension APKs into <appdata>/extensions/apk
 # 3) Start the server with the sandbox enabled
 SUWAYOMI_SANDBOX_JAR=ext-runtime.jar \
-SUWAYOMI_SANDBOX_PORT=8091 \
+SUWAYOMI_SANDBOX_PORT=4568 \
 SUWAYOMI_APPDATA_DIR=/var/lib/suwayomi/appdata \
 SUWAYOMI_SANDBOX_PROXY=127.0.0.1:7890 \   # optional: HTTP proxy
 ./target/release/suwayomi-server
 ```
 
 Environment: `SUWAYOMI_SANDBOX_JAR` (enables the sandbox),
-`SUWAYOMI_SANDBOX_PORT` (default 8091), `SUWAYOMI_APPDATA_DIR` (single writable
+`SUWAYOMI_SANDBOX_PORT` (default 4568), `SUWAYOMI_APPDATA_DIR` (single writable
 root — the sandbox child inherits it and derives the extension dir
 `extensions/apk`, the converted-jar dir `extensions/bin` and `settings/` from
 it), `SUWAYOMI_SANDBOX_PROXY` (optional HTTP proxy). Without a configured
@@ -193,7 +194,7 @@ registered in the database automatically, shared across the UI and the API:
   `syncData*` scope options and `syncInterval`). Sync uses the Mihon backup
   protobuf with ETag (If-None-Match/If-Match) over
   `{host}/api/sync/content`, doing pull → restore → push.
-- **Version triggers**: `migrations/pg-only/0002_*` bump row versions on
+- **Version triggers**: `crates/suwayomi-db/migrations/{sqlite,postgres}/` bump row versions on
   manga/chapter/category changes (exempting `is_syncing`); applied on both the
   embedded and external PostgreSQL backends.
 
@@ -210,17 +211,18 @@ double-click **`build.bat`** in the repo root (or `cmd /c build.bat`).
 
 ## Docs
 
-- `../user-guide.md` — user guide (configuration/backup/OPDS/Docker)
-- `../release.md` — release pipeline & CI conventions
-- `../migration/MIGRATE.md` — migrating from the Kotlin version
-- `../api/rest-endpoints-baseline.md` — REST v1 baseline
-- `../graphql/README.md` — GraphQL schema baseline
+- `../zh/user-guide.md` — user guide (configuration/backup/OPDS/Docker)
+- `../zh/migrate-from-kotlin.md` — migrating from the Kotlin version
+- `../agent/release.md` — release pipeline & CI conventions
+- `../agent/rest-api.md` — REST v1 baseline
+- `../agent/graphql.md` — GraphQL schema baseline
+- `../agent/android.md` — Android host project
 
 ## Docker
 
 ```bash
 docker build -t suwayomi-next .
-docker run -p 8090:8090 -v suwayomi-data:/data suwayomi-next   # 8090 on both
+docker run -p 4567:4567 -v suwayomi-data:/data suwayomi-next   # 4567 on both
 ```
 
 ## License

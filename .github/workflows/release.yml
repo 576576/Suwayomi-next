@@ -1,6 +1,6 @@
 name: Release
 
-# 发布 CI（唯一入口）：推送 main 出自动 alpha，手动 dispatch 出 alpha / beta / release。语义见 docs/release.md。
+# 发布 CI（唯一入口）：推送 main 出自动 alpha，手动 dispatch 出 alpha / beta / release。语义见 docs/agent/release.md。
 
 on:
   push:
@@ -173,7 +173,7 @@ jobs:
 
           VER_CODE="$((COUNT+3000))"
 
-          # alpha 用 r{code}；beta/release 用外部 3.y.z（规则见 docs/release.md）
+          # alpha 用 r{code}；beta/release 用外部 3.y.z（规则见 docs/agent/release.md）
           if [ "$CHANNEL" = "alpha" ]; then
             VER_NAME="r${VER_CODE}"
           else
@@ -333,9 +333,16 @@ jobs:
             echo "捆绑桌面壳: $VER（$BASE）"
           fi
 
+  lint:
+    name: 质量门禁（复用 lint.yml）
+    # 与 prep 并行，不占发布链路的时间；门禁不过时由 build 的 needs 拦住编译。
+    permissions:
+      contents: read
+    uses: ./.github/workflows/lint.yml
+
   build:
     name: 构建（复用 build.yml）
-    needs: prep
+    needs: [prep, lint]
     # 被调工作流的权限不能超过调用方；OCI 要推 GHCR，所以这里必须给 packages: write。
     permissions:
       contents: read

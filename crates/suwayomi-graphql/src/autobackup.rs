@@ -83,7 +83,13 @@ async fn create_backup_file(
     folder: &PathBuf,
     flags: suwayomi_core::backup::BackupFlags,
 ) -> Result<(), String> {
-    let bytes = suwayomi_core::backup::create_backup(state.db.pool(), flags).await.map_err(|e| e.to_string())?;
+    let config = state.config.snapshot();
+    let inputs = suwayomi_core::backup::BackupInputs {
+        server_config: Some(&config),
+        source_preferences: state.fetcher.backup_source_preferences().await,
+    };
+    let bytes =
+        suwayomi_core::backup::create_backup(state.db.pool(), flags, inputs).await.map_err(|e| e.to_string())?;
     std::fs::create_dir_all(folder).map_err(|e| format!("mkdir: {e}"))?;
     let filename = format!("org.suwayomi.next_{}.tachibk", chrono::Local::now().format("%Y-%m-%d_%H-%M"));
     let path = folder.join(filename);
@@ -107,8 +113,11 @@ async fn load_settings(state: &GraphQLState) -> Option<(i32, PathBuf, suwayomi_c
         include_chapters: settings.auto_backup_include_chapters,
         include_tracking: settings.auto_backup_include_tracking,
         include_history: settings.auto_backup_include_history,
-        include_client_data: settings.auto_backup_include_client_data,
-        include_server_settings: settings.auto_backup_include_server_settings,
+        include_read_entries: settings.auto_backup_include_read_entries,
+        include_app_settings: settings.auto_backup_include_app_settings,
+        include_extension_stores: settings.auto_backup_include_extension_stores,
+        include_source_settings: settings.auto_backup_include_source_settings,
+        include_private_settings: settings.auto_backup_include_private_settings,
     };
     Some((frequency, folder, flags))
 }

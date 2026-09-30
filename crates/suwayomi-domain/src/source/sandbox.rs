@@ -7,11 +7,64 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use suwayomi_core::backup::{BackupPreference, PreferenceValue, preference_value};
 use suwayomi_core::source::{MangasPage, SChapter, SManga};
 
 use crate::error::{DomainError, Result};
 use crate::source::SourceFetcher;
 use suwayomi_core::text::urlencode;
+
+/// 沙盒 HTTP 端口在 `SUWAYOMI_SANDBOX_PORT` 缺失时的落点：紧邻 server 默认端口
+/// （4567）的下一格。桌面壳会给它传一个与 server 不同的空闲端口；裸跑 server 时
+/// 这个值被占用（含 server 自身顺延过来）才由 `available_port` 再顺延。
+pub const DEFAULT_SANDBOX_PORT: u16 = 4568;
+
+/// 沙盒报上来的一个偏好项（`/source/{id}/preferences/raw`）。
+///
+/// 值带类型：`SharedPreferences` 把类型一起存下来，只传字符串的话整型/布尔读回来
+/// 会落到默认值。`value` 保持 `serde_json::Value`，由 [`Self::to_backup_preference`]
+/// 按 `value_type` 解释。
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+pub struct SandboxPreference {
+    pub key: String,
+    #[serde(rename = "type")]
+    pub value_type: String,
+    pub value: serde_json::Value,
+}
+
+impl SandboxPreference {
+    /// → Mihon 的 `BackupPreference`（105 号段里的形态）。类型不认识时 `None`。
+    ///
+    /// `Float` 这里收窄成 `f32`：JSON 只有 f64，而 Mihon 的 `BackupPreference.Float`
+    /// 就是 `Float`（32 位），位数对不上是协议本身的形状。
+    pub fn to_backup_preference(&self) -> Option<BackupPreference> {
+        let value = match self.value_type.as_str() {
+            "Int" => preference_value::Value::Int(i32::try_from(self.value.as_i64()?).ok()?),
+            "Long" => preference_value::Value::Long(self.value.as_i64()?),
+            "Float" => preference_value::Value::Float(self.value.as_f64()? as f32),
+            "String" => preference_value::Value::Text(self.value.as_str()?.to_string()),
+            "Boolean" => preference_value::Value::Flag(self.value.as_bool()?),
+            "StringSet" => preference_value::Value::StringSet(preference_value::StringSetValue {
+                value: self.value.as_array()?.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+            }),
+            _ => return None,
+        };
+        Some(BackupPreference { key: self.key.clone(), value: Some(PreferenceValue { value: Some(value) }) })
+    }
+
+    /// [`Self::to_backup_preference`] 的逆操作。
+    pub fn from_backup_preference(pref: &BackupPreference) -> Option<Self> {
+        let (value_type, value) = match pref.value.as_ref()?.value.as_ref()? {
+            preference_value::Value::Int(v) => ("Int", serde_json::json!(v)),
+            preference_value::Value::Long(v) => ("Long", serde_json::json!(v)),
+            preference_value::Value::Float(v) => ("Float", serde_json::json!(v)),
+            preference_value::Value::Text(v) => ("String", serde_json::json!(v)),
+            preference_value::Value::Flag(v) => ("Boolean", serde_json::json!(v)),
+            preference_value::Value::StringSet(v) => ("StringSet", serde_json::json!(v.value)),
+        };
+        Some(Self { key: pref.key.clone(), value_type: value_type.to_string(), value })
+    }
+}
 
 /// A source described by the sandbox (used for registration/debug).
 #[derive(Debug, Clone, Deserialize)]
@@ -160,7 +213,7 @@ impl HttpSandboxFetcher {
                 reqwest::Client::builder()
                     .connect_timeout(std::time::Duration::from_secs(5))
                     // 本地回环绝不走代理：reqwest 默认读取 HTTP_PROXY/HTTPS_PROXY 等
-                    // 环境变量（Clash 常设置），会把 127.0.0.1:8091 也转发到代理，
+                    // 环境变量（Clash 常设置），会把 127.0.0.1:4568 也转发到代理，
                     // 代理无法连接该端口返回 502 Bad Gateway（install reload 失败）。
                     .no_proxy(),
             ),
@@ -237,6 +290,56 @@ impl HttpSandboxFetcher {
         }
         let v: serde_json::Value = r.json().await.map_err(DomainError::from)?;
         Ok(Some(v.get("preferences").map_or_else(|| "[]".to_string(), std::string::ToString::to_string)))
+    }
+
+    /// 源的扁平 key/value（`GET /source/{id}/preferences/raw`），备份 105 号段用。
+    ///
+    /// 与 [`Self::source_preferences`] 的区别：那个给的是「设置界面」（标题、选项、
+    /// 可见性），这个给的是「扩展自己存了什么」——文件格式要的是后者。
+    ///
+    /// `None` = 该源没有设置界面（沙盒回 404），不是错误。
+    pub async fn source_preference_values(&self, source_id: i64) -> Result<Option<Vec<SandboxPreference>>> {
+        let r = self
+            .client
+            .get(format!("{}/source/{source_id}/preferences/raw", self.base_url))
+            .send()
+            .await
+            .map_err(DomainError::from)?;
+        Self::raw_preferences_body(r).await
+    }
+
+    /// 把扁平 key/value 写回扩展自己的存储，返回写回后的结果。
+    pub async fn write_source_preference_values(
+        &self,
+        source_id: i64,
+        prefs: &[SandboxPreference],
+    ) -> Result<Option<Vec<SandboxPreference>>> {
+        let r = self
+            .client
+            .post(format!("{}/source/{source_id}/preferences/raw", self.base_url))
+            .json(&serde_json::json!({ "preferences": prefs }))
+            .send()
+            .await
+            .map_err(DomainError::from)?;
+        Self::raw_preferences_body(r).await
+    }
+
+    async fn raw_preferences_body(r: reqwest::Response) -> Result<Option<Vec<SandboxPreference>>> {
+        #[derive(Deserialize)]
+        struct RawPreferences {
+            #[serde(default)]
+            preferences: Vec<SandboxPreference>,
+        }
+
+        if r.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !r.status().is_success() {
+            return Err(sandbox_error(r).await);
+        }
+
+        let v: RawPreferences = r.json().await.map_err(DomainError::from)?;
+        Ok(Some(v.preferences))
     }
 
     /// Parses an uploaded APK (raw bytes) and returns its extension metadata.
@@ -426,20 +529,59 @@ impl SourceFetcher for HttpSandboxFetcher {
     }
 }
 
+/// `requested` 上探多少个端口找空位；只用来躲开占用，不做全端口扫描。
+const SANDBOX_PORT_TRIES: u16 = 32;
+
+#[cfg(not(windows))]
+fn kill_port_listener(_port: u16) {}
+
+fn port_bindable(port: u16) -> bool {
+    std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).is_ok()
+}
+
+/// 沙盒实际可用的端口：先清掉上一次运行残留的沙盒 JVM，清完还是绑不上就向上顺延。
+/// 「清完仍绑不上」意味着占用者不是残留沙盒，而是 server 自己 —— 它的监听端口自顺延时
+/// 可能正好落到 `SUWAYOMI_SANDBOX_PORT` 上，那种情况下顺延是唯一的出路。
+async fn available_port(requested: u16) -> u16 {
+    if port_bindable(requested) {
+        return requested;
+    }
+    tracing::warn!(port = requested, "sandbox port already in use; killing stale listener");
+    kill_port_listener(requested);
+    for _ in 0..20 {
+        if port_bindable(requested) {
+            return requested;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    let fallback =
+        (requested.saturating_add(1)..=requested.saturating_add(SANDBOX_PORT_TRIES)).find(|p| port_bindable(*p));
+    // 一个空位都没有：原样返回，交给 spawn 去失败 —— 健康检查会报出「沙盒没起来」，
+    // 好过绑到别人的端口上。
+    fallback.map_or(requested, |p| {
+        tracing::warn!(requested, port = p, "sandbox port still taken; using another one");
+        p
+    })
+}
+
 /// Best-effort: terminate whatever process is LISTENING on `port`.
-/// The single-instance mutex guarantees any listener is our own stale JVM.
+/// The single-instance mutex guarantees any listener is our own stale JVM — except
+/// when the port is the one our own server ended up on after falling back; killing
+/// that would take the server down with it.
 #[cfg(windows)]
 fn kill_port_listener(port: u16) {
     use std::os::windows::process::CommandExt;
     use std::process::Command;
     let out = Command::new("netstat").args(["-ano"]).output().ok();
     if let Some(out) = out {
+        let own_pid = std::process::id().to_string();
         let text = String::from_utf8_lossy(&out.stdout);
         for line in text.lines() {
             let l = line.to_ascii_lowercase();
             if l.contains(&format!(":{port}"))
                 && l.contains("listening")
                 && let Some(pid) = line.split_whitespace().last()
+                && pid != own_pid
             {
                 let _ = Command::new("taskkill").args(["/F", "/PID", pid]).creation_flags(0x0800_0000).output();
             }
@@ -514,7 +656,7 @@ fn resolve_java(jar_path: &str) -> std::path::PathBuf {
 }
 
 /// Builds the `java -jar` command for the sandbox (no-window on Windows,
-/// JVM output redirected into `<appdata>/cache/logs/sandbox.log`).
+/// JVM output redirected into `<appdata>/logs/sandbox.log`).
 ///
 /// 子进程只拿一个目录旋钮 `SUWAYOMI_APPDATA_DIR`，扩展目录 / dex2jar 产物目录 /
 /// 设置目录由 ext-runtime 自己按同一套子路径派生（见 Main.kt）—— 两边必须落在
@@ -574,25 +716,12 @@ pub struct SandboxProcess {
 
 impl SandboxProcess {
     /// `appdata` 与 server 共用同一个根（见 `AppPaths::appdata`）：沙盒据此自行
-    /// 派生扩展目录 / dex2jar 产物目录 / 设置目录，日志也写在它的 `cache/logs` 下。
+    /// 派生扩展目录 / dex2jar 产物目录 / 设置目录（沙盒侧不派生 `logs`，那个日志
+    /// 文件是本进程重定向它的 stdout/stderr 写出来的）。
     pub async fn start(jar_path: &str, port: &str, appdata: &std::path::Path) -> Result<Self> {
-        // A sandbox JVM left over from a previous server run (e.g. after a
-        // jar upgrade + server restart) may still own `port`. Our health
-        // probe would hit that stale instance and pass, silently keeping the
-        // OLD jar alive — so clear the port before spawning.
-        let port_num: u16 = port.parse().unwrap_or(8091);
-        if std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port_num)).is_err() {
-            tracing::warn!("sandbox port {port} already in use; killing stale listener");
-            kill_port_listener(port_num);
-            for _ in 0..20 {
-                if std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port_num)).is_ok() {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            }
-        }
+        let port = available_port(port.parse().unwrap_or(DEFAULT_SANDBOX_PORT)).await.to_string();
         let mut child =
-            spawn_java(jar_path, port, appdata).map_err(|e| DomainError::Sandbox(format!("spawn sandbox: {e}")))?;
+            spawn_java(jar_path, &port, appdata).map_err(|e| DomainError::Sandbox(format!("spawn sandbox: {e}")))?;
         let base = format!("http://127.0.0.1:{port}");
         let fetcher = HttpSandboxFetcher::new(base.clone());
         // wait for health with retries (up to ~15s); bail if OUR child died
@@ -644,7 +773,7 @@ impl SandboxProcess {
                     let _ = fetch_child_kill(&mut guard);
                 }
                 // wait for the port to free up (bind probe)
-                let port_num = port.parse::<u16>().unwrap_or(8091);
+                let port_num = port.parse::<u16>().unwrap_or(DEFAULT_SANDBOX_PORT);
                 for _ in 0..10 {
                     if std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port_num)).is_ok() {
                         break;

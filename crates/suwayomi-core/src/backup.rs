@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use prost::Message;
 use suwayomi_db::Db;
 
-use crate::schema::{CategoryRow, ChapterRow, MangaRow, TrackRecordRow};
+use crate::schema::{CategoryRow, ChapterRow, ExtensionStoreRow, MangaRow, TrackRecordRow};
 
 /// 备份里认得的追踪器 id —— 与 `suwayomi_domain::tracker` 的常量一致
 /// （1 MAL / 2 AniList / 3 Kitsu / 4 Shikimori / 5 Bangumi / 7 MangaUpdates）。
@@ -17,11 +17,11 @@ use crate::schema::{CategoryRow, ChapterRow, MangaRow, TrackRecordRow};
 /// `suwayomi-domain` 的测试会断言两份清单相等，防止单边漂移。
 pub const SUPPORTED_TRACKER_IDS: [i32; 6] = [1, 2, 3, 4, 5, 7];
 
-/// 备份内容开关（对应上游 `BackupFlags`）。
+/// 备份内容开关 —— 与 Mihon `BackupOptions` 的十项一一对应。
 ///
-/// 默认全开，与上游 `BackupFlags.DEFAULT` 一致。`include_history` /
-/// `include_client_data` / `include_server_settings` 目前是空操作：本仓库的导出
-/// 还没有把 `BackupHistory`、manga/chapter meta、`BackupServerSettings` 填进去。
+/// 默认全开，唯一的例外是 `include_private_settings`（对齐 Mihon 里唯一默认关闭的
+/// `privateSettings`）。`include_history` 仍是空操作：本仓库没有 history 表，
+/// 导出侧不填 `BackupHistory`。
 #[derive(Debug, Clone, Copy)]
 pub struct BackupFlags {
     pub include_manga: bool,
@@ -29,8 +29,16 @@ pub struct BackupFlags {
     pub include_chapters: bool,
     pub include_tracking: bool,
     pub include_history: bool,
-    pub include_client_data: bool,
-    pub include_server_settings: bool,
+    /// Mihon `readEntries`：除库内作品外，还带上「有已读章节但不在库」的作品。
+    pub include_read_entries: bool,
+    /// Mihon `appSettings`：服务端设置（9001）+ 各 meta 节（9000）。
+    pub include_app_settings: bool,
+    /// Mihon `extensionStores`：插件仓库（106）。
+    pub include_extension_stores: bool,
+    /// Mihon `sourceSettings`：扩展自己存的图源设置（105）。
+    pub include_source_settings: bool,
+    /// Mihon `privateSettings`：凭据与认证信息。默认关闭。
+    pub include_private_settings: bool,
 }
 
 impl Default for BackupFlags {
@@ -41,8 +49,11 @@ impl Default for BackupFlags {
             include_chapters: true,
             include_tracking: true,
             include_history: true,
-            include_client_data: true,
-            include_server_settings: true,
+            include_read_entries: true,
+            include_app_settings: true,
+            include_extension_stores: true,
+            include_source_settings: true,
+            include_private_settings: false,
         }
     }
 }
@@ -55,8 +66,11 @@ pub struct PartialBackupFlags {
     pub include_chapters: Option<bool>,
     pub include_tracking: Option<bool>,
     pub include_history: Option<bool>,
-    pub include_client_data: Option<bool>,
-    pub include_server_settings: Option<bool>,
+    pub include_read_entries: Option<bool>,
+    pub include_app_settings: Option<bool>,
+    pub include_extension_stores: Option<bool>,
+    pub include_source_settings: Option<bool>,
+    pub include_private_settings: Option<bool>,
 }
 
 impl BackupFlags {
@@ -69,34 +83,43 @@ impl BackupFlags {
             include_chapters: p.include_chapters.unwrap_or(d.include_chapters),
             include_tracking: p.include_tracking.unwrap_or(d.include_tracking),
             include_history: p.include_history.unwrap_or(d.include_history),
-            include_client_data: p.include_client_data.unwrap_or(d.include_client_data),
-            include_server_settings: p.include_server_settings.unwrap_or(d.include_server_settings),
+            include_read_entries: p.include_read_entries.unwrap_or(d.include_read_entries),
+            include_app_settings: p.include_app_settings.unwrap_or(d.include_app_settings),
+            include_extension_stores: p.include_extension_stores.unwrap_or(d.include_extension_stores),
+            include_source_settings: p.include_source_settings.unwrap_or(d.include_source_settings),
+            include_private_settings: p.include_private_settings.unwrap_or(d.include_private_settings),
         }
     }
 
     /// 字段按 [`BACKUP_FLAG_QUERY_KEYS`] 的顺序展开。
-    fn to_array(self) -> [bool; 7] {
+    fn to_array(self) -> [bool; 10] {
         [
             self.include_manga,
             self.include_categories,
             self.include_chapters,
             self.include_tracking,
             self.include_history,
-            self.include_client_data,
-            self.include_server_settings,
+            self.include_read_entries,
+            self.include_app_settings,
+            self.include_extension_stores,
+            self.include_source_settings,
+            self.include_private_settings,
         ]
     }
 
     /// [`to_array`](Self::to_array) 的逆操作。
-    fn from_array(values: [bool; 7]) -> Self {
+    fn from_array(values: [bool; 10]) -> Self {
         Self {
             include_manga: values[0],
             include_categories: values[1],
             include_chapters: values[2],
             include_tracking: values[3],
             include_history: values[4],
-            include_client_data: values[5],
-            include_server_settings: values[6],
+            include_read_entries: values[5],
+            include_app_settings: values[6],
+            include_extension_stores: values[7],
+            include_source_settings: values[8],
+            include_private_settings: values[9],
         }
     }
 
@@ -133,15 +156,41 @@ impl BackupFlags {
 
 /// 手动备份下载 URL 里承载开关的键名（camelCase，与 GraphQL
 /// `PartialBackupFlagsInput` 的字段同名），顺序与 [`BackupFlags::to_array`] 一致。
-const BACKUP_FLAG_QUERY_KEYS: [&str; 7] = [
+const BACKUP_FLAG_QUERY_KEYS: [&str; 10] = [
     "includeManga",
     "includeCategories",
     "includeChapters",
     "includeTracking",
     "includeHistory",
-    "includeClientData",
-    "includeServerSettings",
+    "includeReadEntries",
+    "includeAppSettings",
+    "includeExtensionStores",
+    "includeSourceSettings",
+    "includePrivateSettings",
 ];
+
+/// `global_meta` 里属于服务端自身状态、不进备份的键。
+///
+/// 这张表在本仓库是「客户端 meta」与「服务端状态」混住的：设置 blob、自动备份
+/// 游标、KOReader 凭据、SyncYomi 位点都写在这里。放它们进备份会同时造成两件事——
+/// 凭据随备份文件流出，以及恢复一份别人的备份会改掉本机设置与同步位点。
+const GLOBAL_META_INTERNAL_KEYS: [&str; 3] = ["settings", "webui_migration", "last_auto_backup_at"];
+
+/// 服务端自己写的 `global_meta` 键前缀（KOReader 凭据、SyncYomi 游标）。
+const GLOBAL_META_INTERNAL_PREFIXES: [&str; 2] = ["koreader_sync_", "sync_yomi_"];
+
+/// Mihon 用 `__PRIVATE_` 前缀标记敏感偏好、`__APP_STATE_` 标记永不入备份的态。
+/// 图源设置从沙盒原样取回来，过滤在这里做。
+pub const PRIVATE_PREFERENCE_PREFIX: &str = "__PRIVATE_";
+
+/// 见 [`PRIVATE_PREFERENCE_PREFIX`]。
+pub const APP_STATE_PREFERENCE_PREFIX: &str = "__APP_STATE_";
+
+/// `key` 是否属于服务端自身状态（设置 blob / 同步位点 / 凭据）。
+fn is_internal_global_meta_key(key: &str) -> bool {
+    GLOBAL_META_INTERNAL_KEYS.contains(&key)
+        || GLOBAL_META_INTERNAL_PREFIXES.iter().any(|prefix| key.starts_with(prefix))
+}
 
 // 恢复时「查找现有行」用的宽行类型：列多但只作一次性比对，抽别名避免 clippy
 // `type_complexity` 噪音，也让 SELECT 与解构处的形状一目了然。
@@ -172,6 +221,14 @@ pub struct Backup {
     pub backup_categories: Vec<BackupCategory>,
     #[prost(message, repeated, tag = "101")]
     pub backup_sources: Vec<BackupSource>,
+    /// 图源设置（Mihon tag 105）。值是扩展自己存的，从沙盒取；本仓库没有服务端的
+    /// 图源设置表。Mihon 的 104（客户端 SharedPreferences）这里不声明：服务端没有
+    /// 那套键空间，prost 会跳过未知字段，Mihon 的备份照样解得开。
+    #[prost(message, repeated, tag = "105")]
+    pub backup_source_preferences: Vec<BackupSourcePreferences>,
+    /// 插件商店仓库（Mihon tag 106），表 `extension_store`。
+    #[prost(message, repeated, tag = "106")]
+    pub backup_extension_stores: Vec<BackupExtensionStore>,
     #[prost(map = "string, string", tag = "9000")]
     pub meta: HashMap<String, String>,
     #[prost(message, optional, tag = "9001")]
@@ -374,9 +431,117 @@ pub struct BackupServerSettings {
     pub use_hikari_connection_pool: bool,
 }
 
+/// 一个源的扁平设置（Mihon `BackupSourcePreferences`，tag 105）。
+///
+/// `source_key` 是 `source_<id>`，与扩展自己的 `ConfigurableSource.preferenceKey()`
+/// 一致 —— 扩展按这个键取它那份 `SharedPreferences`。
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BackupSourcePreferences {
+    #[prost(string, tag = "1")]
+    pub source_key: String,
+    #[prost(message, repeated, tag = "2")]
+    pub prefs: Vec<BackupPreference>,
+}
+
+/// 一条扁平偏好（Mihon `BackupPreference`）。
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BackupPreference {
+    #[prost(string, tag = "1")]
+    pub key: String,
+    #[prost(message, optional, tag = "2")]
+    pub value: Option<PreferenceValue>,
+}
+
+/// Mihon 把偏好值做成 sealed class，六个子类按声明顺序占 1..6 号字段，各自只有一个
+/// `value`（tag 1）。顺序即协议：换错一位，整型会被读成字符串。
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PreferenceValue {
+    #[prost(oneof = "preference_value::Value", tags = "1, 2, 3, 4, 5, 6")]
+    pub value: Option<preference_value::Value>,
+}
+
+pub mod preference_value {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Value {
+        #[prost(int32, tag = "1")]
+        Int(i32),
+        #[prost(int64, tag = "2")]
+        Long(i64),
+        #[prost(float, tag = "3")]
+        Float(f32),
+        #[prost(string, tag = "4")]
+        Text(String),
+        #[prost(bool, tag = "5")]
+        Flag(bool),
+        #[prost(message, tag = "6")]
+        StringSet(StringSetValue),
+    }
+
+    /// `Set<String>`：一个只有 repeated 字段的消息，字段号 1。
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct StringSetValue {
+        #[prost(string, repeated, tag = "1")]
+        pub value: Vec<String>,
+    }
+}
+
+/// 一个插件仓库（Mihon `BackupExtensionStore`，tag 106）。
+///
+/// 字段号按 Mihon 的声明顺序：3/4 与 5 在源码里是交错声明的，不要按书写顺序排。
+#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+pub struct BackupExtensionStore {
+    #[prost(string, tag = "1")]
+    pub index_url: String,
+    #[prost(string, tag = "2")]
+    pub name: String,
+    #[prost(string, optional, tag = "3")]
+    pub badge_label: Option<String>,
+    #[prost(string, tag = "4")]
+    pub contact_website: String,
+    #[prost(string, tag = "5")]
+    pub signing_key: String,
+    #[prost(string, optional, tag = "6")]
+    pub contact_discord: Option<String>,
+    #[prost(bool, optional, tag = "7")]
+    pub is_legacy: Option<bool>,
+    #[prost(string, optional, tag = "8")]
+    pub extension_list_url: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // export
 // ---------------------------------------------------------------------------
+
+/// 生成备份时需要、DB 之外的两样输入。
+///
+/// 服务端设置住 `ServerConfig`（不在库里），图源设置住沙盒（扩展自己的 JVM 存储，
+/// core 够不到）—— 都由调用方取好喂进来，core 因此不依赖沙盒客户端。
+#[derive(Debug, Default)]
+pub struct BackupInputs<'a> {
+    /// 写进 9001 号段的服务端设置；`None` 表示不填这一节。
+    pub server_config: Option<&'a crate::config::ServerConfig>,
+    /// 写进 105 号段的图源设置。调用方按 `include_source_settings` 决定要不要去取，
+    /// 这里只负责按 `include_private_settings` 过滤。
+    pub source_preferences: Vec<BackupSourcePreferences>,
+}
+
+/// 剔除敏感与「程序状态」偏好，并把过滤后为空的源整个丢掉。
+///
+/// Mihon 同样在导出侧过滤：`__PRIVATE_` 只在勾了敏感设置时带走，`__APP_STATE_`
+/// 永远不带（那是运行态而不是设置）。
+fn filter_source_preferences(
+    mut groups: Vec<BackupSourcePreferences>,
+    include_private: bool,
+) -> Vec<BackupSourcePreferences> {
+    for group in &mut groups {
+        group.prefs.retain(|p| {
+            !p.key.starts_with(APP_STATE_PREFERENCE_PREFIX)
+                && (include_private || !p.key.starts_with(PRIVATE_PREFERENCE_PREFIX))
+        });
+    }
+    groups.retain(|group| !group.prefs.is_empty());
+    groups
+}
 
 // ---------------------------------------------------------------------------
 // import / validate
@@ -388,9 +553,13 @@ pub struct RestoreSummary {
     pub restored_manga: usize,
     pub restored_categories: usize,
     pub restored_chapters: usize,
+    pub restored_extension_stores: usize,
+    pub restored_preferences: usize,
     pub missing_sources: Vec<String>,
     pub mangas_missing_sources: Vec<String>,
     pub errors: Vec<String>,
+    /// 备份里的图源设置（105）。core 写不进沙盒，由调用方拿到后写回扩展。
+    pub source_preferences: Vec<BackupSourcePreferences>,
 }
 
 /// Decodes a gzipped `Backup` protobuf payload.
@@ -487,11 +656,15 @@ pub async fn restore_backup_proto(
         };
         let _ = idx;
         category_mapping.insert(c.order, id);
+        if flags.include_app_settings && !c.meta.is_empty() {
+            summary.restored_preferences +=
+                upsert_meta(pool, "category_meta", "category_ref", i64::from(id), &c.meta).await?;
+        }
     }
 
     // 追踪器凭据整表覆盖写回（导出带的那一节）。没有凭据节就什么都不做，
-    // 不会把本机已登录的追踪器登出。
-    if flags.include_tracking {
+    // 不会把本机已登录的追踪器登出。凭据归「敏感设置」，与导出侧同一条件。
+    if flags.include_tracking && flags.include_private_settings {
         for c in &backup.tracker_credentials {
             suwayomi_db::query(
                 "INSERT INTO tracker_credential (tracker_id, username, password, token, token_expired, score_type, pkce_verifier) \
@@ -548,13 +721,13 @@ pub async fn restore_backup_proto(
                 .await?;
         }
 
-        // Every manga in a Tachiyomi/Mihon/Suwayomi backup is a library
-        // entry. `BackupManga.favorite` is NOT "in library" (on modern Mihon
-        // it is a separate per-library bookmark), so the restore must mark
-        // rows as in_library regardless — otherwise the restored library
-        // stays empty and a follow-up export only contains the pre-existing
-        // rows.
-        let added_secs = if m.date_added > 0 { m.date_added / 1000 } else { now_secs };
+        // `BackupManga.favorite` 就是「在不在书库」：Mihon 的 `Manga.favorite` 派生自
+        // `favoriteAt != null`，恢复时 `favoriteAt` 又正是由这个字段决定
+        // （`BackupManga.kt`）。写死 TRUE 会把 `readEntries` 带出来的非库已读作品
+        // 全部塞进书库。
+        let in_library = m.favorite;
+        // 非库条目没有「入库时间」：Mihon 导出时 `favoriteAt` 为 null（文件里是 0）。
+        let added_secs = if in_library { if m.date_added > 0 { m.date_added / 1000 } else { now_secs } } else { 0 };
         let genre_new = m.genre.join(", ");
         let strategy_new = update_strategy_name(m.update_strategy).to_string();
 
@@ -592,7 +765,7 @@ pub async fn restore_backup_proto(
                 || m.status != cur_status
                 || m.thumbnail_url.as_deref().is_some_and(|v| cur_thumb.as_deref() != Some(v))
                 || cur_strategy != strategy_new
-                || !cur_inlib
+                || cur_inlib != in_library
                 || cur_added != Some(added_secs)
                 || (m.description.is_some() && !cur_init);
             if dirty {
@@ -600,8 +773,8 @@ pub async fn restore_backup_proto(
                     "UPDATE manga SET artist = COALESCE($1, artist), author = COALESCE($2, author), \
                      description = COALESCE($3, description), genre = COALESCE(NULLIF($4, ''), genre), \
                      status = $5, thumbnail_url = COALESCE($6, thumbnail_url), update_strategy = $7, \
-                     in_library = TRUE, in_library_at = $8, \
-                     initialized = initialized OR $9 WHERE id = $10",
+                     in_library = $8, in_library_at = $9, \
+                     initialized = initialized OR $10 WHERE id = $11",
                 )
                 .bind(&m.artist)
                 .bind(&m.author)
@@ -610,6 +783,7 @@ pub async fn restore_backup_proto(
                 .bind(m.status)
                 .bind(&m.thumbnail_url)
                 .bind(&strategy_new)
+                .bind(in_library)
                 .bind(added_secs)
                 .bind(m.description.is_some())
                 .bind(id)
@@ -621,7 +795,7 @@ pub async fn restore_backup_proto(
             let id: i32 = suwayomi_db::query_scalar(
                 "INSERT INTO manga (url, title, artist, author, description, genre, status, thumbnail_url, \
                  update_strategy, source, initialized, in_library, in_library_at, last_modified_at, version) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE, $12, $13, $14) RETURNING id",
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING id",
             )
             .bind(&m.url)
             .bind(&m.title)
@@ -634,6 +808,7 @@ pub async fn restore_backup_proto(
             .bind(update_strategy_name(m.update_strategy))
             .bind(m.source)
             .bind(m.description.is_some())
+            .bind(in_library)
             .bind(added_secs)
             .bind(m.last_modified_at)
             .bind(m.version)
@@ -657,8 +832,17 @@ pub async fn restore_backup_proto(
                 .bind(manga_id)
                 .fetch_optional(pool)
                 .await?;
-            if let Some((cid, cur_name, cur_scan, cur_read, cur_book, cur_lpr, cur_upload, cur_number, cur_order)) =
-                existing_ch
+            let chapter_id = if let Some((
+                cid,
+                cur_name,
+                cur_scan,
+                cur_read,
+                cur_book,
+                cur_lpr,
+                cur_upload,
+                cur_number,
+                cur_order,
+            )) = existing_ch
             {
                 let dirty = cur_name != ch.name
                     || cur_scan.as_deref() != ch.scanlator.as_deref()
@@ -685,7 +869,7 @@ pub async fn restore_backup_proto(
                     .execute(pool)
                     .await?;
                 }
-                chapter_ids.push(cid);
+                cid
             } else {
                 let cid: i32 = suwayomi_db::query_scalar(
                     "INSERT INTO chapter (url, name, scanlator, read, bookmark, last_page_read, date_upload, \
@@ -704,7 +888,12 @@ pub async fn restore_backup_proto(
                 .fetch_one(pool)
                 .await?;
                 summary.restored_chapters += 1;
-                chapter_ids.push(cid);
+                cid
+            };
+            chapter_ids.push(chapter_id);
+            if flags.include_app_settings && !ch.meta.is_empty() {
+                summary.restored_preferences +=
+                    upsert_meta(pool, "chapter_meta", "chapter_ref", i64::from(chapter_id), &ch.meta).await?;
             }
         }
 
@@ -738,7 +927,80 @@ pub async fn restore_backup_proto(
             restore_manga_tracker_data(pool, manga_id, &m.tracking).await?;
         }
 
+        if flags.include_app_settings && !m.meta.is_empty() {
+            summary.restored_preferences +=
+                upsert_meta(pool, "manga_meta", "manga_ref", i64::from(manga_id), &m.meta).await?;
+        }
+
         let _ = chapter_ids;
+    }
+
+    // 图源 meta（9000）挂在 `BackupSource` 上，与作品的 meta 同一开关。
+    if flags.include_app_settings {
+        for s in &backup.backup_sources {
+            if !s.meta.is_empty() {
+                summary.restored_preferences +=
+                    upsert_meta(pool, "source_meta", "source_ref", s.source_id, &s.meta).await?;
+            }
+        }
+    }
+
+    // 插件仓库（106）：按 index_url upsert，不动本机已有的其它仓库行。
+    if flags.include_extension_stores {
+        for store in &backup.backup_extension_stores {
+            let existing: Option<i32> =
+                suwayomi_db::query_scalar("SELECT id FROM extension_store WHERE index_url = $1")
+                    .bind(&store.index_url)
+                    .fetch_optional(pool)
+                    .await?;
+            let badge_label = store.badge_label.clone().unwrap_or_default();
+            let is_legacy = store.is_legacy.unwrap_or(false);
+            if let Some(id) = existing {
+                suwayomi_db::query(
+                    "UPDATE extension_store SET name = $1, badge_label = $2, signing_key = $3, \
+                     contact_website = $4, contact_discord = $5, is_legacy = $6, extension_list_url = $7 \
+                     WHERE id = $8",
+                )
+                .bind(&store.name)
+                .bind(&badge_label)
+                .bind(&store.signing_key)
+                .bind(&store.contact_website)
+                .bind(&store.contact_discord)
+                .bind(is_legacy)
+                .bind(&store.extension_list_url)
+                .bind(id)
+                .execute(pool)
+                .await?;
+            } else {
+                suwayomi_db::query(
+                    "INSERT INTO extension_store (index_url, name, badge_label, signing_key, contact_website, \
+                     contact_discord, is_legacy, extension_list_url) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                )
+                .bind(&store.index_url)
+                .bind(&store.name)
+                .bind(&badge_label)
+                .bind(&store.signing_key)
+                .bind(&store.contact_website)
+                .bind(&store.contact_discord)
+                .bind(is_legacy)
+                .bind(&store.extension_list_url)
+                .execute(pool)
+                .await?;
+                summary.restored_extension_stores += 1;
+            }
+        }
+    }
+
+    // 客户端 meta（9000）：服务端自身状态（设置 blob / 同步位点 / 凭据）一律不写，
+    // 否则导入一份别人的备份会顺手改掉本机设置。
+    if flags.include_app_settings {
+        summary.restored_preferences += upsert_global_meta(pool, &backup.meta).await?;
+    }
+
+    // 图源设置（105）写不进库也写不进沙盒，交给调用方（core 不依赖沙盒客户端）。
+    if flags.include_source_settings {
+        summary.source_preferences =
+            filter_source_preferences(backup.backup_source_preferences.clone(), flags.include_private_settings);
     }
 
     Ok(summary)
@@ -811,12 +1073,119 @@ fn update_strategy_name(ordinal: i32) -> &'static str {
     }
 }
 
-/// Builds the `Backup` protobuf message from the current database (no encoding).
-pub async fn create_backup_proto(pool: &Db, flags: BackupFlags) -> Result<Backup, BackupError> {
-    build_backup(pool, flags).await
+/// 一张 `*_meta` 表的全部行，按 ref 分组。
+async fn load_ref_meta(
+    pool: &Db,
+    table: &str,
+    ref_column: &str,
+) -> Result<HashMap<i64, HashMap<String, String>>, BackupError> {
+    let rows = suwayomi_db::query(&format!("SELECT {ref_column} AS ref_id, meta_key, value FROM {table}"))
+        .fetch_all(pool)
+        .await?;
+    let mut out: HashMap<i64, HashMap<String, String>> = HashMap::new();
+    for row in rows {
+        out.entry(row.try_get("ref_id")?).or_default().insert(row.try_get("meta_key")?, row.try_get("value")?);
+    }
+    Ok(out)
 }
 
-async fn build_backup(pool: &Db, flags: BackupFlags) -> Result<Backup, BackupError> {
+/// `global_meta` 里属于客户端 meta 的部分：跳过服务端自身状态（见
+/// [`is_internal_global_meta_key`]）。
+async fn load_client_global_meta(pool: &Db) -> Result<HashMap<String, String>, BackupError> {
+    let rows = suwayomi_db::query("SELECT meta_key, value FROM global_meta").fetch_all(pool).await?;
+    let mut out = HashMap::new();
+    for row in rows {
+        let key: String = row.try_get("meta_key")?;
+        if is_internal_global_meta_key(&key) {
+            continue;
+        }
+        out.insert(key, row.try_get("value")?);
+    }
+    Ok(out)
+}
+
+/// 把一份 `key -> value` upsert 进带 ref 列的 `*_meta` 表，返回写入的键数。
+async fn upsert_meta(
+    pool: &Db,
+    table: &str,
+    ref_column: &str,
+    ref_id: i64,
+    meta: &HashMap<String, String>,
+) -> Result<usize, BackupError> {
+    for (key, value) in meta {
+        let existing: Option<i32> =
+            suwayomi_db::query_scalar(&format!("SELECT id FROM {table} WHERE {ref_column} = $1 AND meta_key = $2"))
+                .bind(ref_id)
+                .bind(key)
+                .fetch_optional(pool)
+                .await?;
+        match existing {
+            Some(id) => {
+                suwayomi_db::query(&format!("UPDATE {table} SET value = $1 WHERE id = $2"))
+                    .bind(value)
+                    .bind(id)
+                    .execute(pool)
+                    .await?;
+            }
+            None => {
+                suwayomi_db::query(&format!("INSERT INTO {table} (meta_key, value, {ref_column}) VALUES ($1, $2, $3)"))
+                    .bind(key)
+                    .bind(value)
+                    .bind(ref_id)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+    }
+    Ok(meta.len())
+}
+
+/// [`upsert_meta`] 的无 ref 版本（`global_meta` 只有 `meta_key` / `value`）。
+async fn upsert_global_meta(pool: &Db, meta: &HashMap<String, String>) -> Result<usize, BackupError> {
+    let mut written = 0;
+    for (key, value) in meta {
+        if is_internal_global_meta_key(key) {
+            continue;
+        }
+        let existing: Option<i32> = suwayomi_db::query_scalar("SELECT id FROM global_meta WHERE meta_key = $1")
+            .bind(key)
+            .fetch_optional(pool)
+            .await?;
+        match existing {
+            Some(id) => {
+                suwayomi_db::query("UPDATE global_meta SET value = $1 WHERE id = $2")
+                    .bind(value)
+                    .bind(id)
+                    .execute(pool)
+                    .await?;
+            }
+            None => {
+                suwayomi_db::query("INSERT INTO global_meta (meta_key, value) VALUES ($1, $2)")
+                    .bind(key)
+                    .bind(value)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+        written += 1;
+    }
+    Ok(written)
+}
+
+/// Builds the `Backup` protobuf message from the current database (no encoding).
+pub async fn create_backup_proto(
+    pool: &Db,
+    flags: BackupFlags,
+    inputs: BackupInputs<'_>,
+) -> Result<Backup, BackupError> {
+    build_backup(pool, flags, inputs).await
+}
+
+async fn build_backup(pool: &Db, flags: BackupFlags, inputs: BackupInputs<'_>) -> Result<Backup, BackupError> {
+    let with_meta = flags.include_app_settings;
+    let category_meta =
+        if with_meta { load_ref_meta(pool, "category_meta", "category_ref").await? } else { HashMap::new() };
+
     let category_rows: Vec<CategoryRow> =
         suwayomi_db::query_as("SELECT * FROM category ORDER BY sort_order, id").fetch_all(pool).await?;
     let backup_categories: Vec<BackupCategory> = category_rows
@@ -828,12 +1197,30 @@ async fn build_backup(pool: &Db, flags: BackupFlags) -> Result<Backup, BackupErr
             version: c.version,
             uid: c.uid,
             last_modified_at: c.last_modified_at,
-            meta: HashMap::new(),
+            meta: category_meta.get(&i64::from(c.id)).cloned().unwrap_or_default(),
         })
         .collect();
 
+    let manga_meta = if with_meta { load_ref_meta(pool, "manga_meta", "manga_ref").await? } else { HashMap::new() };
+    let chapter_meta =
+        if with_meta { load_ref_meta(pool, "chapter_meta", "chapter_ref").await? } else { HashMap::new() };
+    let source_meta = if with_meta { load_ref_meta(pool, "source_meta", "source_ref").await? } else { HashMap::new() };
+
     let manga_rows: Vec<MangaRow> = if flags.include_manga {
-        suwayomi_db::query_as("SELECT * FROM manga WHERE in_library = TRUE ORDER BY id").fetch_all(pool).await?
+        if flags.include_read_entries {
+            // 库内作品 + 「有已读章节但不在库」的作品（Mihon 的 `readEntries`）。
+            // 库内的排前面，与 Mihon 的 `getFavorites() + getReadMangaNotInLibrary()`
+            // 拼出来的顺序一致。
+            suwayomi_db::query_as(
+                "SELECT * FROM manga m WHERE m.in_library = TRUE \
+                 OR EXISTS (SELECT 1 FROM chapter c WHERE c.manga = m.id AND c.read = TRUE) \
+                 ORDER BY m.in_library DESC, m.id",
+            )
+            .fetch_all(pool)
+            .await?
+        } else {
+            suwayomi_db::query_as("SELECT * FROM manga WHERE in_library = TRUE ORDER BY id").fetch_all(pool).await?
+        }
     } else {
         Vec::new()
     };
@@ -868,7 +1255,7 @@ async fn build_backup(pool: &Db, flags: BackupFlags) -> Result<Backup, BackupErr
                 last_modified_at: c.last_modified_at,
                 version: c.version,
                 memo: c.memo.clone().into_bytes(),
-                meta: HashMap::new(),
+                meta: chapter_meta.get(&i64::from(c.id)).cloned().unwrap_or_default(),
             })
             .collect();
         // BackupManga.categories stores the category ORDER (not id) —
@@ -926,7 +1313,7 @@ async fn build_backup(pool: &Db, flags: BackupFlags) -> Result<Backup, BackupErr
             version: m.version,
             initialized: m.initialized,
             memo: m.memo.clone().into_bytes(),
-            meta: HashMap::new(),
+            meta: manga_meta.get(&i64::from(m.id)).cloned().unwrap_or_default(),
         });
         if !source_ids.contains(&m.source) {
             source_ids.push(m.source);
@@ -938,14 +1325,21 @@ async fn build_backup(pool: &Db, flags: BackupFlags) -> Result<Backup, BackupErr
         let name: Option<String> =
             suwayomi_db::query_scalar("SELECT name FROM source WHERE id = $1").bind(sid).fetch_optional(pool).await?;
         if let Some(name) = name {
-            backup_sources.push(BackupSource { name, source_id: *sid, meta: HashMap::new() });
+            backup_sources.push(BackupSource {
+                name,
+                source_id: *sid,
+                meta: source_meta.get(sid).cloned().unwrap_or_default(),
+            });
         }
     }
 
-    let tracker_credentials: Vec<BackupTrackerCredential> = if flags.include_tracking {
+    // 凭据跟着「敏感设置」而不是「追踪」走：勾了追踪但没勾敏感设置时，绑定关系
+    // （Tracking 那一节）照样带走，用户名/令牌留下。
+    let tracker_credentials: Vec<BackupTrackerCredential> = if flags.include_tracking && flags.include_private_settings
+    {
         suwayomi_db::query_as::<(i32, String, String, String, bool, String, String)>(
             "SELECT tracker_id, username, password, token, token_expired, score_type, pkce_verifier \
-             FROM tracker_credential ORDER BY tracker_id",
+                 FROM tracker_credential ORDER BY tracker_id",
         )
         .fetch_all(pool)
         .await?
@@ -958,12 +1352,58 @@ async fn build_backup(pool: &Db, flags: BackupFlags) -> Result<Backup, BackupErr
         Vec::new()
     };
 
+    let extension_stores: Vec<BackupExtensionStore> = if flags.include_extension_stores {
+        suwayomi_db::query_as::<ExtensionStoreRow>("SELECT * FROM extension_store ORDER BY id")
+            .fetch_all(pool)
+            .await?
+            .iter()
+            .map(|s| BackupExtensionStore {
+                index_url: s.index_url.clone(),
+                name: s.name.clone(),
+                badge_label: Some(s.badge_label.clone()),
+                contact_website: s.contact_website.clone(),
+                signing_key: s.signing_key.clone(),
+                contact_discord: s.contact_discord.clone(),
+                is_legacy: Some(s.is_legacy),
+                extension_list_url: s.extension_list_url.clone(),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let server_settings = if flags.include_app_settings {
+        inputs.server_config.map(|c| BackupServerSettings {
+            // ip / port 是机器局部的：恢复到另一台机器会直接改掉监听地址。
+            ip: String::new(),
+            port: 0,
+            initial_open_in_browser_enabled: c.initial_open_in_browser_enabled,
+            auth_mode: c.auth_mode.clone(),
+            // 凭据归 include_private_settings，见 [`BackupFlags`]。
+            auth_username: if flags.include_private_settings { c.auth_username.clone() } else { String::new() },
+            auth_password: if flags.include_private_settings { c.auth_password.clone() } else { String::new() },
+            use_hikari_connection_pool: c.use_hikari_connection_pool,
+        })
+    } else {
+        None
+    };
+
+    let meta = if with_meta { load_client_global_meta(pool).await? } else { HashMap::new() };
+
+    let source_preferences = if flags.include_source_settings {
+        filter_source_preferences(inputs.source_preferences, flags.include_private_settings)
+    } else {
+        Vec::new()
+    };
+
     Ok(Backup {
         backup_manga: backup_mangas,
         backup_categories,
         backup_sources,
-        meta: HashMap::new(),
-        server_settings: None,
+        backup_source_preferences: source_preferences,
+        backup_extension_stores: extension_stores,
+        meta,
+        server_settings,
         tracker_credentials,
     })
 }
@@ -1008,10 +1448,10 @@ pub enum BackupError {
 }
 
 /// Serializes the current database into a gzipped `Backup` protobuf payload.
-pub async fn create_backup(pool: &Db, flags: BackupFlags) -> Result<Vec<u8>, BackupError> {
+pub async fn create_backup(pool: &Db, flags: BackupFlags, inputs: BackupInputs<'_>) -> Result<Vec<u8>, BackupError> {
     use std::io::Write;
 
-    let backup = create_backup_proto(pool, flags).await?;
+    let backup = create_backup_proto(pool, flags, inputs).await?;
     let bytes = backup.encode_to_vec();
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     encoder.write_all(&bytes)?;
@@ -1074,7 +1514,8 @@ mod tests {
     #[tokio::test]
     async fn backup_roundtrip_preserves_manga() {
         let db = seed().await;
-        let gz = create_backup(db.pool(), BackupFlags::default()).await.expect("create backup");
+        let gz =
+            create_backup(db.pool(), BackupFlags::default(), BackupInputs::default()).await.expect("create backup");
         let mut decoder = flate2::read::GzDecoder::new(gz.as_slice());
         let mut raw = Vec::new();
         decoder.read_to_end(&mut raw).expect("gunzip");
@@ -1104,7 +1545,8 @@ mod tests {
     async fn backup_empty_library_is_valid() {
         let db = Db::sqlite_in_memory().await.expect("connect");
         db.migrate().await.expect("migrate");
-        let gz = create_backup(db.pool(), BackupFlags::default()).await.expect("create backup");
+        let gz =
+            create_backup(db.pool(), BackupFlags::default(), BackupInputs::default()).await.expect("create backup");
         let mut decoder = flate2::read::GzDecoder::new(gz.as_slice());
         let mut raw = Vec::new();
         decoder.read_to_end(&mut raw).expect("gunzip");
@@ -1116,7 +1558,8 @@ mod tests {
     #[tokio::test]
     async fn export_restore_roundtrip() {
         let db = seed().await;
-        let gz = create_backup(db.pool(), BackupFlags::default()).await.expect("create backup");
+        let gz =
+            create_backup(db.pool(), BackupFlags::default(), BackupInputs::default()).await.expect("create backup");
 
         // restore into a fresh embedded database
         let fresh = Db::sqlite_in_memory().await.expect("connect fresh");
@@ -1202,24 +1645,37 @@ mod tests {
         .await
         .expect("credential");
 
-        let gz = create_backup(pool, BackupFlags::default()).await.expect("create backup");
+        // 凭据归「敏感设置」，默认关闭；这里显式打开才带走。
+        let with_private = BackupFlags { include_private_settings: true, ..Default::default() };
+        let gz = create_backup(pool, with_private, BackupInputs::default()).await.expect("create backup");
         let backup = decode_gz_backup(&gz).expect("decode");
         assert_eq!(backup.backup_manga[0].tracking.len(), 2, "导出带上全部 track_record");
         assert_eq!(backup.backup_manga[0].tracking[0].media_id, 12345);
         assert_eq!(backup.backup_manga[0].tracking[0].last_chapter_read, 3.5);
         assert_eq!(backup.tracker_credentials.len(), 1);
 
+        // 只勾追踪、不勾敏感设置：绑定关系带走，凭据留下。
+        let public_only =
+            create_backup(pool, BackupFlags::default(), BackupInputs::default()).await.expect("create backup");
+        let backup = decode_gz_backup(&public_only).expect("decode");
+        assert_eq!(backup.backup_manga[0].tracking.len(), 2);
+        assert!(backup.tracker_credentials.is_empty(), "敏感设置关闭时不导出凭据");
+
         // 关掉 tracking 之后两份数据都不带走
-        let no_tracking = create_backup(pool, BackupFlags { include_tracking: false, ..Default::default() })
-            .await
-            .expect("create backup");
+        let no_tracking = create_backup(
+            pool,
+            BackupFlags { include_tracking: false, include_private_settings: true, ..Default::default() },
+            BackupInputs::default(),
+        )
+        .await
+        .expect("create backup");
         let backup = decode_gz_backup(&no_tracking).expect("decode");
         assert!(backup.backup_manga[0].tracking.is_empty());
         assert!(backup.tracker_credentials.is_empty());
 
         let fresh = Db::sqlite_in_memory().await.expect("connect fresh");
         fresh.migrate().await.expect("migrate fresh");
-        restore_backup(fresh.pool(), &gz, BackupFlags::default()).await.expect("restore");
+        restore_backup(fresh.pool(), &gz, with_private).await.expect("restore");
 
         let (remote_id, last_chapter_read, private): (i64, f64, bool) = suwayomi_db::query_as(
             "SELECT remote_id, last_chapter_read, private FROM track_record WHERE manga_id = 1 AND sync_id = 2",
@@ -1286,15 +1742,19 @@ mod tests {
             include_chapters: false,
             include_tracking: true,
             include_history: false,
-            include_client_data: true,
-            include_server_settings: false,
+            include_read_entries: true,
+            include_app_settings: false,
+            include_extension_stores: true,
+            include_source_settings: false,
+            include_private_settings: true,
         };
         let query = flags.to_query_string();
 
         assert_eq!(
             query,
             "includeManga=false&includeCategories=true&includeChapters=false&includeTracking=true\
-             &includeHistory=false&includeClientData=true&includeServerSettings=false"
+             &includeHistory=false&includeReadEntries=true&includeAppSettings=false\
+             &includeExtensionStores=true&includeSourceSettings=false&includePrivateSettings=true"
         );
 
         let parsed =
@@ -1302,15 +1762,245 @@ mod tests {
         assert_eq!(parsed.to_array(), flags.to_array());
     }
 
-    /// 手敲 URL、老客户端不带 query 时，缺键的开关沿用默认值（全选）。
+    /// 手敲 URL、老客户端不带 query 时，缺键的开关沿用默认值（全选，敏感设置除外）。
     #[test]
     fn backup_flags_query_missing_keys_default() {
         let parsed = BackupFlags::from_query_pairs([("includeManga", "false"), ("nope", "false")]);
         assert!(!parsed.include_manga);
         assert!(parsed.include_categories);
-        assert!(parsed.include_server_settings);
+        assert!(parsed.include_extension_stores);
+        assert!(!parsed.include_private_settings, "缺键时敏感设置保持默认关闭");
 
         let invalid = BackupFlags::from_query_pairs([("includeManga", "1")]);
         assert!(invalid.include_manga, "非布尔值不改变默认");
+    }
+
+    /// 敏感与「程序状态」偏好按前缀过滤；一个源的设置被过滤空之后整个源不进备份
+    /// —— Mihon 的 `.filter { it.prefs.isNotEmpty() }` 也是这个效果。
+    #[test]
+    fn source_preferences_drop_private_and_app_state_keys() {
+        let groups = vec![BackupSourcePreferences {
+            source_key: "source_1".to_string(),
+            prefs: vec![
+                pref("user", preference_text("alice")),
+                pref("__PRIVATE_token", preference_text("secret")),
+                pref("__APP_STATE_last", preference_text("cursor")),
+                pref("pageCount", PreferenceValue { value: Some(preference_value::Value::Int(3)) }),
+            ],
+        }];
+        let kept = filter_source_preferences(groups.clone(), false);
+        assert_eq!(
+            kept[0].prefs.iter().map(|p| p.key.as_str()).collect::<Vec<_>>(),
+            vec!["user", "pageCount"],
+            "默认不带敏感项，程序状态键永远不带"
+        );
+
+        let kept = filter_source_preferences(groups, true);
+        assert_eq!(kept[0].prefs.len(), 3, "勾了敏感设置就带上 __PRIVATE_，但仍不含 __APP_STATE_");
+
+        let only_state = vec![BackupSourcePreferences {
+            source_key: "source_2".to_string(),
+            prefs: vec![pref("__APP_STATE_x", preference_text("y"))],
+        }];
+        assert!(filter_source_preferences(only_state, true).is_empty(), "过滤后为空的源不进备份");
+    }
+
+    /// 105 / 106 的字段号必须与 Mihon 的 `@ProtoNumber` 一致：差一位就是另一个字段，
+    /// 解出来的偏好类型会整体错位。
+    #[test]
+    fn source_preference_and_extension_store_wire_tags_match_mihon() {
+        let pref = BackupPreference {
+            key: "k".to_string(),
+            value: Some(PreferenceValue { value: Some(preference_value::Value::Text("v".to_string())) }),
+        };
+        assert_eq!(
+            pref.encode_to_vec(),
+            vec![0x0a, 0x01, b'k', 0x12, 0x03, 0x22, 0x01, b'v'],
+            "key 在 1 号字段，value 在 2 号字段，字符串值在 oneof 的 4 号"
+        );
+
+        let group = BackupSourcePreferences { source_key: "source_7".to_string(), prefs: vec![pref] };
+        let mut encoded = Vec::new();
+        group.encode(&mut encoded).expect("encode");
+        assert_eq!(encoded[0], 0x0a, "sourceKey 是 1 号字段");
+        assert!(encoded.windows(2).any(|w| w == [0x12, 8]), "prefs 是 2 号字段");
+
+        let store = BackupExtensionStore {
+            index_url: "https://repo".to_string(),
+            name: "name".to_string(),
+            badge_label: Some("18+".to_string()),
+            contact_website: "https://site".to_string(),
+            signing_key: "key".to_string(),
+            contact_discord: Some("discord".to_string()),
+            is_legacy: Some(true),
+            extension_list_url: Some("https://list".to_string()),
+        };
+        let mut encoded = Vec::new();
+        store.encode(&mut encoded).expect("encode");
+        // 4 号是 contactWebsite、5 号是 signingKey —— 源码里它们是交错声明的。
+        assert!(encoded.windows(2).any(|w| w == [0x22, 0x0c]), "contactWebsite 在 4 号");
+        assert!(encoded.windows(2).any(|w| w == [0x2a, 0x03]), "signingKey 在 5 号");
+    }
+
+    /// 恢复时 `in_library` 跟随 `favorite`：把 `readEntries` 带出来的非库已读作品
+    /// 塞进书库，会让往返不自洽（导出 1 条非库，再导出变成 1 条在库）。
+    #[tokio::test]
+    async fn restore_keeps_non_library_entries_out_of_the_library() {
+        let db = seed().await;
+        let pool = db.pool();
+        // 有已读章节但不在库。
+        suwayomi_db::query(
+            "INSERT INTO manga (url, title, status, in_library, source, initialized) VALUES ('/m/2','Read Only',1,FALSE,1,TRUE)",
+        )
+        .execute(pool)
+        .await
+        .expect("manga");
+        suwayomi_db::query(
+            "INSERT INTO chapter (url, name, chapter_number, source_order, read, manga) VALUES ('/m/2/c/1','Ch 1',1.0,0,TRUE,2)",
+        )
+        .execute(pool)
+        .await
+        .expect("chapter");
+
+        let gz = create_backup(pool, BackupFlags::default(), BackupInputs::default()).await.expect("create backup");
+        let backup = decode_gz_backup(&gz).expect("decode");
+        assert_eq!(backup.backup_manga.len(), 2, "readEntries 默认开启，非库已读作品也进备份");
+        assert!(backup.backup_manga[0].favorite, "库内作品在前且 favorite=true");
+        assert!(!backup.backup_manga[1].favorite, "非库已读作品 favorite=false");
+
+        // 关掉 readEntries 之后只剩库内作品。
+        let library_only = create_backup(
+            pool,
+            BackupFlags { include_read_entries: false, ..Default::default() },
+            BackupInputs::default(),
+        )
+        .await
+        .expect("create backup");
+        assert_eq!(decode_gz_backup(&library_only).expect("decode").backup_manga.len(), 1);
+
+        let fresh = Db::sqlite_in_memory().await.expect("connect fresh");
+        fresh.migrate().await.expect("migrate fresh");
+        let summary = restore_backup(fresh.pool(), &gz, BackupFlags::default()).await.expect("restore");
+        assert_eq!(summary.restored_manga, 2);
+        let in_lib: bool = suwayomi_db::query_scalar("SELECT in_library FROM manga WHERE url = '/m/2'")
+            .fetch_one(fresh.pool())
+            .await
+            .expect("in_library");
+        assert!(!in_lib, "非库已读作品恢复后仍在库外");
+        let in_lib: bool = suwayomi_db::query_scalar("SELECT in_library FROM manga WHERE url = '/m/1'")
+            .fetch_one(fresh.pool())
+            .await
+            .expect("in_library");
+        assert!(in_lib, "库内作品恢复后仍在库");
+    }
+
+    /// 106 与 meta 各节往返；`global_meta` 里的服务端自身状态不随备份出去、也不被
+    /// 备份写回。
+    #[tokio::test]
+    async fn extension_stores_and_meta_round_trip_without_server_state() {
+        let db = seed().await;
+        let pool = db.pool();
+        suwayomi_db::query(
+            "INSERT INTO extension_store (index_url, name, badge_label, signing_key, contact_website, is_legacy) \
+             VALUES ('https://repo.example/index.min.json', 'Repo', '18+', 'k', 'https://repo.example', TRUE)",
+        )
+        .execute(pool)
+        .await
+        .expect("store");
+        suwayomi_db::query("INSERT INTO manga_meta (meta_key, value, manga_ref) VALUES ('note', 'hello', 1)")
+            .execute(pool)
+            .await
+            .expect("manga meta");
+        suwayomi_db::query("INSERT INTO global_meta (meta_key, value) VALUES ('viewer_theme', 'dark')")
+            .execute(pool)
+            .await
+            .expect("global meta");
+        suwayomi_db::query("INSERT INTO global_meta (meta_key, value) VALUES ('settings', '{\"port\":1}')")
+            .execute(pool)
+            .await
+            .expect("settings blob");
+        suwayomi_db::query("INSERT INTO global_meta (meta_key, value) VALUES ('last_auto_backup_at', '123')")
+            .execute(pool)
+            .await
+            .expect("autobackup cursor");
+
+        let gz = create_backup(pool, BackupFlags::default(), BackupInputs::default()).await.expect("create backup");
+        let backup = decode_gz_backup(&gz).expect("decode");
+        assert_eq!(backup.backup_extension_stores.len(), 1);
+        assert_eq!(backup.backup_extension_stores[0].index_url, "https://repo.example/index.min.json");
+        assert_eq!(backup.backup_extension_stores[0].is_legacy, Some(true));
+        assert_eq!(backup.backup_manga[0].meta.get("note").map(String::as_str), Some("hello"));
+        assert_eq!(backup.meta.get("viewer_theme").map(String::as_str), Some("dark"));
+        assert!(!backup.meta.contains_key("settings"), "设置 blob 不随备份出去");
+        assert!(!backup.meta.contains_key("last_auto_backup_at"), "自动备份游标不随备份出去");
+
+        let fresh = Db::sqlite_in_memory().await.expect("connect fresh");
+        fresh.migrate().await.expect("migrate fresh");
+        // 目标库先有一份本机设置，导入不能把它冲掉。
+        suwayomi_db::query("INSERT INTO global_meta (meta_key, value) VALUES ('settings', '{\"port\":4567}')")
+            .execute(fresh.pool())
+            .await
+            .expect("local settings");
+        let summary = restore_backup(fresh.pool(), &gz, BackupFlags::default()).await.expect("restore");
+        assert_eq!(summary.restored_extension_stores, 1);
+        assert!(summary.restored_preferences >= 2);
+
+        let note: String =
+            suwayomi_db::query_scalar("SELECT value FROM manga_meta WHERE meta_key = 'note' AND manga_ref = 1")
+                .fetch_one(fresh.pool())
+                .await
+                .expect("manga meta");
+        assert_eq!(note, "hello");
+        let theme: String = suwayomi_db::query_scalar("SELECT value FROM global_meta WHERE meta_key = 'viewer_theme'")
+            .fetch_one(fresh.pool())
+            .await
+            .expect("global meta");
+        assert_eq!(theme, "dark");
+        let settings: String = suwayomi_db::query_scalar("SELECT value FROM global_meta WHERE meta_key = 'settings'")
+            .fetch_one(fresh.pool())
+            .await
+            .expect("settings");
+        assert_eq!(settings, "{\"port\":4567}", "备份不覆盖本机设置 blob");
+
+        let store: String = suwayomi_db::query_scalar("SELECT name FROM extension_store WHERE is_legacy = TRUE")
+            .fetch_one(fresh.pool())
+            .await
+            .expect("store");
+        assert_eq!(store, "Repo");
+    }
+
+    /// 图源设置随 summary 交回调用方（core 够不到沙盒）。
+    #[tokio::test]
+    async fn restore_hands_source_preferences_to_the_caller() {
+        let db = Db::sqlite_in_memory().await.expect("connect");
+        db.migrate().await.expect("migrate");
+        let backup = Backup {
+            backup_source_preferences: vec![BackupSourcePreferences {
+                source_key: "source_1".to_string(),
+                prefs: vec![pref("user", preference_text("alice"))],
+            }],
+            ..Default::default()
+        };
+        let raw = backup.encode_to_vec();
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(&raw).expect("write");
+        let gz = enc.finish().expect("gz");
+
+        let summary = restore_backup(db.pool(), &gz, BackupFlags::default()).await.expect("restore");
+        assert_eq!(summary.source_preferences.len(), 1);
+        assert_eq!(summary.source_preferences[0].source_key, "source_1");
+
+        let off = restore_backup(db.pool(), &gz, BackupFlags { include_source_settings: false, ..Default::default() })
+            .await
+            .expect("restore");
+        assert!(off.source_preferences.is_empty(), "关掉图源设置就不交回");
+    }
+
+    fn pref(key: &str, value: PreferenceValue) -> BackupPreference {
+        BackupPreference { key: key.to_string(), value: Some(value) }
+    }
+
+    fn preference_text(s: &str) -> PreferenceValue {
+        PreferenceValue { value: Some(preference_value::Value::Text(s.to_string())) }
     }
 }

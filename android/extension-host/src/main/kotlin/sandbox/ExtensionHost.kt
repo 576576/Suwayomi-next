@@ -1,6 +1,6 @@
 //! Android 扩展宿主的对外门面：起一个只监听 127.0.0.1 的 HTTP 服务，把共享 `Router`
 //! 挂上去供同进程的 Rust server 调用。之所以用「同进程回环 HTTP」而不是 JNI 回调，见
-//! `docs/migration/ANDROID_IMPL.md` §C3。
+//! `docs/agent/android.md` §C3。
 
 package sandbox
 

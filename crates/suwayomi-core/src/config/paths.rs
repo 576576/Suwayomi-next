@@ -30,9 +30,9 @@ pub fn appdata_cache(appdata: &std::path::Path) -> PathBuf {
     appdata.join(CACHE_SUBDIR)
 }
 
-/// 日志目录（`<appdata>/cache/logs`）。
+/// 日志目录（`<appdata>/logs`）。
 pub fn appdata_logs(appdata: &std::path::Path) -> PathBuf {
-    appdata_cache(appdata).join(LOGS_SUBDIR)
+    appdata.join(LOGS_SUBDIR)
 }
 
 /// 数据库目录（`<appdata>/db`）。
@@ -117,7 +117,7 @@ impl AppPaths {
         appdata_cache(&self.read().appdata)
     }
 
-    /// 日志目录（`<appdata>/cache/logs`）：server 自写的运行日志与沙盒输出。
+    /// 日志目录（`<appdata>/logs`）：server 自写的运行日志与沙盒输出。
     pub fn logs(&self) -> PathBuf {
         appdata_logs(&self.read().appdata)
     }
@@ -179,7 +179,7 @@ mod tests {
         assert_eq!(paths.local_sources(), PathBuf::from("E:/suwayomi/local"));
         // appdata 下的四项与日志全部由根派生，没有第二条来源
         assert_eq!(paths.cache(), PathBuf::from("E:/suwayomi/appdata/cache"));
-        assert_eq!(paths.logs(), PathBuf::from("E:/suwayomi/appdata/cache/logs"));
+        assert_eq!(paths.logs(), PathBuf::from("E:/suwayomi/appdata/logs"));
         assert_eq!(paths.db(), PathBuf::from("E:/suwayomi/appdata/db"));
         assert_eq!(paths.settings(), PathBuf::from("E:/suwayomi/appdata/settings"));
         assert_eq!(paths.extensions(), PathBuf::from("E:/suwayomi/appdata/extensions/apk"));

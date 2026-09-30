@@ -3,7 +3,7 @@ REM ============================================================
 REM  Suwayomi (next) - manual build producing the base artifact
 REM  (no bundled JRE) — naming matches the CI suffix convention:
 REM  an un-suffixed name means no JRE bundle.
-REM  CI builds the ...+jre variant via release.yml (see docs/release.md).
+REM  CI builds the ...+jre variant via release.yml (see docs/agent/release.md).
 REM
 REM  Output: target\artifacts\  (cleared on every run)
 REM    Suwayomi-r{code}-windows-x64\           unpacked stage
@@ -72,7 +72,11 @@ if errorlevel 1 goto :error
 python scripts\unzip_any.py "%ART%\webui.zip" "%STAGE%\webui"
 if errorlevel 1 goto :error
 del /q "%ART%\webui.zip"
-mkdir "%STAGE%\data\autobackup" "%STAGE%\data\downloads" "%STAGE%\data\local"
+REM data\ 与 appdata\ 的目录树来自 assets\templates\directory（与 CI / Dockerfile 同一份清单）；
+REM .gitkeep 只是 Git 留空目录的占位，不进产物。
+xcopy /e /i /y "assets\templates\directory\*" "%STAGE%\" >nul
+if errorlevel 1 goto :error
+del /s /q "%STAGE%\*.gitkeep" >nul 2>&1
 
 REM [6/6] pack zip (same naming as CI)
 echo [6/6] Compressing Suwayomi-%VER%-windows-x64.zip ...

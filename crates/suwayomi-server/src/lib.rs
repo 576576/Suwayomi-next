@@ -3,7 +3,7 @@
 //!
 //! 参数一律由调用方经 [`ServerOptions`] 注入，[`run`] 自己不读环境变量（数据库设置
 //! 例外：未显式给出时按 `SUWAYOMI_*` 解析）。桌面 CLI 在 `main.rs` 里组装参数；
-//! Android 宿主 App 通过 JNI 组装同一份结构（见 docs/migration/ANDROID_IMPL.md）。
+//! Android 宿主 App 通过 JNI 组装同一份结构（见 docs/agent/android.md）。
 
 // 测试代码允许 panic：unwrap / expect / panic! 在断言里是常规写法，
 // 逐个改成 `?` 传播只会让失败信息更难读。生产代码不受这条影响
@@ -530,7 +530,7 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
         tracing::warn!("authentication is disabled; the library is reachable by anyone who can reach this port");
     }
 
-    // 扩展来源（见 docs/migration/ANDROID_IMPL.md）：
+    // 扩展来源（见 docs/agent/android.md）：
     // * Spawn    —— 桌面默认：拉起 JVM 沙盒子进程（jar 由调用方解析好）
     // * External —— 已运行的扩展宿主；Android 上是宿主 App 起的宿主，桌面也可用它
     //               接管一个自己拉起的沙盒

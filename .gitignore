@@ -18,6 +18,8 @@ target/
 
 # Local data dir（从仓库根跑 server 时会生成 data/）
 data/
+# 例外：产物目录树的模板（build.yml / build.bat / Dockerfile 都复制它）
+!assets/templates/directory/data/
 *.db
 *.db.mv.db
 
@@ -26,4 +28,5 @@ node_modules/
 
 .workbuddy/
 extensions
+!assets/templates/directory/appdata/extensions/
 /.idea

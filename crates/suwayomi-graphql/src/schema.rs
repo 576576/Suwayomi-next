@@ -286,7 +286,7 @@ pub fn schema_sdl() -> String {
 /// SDL 顶层类型定义的六种前缀（GraphQL 规范里 `union` 也是类型）。
 ///
 /// `directive` / `schema` / `extend` 不算：基线文件里正好有 3 个 `directive`、0 个 `extend`，
-/// 把 `directive` 计进来会让总数凭空多 3，与 `docs/graphql/README.md` 的 359 对不上。
+/// 把 `directive` 计进来会让总数凭空多 3，与 `docs/agent/graphql.md` 的 359 对不上。
 const TYPE_KINDS: [&str; 6] = ["type", "input", "enum", "scalar", "interface", "union"];
 
 /// 把 SDL 拆成「顶层定义名 → 种类」。
@@ -306,7 +306,7 @@ fn top_level_defs(sdl: &str) -> BTreeMap<String, &'static str> {
         .collect()
 }
 
-/// 顶层类型定义数，与 `docs/graphql/README.md` 的「359 个类型定义」**同口径**
+/// 顶层类型定义数，与 `docs/agent/graphql.md` 的「359 个类型定义」**同口径**
 /// （含 `union`、不含 `directive`）。
 ///
 /// 这个数字同时进启动日志（`suwayomi-server/src/lib.rs`）。口径能否对齐基线由
@@ -324,10 +324,9 @@ mod tests {
     /// Kotlin 版 introspection 导出的基线 SDL。`include_str!` 在**编译期**把文件内容
     /// 嵌进测试二进制 → 断言不依赖运行时工作目录，也不会因为 `cargo test` 的 cwd 不同
     /// 而静默跳过。代价是路径必须相对 crate 目录固定（本仓库不 `cargo publish`，可接受）。
-    const BASELINE_SDL: &str =
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/graphql/schema-baseline.graphql"));
+    const BASELINE_SDL: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/baseline/schema-baseline.graphql"));
 
-    /// `docs/graphql/README.md` 的对外口径：359 个类型定义 / 3033 行 SDL。
+    /// `docs/agent/graphql.md` 的对外口径：359 个类型定义 / 3033 行 SDL。
     const BASELINE_TOTAL: usize = 359;
 
     /// 基线按种类的构成 —— 359 = 167 + 145 + 34 + 4 + 6 + 3。
@@ -336,17 +335,18 @@ mod tests {
     const BASELINE_BY_KIND: [(&str, usize); 6] =
         [("type", 167), ("input", 145), ("enum", 34), ("scalar", 4), ("interface", 6), ("union", 3)];
 
-    /// 基线有、本 fork 尚未实现的 17 个类型。
+    /// 基线有、本 fork 尚未实现的 15 个类型。
     ///
     /// 集中在四块：① 分页的 `Node`/`Edge` 家族 —— 基线里 `Node`/`Edge`/`NodeList`/`MetaType`
     /// 四个 `interface` 加各自的实现类型，本 fork 侧**一个 `interface` 都没注册**；
     /// ② `Settings` 家族；③ 5 个 `WebUIUpdate*`；④ `union Node`（本 fork 只注册了
     /// `Filter` 与 `Preference` 两个 union，第三个在基线里，这里少了）。
-    const KNOWN_MISSING: [&str; 17] = [
+    ///
+    /// `DownloadUpdate` / `DownloadUpdateType` 原先也在这份清单里，只因为它们挂不上
+    /// `DownloadUpdates` 的任何一个字段而**没有被注册**；补上 `updates` 之后已经可达。
+    const KNOWN_MISSING: [&str; 15] = [
         "DownloadEdge",
         "DownloadNodeList",
-        "DownloadUpdate",
-        "DownloadUpdateType",
         "Edge",
         "MetaType",
         "Node",
@@ -392,7 +392,7 @@ mod tests {
 
     /// 契约断言：本 crate 产出的 schema 与基线的差异必须**恰好**是已知的那些。
     ///
-    /// 这条把 `docs/graphql/README.md` 的 359 从「文档里的说法」变成「测试钉住的契约」：
+    /// 这条把 `docs/agent/graphql.md` 的 359 从「文档里的说法」变成「测试钉住的契约」：
     /// - 实现了 `KNOWN_MISSING` 里的类型 → 从数组里删掉它，并同步 README 的现状描述；
     /// - 新增/删除了本 fork 的类型 → 更新 `KNOWN_EXTRA`。
     ///

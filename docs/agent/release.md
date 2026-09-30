@@ -7,9 +7,11 @@
 | 文件 | 角色 |
 |---|---|
 | `build.yml` | **可复用构建工作流**（只由 `workflow_call` 触发）：算好参数后由它编译 + 打包全部 target，产物用 `upload-artifact` 上传。两个 job：`build`（桌面/服务端矩阵）与 `android`（APK）。所有平台的构建逻辑只有这一份。 |
-| `release.yml` | **唯一入口**：推送 main → 自动 alpha；手动 dispatch → alpha/beta/release。负责算版本号、解析 WebUI 制品，然后 `uses: ./.github/workflows/build.yml` 构建，再用 `download-artifact` 收产物发布 Release。 |
-| `clear.yml` | **预发布清理**（只手动 dispatch）：按「每 N 小时窗口内只留最新的 1 个预发布」删掉多余的 alpha Release，见「预发布清理」。 |
+| `release.yml` | **唯一入口**：推送 main → 自动 alpha；手动 dispatch → alpha/beta/release。负责算版本号、解析 WebUI 制品，然后 `uses: ./.github/workflows/lint.yml` 过质量门禁，再 `uses: ./.github/workflows/build.yml` 构建，最后 `download-artifact` 收产物发布 Release。 |
+| `lint.yml` | **质量门禁**：`cargo fmt --check` / `clippy -D warnings` / 全量测试（自带 postgres service）。**不跟 push / PR** —— 只由 `release.yml` 在 build 之前调起（`workflow_call`），或手动 dispatch 单跑。 |
+| `clear.yml` | **预发布清理**（只手动 dispatch，workflow 名 `Clear Pre-release`）：按「每 N 小时窗口内只留最新的 1 个预发布」删掉多余的 alpha Release，见「预发布清理」。 |
 
+- **质量门禁挂在发布链路上，不单独跟 push**：`release.yml` 的 `lint` job 与 `prep` 并行，`build` 的 `needs` 里带上它 —— 门禁不过就直接不进入编译。推送 main 与手动 dispatch 都从 `release.yml` 进，所以没有绕过的路径；唯一的例外是纯文档 push（被 `paths-ignore` 跳过，不发布也不跑门禁）。
 - 产物形态由五个正交开关表达（`pack_core` / `pack_jre` / `pack_msi` / `pack_exe` / `pack_oci`，见「产物形态」）。**推 main 的自动 alpha 与手动 dispatch 的默认值完全一致**（core 关、jre 开、msi 开、exe 关、oci 关），所以两条路径出的包一样，不必再按触发方式分叉。
 - 产物名统一是 `Suwayomi-{VER}{通道段}-{TGT}[+jre]`（Windows 另出 `.msi` 与 `-setup.exe`），**通道段只有 beta 非空**（`-beta`）：beta 与 release 共用 3.y.z 版本名，不区分就会重名；alpha 的 `r{code}` 本身已表明通道。规则在 prep 里算一次（`channel_suffix`），`build.yml` 只负责拼 —— 别在 `build.yml` 里重新推导一遍。
 - Android 的 ABI 矩阵同理由 prep 拼好（`android_targets`），`build.yml` 的 `android` job 直接吃 `include`。
@@ -19,7 +21,7 @@
 - **纯文档改动不出包**：`push` 上配了 `paths-ignore: ['docs/**', '*.md', '**/*.md']`。一次桌面构建约 12 分钟、还会多出一个 alpha Release，而文档改动对产物没有影响。**只要改动里还有一个非文档文件就照跑**（paths-ignore 只在"全部改动都命中"时才跳过），所以"文档 + 代码"混在一起提交不会漏发布。手动 dispatch 不受影响。
   - 写成 `paths-ignore` 而**不是**顶层 `paths:` —— 后者是白名单语义，会把所有代码改动的 push 一起挡掉，而且完全静默。
   - `*.md` 与 `**/*.md` 两条都给：`**/` 能否匹配"零级目录"（即命中根目录的 `README.md`）在 glob 实现之间有歧义，两条并置后两种语义下都覆盖。
-  - **前提**：`docs/` 下除 9 个 `.md` 外只有 `graphql/schema-baseline.graphql`（GraphQL 兼容对照物，没有 CI 步骤消费）；没有任何构建脚本或 Rust 源码把 `.md` 当输入读，打包步骤也不收 md。
+  - **前提**：`docs/` 下只有 `.md`，且没有任何构建脚本或 Rust 源码把 `.md` 当输入读，打包步骤也不收 md。（`schema-baseline.graphql` 曾被放在这里 —— 那是「被忽略路径下的构建输入」，已随本次整理移进 `crates/suwayomi-graphql/baseline/`。）
 - `run:` 里的 `${{ }}` 是**文本替换**，`#` 注释行一样会被求值 —— 注释里想提到表达式就写成普通文字（否则会被替换，还可能把 token 之类带进日志）。
 
 ## 通道与版本
@@ -185,7 +187,7 @@
 
 ## 预发布清理（`clear.yml`）
 
-推 main 的自动 alpha 每次提交都会多一个 Release，列表很快被 `r{code}-alpha.{run_id}` 淹没。`clear.yml`（workflow 名 `Clear Release`）负责回收，**只手动触发**，三个输入：
+推 main 的自动 alpha 每次提交都会多一个 Release，列表很快被 `r{code}-alpha.{run_id}` 淹没。`clear.yml`（workflow 名 `Clear Pre-release`）负责回收，**只手动触发**，三个输入：
 
 | 输入 | 默认 | 含义 |
 |---|---|---|
@@ -203,7 +205,7 @@
 本地验证（不打线上 Release 的主意）：
 
 ```bash
-python .workbuddy/verify/workflows_check.py   # 四个 workflow：YAML 可解析 + 每个 run 块过 bash -n
+python .workbuddy/verify/workflows_check.py   # 四个 workflow：YAML 可解析 + 每个 run 块过 bash -n + 触发/依赖结构
 python .workbuddy/verify/clear_dryrun.py      # gh 打桩 + 假 Release 列表，真跑两个 run 块（9 个场景）
 python .workbuddy/verify/release_inputs_check.py  # 输入顺序 + 发行说明渲染（同样用 gh 打桩真跑）
 ```
@@ -262,7 +264,7 @@ python .workbuddy/verify/release_inputs_check.py  # 输入顺序 + 发行说明�
 - `build.yml` 的 `android` job 是**矩阵**：`build_android_arm64` / `build_android_x64` 各是一个 job，`ABI` 由矩阵给出（`arm64` → `arm64-v8a`，`x86_64` → `x86_64`，映射在 `android/scripts/build-rust.sh` 里）。步骤：装满足 `compileSdk 37` 的 platform 与钉死版本的 NDK → 交叉编译出 `libsuwayomi_android.so` → 把 WebUI zip 放进 assets → 取 ext-runtime 共享源码（见上节）→ `./gradlew :app:assembleRelease` → 改名成上面的 APK 命名。
 - **x64 APK 只对模拟器有意义**（真机基本是 arm64）；两个都勾就是两份独立构建，互不影响。
 - **签名**：配了 `ANDROID_KEYSTORE_BASE64`（+ `_PASSWORD` / `_ALIAS` / `_KEY_PASSWORD`）就用它签；**没配则回退 AGP 的 debug key**，此时每次 CI 的 key 都不同，跨次覆盖安装前要先卸载（workflow 会打 `::warning::` 提示）。自用分发里"能装上"优先于"签名好看"。
-- Android 侧的设计与阶段见 `docs/migration/ANDROID_IMPL.md`。
+- Android 侧的设计与阶段见 `docs/agent/android.md`。
 
 ## 捆绑 WebUI
 
@@ -294,28 +296,21 @@ python .workbuddy/verify/release_inputs_check.py  # 输入顺序 + 发行说明�
 
 ## CI 改动的本地验证
 
-改 workflow 不要靠推上去试错（一轮矩阵十几分钟还污染 release 列表）。用（都要 `pyyaml`，跑托管 venv 里的解释器）：
+改 workflow 不要靠推上去试错（一轮矩阵十几分钟，还会多出一个 alpha Release）。静态部分可以在本地跑（都要 `pyyaml`，用托管 venv 里的解释器）：
 
 ```bash
-python .workbuddy/verify/workflows_check.py         # 四个 workflow：YAML 可解析 + 每个 run 块过 bash -n + 注释块 ≤ 1 行
-python .workbuddy/verify/release_inputs_check.py    # 输入顺序 + prep 形态开关 + 发行说明渲染（真跑 prep 的四段 run 脚本，105 项）
-python .workbuddy/verify/clear_dryrun.py            # gh 打桩 + 假 Release 列表，真跑 clear.yml 两个 run 块（9 个场景）
-python .workbuddy/verify/notes_preview.py           # 拿真渲染结果生成 GitHub 风格的 HTML 预览（改排版时肉眼核对，含离线图标对照）
+python .workbuddy/verify/workflows_check.py   # 四个 workflow：YAML 可解析 + 每个 run 块过 bash -n + 触发/依赖结构
+python .workbuddy/verify/clear_dryrun.py      # gh 打桩 + 假 Release 列表，真跑 clear.yml 两个 run 块（9 个场景）
+python .workbuddy/verify/ci_pack_check.py     # 产物形态开关 / 附件白名单 / paths-ignore 的结构断言
 ```
-
-- `release_inputs_check.py` 不只看渲染：它把 prep 的 `out` 步骤与**三个解析步骤**（`bash scripts/resolve-*.sh` 打成同名桩脚本交给真 bash 跑）都真跑一遍，断言 **auto 的五个形态开关与 dispatch 默认值逐项一致**、两条路径的矩阵一致、三个开关的独立性（只勾 `pack_exe` 放行）、两道守卫（`pack_msi`/`pack_exe` 缺 `pack_jre`、两种包都关）真的会红、以及捆绑组件表那三个 release 链接地址确实是从资产 URL 反推的。
-- `notes_preview.py` 是给人看的（不做断言）：把真渲染结果转成 HTML 摆在 `notes_preview.html` 里，含「全形态 + 手填说明」「自动 alpha」「只勾 OCI」三个场景 —— 改排版时比读 `--notes` 的字面量快得多。它开头还会把 `WIN_LOGO` 解出来内联：**14px 真实尺寸三格（新 / 新 / 满幅旧版当尺子）+ 56px 放大两格**，这样机器没网时也能看图标形状与大小（徽章本身是 shields.io 的远程图片）。
-- 它比对的是**渲染后的整段说明**，所以动排版时它是唯一能提前发现「表被 markdown 当成延续行」这类问题的地方。
-- 打桩验不到 WiX 那一步（`pack_msi` / `pack_exe`）：`.wxs` 的验证是把真 WiX 装在本机、拿真 payload 跑 `wix build` + `wix msi validate` + `wix burn extract`，见「Windows 安装包」。
-- 平台专属代码路径（Windows 的 PE 分支、macOS 的 Mach-O 分支、Android 的 SDK 安装）在本地根本不会被执行 → 这类问题只能真跑 CI，或本地人为复现条件。
-
-JRE 裁剪那两个脚本（`check_jre_arch.sh` 的宿主探测 + 产物自检、`e2e_host_jmods.sh` 的「宿主自带 jmods 就跳过下载」端到端）**已随 `make-jre.sh` 搬到 Suwayomi-ext-runtime**，在那边 `.workbuddy-ai/verify/` 下跑。
 
 做法（详见 `gh-actions-verify` 技能）：把 `run:` 块抽出来、按场景替换 `${{ }}`、外部 CLI 打桩、在最小的假仓库骨架里真跑，断言 `$GITHUB_OUTPUT` / 产物名 / 归档内容 / gh 的 `--notes`。
 
-**但它验不到"脚本在真平台上会不会炸"**：打桩会把真脚本之类跳过去，platform 专属代码路径（Windows 的 PE 分支、macOS 的 Mach-O 分支、Android 的 SDK 安装）在本地根本不会被执行。这类问题只能真跑 CI，或本地人为复现条件。**后者有两种做法**：
+打桩验不到两类东西，都得另找路子：
 
-1. 复现**环境条件** —— 例如 `PYTHONIOENCODING=cp1252` 复现 Windows 的 Python 编码；`JAVA_HOME='C:\…'`（反斜杠形式）复现 CI 注入的路径形态。
-2. 复现**分支条件** —— 有些分支在本地是死代码（`e2e_host_jmods.sh` 针对的就是它：本机 Temurin 25 按 JEP 493 不带 jmods，那条"宿主自带"分支永远走不到）。做法是造夹具：假 `JAVA_HOME` 用目录联接指向真 JDK、塞进真 jmods，再用 CI 那种变量形态调真脚本。
+- **平台的真实行为**。`pack_msi` / `pack_exe` 的 WiX 步骤是把真 WiX 装在本机、拿真 payload 跑 `wix build` + `wix msi validate` + `wix burn extract`（见「Windows 安装包」）；Windows 的 PE 分支、macOS 的 Mach-O 分支、Android 的 SDK 安装这些代码路径在本地根本不会被执行。只能真跑 CI，或本地人为复现条件：
+  1. 复现**环境条件** —— 例如 `PYTHONIOENCODING=cp1252` 复现 Windows 的 Python 编码；`JAVA_HOME='C:\…'`（反斜杠形式）复现 CI 注入的路径形态。
+  2. 复现**分支条件** —— 有些分支在本地是死代码（`e2e_host_jmods.sh` 针对的就是它：本机 Temurin 25 按 JEP 493 不带 jmods，那条「宿主自带」分支永远走不到）。做法是造夹具：假 `JAVA_HOME` 用目录联接指向真 JDK、塞进真 jmods，再用 CI 那种变量形态调真脚本。
+- **打桩模型本身的错**。桩的行为必须跟真实工具对齐：zip 布局那条断言就曾按错误模型写（`Compress-Archive -Path <dir>` 其实把目录本身收进归档），核对真实产物才发现。
 
-打桩的行为也要跟真实工具对齐 —— zip 布局那条断言就曾按错误模型写（`Compress-Archive -Path <dir>` 其实把目录本身收进归档），核对真实产物才发现。
+JRE 裁剪那两个脚本（`check_jre_arch.sh` 的宿主探测 + 产物自检、`e2e_host_jmods.sh` 的「宿主自带 jmods 就跳过下载」端到端）**已随 `make-jre.sh` 搬到 Suwayomi-ext-runtime**，在那边 `.workbuddy-ai/verify/` 下跑。

@@ -1,6 +1,6 @@
-name: Clear Release
+name: Clear Pre-release
 
-# 预发布清理（只手动触发）：每个 window_hours 窗口内只留最新的 1 个预发布，其余删掉。语义见 docs/release.md。
+# 预发布清理（只手动触发）：每个 window_hours 窗口内只留最新的 1 个预发布，其余删掉。语义见 docs/agent/release.md。
 
 on:
   workflow_dispatch:
@@ -96,7 +96,7 @@ jobs:
               print("没有预发布，无需清理")
               summary = os.environ.get("GITHUB_STEP_SUMMARY")
               if summary:
-                  open(summary, "a", encoding="utf-8").write("## Clear Release\n\n没有预发布。\n")
+                  open(summary, "a", encoding="utf-8").write("## Clear Pre-release\n\n没有预发布。\n")
               sys.exit(0)
 
           # 从新到旧贪心：命中窗口的第一条（即该窗口内最新的）留下当锚点
@@ -137,7 +137,7 @@ jobs:
           summary = os.environ.get("GITHUB_STEP_SUMMARY")
           if summary:
               with open(summary, "a", encoding="utf-8") as f:
-                  f.write("## Clear Release\n\n")
+                  f.write("## Clear Pre-release\n\n")
                   f.write(f"窗口 **{window:g} 小时**，内只留最新的 1 个预发布。"
                           f"共 {len(pres)} 个预发布：保留 {len(keep)}，删除 {len(drop)}。\n\n")
                   f.write(plan + "\n")

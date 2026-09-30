@@ -1,6 +1,6 @@
 name: Build
 
-# 可复用构建工作流（workflow_call）：只负责把包做出来。产物规则与背景见 docs/release.md。
+# 可复用构建工作流（workflow_call）：只负责把包做出来。产物规则与背景见 docs/agent/release.md。
 
 on:
   workflow_call:
@@ -171,11 +171,12 @@ jobs:
           mkdir -p "$STAGE/webui"
           python3 -c "import zipfile; zipfile.ZipFile('webui.zip').extractall('$STAGE/webui')"
           rm -f webui.zip
-          mkdir -p "$STAGE/data/autobackup" "$STAGE/data/downloads" "$STAGE/data/local"
-          # appdata 树先建出来：缓存/库/设置/扩展都挂在这个根下（MSIX 与 per-machine
-          # 安装时会整根外指，这里建好省得首启现造）。
-          mkdir -p "$STAGE/appdata/cache/logs" "$STAGE/appdata/db" "$STAGE/appdata/settings" \
-            "$STAGE/appdata/extensions/apk" "$STAGE/appdata/extensions/bin"
+          # data/ 与 appdata/ 的目录树来自 assets/templates/directory —— 清单只有那一份，
+          # 这里、build.bat、Dockerfile 都只负责复制。先建好省得首启现造（MSIX 与
+          # per-machine 安装会把 appdata 整根外指）。
+          # .gitkeep 是给 Git 留空目录用的占位，不属产物内容。
+          cp -R assets/templates/directory/. "$STAGE/"
+          find "$STAGE" -name .gitkeep -delete
 
           zip_dir() {
             powershell -Command "Compress-Archive -Path '$1' -DestinationPath '$2' -Force"
@@ -496,8 +497,8 @@ jobs:
               exit 1
             fi
           '
-          # 动态：真起一个容器，等到 HTTP 有响应为止。
-          docker run -d --name oci-smoke -p 18090:8090 "$IMG"
+          # 动态：真起一个容器，等到 HTTP 有响应为止。宿主侧用 18090，避开本机跑着的实例。
+          docker run -d --name oci-smoke -p 18090:4567 "$IMG"
           code="000"
           for _ in $(seq 1 30); do
             code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18090/ || true)"

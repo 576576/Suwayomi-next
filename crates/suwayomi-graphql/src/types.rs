@@ -1,5 +1,5 @@
 //! GraphQL object types — field names must match
-//! `docs/graphql/schema-baseline.graphql` exactly.
+//! `crates/suwayomi-graphql/baseline/schema-baseline.graphql` exactly.
 
 use async_graphql::{Context, Enum, Interface, Object, SimpleObject, Union};
 use suwayomi_core::db::Db;
@@ -302,8 +302,10 @@ impl MangaType {
     async fn thumbnail_url(&self) -> Option<&str> {
         self.thumbnail_url.as_deref()
     }
-    async fn thumbnail_url_last_fetched(&self) -> LongString {
-        LongString(self.thumbnail_url_last_fetched)
+    /// 上游把这一项声明成可空的（`thumbnailUrlLastFetched: LongString`）；0 表示
+    /// 封面从未抓取过，这里就返回 null，而不是把哨兵值 0 当时间戳发出去。
+    async fn thumbnail_url_last_fetched(&self) -> Option<LongString> {
+        (self.thumbnail_url_last_fetched > 0).then_some(LongString(self.thumbnail_url_last_fetched))
     }
     async fn initialized(&self) -> bool {
         self.initialized

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Export the Kotlin (Suwayomi-Server) GraphQL schema as SDL, saved to
-# docs/graphql/schema-baseline.graphql. Run this once from an environment
+# crates/suwayomi-graphql/baseline/schema-baseline.graphql. Run this once from an environment
 # where the Kotlin server can be built & started; the result is the
 # compatibility baseline (async-graphql must diff clean).
 #
@@ -61,10 +61,10 @@ fi
 if command -v npx >/dev/null 2>&1 && npx --yes graphql-cli get-schema --help >/dev/null 2>&1; then
   echo "==> Converting via graphql-cli..."
   npx --yes graphql-cli get-schema --endpoint "http://127.0.0.1:$PORT/api/graphql" \
-    --output "$SERVER_ROOT/docs/graphql/schema-baseline.graphql" --no-schema
+    --output "$SERVER_ROOT/crates/suwayomi-graphql/baseline/schema-baseline.graphql" --no-schema
 elif command -v python3 >/dev/null 2>&1; then
   echo "==> Converting via python (graphql-core)..."
-  python3 - "$WORKDIR/schema.json" "$SERVER_ROOT/docs/graphql/schema-baseline.graphql" <<'PY'
+  python3 - "$WORKDIR/schema.json" "$SERVER_ROOT/crates/suwayomi-graphql/baseline/schema-baseline.graphql" <<'PY'
 import json, sys
 try:
     from graphql import build_client_schema, print_schema
@@ -82,4 +82,4 @@ else
   exit 3
 fi
 
-echo "==> Done: docs/graphql/schema-baseline.graphql"
+echo "==> Done: crates/suwayomi-graphql/baseline/schema-baseline.graphql"

@@ -3,7 +3,7 @@
 //! 只做「进程外壳」的事：版本号、单实例互斥、日志初始化、从 env/CLI 组装
 //! [`ServerOptions`]，然后交给 [`suwayomi_server::run`]。启动逻辑本身在 lib.rs，
 //! Android 宿主 App 走 JNI 调同一个 `run`（见 crates/suwayomi-android 与
-//! docs/migration/ANDROID_IMPL.md）。
+//! docs/agent/android.md）。
 
 // 测试代码允许 panic：unwrap / expect / panic! 在断言里是常规写法，
 // 逐个改成 `?` 传播只会让失败信息更难读。生产代码不受这条影响
@@ -22,6 +22,7 @@
 // release 无控制台窗口（隐藏启动在真实系统上可能被安全软件拦截）；日志由父进程重定向
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use suwayomi_domain::source::sandbox::DEFAULT_SANDBOX_PORT;
 use suwayomi_server::{
     SandboxMode, ServerOptions, VERSION, config_from_env, init_logging, resolve_data_dir, resolve_sandbox_jar,
     resolve_webui_dir,
@@ -70,8 +71,9 @@ async fn main() -> anyhow::Result<()> {
     let sandbox = match std::env::var("SUWAYOMI_SANDBOX_URL") {
         Ok(url) if !url.trim().is_empty() => SandboxMode::External { base_url: url },
         _ => resolve_sandbox_jar().map_or(SandboxMode::Disabled, |jar| SandboxMode::Spawn {
-            // 默认 8091：避开 Windows Hyper-V 动态保留区 4501-4900
-            port: std::env::var("SUWAYOMI_SANDBOX_PORT").unwrap_or_else(|_| "8091".into()),
+            // 默认 4568：紧邻 server 默认端口（4567）的下一格，桌面壳还会显式传一个
+            // 与 server 不同的空闲端口。被占用或被系统保留时由沙盒侧再顺延。
+            port: std::env::var("SUWAYOMI_SANDBOX_PORT").unwrap_or_else(|_| DEFAULT_SANDBOX_PORT.to_string()),
             jar,
         }),
     };

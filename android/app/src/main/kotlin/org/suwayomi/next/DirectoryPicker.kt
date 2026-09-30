@@ -1,6 +1,6 @@
 //! 「编辑存储位置」在 Android 上走系统授权，不能靠手填路径：先拿文件系统写权限，再用
 //! `ACTION_OPEN_DOCUMENT_TREE` 挑目录，并把 SAF 的 tree URI 映射回真实路径（server 只认
-//! 路径）。为什么非要有写权限见 `docs/migration/ANDROID_IMPL.md` §C1。
+//! 路径）。为什么非要有写权限见 `docs/agent/android.md` §C1。
 
 package org.suwayomi.next
 

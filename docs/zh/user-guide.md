@@ -7,7 +7,7 @@ GraphQL / REST / OPDS 接口与 Mihon 扩展体系兼容，默认**零外部依�
 ## 快速开始
 
 ```bash
-# 直接运行（默认端口 8090；工作数据存 ./data/，SQLite 库存 ./appdata/db/suwayomi.db）
+# 直接运行（默认端口 4567，被占用时自动上探；工作数据存 ./data/，SQLite 库存 ./appdata/db/suwayomi.db）
 cargo run --release -p suwayomi-server
 # 或使用已构建二进制
 ./target/release/suwayomi-server
@@ -20,7 +20,8 @@ suwayomi.exe
 bin/           程序本体（server + ext-runtime.jar）
 jre/  webui/   捆绑运行时与 WebUI
 appdata/       程序自身产生的状态 —— 唯一需要可写的根
-  cache/       缩略图 / 图片 / 仓库索引 / 本地封面 / logs/
+  cache/       缩略图 / 图片 / 仓库索引 / 本地封面
+  logs/        server / tray / sandbox 三个日志文件
   db/          suwayomi.db 与 session.key
   settings/    追踪器凭据与源偏好
   extensions/
@@ -32,16 +33,16 @@ data/          用户数据：downloads/ autobackup/ local/
 把整个 `appdata/` 挪走只需要一个环境变量（见下）：安装目录不可写时（per-machine
 安装）靠它把可写根外指到别处。
 
-- WebUI：`http://localhost:8090`（托管目录，见下）
-- GraphQL：`http://localhost:8090/api/graphql`
-- REST：`http://localhost:8090/api/v1`
-- OPDS：`http://localhost:8090/api/opds/v1.2`（KOReader 等阅读器）
+- WebUI：`http://localhost:4567`（托管目录，见下）
+- GraphQL：`http://localhost:4567/api/graphql`
+- REST：`http://localhost:4567/api/v1`
+- OPDS：`http://localhost:4567/api/opds/v1.2`（KOReader 等阅读器）
 
 ## 配置（环境变量）
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `SUWAYOMI_PORT` | `8090` | HTTP 端口 |
+| `SUWAYOMI_PORT` | `4567` | HTTP 端口。Windows 上可能落在 Hyper-V 动态保留区内，此时监听自动上探（托盘启动时会先替它选好端口） |
 | `SUWAYOMI_IP` | `0.0.0.0` | 监听地址 |
 | `SUWAYOMI_DATA_DIR` | exe 上级 `data/` | 数据目录：`downloads/`、`local/`、`autobackup/` 三个子目录都在它之下，都没有各自的变量；也可在 WebUI 的「数据与存储 → 存储位置」里改 |
 | `SUWAYOMI_APPDATA_DIR` | exe 上级 `appdata/` | **程序自身状态的唯一可写根**：`cache/`、`db/`、`settings/`、`extensions/{apk,bin}` 全在它下面。缓存 / 库 / 设置 / 扩展**没有**各自的目录变量 |
@@ -55,7 +56,7 @@ data/          用户数据：downloads/ autobackup/ local/
 | `SUWAYOMI_SESSION_SECRET` | — | 会话 cookie 与 JWT 的签名密钥；未设置时首次启动生成 `<appdata>/db/session.key` |
 | `SUWAYOMI_AUTH_COOKIE_SECURE` | — | 设为 `1` 时给会话 cookie 加 `Secure`（仅 HTTPS 反代后开启） |
 | `SUWAYOMI_SANDBOX_JAR` | — | JVM 扩展沙盒 jar 路径（未设置则扩展源不可用） |
-| `SUWAYOMI_SANDBOX_PORT` | `8091` | 沙盒 HTTP 端口 |
+| `SUWAYOMI_SANDBOX_PORT` | `4568` | 沙盒 HTTP 端口。桌面壳会自己挑一个可用的传进来 |
 | `SUWAYOMI_TRACKERS_CONFIG` | `<appdata>/settings/trackers.json` | 追踪器 OAuth 应用凭据文件（见下） |
 
 扩展沙盒是 server 拉起的子进程，它只从 server 继承 `SUWAYOMI_APPDATA_DIR` 一个目录
@@ -140,7 +141,7 @@ OAuth 凭据。首次启动会在设置目录下生成 `trackers.json`（默认�
 ## 从 Kotlin 版迁移
 
 Kotlin 版使用 H2 数据库文件（JVM 专有格式，Rust 无法直读），迁移走 Mihon `.proto`
-备份导入（`POST /api/v1/backup/import`）。完整操作指南见 **`docs/migration/MIGRATE.md`**。
+备份导入（`POST /api/v1/backup/import`）。完整操作指南见 **`docs/zh/migrate-from-kotlin.md`**。
 
 ## 备份
 
@@ -152,7 +153,7 @@ Kotlin 版使用 H2 数据库文件（JVM 专有格式，Rust 无法直读），
 
 ## OPDS / KOReader
 
-根目录：`http://localhost:8090/api/opds/v1.2`
+根目录：`http://localhost:4567/api/opds/v1.2`
 （支持：库浏览、来源探索、历史、库更新、系列章节、章节元数据；`?lang=` 切换语言）
 
 ## Docker
@@ -160,20 +161,20 @@ Kotlin 版使用 H2 数据库文件（JVM 专有格式，Rust 无法直读），
 官方镜像在 GHCR（`linux/amd64` 与 `linux/arm64` 多架构），标签与发布版本一致：alpha 为 `r<提交数>`、release/beta 为 `3.y.z`。**没有 `latest` 标签**，请显式指定：
 
 ```bash
-docker run -p 8090:8090 -v suwayomi-data:/data ghcr.io/576576/suwayomi-next:r3226
+docker run -p 4567:4567 -v suwayomi-data:/data ghcr.io/576576/suwayomi-next:r3226
 ```
 
 本地构建（`WEBUI_URL` 指向 Suwayomi-WebUI 的 release zip，不传则镜像不含 WebUI）：
 
 ```bash
 docker build -t suwayomi-next --build-arg WEBUI_URL=<zip 地址> .
-docker run -p 8090:8090 -v suwayomi-data:/data suwayomi-next
+docker run -p 4567:4567 -v suwayomi-data:/data suwayomi-next
 ```
 
 数据与 SQLite 库都持久化在 `/data`（工作数据在 `/data`，库在 `/data/appdata/db/suwayomi.db`）。要连外部 PostgreSQL：
 
 ```bash
-docker run -p 8090:8090   -e SUWAYOMI_DB_BACKEND=postgres   -e SUWAYOMI_DATABASE_URL=postgres://user:pass@host:5432/db suwayomi-next
+docker run -p 4567:4567   -e SUWAYOMI_DB_BACKEND=postgres   -e SUWAYOMI_DATABASE_URL=postgres://user:pass@host:5432/db suwayomi-next
 ```
 
 ## 已知限制

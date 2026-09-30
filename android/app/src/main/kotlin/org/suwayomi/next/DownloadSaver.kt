@@ -1,6 +1,6 @@
 //! WebView 里触发的下载由宿主代劳 —— 「创建备份」走的就是这条路。
 //! 没设 `DownloadListener` 时点击是**静默无响应**（不报错、不回调、没有日志）。
-//! cookie、二次请求、空壳清理等细节见 `docs/migration/ANDROID_IMPL.md` §「创建备份」。
+//! cookie、二次请求、空壳清理等细节见 `docs/agent/android.md` §「创建备份」。
 
 package org.suwayomi.next
 

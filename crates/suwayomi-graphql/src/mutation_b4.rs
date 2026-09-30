@@ -84,6 +84,9 @@ pub struct DownloadUpdates {
     pub initial: Option<Vec<DownloadType>>,
     pub omitted_updates: bool,
     pub state: DownloaderState,
+    /// 相对上一条事件的队列差量。WebUI 的下载页按它增量维护缓存 ——
+    /// 只给 [`Self::initial`]（整条快照）的话，页面上队列不会随下载推进更新。
+    pub updates: Vec<DownloadUpdate>,
 }
 
 #[derive(InputObject)]
@@ -372,11 +375,25 @@ pub struct UpdateStopPayload {
 pub struct PartialBackupFlagsInput {
     pub include_categories: Option<bool>,
     pub include_chapters: Option<bool>,
+    /// 已废弃：并入 `includeAppSettings`（客户端数据与服务端设置合并成「应用设置」）。
+    #[graphql(deprecation = "Merged into includeAppSettings")]
     pub include_client_data: Option<bool>,
     pub include_history: Option<bool>,
     pub include_manga: Option<bool>,
+    /// 已废弃：并入 `includeAppSettings`。
+    #[graphql(deprecation = "Merged into includeAppSettings")]
     pub include_server_settings: Option<bool>,
     pub include_tracking: Option<bool>,
+    /// 除库内作品外，还带上「有已读章节但不在库」的作品。
+    pub include_read_entries: Option<bool>,
+    /// 服务端设置（9001）与各 meta 节（9000）。
+    pub include_app_settings: Option<bool>,
+    /// 插件仓库（106）。
+    pub include_extension_stores: Option<bool>,
+    /// 扩展自己存的图源设置（105）。
+    pub include_source_settings: Option<bool>,
+    /// 凭据与认证信息，默认关闭。
+    pub include_private_settings: Option<bool>,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -897,12 +914,21 @@ pub struct PartialSettingsTypeInput {
     pub auth_mode: Option<AuthMode>,
     pub auth_password: Option<String>,
     pub auth_username: Option<String>,
+    pub auto_backup_include_app_settings: Option<bool>,
     pub auto_backup_include_categories: Option<bool>,
     pub auto_backup_include_chapters: Option<bool>,
+    /// 已废弃：并入 `autoBackupIncludeAppSettings`。
+    #[graphql(deprecation = "Merged into autoBackupIncludeAppSettings")]
     pub auto_backup_include_client_data: Option<bool>,
+    pub auto_backup_include_extension_stores: Option<bool>,
     pub auto_backup_include_history: Option<bool>,
     pub auto_backup_include_manga: Option<bool>,
+    pub auto_backup_include_private_settings: Option<bool>,
+    pub auto_backup_include_read_entries: Option<bool>,
+    /// 已废弃：并入 `autoBackupIncludeAppSettings`。
+    #[graphql(deprecation = "Merged into autoBackupIncludeAppSettings")]
     pub auto_backup_include_server_settings: Option<bool>,
+    pub auto_backup_include_source_settings: Option<bool>,
     pub auto_backup_include_tracking: Option<bool>,
     pub auto_download_ignore_re_uploads: Option<bool>,
     pub auto_download_new_chapters: Option<bool>,
@@ -1284,6 +1310,10 @@ impl MutationRootB4 {
                 if !summary.errors.is_empty() {
                     tracing::warn!(errors = ?summary.errors, "backup restore completed with errors");
                 }
+                // 图源设置住扩展自己的 JVM 存储里，core 够不着，只能在恢复之后
+                // 把 105 号段交回沙盒写。漏掉这一步，导入的备份「看起来恢复了」，
+                // 但每个扩展的设置项还是空的。
+                state.fetcher.apply_source_preferences(&summary.source_preferences).await;
                 let manga_total = summary.restored_manga as i32;
                 BackupRestoreStatus {
                     manga_progress: manga_total,
@@ -1837,12 +1867,16 @@ impl MutationRootB4 {
         Ok(RebuildDownloadIndexPayload { client_mutation_id: input.client_mutation_id, chapters: chapters as i32 })
     }
 
+    /// 入参可省：上游把它声明成可选（`input: ClearCookiesAndCacheInput`，
+    /// Kotlin 侧默认 `= ClearCookiesAndCacheInput()`），WebUI 的
+    /// `WEBVIEW_CLEAR_CACHE_COOKIES` 就不带参数。声明成必填会让那条 mutation
+    /// 校验不过。
     async fn clear_cookies_and_cache(
         &self,
         _ctx: &Context<'_>,
-        input: ClearCookiesAndCacheInput,
+        input: Option<ClearCookiesAndCacheInput>,
     ) -> async_graphql::Result<ClearCookiesAndCachePayload> {
-        Ok(ClearCookiesAndCachePayload { client_mutation_id: input.client_mutation_id })
+        Ok(ClearCookiesAndCachePayload { client_mutation_id: input.and_then(|i| i.client_mutation_id) })
     }
 
     async fn reset_settings(
@@ -1959,7 +1993,22 @@ async fn fetch_chapter_row(state: &GraphQLState, id: i32) -> async_graphql::Resu
         .map_err(async_graphql::Error::from)
 }
 
+/// 把两个已废弃的开关（`includeClientData` / `includeServerSettings`）折算成
+/// `includeAppSettings`：任一为 `true` 即为 `true`，两个都没传则返回 `None`
+/// （由调用方决定默认值，通常是「保持现状」）。
+///
+/// 新旧两套键各自映射到不同开关，会出现同一个概念两个值、以谁为准说不清。
+pub(crate) fn legacy_app_settings(client: Option<bool>, server: Option<bool>) -> Option<bool> {
+    match (client, server) {
+        (None, None) => None,
+        (client, server) => Some(client.unwrap_or(false) || server.unwrap_or(false)),
+    }
+}
+
 /// GraphQL 的部分开关 → 备份模块的部分开关（字段一一对应）。
+///
+/// 两个已废弃的字段仍能被解析：上游客户端与旧 WebUI 在传它们，见
+/// [`legacy_app_settings`]。
 pub(crate) fn backup_flags(input: Option<&PartialBackupFlagsInput>) -> suwayomi_core::backup::PartialBackupFlags {
     let Some(f) = input else {
         return suwayomi_core::backup::PartialBackupFlags::default();
@@ -1970,8 +2019,13 @@ pub(crate) fn backup_flags(input: Option<&PartialBackupFlagsInput>) -> suwayomi_
         include_chapters: f.include_chapters,
         include_tracking: f.include_tracking,
         include_history: f.include_history,
-        include_client_data: f.include_client_data,
-        include_server_settings: f.include_server_settings,
+        include_read_entries: f.include_read_entries,
+        include_app_settings: f
+            .include_app_settings
+            .or(legacy_app_settings(f.include_client_data, f.include_server_settings)),
+        include_extension_stores: f.include_extension_stores,
+        include_source_settings: f.include_source_settings,
+        include_private_settings: f.include_private_settings,
     }
 }
 
@@ -2106,12 +2160,23 @@ fn partial_settings_to_json(s: &PartialSettingsTypeInput) -> serde_json::Value {
     );
     put!("authPassword", s.auth_password.clone());
     put!("authUsername", s.auth_username.clone());
+    // 旧的两个键（`autoBackupIncludeClientData` / `autoBackupIncludeServerSettings`）
+    // 不再单独落盘：合并成「应用设置」后它们只是入参的兼容形态，继续单独存会让 blob
+    // 里同时存在两套等价开关。
+    put!(
+        "autoBackupIncludeAppSettings",
+        s.auto_backup_include_app_settings.or_else(|| {
+            legacy_app_settings(s.auto_backup_include_client_data, s.auto_backup_include_server_settings)
+        })
+    );
     put!("autoBackupIncludeCategories", s.auto_backup_include_categories);
     put!("autoBackupIncludeChapters", s.auto_backup_include_chapters);
-    put!("autoBackupIncludeClientData", s.auto_backup_include_client_data);
+    put!("autoBackupIncludeExtensionStores", s.auto_backup_include_extension_stores);
     put!("autoBackupIncludeHistory", s.auto_backup_include_history);
     put!("autoBackupIncludeManga", s.auto_backup_include_manga);
-    put!("autoBackupIncludeServerSettings", s.auto_backup_include_server_settings);
+    put!("autoBackupIncludePrivateSettings", s.auto_backup_include_private_settings);
+    put!("autoBackupIncludeReadEntries", s.auto_backup_include_read_entries);
+    put!("autoBackupIncludeSourceSettings", s.auto_backup_include_source_settings);
     put!("autoBackupIncludeTracking", s.auto_backup_include_tracking);
     put!("autoDownloadIgnoreReUploads", s.auto_download_ignore_re_uploads);
     put!("autoDownloadNewChapters", s.auto_download_new_chapters);

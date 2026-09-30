@@ -1510,8 +1510,8 @@ mod tests {
         db
     }
 
-    /// 同源代理 URL 必须落在**注入的**基址上。此前写死 8090：端口被占用自顺延、
-    /// 或被 `SUWAYOMI_PORT` 改掉后，每一页都会打到没人监听的端口上。
+    /// 同源代理 URL 必须落在**注入的**基址上：端口被占用自顺延、或被
+    /// `SUWAYOMI_PORT` 改掉后，写死端口会让每一页都打到没人监听的端口上。
     #[tokio::test]
     async fn page_proxy_url_uses_the_injected_base() {
         let db = seed().await;

@@ -19,6 +19,8 @@ bin/
 docs/
 *.md
 
-# 运行期数据（安装的扩展、本地图源），不该进镜像
+# 运行期数据（安装的扩展、本地图源），不该进镜像。
+# 这两条只匹配上下文根下那两层：assets/templates/directory 下有同名目录，是产物目录树
+# 的模板（Dockerfile 要 COPY 它）—— 别改成会跨层命中的写法（如 `**/data/`）。
 extensions/
 data/

@@ -125,6 +125,66 @@ impl SourceBackend {
             Self::Test(_) => None,
         }
     }
+
+    /// 沙盒里各源的扁平设置，供备份写进 105 号段。
+    ///
+    /// 只问「可配置」的源（`/sources` 里的 `isConfigurable`），源不可配置或没接沙盒
+    /// 时为空 —— 调用方据此得到空节，而不是一堆空壳条目。某个源读失败只跳过它：
+    /// 一个扩展抛异常不该让整份备份失败。
+    pub async fn backup_source_preferences(&self) -> Vec<suwayomi_core::backup::BackupSourcePreferences> {
+        let Self::Sandbox(fetcher) = self else {
+            return Vec::new();
+        };
+        let Ok(sources) = fetcher.list_sources().await else {
+            tracing::warn!("sandbox: cannot list sources for source preferences backup");
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for source in sources.into_iter().filter(|s| s.is_configurable) {
+            match fetcher.source_preference_values(source.id).await {
+                Ok(Some(values)) if !values.is_empty() => out.push(suwayomi_core::backup::BackupSourcePreferences {
+                    source_key: source_preference_key(source.id),
+                    prefs: values.iter().filter_map(sandbox::SandboxPreference::to_backup_preference).collect(),
+                }),
+                Ok(_) => {}
+                // 404 是常态：备份里的扩展这台机器可能没装。
+                Err(e) => tracing::debug!(source = source.id, %e, "sandbox: cannot read source preferences"),
+            }
+        }
+        out
+    }
+
+    /// 把备份里的图源设置（105 号段）写回沙盒。没接沙盒时什么都不做。
+    pub async fn apply_source_preferences(&self, groups: &[suwayomi_core::backup::BackupSourcePreferences]) {
+        let Self::Sandbox(fetcher) = self else {
+            return;
+        };
+        for group in groups {
+            let Some(source_id) = parse_source_preference_key(&group.source_key) else {
+                continue;
+            };
+            let prefs: Vec<sandbox::SandboxPreference> =
+                group.prefs.iter().filter_map(sandbox::SandboxPreference::from_backup_preference).collect();
+            if prefs.is_empty() {
+                continue;
+            }
+            match fetcher.write_source_preference_values(source_id, &prefs).await {
+                Ok(_) => tracing::debug!(source = source_id, count = prefs.len(), "source preferences restored"),
+                // 同样按常态处理：备份来自另一台机器，本机没有这个源就没有地方写。
+                Err(e) => tracing::debug!(source = source_id, %e, "sandbox: cannot write source preferences"),
+            }
+        }
+    }
+}
+
+/// 105 号段里的 `sourceKey`，与扩展自己的 `ConfigurableSource.preferenceKey()` 一致。
+fn source_preference_key(source_id: i64) -> String {
+    format!("source_{source_id}")
+}
+
+/// `source_<id>` → id；别的写法（别的客户端自定义的 key）一律忽略。
+fn parse_source_preference_key(key: &str) -> Option<i64> {
+    key.strip_prefix("source_")?.parse().ok()
 }
 
 impl From<sandbox::HttpSandboxFetcher> for SourceBackend {

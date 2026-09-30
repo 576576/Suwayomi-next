@@ -11,7 +11,7 @@ workspace = true
 
 # Android 10+ 禁止 App 从私有目录 exec 可执行文件，所以 Android 上不能像桌面那样把
 # suwayomi-server 当子进程拉起：整份 server 以 cdylib 随 APK 分发，由宿主 App
-# `System.loadLibrary("suwayomi_android")` 后经 JNI 启动（见 docs/migration/ANDROID_IMPL.md）。
+# `System.loadLibrary("suwayomi_android")` 后经 JNI 启动（见 docs/agent/android.md）。
 [lib]
 crate-type = ["cdylib"]
 

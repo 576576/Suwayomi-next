@@ -202,6 +202,12 @@ macro_rules! string_filter_input {
             pub not_equal_to_insensitive_any: Option<Vec<String>>,
             pub not_in: Option<Vec<String>>,
             pub not_in_insensitive: Option<Vec<String>>,
+            pub not_includes: Option<String>,
+            pub not_includes_all: Option<Vec<String>>,
+            pub not_includes_any: Option<Vec<String>>,
+            pub not_includes_insensitive: Option<String>,
+            pub not_includes_insensitive_all: Option<Vec<String>>,
+            pub not_includes_insensitive_any: Option<Vec<String>>,
             pub not_like: Option<String>,
             pub not_like_all: Option<Vec<String>>,
             pub not_like_any: Option<Vec<String>>,
@@ -338,6 +344,8 @@ pub struct ExtensionCondition {
     pub is_installed: Option<bool>,
     pub is_obsolete: Option<bool>,
     pub has_update: Option<bool>,
+    pub store_index_url: Option<String>,
+    pub content_warning: Option<ContentWarning>,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -357,6 +365,7 @@ pub struct ExtensionOrder {
 #[derive(InputObject, Default)]
 pub struct ExtensionFilterInput {
     pub and: Option<Vec<Self>>,
+    pub content_warning: Option<ContentWarningFilterInput>,
     pub lang: Option<StringFilterInput>,
     pub name: Option<StringFilterInput>,
     pub not: Option<Box<Self>>,
@@ -834,7 +843,7 @@ impl QueryRoot {
             }
             if let Some(v) = cond.content_warning {
                 where_clauses.push("content_warning = ?".into());
-                binds.push(BindVal::I32(v.to_i32()));
+                binds.push(content_warning_bind(v));
             }
         }
         if !where_clauses.is_empty() {
@@ -960,7 +969,7 @@ impl QueryRoot {
         last: Option<i32>,
         offset: Option<i32>,
     ) -> async_graphql::Result<ExtensionNodeList> {
-        let _ = (filter, before, after, last, offset); // shape parity
+        let _ = (before, after, last, offset); // shape parity
         let state = ctx.data::<GraphQLState>()?;
         let mut sql = "SELECT * FROM extension".to_string();
         let mut where_clauses: Vec<String> = Vec::new();
@@ -990,6 +999,20 @@ impl QueryRoot {
                 where_clauses.push("has_update = ?".into());
                 binds.push(BindVal::Bool(v));
             }
+            if let Some(v) = &cond.store_index_url {
+                where_clauses.push("store_index_url = ?".into());
+                binds.push(BindVal::Str(v.clone()));
+            }
+            if let Some(v) = cond.content_warning {
+                where_clauses.push("content_warning = ?".into());
+                binds.push(content_warning_bind(v));
+            }
+        }
+        // `ExtensionFilterInput` 的其余字段（lang/name/pkgName/logical）仍未接进 SQL。
+        if let Some(f) = &filter
+            && let Some(v) = &f.content_warning
+        {
+            build_numeric_filter(&mut where_clauses, &mut binds, "content_warning", v);
         }
         if !where_clauses.is_empty() {
             sql.push_str(" WHERE ");
@@ -1797,6 +1820,44 @@ impl NumericFilterOps for DoubleFilterInput {
     }
 }
 
+/// `ContentWarning` 是枚举，`content_warning` 列在 SQL 里存的是它的序号。
+fn content_warning_bind(v: ContentWarning) -> BindVal {
+    BindVal::I32(v.to_i32())
+}
+
+impl NumericFilterOps for ContentWarningFilterInput {
+    fn eq(&self) -> Option<BindVal> {
+        self.equal_to.map(content_warning_bind)
+    }
+    fn neq(&self) -> Option<BindVal> {
+        self.not_equal_to.map(content_warning_bind)
+    }
+    fn neq_all(&self) -> Option<Vec<BindVal>> {
+        self.not_equal_to_all.as_ref().map(|vs| vs.iter().copied().map(content_warning_bind).collect())
+    }
+    fn in_v(&self) -> Option<Vec<BindVal>> {
+        self.in_.as_ref().map(|vs| vs.iter().copied().map(content_warning_bind).collect())
+    }
+    fn not_in_v(&self) -> Option<Vec<BindVal>> {
+        self.not_in.as_ref().map(|vs| vs.iter().copied().map(content_warning_bind).collect())
+    }
+    fn gt(&self) -> Option<BindVal> {
+        self.greater_than.map(content_warning_bind)
+    }
+    fn gte(&self) -> Option<BindVal> {
+        self.greater_than_or_equal_to.map(content_warning_bind)
+    }
+    fn lt(&self) -> Option<BindVal> {
+        self.less_than.map(content_warning_bind)
+    }
+    fn lte(&self) -> Option<BindVal> {
+        self.less_than_or_equal_to.map(content_warning_bind)
+    }
+    fn is_null(&self) -> Option<bool> {
+        self.is_null
+    }
+}
+
 fn build_numeric_filter<T: NumericFilterOps>(
     where_clauses: &mut Vec<String>,
     binds: &mut Vec<BindVal>,
@@ -2109,6 +2170,25 @@ fn build_string_filter(where_clauses: &mut Vec<String>, binds: &mut Vec<BindVal>
         push_like_all(where_clauses, binds, col, vs, true, true, "%", "%");
     }
     if let Some(vs) = &f.not_like_insensitive_any {
+        push_like_any(where_clauses, binds, col, vs, true, true, "%", "%");
+    }
+    // not includes（不包含）—— 与上面的 not_like 同义，只是上游把两个名字都暴露了出来
+    if let Some(v) = &f.not_includes {
+        push_like(where_clauses, binds, col, v, true, false, "%", "%");
+    }
+    if let Some(v) = &f.not_includes_insensitive {
+        push_like(where_clauses, binds, col, v, true, true, "%", "%");
+    }
+    if let Some(vs) = &f.not_includes_all {
+        push_like_all(where_clauses, binds, col, vs, true, false, "%", "%");
+    }
+    if let Some(vs) = &f.not_includes_any {
+        push_like_any(where_clauses, binds, col, vs, true, false, "%", "%");
+    }
+    if let Some(vs) = &f.not_includes_insensitive_all {
+        push_like_all(where_clauses, binds, col, vs, true, true, "%", "%");
+    }
+    if let Some(vs) = &f.not_includes_insensitive_any {
         push_like_any(where_clauses, binds, col, vs, true, true, "%", "%");
     }
     // starts_with / ends_with

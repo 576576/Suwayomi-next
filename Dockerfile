@@ -26,7 +26,7 @@
 # CI 里由 .github/workflows/build.yml 的 oci job 构建：**每个架构跑在自己的
 # runner 上**（linux/amd64 → ubuntu-latest，linux/arm64 → ubuntu-24.04-arm），
 # 推 GHCR 后用 imagetools 合成多架构 manifest。不用 QEMU 模拟 —— jlink 不能跨平台
-# 生成运行时（见 docs/release.md），模拟编译只是把同一件错事做得更慢。
+# 生成运行时（见 docs/agent/release.md），模拟编译只是把同一件错事做得更慢。
 
 # --- 1) Rust server ------------------------------------------------------
 FROM rust:1.95-slim AS server
@@ -123,11 +123,13 @@ COPY --from=webui   /webui                                        /opt/suwayomi/
 ENV SUWAYOMI_WEBUI_DIR=/opt/suwayomi/webui \
     SUWAYOMI_DATA_DIR=/data \
     SUWAYOMI_APPDATA_DIR=/data/appdata \
-    SUWAYOMI_PORT=8090 \
+    SUWAYOMI_PORT=4567 \
     SUWAYOMI_IP=0.0.0.0
-RUN mkdir -p /data/appdata/cache /data/appdata/db /data/appdata/settings \
-        /data/appdata/extensions/apk /data/appdata/extensions/bin \
-        /data/autobackup /data/downloads /data/local
+# /data 与 /data/appdata 的目录树跟桌面包同源：assets/templates/directory 是清单的
+# 唯一来源，.gitkeep 只是 Git 的占位，不进镜像。
+COPY assets/templates/directory/data    /data/
+COPY assets/templates/directory/appdata /data/appdata/
+RUN find /data -name .gitkeep -delete
 VOLUME ["/data"]
-EXPOSE 8090
+EXPOSE 4567
 ENTRYPOINT ["/opt/suwayomi/bin/suwayomi-server"]

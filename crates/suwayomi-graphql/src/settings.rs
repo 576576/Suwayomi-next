@@ -1,6 +1,6 @@
 //! Settings & about-server types — mirrors `SettingsType.kt` / `InfoType.kt`
 //! (which are code-generated from ServerConfig in Kotlin; here hand-written
-//! against `docs/graphql/schema-baseline.graphql`).
+//! against `crates/suwayomi-graphql/baseline/schema-baseline.graphql`).
 
 use async_graphql::{Enum, SimpleObject};
 use suwayomi_core::auth::parse_duration;
@@ -133,12 +133,15 @@ pub enum WebUIInterface {
 }
 
 /// Mirrors `SettingsDownloadConversionType`.
+///
+/// 三个字段都可空：`callTimeout`/`connectTimeout`/`headers` 是可选覆盖项，缺省表示沿用
+/// 全局默认值；把它们当必填会凭空造出一个「0 秒超时 / 空 headers」的假值。
 #[derive(SimpleObject, Clone)]
 pub struct SettingsDownloadConversionType {
-    pub call_timeout: DurationScalar,
+    pub call_timeout: Option<DurationScalar>,
     pub compression_level: Option<f64>,
-    pub connect_timeout: DurationScalar,
-    pub headers: Vec<SettingsDownloadConversionHeaderType>,
+    pub connect_timeout: Option<DurationScalar>,
+    pub headers: Option<Vec<SettingsDownloadConversionHeaderType>>,
     pub mime_type: String,
     pub target: String,
 }
@@ -157,12 +160,15 @@ pub struct SettingsType {
     pub auth_mode: AuthMode,
     pub auth_password: String,
     pub auth_username: String,
+    pub auto_backup_include_app_settings: bool,
     pub auto_backup_include_categories: bool,
     pub auto_backup_include_chapters: bool,
-    pub auto_backup_include_client_data: bool,
+    pub auto_backup_include_extension_stores: bool,
     pub auto_backup_include_history: bool,
     pub auto_backup_include_manga: bool,
-    pub auto_backup_include_server_settings: bool,
+    pub auto_backup_include_private_settings: bool,
+    pub auto_backup_include_read_entries: bool,
+    pub auto_backup_include_source_settings: bool,
     pub auto_backup_include_tracking: bool,
     #[graphql(deprecation = "Replaced with autoDownloadNewChaptersLimit")]
     pub auto_download_ahead_limit: i32,
@@ -290,12 +296,15 @@ impl SettingsType {
             auth_mode: AuthMode::from_mode(&c.auth_mode),
             auth_password: c.auth_password.clone(),
             auth_username: c.auth_username.clone(),
+            auto_backup_include_app_settings: backup_include.include_app_settings,
             auto_backup_include_categories: backup_include.include_categories,
             auto_backup_include_chapters: backup_include.include_chapters,
-            auto_backup_include_client_data: backup_include.include_client_data,
+            auto_backup_include_extension_stores: backup_include.include_extension_stores,
             auto_backup_include_history: backup_include.include_history,
             auto_backup_include_manga: backup_include.include_manga,
-            auto_backup_include_server_settings: backup_include.include_server_settings,
+            auto_backup_include_private_settings: backup_include.include_private_settings,
+            auto_backup_include_read_entries: backup_include.include_read_entries,
+            auto_backup_include_source_settings: backup_include.include_source_settings,
             auto_backup_include_tracking: backup_include.include_tracking,
             auto_download_ahead_limit: 3,
             auto_download_ignore_re_uploads: false,
@@ -406,15 +415,32 @@ impl SettingsType {
         };
         self.auth_username = ov_str(o, "authUsername", self.auth_username.clone());
         self.auth_password = ov_str(o, "authPassword", self.auth_password.clone());
+        // 合并成「应用设置」之前保存的 blob 里只有旧的两个键。新键存在就以它为准
+        // （否则用户取消勾选后会被旧键一直顶回 true）；读不到新键再按旧键折算；
+        // 两个旧键也没有就保留当前值，否则旧实例升级后设置页会把应用设置显示回默认值。
+        self.auto_backup_include_app_settings = o
+            .get("autoBackupIncludeAppSettings")
+            .and_then(Value::as_bool)
+            .or_else(|| {
+                crate::mutation_b4::legacy_app_settings(
+                    o.get("autoBackupIncludeClientData").and_then(Value::as_bool),
+                    o.get("autoBackupIncludeServerSettings").and_then(Value::as_bool),
+                )
+            })
+            .unwrap_or(self.auto_backup_include_app_settings);
         self.auto_backup_include_categories =
             ov_bool(o, "autoBackupIncludeCategories", self.auto_backup_include_categories);
         self.auto_backup_include_chapters = ov_bool(o, "autoBackupIncludeChapters", self.auto_backup_include_chapters);
-        self.auto_backup_include_client_data =
-            ov_bool(o, "autoBackupIncludeClientData", self.auto_backup_include_client_data);
+        self.auto_backup_include_extension_stores =
+            ov_bool(o, "autoBackupIncludeExtensionStores", self.auto_backup_include_extension_stores);
         self.auto_backup_include_history = ov_bool(o, "autoBackupIncludeHistory", self.auto_backup_include_history);
         self.auto_backup_include_manga = ov_bool(o, "autoBackupIncludeManga", self.auto_backup_include_manga);
-        self.auto_backup_include_server_settings =
-            ov_bool(o, "autoBackupIncludeServerSettings", self.auto_backup_include_server_settings);
+        self.auto_backup_include_private_settings =
+            ov_bool(o, "autoBackupIncludePrivateSettings", self.auto_backup_include_private_settings);
+        self.auto_backup_include_read_entries =
+            ov_bool(o, "autoBackupIncludeReadEntries", self.auto_backup_include_read_entries);
+        self.auto_backup_include_source_settings =
+            ov_bool(o, "autoBackupIncludeSourceSettings", self.auto_backup_include_source_settings);
         self.auto_backup_include_tracking = ov_bool(o, "autoBackupIncludeTracking", self.auto_backup_include_tracking);
         self.auto_download_ignore_re_uploads =
             ov_bool(o, "autoDownloadIgnoreReUploads", self.auto_download_ignore_re_uploads);
@@ -593,20 +619,14 @@ fn conversion_from_json(v: &serde_json::Value) -> Option<SettingsDownloadConvers
             .get("callTimeout")
             .and_then(Value::as_str)
             .and_then(parse_iso8601_duration)
-            .map(DurationScalar)
-            .unwrap_or_default(),
+            .map(DurationScalar),
         compression_level: obj.get("compressionLevel").and_then(Value::as_f64),
         connect_timeout: obj
             .get("connectTimeout")
             .and_then(Value::as_str)
             .and_then(parse_iso8601_duration)
-            .map(DurationScalar)
-            .unwrap_or_default(),
-        headers: obj
-            .get("headers")
-            .and_then(Value::as_array)
-            .map(|hs| hs.iter().filter_map(header).collect())
-            .unwrap_or_default(),
+            .map(DurationScalar),
+        headers: obj.get("headers").and_then(Value::as_array).map(|hs| hs.iter().filter_map(header).collect()),
         mime_type,
         target,
     })
@@ -716,8 +736,11 @@ mod tests {
         assert_eq!(s.auto_backup_include_chapters, d.include_chapters);
         assert_eq!(s.auto_backup_include_tracking, d.include_tracking);
         assert_eq!(s.auto_backup_include_history, d.include_history);
-        assert_eq!(s.auto_backup_include_client_data, d.include_client_data);
-        assert_eq!(s.auto_backup_include_server_settings, d.include_server_settings);
+        assert_eq!(s.auto_backup_include_read_entries, d.include_read_entries);
+        assert_eq!(s.auto_backup_include_app_settings, d.include_app_settings);
+        assert_eq!(s.auto_backup_include_extension_stores, d.include_extension_stores);
+        assert_eq!(s.auto_backup_include_source_settings, d.include_source_settings);
+        assert_eq!(s.auto_backup_include_private_settings, d.include_private_settings);
     }
 
     /// `onlyServerSettingsOwned` 的那批字段：`ServerConfig` 持有的值必须原样带出来，

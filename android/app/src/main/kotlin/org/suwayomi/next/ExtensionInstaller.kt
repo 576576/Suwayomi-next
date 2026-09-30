@@ -1,6 +1,6 @@
 //! 扩展的安装/卸载全部交给**系统安装器/卸载器**，本项目不写任何扩展文件。
 //! 因此「扩展的所有权在系统」：Mihon/Komikku 装了或卸了扩展，下一次重扫立刻能看到。
-//! 与桌面的差别见 `docs/migration/ANDROID_IMPL.md` §C4。
+//! 与桌面的差别见 `docs/agent/android.md` §C4。
 
 package org.suwayomi.next
 

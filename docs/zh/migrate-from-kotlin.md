@@ -10,9 +10,9 @@ Kotlin 原版（Suwayomi/Tachidesk）使用 H2 数据库文件（JVM 专有格�
 
 ```bash
 # 校验（不落库）：
-curl -X POST http://localhost:8090/api/v1/backup/validate --data-binary @backup.tachibk
+curl -X POST http://localhost:4567/api/v1/backup/validate --data-binary @backup.tachibk
 # 导入：
-curl -X POST http://localhost:8090/api/v1/backup/import --data-binary @backup.tachibk
+curl -X POST http://localhost:4567/api/v1/backup/import --data-binary @backup.tachibk
 ```
 
 导出（用于反向迁移或日常备份）：`GET /api/v1/backup/export`。

@@ -1,6 +1,6 @@
 //! WebView 里 `<input type="file">` 的宿主侧实现 —— 「恢复备份」要靠它。
 //! WebView 把「弹文件选择器」外包给宿主，只有实现了 `onShowFileChooser` 才有反应；
-//! 缺了它点击是**静默无响应**。细节见 `docs/migration/ANDROID_IMPL.md` §「选文件」。
+//! 缺了它点击是**静默无响应**。细节见 `docs/agent/android.md` §「选文件」。
 
 package org.suwayomi.next
 

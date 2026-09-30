@@ -18,6 +18,15 @@ on:
         type: choice
         options: [alpha, beta, release]
         default: alpha
+      # Windows 工具链：决定两个 Windows 目标用哪套 rust target —— msvc 走 VS 生成工具，
+      # gnullvm 走 llvm-mingw（无 MSVC 依赖，产物静态链 CRT 与 libunwind）；all 是两套都出，
+      # gnullvm 那份的产物名多一段 -gnullvm。放在平台开关之前，因为它管的是所有 Windows
+      # 目标，不是某一个。
+      windows_toolchain:
+        description: Windows 工具链
+        type: choice
+        options: [msvc, gnullvm, all]
+        default: msvc
       # 平台开关：先 Windows/Linux，再 Android，最后 macOS；同族内一律 x64 在前、arm64 在后。
       build_windows_x64:
         description: Windows x64
@@ -127,6 +136,7 @@ jobs:
           if [ "$EVENT" = "workflow_dispatch" ]; then
             FLOW="manual"
             CHANNEL="${{ github.event.inputs.channel }}"
+            WIN_TC="${{ github.event.inputs.windows_toolchain }}"
             PACK_CORE="${{ github.event.inputs.pack_core }}"
             PACK_JRE="${{ github.event.inputs.pack_jre }}"
             PACK_MSI="${{ github.event.inputs.pack_msi }}"
@@ -151,10 +161,12 @@ jobs:
             PACK_OCI="${PACK_OCI:-false}"
             ANDROID_ARM64="${ANDROID_ARM64:-false}"
             ANDROID_X64="${ANDROID_X64:-false}"
+            WIN_TC="${WIN_TC:-msvc}"
           else
             # 推送 main：自动 alpha，固定 windows-x64 + linux-x64；形态与手动 dispatch 的默认值保持一致。
             FLOW="auto"
             CHANNEL="alpha"
+            WIN_TC="msvc"
             PACK_CORE="false"
             PACK_JRE="true"
             PACK_MSI="true"
@@ -188,20 +200,36 @@ jobs:
           esac
 
           # 桌面/服务端矩阵；第 3、4 列是裁剪 JRE 资产的 (os, arch) 标签。macos-13 已下线，x64 用 macos-15-intel。
-          INCLUDE="$(python3 - "$SEL" <<'PY'
+          # Windows 两行按 windows_toolchain 展开：msvc 用 target 原名，gnullvm 在 target 名后加
+          # -gnullvm —— 产物名 / 附件名 / 桌面壳资产名都从 target 派生，所以这一维只加在这里。
+          INCLUDE="$(python3 - "$SEL" "$WIN_TC" <<'PY'
           import json, sys
-          mapping = {
-              "windows-x64":   ("windows-latest",   "x86_64-pc-windows-msvc",   "windows", "x64"),
-              "windows-arm64": ("windows-11-arm",   "aarch64-pc-windows-msvc",  "windows", "aarch64"),
-              "linux-x64":     ("ubuntu-latest",    "x86_64-unknown-linux-gnu", "linux",   "x64"),
-              "linux-arm64":   ("ubuntu-24.04-arm", "aarch64-unknown-linux-gnu","linux",   "aarch64"),
-              "macos-x64":     ("macos-15-intel",   "x86_64-apple-darwin",      "mac",     "x64"),
-              "macos-arm64":   ("macos-15",         "aarch64-apple-darwin",     "mac",     "aarch64"),
+
+          tc = sys.argv[2]
+          WIN = {
+              "windows-x64":   ("windows-latest", "x86_64-pc-windows-",  "x64"),
+              "windows-arm64": ("windows-11-arm", "aarch64-pc-windows-", "aarch64"),
           }
-          sel = sys.argv[1].split()
-          inc = [{"target": t, "os": mapping[t][0], "rust_target": mapping[t][1],
-                  "jre_os": mapping[t][2], "jre_arch": mapping[t][3]}
-                 for t in sel if t in mapping]
+          mapping = {
+              "linux-x64":   ("ubuntu-latest",    "x86_64-unknown-linux-gnu", "linux", "x64"),
+              "linux-arm64": ("ubuntu-24.04-arm", "aarch64-unknown-linux-gnu","linux", "aarch64"),
+              "macos-x64":   ("macos-15-intel",   "x86_64-apple-darwin",      "mac",   "x64"),
+              "macos-arm64": ("macos-15",         "aarch64-apple-darwin",     "mac",   "aarch64"),
+          }
+          # all 是两套都出；顺序与「单独跑两次」一致（msvc 在前）。
+          tcs = ("msvc", "gnullvm") if tc == "all" else (tc,)
+          inc = []
+          for t in sys.argv[1].split():
+              if t in WIN:
+                  os_name, triple, arch = WIN[t]
+                  for one in tcs:
+                      inc.append({"target": t if one == "msvc" else f"{t}-{one}",
+                                  "os": os_name, "rust_target": f"{triple}{one}",
+                                  "jre_os": "windows", "jre_arch": arch})
+              elif t in mapping:
+                  os_name, rt, jre_os, jre_arch = mapping[t]
+                  inc.append({"target": t, "os": os_name, "rust_target": rt,
+                              "jre_os": jre_os, "jre_arch": jre_arch})
           print(json.dumps(inc))
           PY
           )"
@@ -223,6 +251,12 @@ jobs:
             echo "::error::未选择任何构建目标"
             exit 1
           fi
+          # 工具链只有这三支。拼错的取值会凭空造出一个不存在的 rust target，那时每个 target
+          # 都要白跑一遍编译才报错 —— 在这里拦下来。
+          case "$WIN_TC" in
+            msvc|gnullvm|all) ;;
+            *) echo "::error::未知的 Windows 工具链：$WIN_TC"; exit 1 ;;
+          esac
           # 两种安装包装的都是 +jre 那份内容（setup.exe 只是 msi 的 Burn 外壳），关掉 pack_jre 时无处可取。
           if [ "$PACK_MSI" = "true" ] || [ "$PACK_EXE" = "true" ]; then
             if [ "$PACK_JRE" != "true" ]; then
@@ -253,7 +287,7 @@ jobs:
             echo "pack_oci=$PACK_OCI"
           } >> "$GITHUB_OUTPUT"
           echo "$FLOW 发布: $CHANNEL $VER_NAME (code $VER_CODE, commits $COUNT) -> $TAG"
-          echo "   targets=[$SEL] android=[$ANDROID_ARM64 $ANDROID_X64] core=$PACK_CORE jre=$PACK_JRE msi=$PACK_MSI exe=$PACK_EXE oci=$PACK_OCI"
+          echo "   targets=[$SEL] android=[$ANDROID_ARM64 $ANDROID_X64] core=$PACK_CORE jre=$PACK_JRE msi=$PACK_MSI exe=$PACK_EXE oci=$PACK_OCI win_tc=$WIN_TC"
 
           # 未注入 GITHUB_TOKEN，此请求恒 401 被吞掉，run 标题一直是默认值（要生效补 env: GH_TOKEN）。
           if [ "$FLOW" = "manual" ]; then
@@ -449,7 +483,9 @@ jobs:
             printf '<a href="%s/%s"><img src="%s/%s-%s-%s.svg?logo=%s" alt="%s"></a><br>' \
               "$REL_URL" "$5" "$BADGE_HOST" "$1" "$2" "$3" "$4" "$5"
           }
-          # 按「<平台>-<架构>[_<形态>]」收进表再按固定顺序取：附件的字典序会把 +jre 排到基线包前、arm64 排到 x64 前。
+          # 按「<平台>-<架构>[-gnullvm][_<形态>]」收进表再按固定顺序取：附件的字典序会把 +jre 排到
+          # 基线包前、arm64 排到 x64 前。工具链段只带在 gnullvm 那份上（msvc 是默认、产物名保持
+          # 原样），它既进键也进徽章左半边的文字（「ZIP GNULLVM」），与 msvc 那份各占一格。
           declare -A DL_BADGE=()
           for f in "${FILES[@]}"; do
             n="$(basename "$f")"
@@ -467,10 +503,14 @@ jobs:
               *-setup.exe) STEM="${REST%-setup.exe}"; LABEL="EXE"; FACE="Installer_EXE" ;;
               *) echo "跳过未识别的产物：$n"; continue ;;
             esac
-            FACE="${FACE:-$LABEL}"
             # 同一架构的基线包与 +jre 包共处一格：键里留 _JRE 区分，徽章右半边写「+JRE」（%2B 才是字面加号）。
             JRE_KEY=""; JRE_FACE=""
             case "$STEM" in *+jre) STEM="${STEM%+jre}"; JRE_KEY="_JRE"; JRE_FACE="_%2BJRE" ;; esac
+            # 工具链段要**在 +jre 之后**摘：它贴在架构后面，而 +jre 贴在最后，先摘工具链摘不掉
+            # （`*-gnullvm` 匹配不到以 `+jre` 结尾的名字），留下来就会挡住下面的平台段解析。
+            VAR=""; VAR_FACE=""
+            case "$STEM" in *-gnullvm) STEM="${STEM%-gnullvm}"; VAR="-gnullvm"; VAR_FACE="_GNULLVM" ;; esac
+            FACE="${FACE:-$LABEL}$VAR_FACE"
             # 安装包（msi / setup.exe）与便携包分区：键尾带 _MSI / _EXE，渲染时排在同架构的 zip 前。
             KIND=""
             case "$LABEL" in MSI|EXE) KIND="_$LABEL" ;; esac
@@ -482,7 +522,7 @@ jobs:
             esac
             # 安装包与便携包同族不同色（靛蓝 vs 青蓝），一眼能看出这两枚是装上去的。
             [ -z "$KIND" ] || COLOR="4a4e8f"
-            DL_BADGE["${STEM%-*}-${STEM##*-}$KIND$JRE_KEY"]="$(badge "$FACE" "${STEM##*-}$JRE_FACE" "$COLOR" "$ICON" "$n")"
+            DL_BADGE["${STEM%-*}-${STEM##*-}$VAR$KIND$JRE_KEY"]="$(badge "$FACE" "${STEM##*-}$JRE_FACE" "$COLOR" "$ICON" "$n")"
           done
           # OCI 只推 GHCR、不进 Release 附件，所以单独做枚徽章垫在 Linux 格末尾，点进去是包页面。
           if [ "$PACK_OCI" = "true" ]; then
@@ -492,12 +532,15 @@ jobs:
               "https://github.com/${GITHUB_REPOSITORY}" "${GITHUB_REPOSITORY##*/}" "$BADGE_HOST" "$OCI_TAG" "$OCI_REF")"
           fi
           dl_cell() {   # <平台> <显示名>：每个架构「安装包 → 基线包 → +jre」，Linux 格末尾垫 OCI
-            local p="$1" name="$2" arch suf k cell="" oci="$1-oci"
+            local p="$1" name="$2" arch var suf k cell="" oci="$1-oci"
             for arch in x64 arm64; do
-              for suf in _MSI _EXE "" _JRE; do
-                k="$p-$arch$suf"
-                [ -n "${DL_BADGE[$k]:-}" ] || continue
-                cell="$cell${DL_BADGE[$k]}"$'\n'
+              # 工具链维度排在架构之内：先 msvc（产物名不带段）再 gnullvm。
+              for var in "" "-gnullvm"; do
+                for suf in _MSI _EXE "" _JRE; do
+                  k="$p-$arch$var$suf"
+                  [ -n "${DL_BADGE[$k]:-}" ] || continue
+                  cell="$cell${DL_BADGE[$k]}"$'\n'
+                done
               done
             done
             [ -z "${DL_BADGE[$oci]:-}" ] || cell="$cell${DL_BADGE[$oci]}"$'\n'

@@ -108,6 +108,28 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+      - name: 安装 llvm-mingw（gnullvm 目标）
+        # gnullvm 的默认 linker 就是 llvm-mingw 的 <triple>-clang（rustc 的 target spec 里写死的），
+        # 依赖里的 C 源码（libsqlite3-sys 的 bundled 那份）也由它编 —— rustup 给该 target 的
+        # lib/self-contained/ 只有 crt2.o / dllcrt2.o，缺 libmingw32 / libmingwex。runner 上的
+        # MSVC 工具链在这个 target 下用不上，所以这一步与「安装交叉编译工具链」是两回事。
+        if: contains(matrix.rust_target, 'gnullvm')
+        shell: bash
+        run: |
+          V="20260922"
+          DIR="llvm-mingw-${V}-ucrt-x86_64"
+          # 版本写死：该工具链只提供 linker 与 mingw 库，不参与 rust target 的选择，
+          # 跟 rust-toolchain 那边的 stable 不同，这里浮动起来只会让产物不可复现。
+          curl -fsSL --retry 3 -o llvm-mingw.zip \
+            "https://github.com/mstorsjo/llvm-mingw/releases/download/${V}/${DIR}.zip"
+          # Windows runner 的 Git for Windows 没有 unzip（pack 步骤里也是同样的原因改走
+          # python3 zipfile），这里同样用 python3 解开。
+          python3 -c "import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall('.')" llvm-mingw.zip
+          rm -f llvm-mingw.zip
+          test -x "$DIR/bin/x86_64-w64-mingw32-clang.exe" || { echo "::error::llvm-mingw 解压异常（缺 $DIR/bin）"; exit 1; }
+          # 交给后续步骤（cargo / cc）找 <triple>-clang 与 llvm-ar。路径给 Windows 形式：
+          # GITHUB_PATH 的条目会进原生进程的 PATH，`/d/...` 那种 POSIX 形式对它们无意义。
+          echo "$(pwd -W)/$DIR/bin" >> "$GITHUB_PATH"
       - name: 安装交叉编译工具链
         # 只有 x86_64 runner 出 aarch64 包才需要交叉工具链。
         if: matrix.rust_target == 'aarch64-unknown-linux-gnu' && runner.arch == 'X64'
@@ -131,6 +153,10 @@ jobs:
 
           IS_WIN="false"
           [ "${{ runner.os }}" = "Windows" ] && IS_WIN="true"
+          # gnullvm 的桌面壳动态链 WebView2Loader.dll（msvc 那份是静态链的 loader 库），
+          # 它俩必须成对落盘 —— 托盘 exe 单独存在时起不来。
+          IS_GNULLVM="false"
+          case "${{ matrix.rust_target }}" in *gnullvm) IS_GNULLVM="true" ;; esac
 
           # 通道段由调用方给出，只有 beta 非空（beta 与 release 共用 3.y.z，不区分会重名）。
           BASE="Suwayomi-${VER}${{ inputs.channel_suffix }}-${TGT}"
@@ -142,6 +168,8 @@ jobs:
           cp "$BIN" "$STAGE/bin/"
 
           # 托盘壳所有桌面 target 都要（Android 不在这个矩阵里）；取不到只告警，不挡发布。
+          # 资产名里的 target 段就是 matrix.target，它已带工具链段（windows-x64-gnullvm），
+          # 所以两边取的是同一个变体（gnullvm server 配 gnullvm 桌面壳）。
           TRAY_VER="${{ inputs.tray_version }}"
           TRAY_BASE="${{ inputs.tray_base }}"
           if [ -z "$TRAY_VER" ] || [ -z "$TRAY_BASE" ]; then
@@ -153,6 +181,17 @@ jobs:
             [ "$IS_WIN" = "true" ] && TRAY_OUT="$STAGE/suwayomi.exe"
             if curl -fsSL --retry 2 -o "$TRAY_OUT" "$TRAY_BASE/$TRAY_ASSET"; then
               echo "桌面壳 ${TRAY_VER} → $TRAY_OUT"
+              # gnullvm 那份另带一份同名的 WebView2Loader.dll（托盘仓库按 <exe 同名>.dll 发布）。
+              # 缺它就等于出一个起不来的托盘，所以 DLL 失败时把 exe 一起撤掉。
+              if [ "$IS_GNULLVM" = "true" ]; then
+                TRAY_DLL="${TRAY_ASSET%.exe}.dll"
+                if curl -fsSL --retry 2 -o "$STAGE/WebView2Loader.dll" "$TRAY_BASE/$TRAY_DLL"; then
+                  echo "WebView2Loader.dll → $STAGE/WebView2Loader.dll"
+                else
+                  rm -f "$TRAY_OUT" "$STAGE/WebView2Loader.dll"
+                  echo "::warning::桌面壳的 WebView2Loader.dll 取不到（$TRAY_BASE/$TRAY_DLL），本包不含托盘壳"
+                fi
+              fi
             else
               rm -f "$TRAY_OUT"
               echo "::warning::桌面壳资产下载失败（$TRAY_BASE/$TRAY_ASSET），本包不含托盘壳"

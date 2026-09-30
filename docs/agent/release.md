@@ -41,12 +41,13 @@
 
 ## 构建目标与 runner
 
-手动 dispatch 的平台开关与对应的 runner（`release.yml` 里的 mapping）。**行序 = 触发页面上的输入框顺序**：先 Windows/Linux，再 Android，最后 macOS，形态开关垫底（顺序固定为 `pack_core` → `pack_jre` → `pack_msi` → `pack_exe` → `pack_oci`）；同族内一律 x64 在前、arm64 在后。
+手动 dispatch 的平台开关与对应的 runner（`release.yml` 里的 mapping）。**行序 = 触发页面上的输入框顺序**：`windows_toolchain` 单选项排在最前（它管的是所有 Windows 目标，不是某一个），接着是 Windows/Linux，再 Android，最后 macOS，形态开关垫底（顺序固定为 `pack_core` → `pack_jre` → `pack_msi` → `pack_exe` → `pack_oci`）；同族内一律 x64 在前、arm64 在后。
 
 | 开关 | runner | rust target | 取的 JRE 资产 |
 |---|---|---|---|
-| `build_windows_x64` | `windows-latest` | `x86_64-pc-windows-msvc` | windows/x64 |
-| `build_windows_arm64` | `windows-11-arm` | `aarch64-pc-windows-msvc` | windows/aarch64 |
+| `windows_toolchain` | — | `msvc` → `*-pc-windows-msvc`；`gnullvm` → `*-pc-windows-gnullvm` | —（只改 rust target） |
+| `build_windows_x64` | `windows-latest` | `x86_64-pc-windows-{msvc\|gnullvm}` | windows/x64 |
+| `build_windows_arm64` | `windows-11-arm` | `aarch64-pc-windows-{msvc\|gnullvm}` | windows/aarch64 |
 | `build_linux_x64` | `ubuntu-latest` | `x86_64-unknown-linux-gnu` | linux/x64 |
 | `build_linux_arm64` | `ubuntu-24.04-arm` | `aarch64-unknown-linux-gnu` | linux/aarch64 |
 | `build_android_x64` | `ubuntu-latest` | `x86_64-linux-android` | —（Android 不打包 JRE） |
@@ -56,6 +57,11 @@
 | `pack_msi` | 仅 Windows 的 `build` job | 同上 | 同 target（装的就是 `+jre` 那份） |
 | `pack_exe` | 同上（与 `pack_msi` 共用一个步骤） | 同上 | 同 target（内容与 msi 完全一致） |
 | `pack_oci` | 见下 | `linux/amd64` / `linux/arm64` | linux/x64 与 linux/aarch64（镜像里按 `uname -m` 各取对应那份） |
+
+- **`windows_toolchain` 决定本次 run 出哪几套 Windows 产物**（`msvc` / `gnullvm` / `all`）：runner 与 JRE 资产不受影响；`gnullvm` 那份把工具链段写进 `matrix.target`（`windows-x64-gnullvm`），而产物名 / 附件名 / 桌面壳资产名**全都从 `matrix.target` 派生**，所以那一份的名字里带 `-gnullvm`（`msvc` 那份保持原名）。`all` = 两套都出，每个被勾选的 Windows 目标各出两份（msvc 在前）。默认 `msvc`，与推送 main 的自动 alpha 一致（自动通道恒 `msvc`，取不到输入框）。用哪套工具链看产物名即可，prep 日志里另有 `win_tc=`。
+- **选了 `gnullvm` 时 `build.yml` 会下载 llvm-mingw**（`mstorsjo/llvm-mingw` 的 `<版本>-ucrt-x86_64.zip`，版本写死在 workflow 里）：rustc 对该 target 的默认 linker 就是它提供的 `<triple>-clang`，依赖里的 C 源码（`libsqlite3-sys` 的 bundled 那份）也由它编 —— rustup 给这个 target 的 `lib/self-contained/` 只有 `crt2.o` / `dllcrt2.o`，缺 `libmingw32` / `libmingwex`。**MSVC 工具链在这个 target 下完全不参与**，所以「装了 VS 就没有 gnullvm 的依赖」是错的。那一步的条件挂在 `matrix.rust_target` 上，`all` 时只有 gnullvm 那个矩阵项会下。
+- `.cargo/config.toml` 给两个 gnullvm 目标加了 `target-feature=+crt-static`：不加的话产物要额外带一份 `libunwind.dll` 才起得来。
+- **server 与桌面壳同工具链成对**：桌面壳（`suwayomi.exe`）来自 Suwayomi-tray 的 Release，按**与当前矩阵项完全同名的 target** 取 —— 选了 gnullvm 就取托盘那边同名的那份资产，两边不会是混搭。gnullvm 的桌面壳动态链 `WebView2Loader.dll`（msvc 那份反过来：静态链 loader、动态链 `VCRUNTIME140.dll`），托盘会另发一份同名换扩展名的 DLL，打包时一并放进包根目录；DLL 取不到就把 exe 一起撤掉（缺它托盘起不来）。选了 gnullvm 之后**仓里编的 server 导入表里不再有 `VCRUNTIME140.dll`**（llvm-mingw + `+crt-static` 下 CRT 静态链入）。
 
 - **每个 target 的 runner 都是原生同架构**：Rust 二进制在本平台原生编译（linux-arm64 用 arm64 runner，顺带不再需要交叉工具链；桌面壳在 Suwayomi-tray 那边同样由原生 runner 出）。以前这里还有第二条理由 —— `+jre` 的 jlink 不能跨平台生成运行时；JRE 搬到 Suwayomi-ext-runtime 后这条约束不再落在本仓库，但"原生编译"本身仍然值得保留。
 - `macos-13` 已被 GitHub 下线，x64 macOS 现为 `macos-15-intel`；Windows arm64 用 `windows-11-arm`（公开预览，公共仓库免费不限量），该镜像自带 VS 2022 + Windows SDK 26100（`build.rs` 嵌图标要的 `rc.exe`）与 Git for Windows，`shell: bash` 可直接用。
@@ -89,6 +95,8 @@
 | 安装包 | `Suwayomi-{VER}[-beta]-{TGT}.msi` / `Suwayomi-{VER}[-beta]-{TGT}-setup.exe` |
 | Android | `Suwayomi-{VER}[-beta]-android-arm64.apk` / `-android-x64.apk`（跑系统 ART，不用 JRE） |
 | OCI | 镜像 tag `{VER}[-beta]`；release / beta 另打 `latest`，只推 GHCR、不进附件 |
+
+- `{TGT}` 就是 `matrix.target`：Windows 的 gnullvm 那份自带 `-gnullvm` 段（`Suwayomi-…-windows-x64-gnullvm.zip`）。所以「哪份是哪套工具链」在文件名里一眼可见，`+jre` / `-setup.exe` 那些后缀接在工具链段之后。
 
 - 自动 alpha（推 main）固定 `windows-x64 + linux-x64`，所以它出的就是这两份 `+jre` 包，外加 Windows 的 msi（`pack_exe` 默认关，所以不出 setup.exe）。
 - 只勾 Android 时桌面矩阵为空数组、`build` job 直接跳过；**只勾 OCI 时两个矩阵都空**，Release 会没有任何附件 —— 这是允许的，`publish` 里的附件列表用数组拼（裸 `artifacts/*` 在空目录下不展开，会把那个字面量当文件名传给 `gh`）。
@@ -184,7 +192,7 @@
   - 格内顺序是**显式固定**的：附件的字典序恰好把 `+jre` 排在核心包前、`arm64` 排在 `x64` 前，照遍历顺序渲染格子会乱。安装包（`.msi` / `-setup.exe`）进表的时机也在这里 —— 它们不被当成「另一种后缀的便携包」，而是按 `_MSI` / `_EXE` 单独占键、插在同架构核心包之前。
   - `MSI` / `Installer EXE` 两枚统一用**靛蓝**（`4a4e8f`）与青蓝的 `ZIP` 区分，一眼能看出这两枚是「装上去的」而不是解压即用。`EXE` 单看太含糊（zip 里也有 exe），所以徽章上写全 `Installer EXE`（shields 的下划线渲染成空格）；它指的是 `-setup.exe`（Burn bundle）而不是裸 exe。
   - **Windows 徽章的图标是内嵌的**：simple-icons 因商标下架了 `windows`（`logo=windows` 静默失效，徽章只是少个图标，不报错），所以 `WIN_LOGO` 里塞了一份 base64 的自绘图标 —— **Win11 形状的等宽四格**（轴对齐正方形，无透视；早先那版是带透视的倾斜四格）。同样的原因，别把 Windows 徽章改回 `logo=windows`；Linux / macOS / Android / Docker 的 `logo=linux|apple|android|docker` 都还在。
-  - **图标的 viewBox 留了 4 单位内边距**（`-4 -4 32 32`，字形占 75%）：shields.io 给所有 logo 的图标位恒为 14px，所以字形多大**只由它自己占 viewBox 的比例决定**。四格是实心块，满幅（`0 0 24 24`，100%）在 14px 里比线描图标显重，收一圈才与 `linux` / `apple` 那几枚齐平。改 `WIN_LOGO` 时别把 viewBox 改回满幅，`release_inputs_check.py` 有占比断言拦着。
+  - **图标的 viewBox 留了 4 单位内边距**（`-4 -4 32 32`，字形占 75%）：shields.io 给所有 logo 的图标位恒为 14px，所以字形多大**只由它自己占 viewBox 的比例决定**。四格是实心块，满幅（`0 0 24 24`，100%）在 14px 里比线描图标显重，收一圈才与 `linux` / `apple` 那几枚齐平。改 `WIN_LOGO` 时别把 viewBox 改回满幅，`ci_pack_check.py` 有占比断言拦着。
   - `+JRE` 里的加号在 shields.io 的 URL 里要写 `%2B`（`_` 渲染成空格，所以徽章文字是 `x64 +JRE`）。徽章的 `alt` 是文件名 / 镜像地址，图挂了也能看出该下哪个。
 - **没有「版本计数」输入框**：版本号一律由 `git rev-list --count HEAD` 推导（`versionCode = 计数 + 3000`）。早先那个可以手填覆盖计数的框已移除，避免产物名与真实提交数脱钩。
 
@@ -210,10 +218,10 @@
 ```bash
 python .workbuddy/verify/workflows_check.py   # 四个 workflow：YAML 可解析 + 每个 run 块过 bash -n + 触发/依赖结构
 python .workbuddy/verify/clear_dryrun.py      # gh 打桩 + 假 Release 列表，真跑两个 run 块（9 个场景）
-python .workbuddy/verify/release_inputs_check.py  # 输入顺序 + 发行说明渲染（同样用 gh 打桩真跑）
+python .workbuddy/verify/ci_pack_check.py     # 输入顺序 / prep 各分支 / 产物形态 / 发行说明渲染（同样用 gh 打桩真跑）
 ```
 
-三个脚本都要 `pyyaml`（没装会直接 `ImportError`）。`release_inputs_check.py` 比对的是
+三个脚本都要 `pyyaml`（没装会直接 `ImportError`）。`ci_pack_check.py` 的第 5 节比对的是
 渲染后的整段说明，所以动发行说明排版时它是唯一能提前发现「表被 markdown 当成延续行」
 这类问题的地方。
 
@@ -281,12 +289,13 @@ python .workbuddy/verify/release_inputs_check.py  # 输入顺序 + 发行说明�
 
 | 消费方 | 取的资产 | 落到哪 |
 | --- | --- | --- |
-| 六个桌面 target | `suwayomi-tray-<V>-<target>[.exe]` | 各 target 产物根目录的 `suwayomi` / `suwayomi.exe` |
+| 每个桌面 target | `suwayomi-tray-<V>-<target>[.exe]` | 各 target 产物根目录的 `suwayomi` / `suwayomi.exe` |
+| Windows 的 gnullvm 那份 | 同上换扩展名（`<.dll>`） | 同一份产物根目录的 `WebView2Loader.dll`（与 exe 成对，缺它托盘起不来） |
 
-- 解析脚本：`scripts/resolve-tray.sh`，三级探测同 `resolve-webui.sh`，同样吐 `base=`（该 release 的资产下载前缀）—— 六个 target 的资产都在同一个 release 里，prep 解析一次，各 target 按 `<base>/suwayomi-tray-<V>-<target>[.exe]` 取，不必逐个探测。
+- 解析脚本：`scripts/resolve-tray.sh`，三级探测同 `resolve-webui.sh`，同样吐 `base=`（该 release 的资产下载前缀）—— 各 target 的资产都在同一个 release 里，prep 解析一次，各 target 按 `<base>/suwayomi-tray-<V>-<target>[.exe]` 取，不必逐个探测。`<target>` 就是 `matrix.target`（带工具链段的那份也一样），所以本仓库的 server 与取来的桌面壳恒同工具链。
 - **解析不到或下载失败只打 `::warning::`，不让发布失败**：没有托盘壳时 server 本身照样可用。这是刻意选的（托盘仓库 CI 挂掉不该阻塞 server 发布），代价是可能静默出一个不含桌面壳的包 —— 看构建日志里的 warning。
 - 版本号由托盘仓库自己管（算法与本仓库同款：`versionCode = 提交数 + 1000`，版本名 `1.{提交数/100}.{提交数%100}`；三通道共用同一个版本名，差异在 tag）。**不与本仓库的 `r{code}` / `3.y.z` 对齐**：exe 的 PE 版本资源显示的是托盘自己的版本。
-- 改托盘的流程：在 Suwayomi-tray 改 → 推 main（自动出 alpha，只有 windows-x64 + linux-x64 两份）或手动 dispatch release 通道（六份出齐）→ 回这边跑一次发布即生效（无需改本仓库代码）。
+- 改托盘的流程：在 Suwayomi-tray 改 → 推 main（自动出 alpha，只有 windows-x64 + linux-x64 两份，工具链恒 `msvc`）或手动 dispatch release 通道（六份出齐，`windows_toolchain` 可选 `msvc`/`gnullvm`/`all`，选 `all`/`gnullvm` 时 Windows 的是两套）→ 回这边跑一次发布即生效（无需改本仓库代码）。
 - **通道到这里是分岔的**：那边推 main 会自动出 alpha 预发布，所以本仓库正式发布只认非预发布版本（`resolve-tray.sh --stable`），alpha/beta 才跟最新构建（`--build`）。
 - 为什么拆：托盘是独立 workspace + 494 个 crate 的 Tauri 依赖树，原先在每个 desktop target 的 job 里**串行**编译一次，托盘代码没变也照编。拆走后本仓库每次构建只下载几 MB，顺带省掉 Linux 那套 webkit2gtk/appindicator 系统依赖。
 

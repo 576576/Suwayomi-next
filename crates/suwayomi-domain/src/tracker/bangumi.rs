@@ -1,4 +1,4 @@
-//! Bangumi —— 上游 `tracker/bangumi/Bangumi.kt` + `BangumiApi.kt`。
+//! Bangumi —— 参考实现 `tracker/bangumi/Bangumi.kt` + `BangumiApi.kt`。
 //!
 //! OAuth2 授权码 + client_secret。条目用 `POST/PATCH /v0/users/-/collections/{id}`
 //! 写入（新增 202、更新 204，都没有响应体）。站点没有读书记录日期，
@@ -13,7 +13,7 @@ use crate::error::{DomainError, Result};
 use super::service::{TrackerCtx, TrackerService, check, expires_soon, extract_token, now_secs};
 use super::{BANGUMI, Track, TrackSearch};
 
-/// 内置默认值 = 上游 Suwayomi 在 Bangumi 注册的应用；`trackers.json` 缺键时用它。
+/// 内置默认值 = 参考实现 Suwayomi 在 Bangumi 注册的应用；`trackers.json` 缺键时用它。
 pub(super) const DEFAULT_CLIENT_ID: &str = "bgm376667faf473119bb";
 pub(super) const DEFAULT_CLIENT_SECRET: &str = "d74caf0b874ddd18e6c6e7fb86d77a06";
 const API_URL: &str = "https://api.bgm.tv";
@@ -77,7 +77,7 @@ impl Bangumi {
         let value = check(&self.ctx, BANGUMI, self.name(), resp).await?;
         let mut fresh: BgmOAuth = serde_json::from_value(value)
             .map_err(|e| DomainError::tracker(format!("Bangumi 刷新 token 响应无法解析：{e}")))?;
-        // 站点不返回 user_id，沿用旧值（上游 newAuth 也是这么保的）。
+        // 站点不返回 user_id，沿用旧值（参考实现 newAuth 也是这么保的）。
         fresh.user_id = fresh.user_id.or(oauth.user_id);
         self.save_token(Some(&fresh)).await?;
         Ok(fresh)
@@ -137,7 +137,7 @@ impl Bangumi {
         Ok(())
     }
 
-    /// 对应上游 `statusLibManga`：没收藏时站点返回 404，这里转成 `None`。
+    /// 对应参考实现 `statusLibManga`：没收藏时站点返回 404，这里转成 `None`。
     async fn status_lib_manga(&self, remote_id: i64) -> Result<Option<Track>> {
         let username = self.username().await?;
         let token = self.bearer().await?;
@@ -167,7 +167,7 @@ impl Bangumi {
         Ok(Some(track))
     }
 
-    /// 对应上游 `Bangumi.login(code)`。
+    /// 对应参考实现 `Bangumi.login(code)`。
     async fn login(&self, code: &str) -> Result<()> {
         let app = self.require_oauth_app()?;
         let resp = self

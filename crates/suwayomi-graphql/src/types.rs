@@ -302,7 +302,7 @@ impl MangaType {
     async fn thumbnail_url(&self) -> Option<&str> {
         self.thumbnail_url.as_deref()
     }
-    /// 上游把这一项声明成可空的（`thumbnailUrlLastFetched: LongString`）；0 表示
+    /// 参考实现把这一项声明成可空的（`thumbnailUrlLastFetched: LongString`）；0 表示
     /// 封面从未抓取过，这里就返回 null，而不是把哨兵值 0 当时间戳发出去。
     async fn thumbnail_url_last_fetched(&self) -> Option<LongString> {
         (self.thumbnail_url_last_fetched > 0).then_some(LongString(self.thumbnail_url_last_fetched))
@@ -366,7 +366,7 @@ impl MangaType {
         Ok(self.chapters_of(db).await.iter().filter(|c| c.bookmark).count() as i32)
     }
     async fn has_duplicate_chapters(&self, ctx: &Context<'_>) -> async_graphql::Result<bool> {
-        // 对齐上游 `HasDuplicateChaptersForMangaDataLoader`：
+        // 对齐参考实现 `HasDuplicateChaptersForMangaDataLoader`：
         // 按 chapter_number 分组（仅统计 chapter_number >= 0 的章节），存在
         // 出现次数 > 1 的编号即视为有重复章节。旧实现按 (url, chapter_number)
         // 判重，会把同编号但不同 url 的章节漏判，与 WebUI「重复章节」筛选不一致。
@@ -426,7 +426,7 @@ impl MangaType {
         Ok(row.map(|r| SourceType::from_row(&r)))
     }
 
-    /// 对齐上游 `TrackRecordsForMangaIdDataLoader`：按 manga_id 查询绑定记录。
+    /// 对齐参考实现 `TrackRecordsForMangaIdDataLoader`：按 manga_id 查询绑定记录。
     /// 旧实现恒返回空列表，导致 WebUI 书架的「按追踪器筛选」永远筛不出结果。
     async fn track_records(&self, ctx: &Context<'_>) -> async_graphql::Result<TrackRecordNodeList> {
         let state = ctx.data::<GraphQLState>()?;
@@ -440,7 +440,7 @@ impl MangaType {
         Ok(TrackRecordNodeList::from_nodes(nodes))
     }
 
-    /// 对齐上游 `LastReadChapterForMangaDataLoader`：按 lastReadAt 降序取首条
+    /// 对齐参考实现 `LastReadChapterForMangaDataLoader`：按 lastReadAt 降序取首条
     /// （**不过滤是否已读**，与 latestReadChapter 的语义正好互换）。
     /// 书架「按最后一次阅读」排序依赖该字段，旧实现取「已读中 sourceOrder 最大」，
     /// 导致阅读后排序键不更新、顺序不刷新。
@@ -453,7 +453,7 @@ impl MangaType {
             .map(|c| ChapterType::from_row(&c)))
     }
 
-    /// 对齐上游 `LatestReadChapterForMangaDataLoader`：已读章节中 sourceOrder 最大者。
+    /// 对齐参考实现 `LatestReadChapterForMangaDataLoader`：已读章节中 sourceOrder 最大者。
     async fn latest_read_chapter(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<ChapterType>> {
         Ok(self
             .chapters_of(&ctx.data::<GraphQLState>()?.db)
@@ -464,7 +464,7 @@ impl MangaType {
             .map(|c| ChapterType::from_row(&c)))
     }
 
-    /// 对齐上游 `FirstUnreadChapterForMangaDataLoader`：未读章节中 sourceOrder 最小者
+    /// 对齐参考实现 `FirstUnreadChapterForMangaDataLoader`：未读章节中 sourceOrder 最小者
     /// （「继续阅读」应指向最靠前的未读章节，旧实现按 sourceOrder 倒序取首个未读）。
     async fn first_unread_chapter(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<ChapterType>> {
         Ok(self
@@ -476,7 +476,7 @@ impl MangaType {
             .map(|c| ChapterType::from_row(&c)))
     }
 
-    /// 对齐上游 `HighestNumberedChapterForMangaDataLoader`：仅在 chapter_number > 0
+    /// 对齐参考实现 `HighestNumberedChapterForMangaDataLoader`：仅在 chapter_number > 0
     /// 的章节中取最大编号（编号 0 / 负数表示未知编号，不应参与）。
     async fn highest_numbered_chapter(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<ChapterType>> {
         Ok(self
@@ -488,7 +488,7 @@ impl MangaType {
             .map(|c| ChapterType::from_row(&c)))
     }
 
-    /// 对齐上游 `LatestFetchedChapterForMangaDataLoader`：fetchedAt 降序，
+    /// 对齐参考实现 `LatestFetchedChapterForMangaDataLoader`：fetchedAt 降序，
     /// 同一时间戳时以 sourceOrder 降序作为次级排序。
     async fn latest_fetched_chapter(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<ChapterType>> {
         Ok(self
@@ -499,7 +499,7 @@ impl MangaType {
             .map(|c| ChapterType::from_row(&c)))
     }
 
-    /// 对齐上游 `LatestUploadedChapterForMangaDataLoader`：date_upload 降序，
+    /// 对齐参考实现 `LatestUploadedChapterForMangaDataLoader`：date_upload 降序，
     /// 同一时间戳时以 sourceOrder 降序作为次级排序。
     async fn latest_uploaded_chapter(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<ChapterType>> {
         Ok(self
@@ -714,7 +714,7 @@ impl PageInfo {
     ///
     /// Kotlin 的 `PageInfo` 只有首尾游标有意义（分页由客户端做），所以这里按
     /// 列表长度推出 `0 .. total - 1`；空列表的 `end_cursor` 落在 `0`（`saturating_sub`），
-    /// 与上游行为一致。
+    /// 与参考实现行为一致。
     pub(crate) fn for_total(total: i32) -> Self {
         Self {
             start_cursor: Some(Cursor("0".into())),

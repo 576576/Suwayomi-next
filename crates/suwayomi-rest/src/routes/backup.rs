@@ -118,7 +118,7 @@ async fn backup_validate(State(state): State<AppState>, body: Bytes) -> Response
         }
     };
 
-    // 备份里出现过、但本机没登录的追踪器才算「缺」（上游 `ProtoBackupValidator`）。
+    // 备份里出现过、但本机没登录的追踪器才算「缺」（参考实现 `ProtoBackupValidator`）。
     let mut sync_ids: Vec<i32> =
         backup.backup_manga.iter().flat_map(|m| m.tracking.iter().map(|t| t.sync_id)).collect();
     sync_ids.sort_unstable();

@@ -1,4 +1,4 @@
-//! Kitsu —— 上游 `tracker/kitsu/Kitsu.kt` + `KitsuApi.kt`。
+//! Kitsu —— 参考实现 `tracker/kitsu/Kitsu.kt` + `KitsuApi.kt`。
 //!
 //! 用户名密码登录（OAuth2 password grant）拿 JWT，过期时用 refresh token 续。
 //! `username` 列存站点用户名，`password` 列存 **用户 id**（列表查询要用），真正的
@@ -21,7 +21,7 @@ use super::service::{TrackerCtx, TrackerService, check, expires_soon};
 use super::{KITSU, Track, TrackSearch};
 use suwayomi_core::text::urlencode;
 
-/// 内置默认值 = 上游 Suwayomi 在 Kitsu 注册的应用；`trackers.json` 缺键时用它。
+/// 内置默认值 = 参考实现 Suwayomi 在 Kitsu 注册的应用；`trackers.json` 缺键时用它。
 pub(super) const DEFAULT_CLIENT_ID: &str = "dd031b32d2f56c990b1425efe6c42ad847e7fe3ab46bf1299f05ecd856bdb7dd";
 pub(super) const DEFAULT_CLIENT_SECRET: &str = "54d7307928f63414defd96399fc31ba847961ceaecef3a5fd93144e960c0e151";
 const BASE_URL: &str = "https://kitsu.app/api/edge/";
@@ -120,7 +120,7 @@ impl Kitsu {
     }
 
     /// 把站点侧评分制写进 `score_type`。对应 Mihon `Kitsu.login` 里读
-    /// `currentUser.ratingSystem` 那步（上游 Suwayomi 只对 AniList 做了这件事）。
+    /// `currentUser.ratingSystem` 那步（参考实现 Suwayomi 只对 AniList 做了这件事）。
     async fn save_rating_system(&self, raw: Option<&str>) -> Result<()> {
         let name = rating_system_for(raw.unwrap_or_default()).name;
         self.ctx.store.set_score_type(KITSU, name).await
@@ -136,7 +136,7 @@ impl Kitsu {
         serde_json::from_str(&raw).ok()
     }
 
-    /// 对应上游 `KitsuInterceptor`：过期就用 refresh token 换新的。
+    /// 对应参考实现 `KitsuInterceptor`：过期就用 refresh token 换新的。
     async fn bearer(&self) -> Result<String> {
         let Some(mut oauth) = self.load_token().await else {
             return Err(DomainError::tracker("Kitsu：尚未认证"));
@@ -171,7 +171,7 @@ impl Kitsu {
         Ok(fresh)
     }
 
-    /// 用户 id 以字符串存在 `password` 列（上游 `getUserId() = getPassword()`）。
+    /// 用户 id 以字符串存在 `password` 列（参考实现 `getUserId() = getPassword()`）。
     async fn user_id(&self) -> Result<String> {
         self.ctx.store.password(KITSU).await
     }
@@ -246,7 +246,7 @@ impl Kitsu {
         Ok(())
     }
 
-    /// 对应上游 `findLibManga`。用户列表里没有、或站点没带回作品时返回 `None`。
+    /// 对应参考实现 `findLibManga`。用户列表里没有、或站点没带回作品时返回 `None`。
     async fn find_lib_manga(&self, remote_id: i64, user_id: &str) -> Result<Option<Track>> {
         let url =
             format!("{BASE_URL}library-entries?filter[manga_id]={remote_id}&filter[user_id]={user_id}&include=manga");
@@ -415,7 +415,7 @@ impl TrackerService for Kitsu {
     }
 
     async fn logout(&self) -> Result<()> {
-        // 上游只清凭据，token 留着（下次登录会覆盖）。
+        // 参考实现只清凭据，token 留着（下次登录会覆盖）。
         self.ctx.store.clear_credentials(KITSU).await
     }
 
@@ -497,17 +497,17 @@ fn from_api_status(status: &str) -> Result<i32> {
     }
 }
 
-/// 对应上游 `toApiScore()`：站点用 20 分制，0 分表示未评分（传 null）。
+/// 对应参考实现 `toApiScore()`：站点用 20 分制，0 分表示未评分（传 null）。
 fn to_api_score(score: f64) -> Option<i32> {
     (score > 0.0).then_some((score * 2.0) as i32)
 }
 
-/// 对应上游 `DecimalFormat("0.#")`：整数不带小数点。
+/// 对应参考实现 `DecimalFormat("0.#")`：整数不带小数点。
 fn format_half(v: f64) -> String {
     if (v.fract()).abs() < f64::EPSILON { format!("{}", v as i64) } else { format!("{v:.1}") }
 }
 
-/// 对应上游 `KitsuDateHelper.convert`：本地时间按 `...Z` 的格式发出去。
+/// 对应参考实现 `KitsuDateHelper.convert`：本地时间按 `...Z` 的格式发出去。
 fn kitsu_date(ms: i64) -> Option<String> {
     use chrono::TimeZone as _;
     if ms == 0 {
@@ -516,7 +516,7 @@ fn kitsu_date(ms: i64) -> Option<String> {
     chrono::Local.timestamp_millis_opt(ms).single().map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
 }
 
-/// 对应上游 `KitsuDateHelper.parse`。
+/// 对应参考实现 `KitsuDateHelper.parse`。
 fn parse_kitsu_date(s: Option<&str>) -> i64 {
     use chrono::TimeZone as _;
     let Some(s) = s else {

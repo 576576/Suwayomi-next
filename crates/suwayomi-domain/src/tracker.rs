@@ -1,12 +1,12 @@
 //! 追踪器（MyAnimeList / AniList / Kitsu / Shikimori / Bangumi / MangaUpdates）
-//! —— 上游 `manga/impl/track/Track.kt` + `track/tracker/*` 的对应物。
+//! —— 参考实现 `manga/impl/track/Track.kt` + `track/tracker/*` 的对应物。
 //!
 //! 分工：本模块放模型（[`Track`] / [`TrackSearch`]）与编排（[`TrackerManager`]，
 //! 含 `track_record` / `track_search` 的落库与 `bind`/`update`/`unbind`/
 //! `trackChapter` 等对外语义）；站点各自的 HTTP 细节在 [`service`] 的实现里；
 //! 凭据在 [`store`]。
 //!
-//! 追踪器列表的顺序**保持本仓现状**（1,2,3,4,5,7），与上游 `TrackerManager.
+//! 追踪器列表的顺序**保持本仓现状**（1,2,3,4,5,7），与参考实现 `TrackerManager.
 //! services` 的 1,2,3,7,4,5 不同：列表顺序对外可见，本仓 WebUI 与既有测试都按
 //! 前者，改顺序会改动界面上的排列。
 
@@ -55,7 +55,7 @@ pub fn user_agent() -> &'static str {
     UA.get_or_init(|| format!("Suwayomi-next/{}", suwayomi_core::version::VERSION))
 }
 
-// 上游 `TrackerManager` 的常量。
+// 参考实现 `TrackerManager` 的常量。
 pub const MYANIMELIST: i32 = 1;
 pub const ANILIST: i32 = 2;
 pub const KITSU: i32 = 3;
@@ -63,7 +63,7 @@ pub const SHIKIMORI: i32 = 4;
 pub const BANGUMI: i32 = 5;
 pub const MANGA_UPDATES: i32 = 7;
 
-/// 一个追踪器。与上游 `Track` 模型一一对应；`id` 为 `None` 表示还没落库。
+/// 一个追踪器。与参考实现 `Track` 模型一一对应；`id` 为 `None` 表示还没落库。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Track {
     pub id: Option<i32>,
@@ -83,12 +83,12 @@ pub struct Track {
 }
 
 impl Track {
-    /// 对应上游 `Track.create(serviceId)`。
+    /// 对应参考实现 `Track.create(serviceId)`。
     pub fn create(tracker_id: i32) -> Self {
         Self { tracker_id, ..Default::default() }
     }
 
-    /// 对应上游 `copyPersonalFrom`：只搬「用户数据」，不搬 `remote_id` /
+    /// 对应参考实现 `copyPersonalFrom`：只搬「用户数据」，不搬 `remote_id` /
     /// `library_id`（那两项由调用方按站点返回单独设）。
     pub fn copy_personal_from(&mut self, other: &Self, copy_remote_private: bool) {
         self.last_chapter_read = other.last_chapter_read;
@@ -123,7 +123,7 @@ impl Track {
 
 /// 一次搜索命中的条目。落库后 `id` 才有值。
 ///
-/// `authors` / `artists` 只落库，不出现在 REST 或 GraphQL 的响应里（上游
+/// `authors` / `artists` 只落库，不出现在 REST 或 GraphQL 的响应里（参考实现
 /// `TrackSearchDataClass` 与 `TrackSearchType` 都没有这两个字段），所以标了
 /// `serde(skip)`。
 #[derive(Debug, Clone, Default, serde::Serialize)]
@@ -197,7 +197,7 @@ fn join_list(v: &[String]) -> Option<String> {
     (!v.is_empty()).then(|| v.join(","))
 }
 
-/// 列表接口返回的一个追踪器（对应上游 `TrackerDataClass` 去掉 icon）。
+/// 列表接口返回的一个追踪器（对应参考实现 `TrackerDataClass` 去掉 icon）。
 #[derive(Debug, Clone)]
 pub struct TrackerDescriptor {
     pub id: i32,
@@ -206,7 +206,7 @@ pub struct TrackerDescriptor {
     pub auth_url: Option<String>,
 }
 
-/// `update` 的入参，对应上游 `Track.UpdateInput`。
+/// `update` 的入参，对应参考实现 `Track.UpdateInput`。
 #[derive(Debug, Clone, Default)]
 pub struct TrackUpdate {
     pub record_id: i32,
@@ -215,7 +215,7 @@ pub struct TrackUpdate {
     pub score_string: Option<String>,
     pub start_date: Option<i64>,
     pub finish_date: Option<i64>,
-    /// 已废弃，等价于 `unbind(recordId, false)`；上游保留是为了兼容老前端。
+    /// 已废弃，等价于 `unbind(recordId, false)`；参考实现保留是为了兼容老前端。
     pub unbind: Option<bool>,
     pub private: Option<bool>,
 }
@@ -318,7 +318,7 @@ impl TrackerManager {
         self.services.iter().find(|s| s.id() == id).cloned()
     }
 
-    /// 找不到就报 `NotFound`（对应上游 `getTracker(id)!!`）。
+    /// 找不到就报 `NotFound`（对应参考实现 `getTracker(id)!!`）。
     pub fn get(&self, id: i32) -> Result<Arc<dyn TrackerService>> {
         self.find(id).ok_or(DomainError::TrackerNotFound(id))
     }
@@ -332,7 +332,7 @@ impl TrackerManager {
         false
     }
 
-    /// 对应上游 `Track.getTrackerList()`。
+    /// 对应参考实现 `Track.getTrackerList()`。
     pub async fn list(&self) -> Vec<TrackerDescriptor> {
         let mut out = Vec::with_capacity(self.services.len());
         for s in self.services.iter() {
@@ -343,9 +343,9 @@ impl TrackerManager {
         out
     }
 
-    /// 对应上游 `Track.login()`：给了 callbackUrl 就走 OAuth 回调，否则当密码登录。
+    /// 对应参考实现 `Track.login()`：给了 callbackUrl 就走 OAuth 回调，否则当密码登录。
     ///
-    /// 失败时**不清**已有凭据 —— 上游 REST `Track.login` / GraphQL
+    /// 失败时**不清**已有凭据 —— 参考实现 REST `Track.login` / GraphQL
     /// `loginTrackerCredentials` 都是直接调 `authCallback` / `loginImpl`，没有失败
     /// 兜底；站点报错后旧的登录态仍然保留。
     pub async fn login(
@@ -366,7 +366,7 @@ impl TrackerManager {
         self.get(tracker_id)?.logout().await
     }
 
-    /// 对应上游 `Track.search()`：搜索并**落 `track_search`**，返回落库后的行。
+    /// 对应参考实现 `Track.search()`：搜索并**落 `track_search`**，返回落库后的行。
     pub async fn search(&self, tracker_id: i32, query: &str) -> Result<Vec<TrackSearch>> {
         let tracker = self.get(tracker_id)?;
         let hits = tracker.search(query).await?;
@@ -377,7 +377,7 @@ impl TrackerManager {
         Ok(rows.iter().map(TrackSearch::from_row).collect())
     }
 
-    /// 对应上游 `Track.bind()`。
+    /// 对应参考实现 `Track.bind()`。
     pub async fn bind(&self, manga_id: i32, tracker_id: i32, remote_id: i64, private: bool) -> Result<i32> {
         let tracker = self.get(tracker_id)?;
 
@@ -419,7 +419,7 @@ impl TrackerManager {
         Ok(record_id)
     }
 
-    /// 对应上游 `Track.bindTrackRecord()`。
+    /// 对应参考实现 `Track.bindTrackRecord()`。
     pub async fn bind_track_record(&self, manga_id: i32, record_id: i32) -> Result<i32> {
         let source = self.track_record_row(record_id).await?;
         let source_track = Track::from_row(&source);
@@ -452,7 +452,7 @@ impl TrackerManager {
         }
     }
 
-    /// 对应上游 `Track.refresh()`。
+    /// 对应参考实现 `Track.refresh()`。
     pub async fn refresh(&self, record_id: i32) -> Result<()> {
         let row = self.track_record_row(record_id).await?;
         let tracker = self.get(row.sync_id)?;
@@ -462,7 +462,7 @@ impl TrackerManager {
         Ok(())
     }
 
-    /// 对应上游 `Track.unbind()`。`delete_remote_track` 只在站点支持删除时生效。
+    /// 对应参考实现 `Track.unbind()`。`delete_remote_track` 只在站点支持删除时生效。
     pub async fn unbind(&self, record_id: i32, delete_remote_track: bool) -> Result<()> {
         let row = self.track_record_row(record_id).await?;
         if delete_remote_track
@@ -475,7 +475,7 @@ impl TrackerManager {
         Ok(())
     }
 
-    /// 对应上游 `Track.update()`。
+    /// 对应参考实现 `Track.update()`。
     pub async fn update(&self, input: TrackUpdate) -> Result<i32> {
         if input.unbind == Some(true) {
             self.unbind(input.record_id, false).await?;
@@ -524,7 +524,7 @@ impl TrackerManager {
         self.upsert_track_record(&track).await
     }
 
-    /// 对应上游 `Track.asyncTrackChapter()` 的单漫画版本 `trackChapter(mangaId)`。
+    /// 对应参考实现 `Track.asyncTrackChapter()` 的单漫画版本 `trackChapter(mangaId)`。
     pub async fn track_chapter(&self, manga_id: i32) -> Result<()> {
         let Some(chapter) = self.max_read_chapter(manga_id).await? else {
             return Ok(());
@@ -537,7 +537,7 @@ impl TrackerManager {
         Ok(())
     }
 
-    /// 对应上游 `Track.asyncTrackChapter()`：整库更新跑完后按漫画批量推进。
+    /// 对应参考实现 `Track.asyncTrackChapter()`：整库更新跑完后按漫画批量推进。
     pub async fn track_chapters(&self, manga_ids: &[i32]) {
         if !self.has_logged_tracker().await {
             return;
@@ -547,7 +547,7 @@ impl TrackerManager {
         }
     }
 
-    /// 单个追踪器失败不影响同一漫画的其它追踪器（上游逐个 try/catch）。
+    /// 单个追踪器失败不影响同一漫画的其它追踪器（参考实现逐个 try/catch）。
     async fn track_chapter_for_manga(&self, manga_id: i32, chapter_number: f64) {
         let records = suwayomi_db::query_as::<TrackRecordRow>("SELECT * FROM track_record WHERE manga_id = ?")
             .bind(manga_id)
@@ -633,7 +633,7 @@ impl TrackerManager {
         .await?)
     }
 
-    /// 对应上游 `Track.upsertTrackRecord()`：按 (manga_id, tracker_id) 判定新增还是更新。
+    /// 对应参考实现 `Track.upsertTrackRecord()`：按 (manga_id, tracker_id) 判定新增还是更新。
     pub async fn upsert_track_record(&self, track: &Track) -> Result<i32> {
         let existing: Option<i32> =
             suwayomi_db::query_scalar("SELECT id FROM track_record WHERE manga_id = ? AND sync_id = ?")

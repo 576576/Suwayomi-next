@@ -379,7 +379,7 @@ impl HttpSandboxFetcher {
         }
 
         let bytes = base64::engine::general_purpose::STANDARD.decode(payload.data).ok()?;
-        // 回环另一端回 200 却带着一段正文（比如上游 404 页面）并不罕见，认一下魔数。
+        // 回环另一端回 200 却带着一段正文（比如参考实现 404 页面）并不罕见，认一下魔数。
         is_image(&bytes).then_some(bytes)
     }
 

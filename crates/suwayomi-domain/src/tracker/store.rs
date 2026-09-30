@@ -1,13 +1,13 @@
 //! 追踪器凭据与偏好存储（`tracker_credential` 表）。
 //!
-//! 上游把这些值放在客户端侧的 SharedPreferences（`TrackerPreferences.kt`）；
+//! 参考实现把这些值放在客户端侧的 SharedPreferences（`TrackerPreferences.kt`）；
 //! 服务端没有等价物，改落库，重启后登录态还在。
 //!
-//! 各列对应上游的键：`username` ↔ `pref_mangasync_username_{id}`、`password` ↔
+//! 各列对应参考实现的键：`username` ↔ `pref_mangasync_username_{id}`、`password` ↔
 //! `pref_mangasync_password_{id}`、`token` ↔ `track_token_{id}`、
 //! `token_expired` ↔ `track_token_expired_{id}`、`score_type` ↔
 //! `score_type_{id}`。注意 OAuth 类追踪器把 **access token 存在 password 列**
-//! （上游 `saveCredentials(username, oauth.accessToken)`），`token` 列存的是整份
+//! （参考实现 `saveCredentials(username, oauth.accessToken)`），`token` 列存的是整份
 //! OAuth JSON，供刷新用；MangaUpdates 的 session token 同样在 password 列。
 
 use suwayomi_core::db::Db;
@@ -74,7 +74,7 @@ impl TrackerStore {
         Ok(self.get(tracker_id).await?.pkce_verifier)
     }
 
-    /// 对应上游 `TrackerPreferences.setTrackCredentials`：写用户名/密码，并把
+    /// 对应参考实现 `TrackerPreferences.setTrackCredentials`：写用户名/密码，并把
     /// 过期标记清掉（重新登录后旧标记必须失效）。
     pub async fn set_credentials(&self, tracker_id: i32, username: &str, password: &str) -> Result<()> {
         suwayomi_db::query(
@@ -145,7 +145,7 @@ impl TrackerStore {
         Ok(())
     }
 
-    /// 对应上游 `Tracker.logout()` 的默认实现（只清凭据）。清完即未登录。
+    /// 对应参考实现 `Tracker.logout()` 的默认实现（只清凭据）。清完即未登录。
     pub async fn clear_credentials(&self, tracker_id: i32) -> Result<()> {
         suwayomi_db::query(
             "UPDATE tracker_credential SET username = '', password = '', token = '', token_expired = FALSE WHERE tracker_id = ?",

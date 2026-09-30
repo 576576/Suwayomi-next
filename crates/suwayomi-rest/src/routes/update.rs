@@ -15,7 +15,7 @@ use suwayomi_domain::updater::{CategoryJobStatus, MangaJobStatus};
 use crate::error::{ApiError, ApiResult};
 use suwayomi_api::AppState;
 
-/// `categoryId` 既可能在 query 上，也可能在表单 body 里 —— 上游用的是 Javalin
+/// `categoryId` 既可能在 query 上，也可能在表单 body 里 —— 参考实现用的是 Javalin
 /// 的 `formParam`，两种都取。
 #[derive(serde::Deserialize, Default)]
 pub struct FetchParams {
@@ -45,12 +45,12 @@ fn category_dc(c: &CategoryRow) -> CategoryDataClass {
     }
 }
 
-/// Mirrors `UpdateController.updateSummary` — 上游返回 `updater.statusDeprecated.value`，
+/// Mirrors `UpdateController.updateSummary` — 参考实现返回 `updater.statusDeprecated.value`，
 /// 即 `UpdateStatus`：`{categoryStatusMap, mangaStatusMap, running}`。
 ///
 /// 两个 map 的键都是**枚举名**，且都不补齐：`categoryStatusMap` 只带本轮真实存在的
 /// 分类状态（`reset()` 清空后就是 `{}`），`mangaStatusMap` 恒带 `SKIPPED`
-/// （上游 `plus(Pair(SKIPPED, skippedMangas))`），其余状态有才出现。
+/// （参考实现 `plus(Pair(SKIPPED, skippedMangas))`），其余状态有才出现。
 async fn summary(State(s): State<AppState>) -> Json<serde_json::Value> {
     let jobs = s.update.jobs().await;
     let skipped = s.update.skipped_mangas().await;

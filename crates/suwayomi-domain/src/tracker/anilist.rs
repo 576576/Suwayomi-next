@@ -1,4 +1,4 @@
-//! AniList —— 上游 `tracker/anilist/Anilist.kt` + `AnilistApi.kt`。
+//! AniList —— 参考实现 `tracker/anilist/Anilist.kt` + `AnilistApi.kt`。
 //!
 //! 登录走 **隐式流**（`response_type=token`），没有 refresh token，token 有效期一年，
 //! 过期只能重登。站点内部评分一律按 `POINT_100` 存取，展示时再按用户的
@@ -13,15 +13,15 @@ use crate::error::{DomainError, Result};
 use super::service::{TrackerCtx, TrackerService, check, extract_token, now_secs};
 use super::{ANILIST, Track, TrackSearch};
 
-/// 内置默认值 = 上游 Suwayomi 在 AniList 注册的应用；`trackers.json` 缺键时用它。
+/// 内置默认值 = 参考实现 Suwayomi 在 AniList 注册的应用；`trackers.json` 缺键时用它。
 pub(super) const DEFAULT_CLIENT_ID: &str = "16186";
 const API_URL: &str = "https://graphql.anilist.co/";
 const BASE_URL: &str = "https://anilist.co/api/v2/";
 const BASE_MANGA_URL: &str = "https://anilist.co/manga/";
-/// 隐式流拿到的 token 上游按一年算。
+/// 隐式流拿到的 token 参考实现按一年算。
 const TOKEN_TTL_SECS: i64 = 31_536_000;
 
-/// 用户没设过偏好时的默认展示口径（上游 `TrackerPreferences.getScoreType`）。
+/// 用户没设过偏好时的默认展示口径（参考实现 `TrackerPreferences.getScoreType`）。
 const DEFAULT_SCORE_TYPE: &str = "POINT_10";
 
 const READING: i32 = 1;
@@ -31,7 +31,7 @@ const DROPPED: i32 = 4;
 const PLAN_TO_READ: i32 = 5;
 const REREADING: i32 = 6;
 
-/// mediaList 里要取的字段（与上游 `findLibManga` 的 query 一致）。
+/// mediaList 里要取的字段（与参考实现 `findLibManga` 的 query 一致）。
 const MEDIA_FIELDS: &str = r"
     id
     title { userPreferred }
@@ -225,7 +225,7 @@ impl AniList {
         Ok((result.data.viewer.id, result.data.viewer.media_list_options.score_format))
     }
 
-    /// 对应上游 `Anilist.login(token)`。隐式流的 token 只在这时拿到一次。
+    /// 对应参考实现 `Anilist.login(token)`。隐式流的 token 只在这时拿到一次。
     async fn login(&self, token: &str) -> Result<()> {
         let oauth = AlOAuth {
             access_token: token.to_string(),
@@ -372,7 +372,7 @@ impl TrackerService for AniList {
     async fn bind(&self, track: &mut Track, has_read_chapters: bool) -> Result<()> {
         let user_id = self.user_id().await?;
         if let Some(remote) = self.find_lib_manga(track.remote_id, user_id).await? {
-            // AniList 的条目隐私属于远端设置，绑定时不覆盖本地（上游 copyRemotePrivate=false）。
+            // AniList 的条目隐私属于远端设置，绑定时不覆盖本地（参考实现 copyRemotePrivate=false）。
             track.copy_personal_from(&remote, false);
             track.library_id = remote.library_id;
             if track.status != COMPLETED {
@@ -462,7 +462,7 @@ fn from_api_status(status: &str) -> Result<i32> {
     }
 }
 
-/// 对应上游 `Track.toApiScore(scoreType)`：内部 0–100 -> 站点展示值。
+/// 对应参考实现 `Track.toApiScore(scoreType)`：内部 0–100 -> 站点展示值。
 fn to_api_score(score: f64, score_type: &str) -> Result<String> {
     Ok(match score_type {
         "POINT_10" => ((score as i32) / 10).to_string(),
@@ -498,7 +498,7 @@ fn to_api_score(score: f64, score_type: &str) -> Result<String> {
     })
 }
 
-/// 对应上游 `createDate`：0 表示没有日期，三个字段都要传 null。
+/// 对应参考实现 `createDate`：0 表示没有日期，三个字段都要传 null。
 fn fuzzy_date_input(ms: i64) -> serde_json::Value {
     use chrono::{Datelike as _, TimeZone as _};
     if ms == 0 {

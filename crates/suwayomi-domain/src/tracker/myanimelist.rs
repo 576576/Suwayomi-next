@@ -1,10 +1,10 @@
-//! MyAnimeList —— 上游 `tracker/myanimelist/MyAnimeList.kt` + `MyAnimeListApi.kt`。
+//! MyAnimeList —— 参考实现 `tracker/myanimelist/MyAnimeList.kt` + `MyAnimeListApi.kt`。
 //!
 //! 登录是 OAuth2 授权码 + PKCE，且用的是 **plain 方式**：`authUrl` 里
-//! `code_challenge` 就是 code_verifier 本身（上游把 `PkceUtil.generateCodeVerifier()`
+//! `code_challenge` 就是 code_verifier 本身（参考实现把 `PkceUtil.generateCodeVerifier()`
 //! 的返回值直接当 challenge 传）。所以 verifier 要存起来，换 token 时原样回传。
 //!
-//! access token 一小时过期，但上游的拦截器会拿 refresh token 自动续期，用户只在
+//! access token 一小时过期，但参考实现的拦截器会拿 refresh token 自动续期，用户只在
 //! 拿不到新 token 时才会看到「登录已过期」。
 
 use async_trait::async_trait;
@@ -18,11 +18,11 @@ use super::service::{
 use super::{MYANIMELIST, Track, TrackSearch};
 use suwayomi_core::text::urlencode;
 
-/// 内置默认值 = 上游 Suwayomi 在 MyAnimeList 注册的应用；`trackers.json` 缺键时用它。
+/// 内置默认值 = 参考实现 Suwayomi 在 MyAnimeList 注册的应用；`trackers.json` 缺键时用它。
 pub(super) const DEFAULT_CLIENT_ID: &str = "3fda277931a4f9bc01fa4a715ce8b91d";
 const BASE_OAUTH_URL: &str = "https://myanimelist.net/v1/oauth2";
 const BASE_API_URL: &str = "https://api.myanimelist.net/v2";
-/// 上游的列表分页步长（`LIST_PAGINATION_AMOUNT`）。
+/// 参考实现的列表分页步长（`LIST_PAGINATION_AMOUNT`）。
 const LIST_PAGE: usize = 250;
 /// MAL 的搜索接口超过 64 字符直接 400，所以查询串要截断。
 const MAX_QUERY: usize = 64;
@@ -43,7 +43,7 @@ impl MyAnimeList {
         Self { ctx }
     }
 
-    /// 保存 OAuth 串（上游 `saveOAuth`）。空串等同 `null`。
+    /// 保存 OAuth 串（参考实现 `saveOAuth`）。空串等同 `null`。
     async fn save_oauth(&self, oauth: Option<&MalOAuth>) -> Result<()> {
         let token = oauth.map_or_else(String::new, |o| serde_json::to_string(o).unwrap_or_default());
         self.ctx.store.set_token(MYANIMELIST, &token).await
@@ -54,7 +54,7 @@ impl MyAnimeList {
         serde_json::from_str(&raw).ok()
     }
 
-    /// 对应上游 `MyAnimeListInterceptor.intercept`：过期就刷新，拿不到就报过期。
+    /// 对应参考实现 `MyAnimeListInterceptor.intercept`：过期就刷新，拿不到就报过期。
     async fn bearer(&self) -> Result<String> {
         if self.ctx.store.token_expired(MYANIMELIST).await? {
             return Err(DomainError::token_expired(self.name()));
@@ -117,7 +117,7 @@ impl MyAnimeList {
         Ok(user.name)
     }
 
-    /// 对应上游 `MyAnimeList.login(authCode)`。登录成功后立刻清掉 PKCE verifier。
+    /// 对应参考实现 `MyAnimeList.login(authCode)`。登录成功后立刻清掉 PKCE verifier。
     async fn login(&self, auth_code: &str) -> Result<()> {
         let oauth = self.get_access_token(auth_code).await?;
         self.save_oauth(Some(&oauth)).await?;
@@ -131,7 +131,7 @@ impl MyAnimeList {
         format!("{BASE_API_URL}/manga/{remote_id}/my_list_status")
     }
 
-    /// 对应上游 `getMangaDetails`。
+    /// 对应参考实现 `getMangaDetails`。
     async fn get_manga_details(&self, id: i64) -> Result<TrackSearch> {
         let token = self.bearer().await?;
         let url = format!(
@@ -157,7 +157,7 @@ impl MyAnimeList {
         })
     }
 
-    /// 对应上游 `updateItem`：把本地 track 推上去，并按响应回写站点侧的状态。
+    /// 对应参考实现 `updateItem`：把本地 track 推上去，并按响应回写站点侧的状态。
     async fn update_item(&self, track: &mut Track) -> Result<()> {
         let token = self.bearer().await?;
         let mut form: Vec<(&str, String)> = vec![
@@ -204,7 +204,7 @@ impl MyAnimeList {
         Ok(())
     }
 
-    /// 对应上游 `findListItem`：不在用户列表上时返回 `None`。
+    /// 对应参考实现 `findListItem`：不在用户列表上时返回 `None`。
     async fn find_list_item(&self, track: &mut Track) -> Result<Option<Track>> {
         let token = self.bearer().await?;
         let url = format!(
@@ -234,7 +234,7 @@ impl MyAnimeList {
         let mut out = Vec::new();
         for node in result.data {
             let details = self.get_manga_details(node.node.id).await?;
-            // MAL 的搜索结果里混着小说；上游按 publishing_type 过滤。
+            // MAL 的搜索结果里混着小说；参考实现按 publishing_type 过滤。
             if !details.publishing_type.contains("novel") {
                 out.push(details);
             }
@@ -242,7 +242,7 @@ impl MyAnimeList {
         Ok(out)
     }
 
-    /// 对应上游 `findListItems("my:<title>")`：翻遍用户列表按标题子串匹配。
+    /// 对应参考实现 `findListItems("my:<title>")`：翻遍用户列表按标题子串匹配。
     async fn find_list_items(&self, query: &str) -> Result<Vec<TrackSearch>> {
         let mut out = Vec::new();
         let mut offset = 0usize;
@@ -343,7 +343,7 @@ impl TrackerService for MyAnimeList {
         self.login(&code).await
     }
 
-    /// 上游这里就是把 password 当授权码用（界面上的「密码」填的是 auth code）。
+    /// 参考实现这里就是把 password 当授权码用（界面上的「密码」填的是 auth code）。
     async fn login_impl(&self, _username: &str, password: &str) -> Result<()> {
         self.login(password).await
     }
@@ -419,7 +419,7 @@ fn to_my_anime_list_status(status: i32) -> Option<&'static str> {
     }
 }
 
-/// 站点返回的状态串 → 本地状态码。未知值按 READING 处理（上游 `getStatus` 如此）。
+/// 站点返回的状态串 → 本地状态码。未知值按 READING 处理（参考实现 `getStatus` 如此）。
 fn from_my_anime_list_status(status: Option<&str>) -> i32 {
     match status {
         Some("completed") => COMPLETED,
@@ -472,7 +472,7 @@ fn default_created_at() -> i64 {
 }
 
 impl MalOAuth {
-    /// 上游假设 token 提前一分钟过期（`adjustedExpiresIn = expiresIn - 60`）。
+    /// 参考实现假设 token 提前一分钟过期（`adjustedExpiresIn = expiresIn - 60`）。
     fn is_expired(&self) -> bool {
         self.created_at + self.expires_in - 60 < now_secs()
     }

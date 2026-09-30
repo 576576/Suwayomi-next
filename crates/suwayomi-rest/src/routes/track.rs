@@ -1,10 +1,10 @@
 //! Track REST endpoints — mirrors `TrackController.kt` + `impl/track/Track.kt`.
 //!
 //! `/list` 与 `/search` 会把追踪器的真实登录态与搜索结果带出来；`login` / `logout`
-//! / `bind` / `update` 都会打到站点 API。未知 tracker id 一律 404（上游
+//! / `bind` / `update` 都会打到站点 API。未知 tracker id 一律 404（参考实现
 //! `TrackerManager.getTracker(id)!!` 抛 NPE → 404）。
 //!
-//! `/track/{id}/thumbnail` 读编在二进制里的 PNG（对齐上游从 classpath 读
+//! `/track/{id}/thumbnail` 读编在二进制里的 PNG（对齐参考实现从 classpath 读
 //! `/static/tracker/*.png`），不再联网抓图，响应带 `cache-control: max-age=86400`。
 
 use axum::extract::{Path, State};
@@ -30,7 +30,7 @@ pub struct TrackerDataClass {
     pub auth_url: Option<String>,
 }
 
-/// 上游 `Track.getTrackerList()`：`authUrl` 只在未登录时给。
+/// 参考实现 `Track.getTrackerList()`：`authUrl` 只在未登录时给。
 async fn list(State(s): State<AppState>) -> Json<Vec<TrackerDataClass>> {
     let trackers = s
         .tracker
@@ -156,7 +156,7 @@ async fn update(State(s): State<AppState>, Json(input): Json<UpdateInput>) -> Ap
     Ok(StatusCode::OK)
 }
 
-/// 上游 `Track.getTrackerThumbnail`：资源里的 PNG + 一天缓存。
+/// 参考实现 `Track.getTrackerThumbnail`：资源里的 PNG + 一天缓存。
 async fn thumbnail(State(s): State<AppState>, Path(tracker_id): Path<i32>) -> ApiResult<axum::response::Response> {
     use axum::response::IntoResponse;
 

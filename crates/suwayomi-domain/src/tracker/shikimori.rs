@@ -1,4 +1,4 @@
-//! Shikimori —— 上游 `tracker/shikimori/Shikimori.kt` + `ShikimoriApi.kt`。
+//! Shikimori —— 参考实现 `tracker/shikimori/Shikimori.kt` + `ShikimoriApi.kt`。
 //!
 //! OAuth2 授权码 + client_secret（不需要 PKCE）。条目写入是 upsert：新增和更新
 //! 都打 `POST /v2/user_rates`，`library_id` 是站点返回的 user_rate id。
@@ -18,7 +18,7 @@ const BASE_URL: &str = "https://shikimori.io";
 const API_URL: &str = "https://shikimori.io/api";
 const OAUTH_URL: &str = "https://shikimori.io/oauth/token";
 const LOGIN_URL: &str = "https://shikimori.io/oauth/authorize";
-/// 内置默认值 = 上游 Suwayomi 在 Shikimori 注册的应用；`trackers.json` 缺键时用它。
+/// 内置默认值 = 参考实现 Suwayomi 在 Shikimori 注册的应用；`trackers.json` 缺键时用它。
 pub(super) const DEFAULT_REDIRECT_URL: &str = "https://suwayomi.org/tracker-oauth";
 pub(super) const DEFAULT_CLIENT_ID: &str = "qTrMBF5HtM_33Pv2Vm2fFmEaBUI_c3LvohyJ0beQ9pA";
 pub(super) const DEFAULT_CLIENT_SECRET: &str = "MN_XHQK_aeSqduW_rB64cARi2fFoLGl-AgZ0iMD9zq0";
@@ -93,7 +93,7 @@ impl Shikimori {
         self.ctx.auth_get(SHIKIMORI, self.name(), url, &token).await
     }
 
-    /// 对应上游 `Shikimori.login(code)`：用授权码换 token，再拿用户 id 存下来。
+    /// 对应参考实现 `Shikimori.login(code)`：用授权码换 token，再拿用户 id 存下来。
     async fn login(&self, code: &str) -> Result<()> {
         let app = self.require_oauth_app()?;
         let resp = self
@@ -122,7 +122,7 @@ impl Shikimori {
         Ok(())
     }
 
-    /// 对应上游 `addLibManga` / `updateLibManga`：同一个 upsert 端点。
+    /// 对应参考实现 `addLibManga` / `updateLibManga`：同一个 upsert 端点。
     async fn put_user_rate(&self, track: &mut Track) -> Result<()> {
         let token = self.bearer().await?;
         let user_id = self.user_id().await?;
@@ -413,7 +413,7 @@ struct SmUserListEntry {
 }
 
 impl SmUserListEntry {
-    /// `remote_id` 取调用方原本的值：上游这里写的是 entry.id（user_rate 的 id，
+    /// `remote_id` 取调用方原本的值：参考实现这里写的是 entry.id（user_rate 的 id，
     /// 不是作品 id），但 `copyPersonalFrom` 不搬 `remote_id`，所以那个值一直没被
     /// 用到；照抄会把错误的 id 写进 `track_record`。
     fn to_track(&self, remote_id: i64, manga: &SmManga) -> Track {

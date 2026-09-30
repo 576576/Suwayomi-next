@@ -12,7 +12,7 @@ use crate::schema::{CategoryRow, ChapterRow, ExtensionStoreRow, MangaRow, TrackR
 /// 备份里认得的追踪器 id —— 与 `suwayomi_domain::tracker` 的常量一致
 /// （1 MAL / 2 AniList / 3 Kitsu / 4 Shikimori / 5 Bangumi / 7 MangaUpdates）。
 ///
-/// 恢复时用来丢弃备份里本仓库不支持的追踪器记录（上游 `BackupMangaHandler`
+/// 恢复时用来丢弃备份里本仓库不支持的追踪器记录（参考实现 `BackupMangaHandler`
 /// 也是这么做的），否则会留下一条没有对应追踪器的 `track_record`。
 /// `suwayomi-domain` 的测试会断言两份清单相等，防止单边漂移。
 pub const SUPPORTED_TRACKER_IDS: [i32; 6] = [1, 2, 3, 4, 5, 7];
@@ -74,7 +74,7 @@ pub struct PartialBackupFlags {
 }
 
 impl BackupFlags {
-    /// 未指定的键沿用默认值（上游 `BackupFlags.fromPartial`）。
+    /// 未指定的键沿用默认值（参考实现 `BackupFlags.fromPartial`）。
     pub fn from_partial(p: &PartialBackupFlags) -> Self {
         let d = Self::default();
         Self {
@@ -233,7 +233,7 @@ pub struct Backup {
     pub meta: HashMap<String, String>,
     #[prost(message, optional, tag = "9001")]
     pub server_settings: Option<BackupServerSettings>,
-    /// 追踪器凭据。上游把凭据放在客户端 SharedPreferences 里，备份格式没有这一节；
+    /// 追踪器凭据。参考实现把凭据放在客户端 SharedPreferences 里，备份格式没有这一节；
     /// 本仓库凭据落库（`tracker_credential`），用 Suwayomi 自留号段（9000+）带走。
     /// 其它客户端按 proto3 规则忽略未知字段。
     #[prost(message, repeated, tag = "9002")]
@@ -1006,9 +1006,9 @@ pub async fn restore_backup_proto(
     Ok(summary)
 }
 
-/// 对应上游 `BackupMangaHandler.restoreMangaTrackerData`。
+/// 对应参考实现 `BackupMangaHandler.restoreMangaTrackerData`。
 ///
-/// 只在「本地没有该追踪器的记录」时新增；已有记录时按上游的做法只并进
+/// 只在「本地没有该追踪器的记录」时新增；已有记录时按参考实现的做法只并进
 /// `remote_id` / `library_id` 与取大的 `last_chapter_read`，其余字段保留本机值。
 /// 备份里本仓库不支持的追踪器（例如旧版备份里的 id）直接丢弃。
 async fn restore_manga_tracker_data(pool: &Db, manga_id: i32, tracks: &[BackupTracking]) -> Result<(), BackupError> {
@@ -1412,7 +1412,7 @@ async fn build_backup(pool: &Db, flags: BackupFlags, inputs: BackupInputs<'_>) -
 fn backup_tracking_of(r: &TrackRecordRow) -> BackupTracking {
     BackupTracking {
         sync_id: r.sync_id,
-        // 上游强制给 0 而不是 null：1.x 的字段是非空 long。
+        // 参考实现强制给 0 而不是 null：1.x 的字段是非空 long。
         library_id: r.library_id.unwrap_or(0),
         media_id_int: r.remote_id as i32,
         tracking_url: r.remote_url.clone(),

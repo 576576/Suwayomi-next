@@ -187,7 +187,7 @@ impl CategoryService {
 
     /// Mirrors `getCategoryList` — default category only when needed (manga in
     /// library without any category). 仅用于内部逻辑（下载/更新判定、备份、同步），
-    /// GraphQL 的 categories 查询**不走这里**，与上游保持一致。
+    /// GraphQL 的 categories 查询**不走这里**，与参考实现保持一致。
     pub async fn get_category_list(&self) -> Result<Vec<CategoryDataClass>> {
         let needs_default = self.needs_default_category().await?;
         let rows = self.list_rows_all().await?;
@@ -197,8 +197,8 @@ impl CategoryService {
         Ok(out)
     }
 
-    /// 对应上游 GraphQL `categories` resolver：直接读全表（`CategoryTable.selectAll()`），
-    /// **不过滤默认分类**。上游 WebUI 依赖这一点：
+    /// 对应参考实现 GraphQL `categories` resolver：直接读全表（`CategoryTable.selectAll()`），
+    /// **不过滤默认分类**。参考实现 WebUI 依赖这一点：
     /// - 分类计数写死 `nodes.length - 1`（「-1 for the DEFAULT category」）；
     /// - 「编辑分类」页按 `nodes[0].name === 'Default'` 把默认分类剔除。
     ///

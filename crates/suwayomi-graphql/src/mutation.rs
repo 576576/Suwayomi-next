@@ -828,7 +828,7 @@ impl MutationRoot {
         let row = fetch_category_row(state, input.id).await?;
         state.category.reorder_category(row.sort_order, input.position).await.map_err(async_graphql::Error::from)?;
         state.category.normalize_categories().await.map_err(async_graphql::Error::from)?;
-        // 与上游一致：mutation 回包也读全表，保证返回列表含默认分类
+        // 与参考实现一致：mutation 回包也读全表，保证返回列表含默认分类
         let list = state.category.list_categories_for_graphql().await.map_err(async_graphql::Error::from)?;
         let categories = list
             .iter()
@@ -1568,7 +1568,7 @@ impl MutationRoot {
         let page_num = input.page.max(1) as u32;
 
         // Resolve the manga rows for this page, then map to GraphQL types.
-        // 本地源只有一页（`hasNextPage` 恒为 false），远端源的分页由上游决定。
+        // 本地源只有一页（`hasNextPage` 恒为 false），远端源的分页由参考实现决定。
         let (ids, has_next_page) = if source_id == suwayomi_domain::source::LOCAL_SOURCE_ID {
             // Local source: scan `data/local/` (folders -> manga). Search
             // filters by title client-side; pagination is a single page.

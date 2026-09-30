@@ -168,7 +168,7 @@ impl SubscriptionRoot {
     }
 }
 
-/// 两条队列快照之间的差量，对应上游 `DownloadUpdates.updates`。
+/// 两条队列快照之间的差量，对应参考实现 `DownloadUpdates.updates`。
 ///
 /// 队伍里没有的按 `Dequeued` 报（WebUI 据此从缓存里删），新出现的按 `Queued`，
 /// 其余按状态 / 进度 / 位置变化取对应类型。**没变化的不发** —— 每次事件都把整条

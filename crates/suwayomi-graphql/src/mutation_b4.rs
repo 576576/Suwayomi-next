@@ -468,8 +468,8 @@ pub struct ValidateBackupResult {
 
 /// Mirrors `KoSyncStatusPayload`.
 #[derive(SimpleObject)]
-// 上游类型名就是 `KoSyncStatusPayload`（同文件里的 KoSyncConnectPayload /
-// LogoutKoSyncAccountPayload / ConnectKoSyncAccountInput 都照抄了上游名），
+// 参考实现类型名就是 `KoSyncStatusPayload`（同文件里的 KoSyncConnectPayload /
+// LogoutKoSyncAccountPayload / ConnectKoSyncAccountInput 都照抄了参考实现名），
 // 这里多出来的 `Type` 后缀会让 WebUI 的 `fragment … on KoSyncStatusPayload`
 // 直接校验失败（Unknown type）—— 用显式重命名对齐，不动 Rust 标识符。
 #[graphql(name = "KoSyncStatusPayload")]
@@ -1499,7 +1499,7 @@ impl MutationRootB4 {
     }
 
     /// Mirrors Mihon `BaseTracker.refreshUser()` —— 重新拉站点上的用户级设置（评分制）
-    /// 并落库，`tracker.scores` 随之更新。上游 Suwayomi 没有对应 mutation。
+    /// 并落库，`tracker.scores` 随之更新。参考实现 Suwayomi 没有对应 mutation。
     async fn refresh_tracker_user(
         &self,
         ctx: &Context<'_>,
@@ -1867,7 +1867,7 @@ impl MutationRootB4 {
         Ok(RebuildDownloadIndexPayload { client_mutation_id: input.client_mutation_id, chapters: chapters as i32 })
     }
 
-    /// 入参可省：上游把它声明成可选（`input: ClearCookiesAndCacheInput`，
+    /// 入参可省：参考实现把它声明成可选（`input: ClearCookiesAndCacheInput`，
     /// Kotlin 侧默认 `= ClearCookiesAndCacheInput()`），WebUI 的
     /// `WEBVIEW_CLEAR_CACHE_COOKIES` 就不带参数。声明成必填会让那条 mutation
     /// 校验不过。
@@ -1979,7 +1979,7 @@ impl MutationRootB4 {
 }
 
 /// WebUI 的 `GraphQLClient.isAuthError` 就是按这个名字识别「凭据无效」的，
-/// 与上游 `UnauthorizedException` 的类名一致——改它之前先改前端。
+/// 与参考实现 `UnauthorizedException` 的类名一致——改它之前先改前端。
 fn unauthorized_message() -> String {
     "suwayomi.tachidesk.server.user.UnauthorizedException: Unauthorized".to_string()
 }
@@ -2007,7 +2007,7 @@ pub(crate) fn legacy_app_settings(client: Option<bool>, server: Option<bool>) ->
 
 /// GraphQL 的部分开关 → 备份模块的部分开关（字段一一对应）。
 ///
-/// 两个已废弃的字段仍能被解析：上游客户端与旧 WebUI 在传它们，见
+/// 两个已废弃的字段仍能被解析：参考实现客户端与旧 WebUI 在传它们，见
 /// [`legacy_app_settings`]。
 pub(crate) fn backup_flags(input: Option<&PartialBackupFlagsInput>) -> suwayomi_core::backup::PartialBackupFlags {
     let Some(f) = input else {
@@ -2038,7 +2038,7 @@ async fn fetch_track_record_row(state: &GraphQLState, id: i32) -> async_graphql:
         .map_err(async_graphql::Error::from)
 }
 
-/// 取某漫画在某追踪器上的记录 —— `bindTrack` 之后回读用（上游也是按这两个键找回来）。
+/// 取某漫画在某追踪器上的记录 —— `bindTrack` 之后回读用（参考实现也是按这两个键找回来）。
 async fn fetch_track_record_row_for(
     state: &GraphQLState,
     manga_id: i32,

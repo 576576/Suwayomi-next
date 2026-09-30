@@ -57,7 +57,7 @@ fn non_empty<'a>(value: &'a str, tracker: &str, key: &str) -> Result<&'a str> {
     Ok(value)
 }
 
-/// 全部站点的应用凭据。[`Default`] 即内置默认值（上游 Suwayomi 注册的应用）。
+/// 全部站点的应用凭据。[`Default`] 即内置默认值（参考实现 Suwayomi 注册的应用）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackerOAuthApps {
     pub anilist: AppCredentials,

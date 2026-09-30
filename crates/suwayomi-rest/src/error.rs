@@ -31,7 +31,7 @@ impl From<suwayomi_domain::error::DomainError> for ApiError {
             suwayomi_domain::error::DomainError::Source(m) => Self::Internal(m),
             suwayomi_domain::error::DomainError::Db(e) => Self::Internal(e.to_string()),
             suwayomi_domain::error::DomainError::Sandbox(e) => Self::Internal(e),
-            // 上游 `getTracker(id)!!` 抛 NPE → 404；站点侧错误与 TokenExpired 都是
+            // 参考实现 `getTracker(id)!!` 抛 NPE → 404；站点侧错误与 TokenExpired 都是
             // IOException → 500。这里照抄那套映射。
             suwayomi_domain::error::DomainError::TrackerNotFound(id) => {
                 Self::NotFound(format!("tracker {id} not found"))

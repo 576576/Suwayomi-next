@@ -477,8 +477,8 @@ pub async fn run(opts: ServerOptions) -> anyhow::Result<()> {
 
     // 确保默认分类 (id=0) 存在——书架页首个 tab 依赖；ON CONFLICT 幂等（覆盖
     // 备份恢复后 category 表为空的情况）。
-    // 名字必须与上游 M0027_AddDefaultCategory 一致，固定英文 'Default'：
-    // 上游 WebUI 的「编辑分类」页正是按 `nodes[0].name === 'Default'` 这个字面量
+    // 名字必须与参考实现 M0027_AddDefaultCategory 一致，固定英文 'Default'：
+    // 参考实现 WebUI 的「编辑分类」页正是按 `nodes[0].name === 'Default'` 这个字面量
     // 把默认分类从列表里剔除的（CategorySettings.tsx）。若写成中文「默认」，该判据
     // 失效，默认分类会混进可排序列表。DO UPDATE 用于纠正历史库里已有的中文名。
     suwayomi_db::query(

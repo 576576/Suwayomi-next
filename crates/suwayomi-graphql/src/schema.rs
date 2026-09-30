@@ -2,7 +2,7 @@
 //! `graphql/server/GraphQLServer.kt` + `GraphQLController.kt`.
 //!
 //! 模块级放行 `useless_let_if_seq`：`async-graphql-derive` 的 `MergedObject` 展开里
-//! 有一处 clippy 不认的 `let mut`（见下方 `RootMutation`），属于上游宏实现，用
+//! 有一处 clippy 不认的 `let mut`（见下方 `RootMutation`），属于参考实现的宏实现，用
 //! item 上的 `#[allow]` 盖不住。
 
 #![allow(clippy::useless_let_if_seq)]
@@ -28,7 +28,7 @@ use crate::state::GraphQLState;
 use crate::subscription::SubscriptionRoot;
 
 // `async-graphql-derive` 的 `MergedObject` 展开里有一处 clippy 不认的 `let mut`，
-// 属于上游宏实现，与本 crate 无关。
+// 属于参考实现的宏实现，与本 crate 无关。
 #[derive(MergedObject, Default)]
 #[graphql(name = "Mutation")]
 pub struct RootMutation(pub MutationRoot, pub MutationRootB4);

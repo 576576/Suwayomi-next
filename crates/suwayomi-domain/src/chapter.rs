@@ -67,12 +67,12 @@ impl ChapterService {
         self
     }
 
-    /// 标记已读后把进度推给站点（对应上游 `Track.asyncTrackChapter`）。
+    /// 标记已读后把进度推给站点（对应参考实现 `Track.asyncTrackChapter`）。
     ///
     /// 丢到后台任务里跑：追踪站在境外，同步等它会把翻页与批量勾选的响应拖住好几秒，
-    /// 而上游也是在协程里发的、不阻塞调用方。
+    /// 而参考实现也是在协程里发的、不阻塞调用方。
     ///
-    /// 只有 `auto_track` 为真的入口会走到这里。上游只在 REST 章节编辑与
+    /// 只有 `auto_track` 为真的入口会走到这里。参考实现只在 REST 章节编辑与
     /// `updateChapterProgress` 上挂了这一钩；GraphQL 的 `updateChapters` 不挂 ——
     /// WebUI 自己按「更新进度」设置决定要不要额外发 `trackProgress`，
     /// 服务端再钩一次会让设置形同虚设。
@@ -190,7 +190,7 @@ impl ChapterService {
     /// Mirrors `modifyChapter` — locate chapter by (manga, source_order).
     ///
     /// `auto_track`：标记已读后是否推进追踪器进度（见 [`Self::spawn_track_chapters`]）。
-    // 参数与上游 `Chapter.modifyChapter` 一一对应，`auto_track` 只有 REST 入口会置位。
+    // 参数与参考实现 `Chapter.modifyChapter` 一一对应，`auto_track` 只有 REST 入口会置位。
     #[allow(clippy::too_many_arguments)]
     pub async fn modify_chapter(
         &self,
@@ -277,7 +277,7 @@ impl ChapterService {
             .ok_or_else(|| DomainError::not_found("chapter not found"))?;
         let one_indexed = page_no + 1;
         let is_read = (row.page_count == one_indexed).then_some(true);
-        // 进度上报这条路要推进追踪（上游 `updateChapterProgress` → `modifyChapter`）。
+        // 进度上报这条路要推进追踪（参考实现 `updateChapterProgress` → `modifyChapter`）。
         self.modify_chapter(manga_id, chapter_index, is_read, None, None, Some(page_no), true).await?;
         Ok(row.id)
     }

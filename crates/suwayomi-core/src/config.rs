@@ -196,7 +196,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             ip: "0.0.0.0".into(),
-            // 与上游一致。该值落在 Windows 的 Hyper-V 动态保留区（4501-4900，
+            // 与参考实现一致。该值落在 Windows 的 Hyper-V 动态保留区（4501-4900，
             // bind 报 10013）里：桌面由托盘启动前嗅探并顺延（见 Suwayomi-tray），
             // 独立运行由下面监听循环的自顺延兜底。
             port: 4567,

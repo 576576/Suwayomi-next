@@ -17,13 +17,13 @@ use crate::scalars::{Cursor, LongString};
 use crate::state::GraphQLState;
 use crate::types::{MangaType, PageInfo, cursor_edges};
 
-/// 一个追踪器（对应上游 `TrackerType`）。
+/// 一个追踪器（对应参考实现 `TrackerType`）。
 #[derive(Clone)]
 pub struct TrackerType {
     service: Arc<dyn TrackerService>,
 }
 
-/// 追踪器 logo 的代理地址（上游 `Track.proxyThumbnailUrl`）。
+/// 追踪器 logo 的代理地址（参考实现 `Track.proxyThumbnailUrl`）。
 pub fn thumbnail_url(id: i32) -> String {
     format!("/api/v1/track/{id}/thumbnail")
 }
@@ -33,7 +33,7 @@ impl TrackerType {
         Self { service }
     }
 
-    /// 按 id 取；未知 id 返回 `None`（上游这里是 `TrackerManager.getTracker(id)`，
+    /// 按 id 取；未知 id 返回 `None`（参考实现这里是 `TrackerManager.getTracker(id)`，
     /// 调用方 `requireNotNull`）。
     pub fn find(state: &GraphQLState, id: i32) -> Option<Self> {
         state.tracker.find(id).map(Self::from_service)
@@ -70,7 +70,7 @@ impl TrackerType {
     async fn is_logged_in(&self) -> async_graphql::Result<bool> {
         Ok(self.service.is_logged_in().await?)
     }
-    /// 已登录时给 null（上游 `TrackerType` 构造时就是这么定的）。
+    /// 已登录时给 null（参考实现 `TrackerType` 构造时就是这么定的）。
     async fn auth_url(&self) -> async_graphql::Result<Option<String>> {
         if self.service.is_logged_in().await? {
             return Ok(None);
@@ -160,7 +160,7 @@ impl TrackRecordType {
         }
     }
 
-    /// 落库行 → 领域模型（对应上游 `TrackRecordType.toTrack()`）。
+    /// 落库行 → 领域模型（对应参考实现 `TrackRecordType.toTrack()`）。
     pub fn to_track(&self) -> Track {
         let mut track = Track::create(self.tracker_id);
         track.id = Some(self.id);

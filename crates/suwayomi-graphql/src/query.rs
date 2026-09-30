@@ -643,7 +643,7 @@ impl QueryRoot {
     ) -> async_graphql::Result<CategoryNodeList> {
         let _ = (filter, order, before, after, first, last, offset); // shape parity
         let state = ctx.data::<GraphQLState>()?;
-        // 上游 categories resolver 直接读全表（不过滤默认分类），WebUI 的分类
+        // 参考实现 categories resolver 直接读全表（不过滤默认分类），WebUI 的分类
         // 计数与「编辑分类」页都依赖默认分类恒在。
         let rows = state.category.list_categories_for_graphql().await.map_err(async_graphql::Error::from)?;
         let nodes: Vec<CategoryType> = rows
@@ -1415,7 +1415,7 @@ impl QueryRoot {
         let mut bytes = Vec::new();
         upload.content.read_to_end(&mut bytes).map_err(|e| async_graphql::Error::new(format!("read upload: {e}")))?;
         let summary = suwayomi_core::backup::validate_backup(&bytes).await.map_err(async_graphql::Error::from)?;
-        // 上游 `ProtoBackupValidator`：备份里出现过、但本机没登录的追踪器才算「缺」，
+        // 参考实现 `ProtoBackupValidator`：备份里出现过、但本机没登录的追踪器才算「缺」，
         // 按名字母序去重（同一追踪器可能挂了很多部漫画）。
         let backup = suwayomi_core::backup::decode_gz_backup(&bytes).map_err(async_graphql::Error::from)?;
         let mut sync_ids: Vec<i32> =
@@ -2172,7 +2172,7 @@ fn build_string_filter(where_clauses: &mut Vec<String>, binds: &mut Vec<BindVal>
     if let Some(vs) = &f.not_like_insensitive_any {
         push_like_any(where_clauses, binds, col, vs, true, true, "%", "%");
     }
-    // not includes（不包含）—— 与上面的 not_like 同义，只是上游把两个名字都暴露了出来
+    // not includes（不包含）—— 与上面的 not_like 同义，只是参考实现把两个名字都暴露了出来
     if let Some(v) = &f.not_includes {
         push_like(where_clauses, binds, col, v, true, false, "%", "%");
     }

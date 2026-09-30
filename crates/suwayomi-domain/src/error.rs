@@ -20,7 +20,7 @@ pub enum DomainError {
     /// `TrackerManager` 里没有这个 id。
     #[error("tracker {0} not found")]
     TrackerNotFound(i32),
-    /// 对应上游 `TokenExpired`：要重新登录。
+    /// 对应参考实现 `TokenExpired`：要重新登录。
     #[error("{0}: 登录已过期，需要重新登录")]
     TokenExpired(String),
 }

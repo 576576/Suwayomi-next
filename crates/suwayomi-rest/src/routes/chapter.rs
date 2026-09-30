@@ -10,7 +10,7 @@ use axum::{Json, Router};
 use crate::error::{ApiError, ApiResult};
 use suwayomi_api::AppState;
 
-/// `markAsRead` 在 query 上（上游是 `queryParam<Boolean?>`）。
+/// `markAsRead` 在 query 上（参考实现是 `queryParam<Boolean?>`）。
 #[derive(serde::Deserialize, Default)]
 pub struct DownloadParams {
     #[serde(rename = "markAsRead")]

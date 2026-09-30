@@ -16,10 +16,10 @@ type HmacSha256 = Hmac<Sha256>;
 
 const B64: base64::engine::general_purpose::GeneralPurpose = base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-/// 会话 cookie 名。与上游一致（`JavalinSetup` 写 `logged-in`）。
+/// 会话 cookie 名。与参考实现一致（`JavalinSetup` 写 `logged-in`）。
 pub const SESSION_COOKIE: &str = "logged-in";
 
-/// 上游把 token 也接受在 cookie 里，键名叫这个。
+/// 参考实现把 token 也接受在 cookie 里，键名叫这个。
 pub const TOKEN_COOKIE: &str = "suwayomi-server-token";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +57,7 @@ impl AuthMode {
     }
 }
 
-/// 请求主体。只有两级——上游也是单用户模型（`UserType.Admin` / `Visitor`）。
+/// 请求主体。只有两级——参考实现也是单用户模型（`UserType.Admin` / `Visitor`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Principal {
     Anonymous,
@@ -266,7 +266,7 @@ impl AuthContext {
     }
 }
 
-/// 会话有效期。上游是 30 分钟的 Javalin session 默认值。
+/// 会话有效期。参考实现是 30 分钟的 Javalin session 默认值。
 fn session_ttl() -> Duration {
     Duration::from_mins(30)
 }

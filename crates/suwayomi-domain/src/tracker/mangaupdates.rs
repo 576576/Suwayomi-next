@@ -1,7 +1,7 @@
-//! MangaUpdates —— 上游 `tracker/mangaupdates/MangaUpdates.kt` + `MangaUpdatesApi.kt`。
+//! MangaUpdates —— 参考实现 `tracker/mangaupdates/MangaUpdates.kt` + `MangaUpdatesApi.kt`。
 //!
 //! 用户名密码登录换 session token（不用 OAuth，没有刷新机制）。`username` 列存
-//! 站点返回的 uid，`password` 列存 session token —— 上游 `restoreSession()` 读的
+//! 站点返回的 uid，`password` 列存 session token —— 参考实现 `restoreSession()` 读的
 //! 就是 password。
 //!
 //! 评分是 0–10 的十分位，未评分用 `-` 表示；条目状态用 `list_id`（0..4）。
@@ -61,7 +61,7 @@ impl MangaUpdates {
         check(&self.ctx, MANGA_UPDATES, self.name(), resp).await
     }
 
-    /// 对应上游 `getSeriesListItem`：列表项 + 评分，评分拿不到按未评分处理。
+    /// 对应参考实现 `getSeriesListItem`：列表项 + 评分，评分拿不到按未评分处理。
     async fn get_series_list_item(&self, remote_id: i64) -> Result<(MuListItem, Option<f64>)> {
         let item: MuListItem = serde_json::from_value(
             self.request(reqwest::Method::GET, &format!("/v1/lists/series/{remote_id}"), None).await?,
@@ -75,7 +75,7 @@ impl MangaUpdates {
         Ok((item, rating))
     }
 
-    /// 对应上游 `addSeriesToList`。
+    /// 对应参考实现 `addSeriesToList`。
     async fn add_series_to_list(&self, track: &mut Track, has_read_chapters: bool) -> Result<()> {
         let status = if has_read_chapters { READING_LIST } else { WISH_LIST };
         let body = json!([{ "series": { "id": track.remote_id }, "list_id": status }]);
@@ -110,7 +110,7 @@ impl MangaUpdates {
         Ok(())
     }
 
-    /// 对应上游 `MangaUpdates.loginImpl`。
+    /// 对应参考实现 `MangaUpdates.loginImpl`。
     async fn authenticate(&self, username: &str, password: &str) -> Result<()> {
         let resp = self
             .ctx
@@ -235,7 +235,7 @@ impl TrackerService for MangaUpdates {
     }
 }
 
-/// 对应上游 `MangaUpdates.SCORE_LIST`：`-` 是「未评分」，其余是 0.0 起的十分位。
+/// 对应参考实现 `MangaUpdates.SCORE_LIST`：`-` 是「未评分」，其余是 0.0 起的十分位。
 fn score_list() -> Vec<String> {
     let mut out = vec!["-".to_string()];
     for decimal in 0..=10 {
@@ -343,7 +343,7 @@ struct MuImageUrl {
 }
 
 impl MuRecord {
-    /// 上游的 `total_chapters` 固定写 0、`publishing_status` 固定写空串（站点搜索
+    /// 参考实现的 `total_chapters` 固定写 0、`publishing_status` 固定写空串（站点搜索
     /// 结果里没有这两项），照抄。
     fn to_track_search(&self) -> TrackSearch {
         TrackSearch {

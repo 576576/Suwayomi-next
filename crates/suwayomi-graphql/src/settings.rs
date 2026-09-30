@@ -288,7 +288,7 @@ impl SettingsType {
     /// defaults that `apply_overrides` then overwrites from the same blob.
     pub fn from_config(c: &ServerConfig) -> Self {
         let basic_auth = c.auth_mode.to_uppercase().as_str() == "BASIC_AUTH";
-        // 这组开关的默认值取自 `BackupFlags::DEFAULT`（上游 `ServerConfig` 的
+        // 这组开关的默认值取自 `BackupFlags::DEFAULT`（参考实现 `ServerConfig` 的
         // `defaultValue` 就是它）。写成字面量 `false` 的话，自动备份在没保存过这组
         // 开关的实例上会导出空档，而同一台机器上的手动导出/REST 导入用的是全开。
         let backup_include = BackupFlags::default();

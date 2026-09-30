@@ -1,10 +1,10 @@
-//! `TrackerService` —— 上游 `Tracker` 抽象类（含 `DeletableTracker`）的对应物。
+//! `TrackerService` —— 参考实现 `Tracker` 抽象类（含 `DeletableTracker`）的对应物。
 //!
 //! 每个追踪器一个实现，负责把 `Track` 翻译成站点 API 的请求、把响应翻译回
 //! `Track`/`TrackSearch`。凭据读写走 `ctx().store`，HTTP 走 `ctx().http`。
 //!
 //! `delete` 在 trait 上有默认空实现：只有 `supports_track_deletion()` 为真的
-//! 追踪器（上游的 `DeletableTracker`）才需要覆写，调用方也只在为真时才调到。
+//! 追踪器（参考实现的 `DeletableTracker`）才需要覆写，调用方也只在为真时才调到。
 
 use async_trait::async_trait;
 use std::sync::{Arc, RwLock};
@@ -79,7 +79,7 @@ pub trait TrackerService: Send + Sync {
     fn supports_private_tracking(&self) -> bool {
         false
     }
-    /// 对应上游 `DeletableTracker`。
+    /// 对应参考实现 `DeletableTracker`。
     fn supports_track_deletion(&self) -> bool {
         false
     }
@@ -109,10 +109,10 @@ pub trait TrackerService: Send + Sync {
         Err(DomainError::tracker(format!("{} 不支持 OAuth 回调", self.name())))
     }
     async fn login_impl(&self, username: &str, password: &str) -> Result<()>;
-    /// 清登录态。上游默认只清凭据，带 token 的站点再清 token。
+    /// 清登录态。参考实现默认只清凭据，带 token 的站点再清 token。
     async fn logout(&self) -> Result<()>;
 
-    /// 上游 `isLoggedIn`：用户名与密码都非空。OAuth 站点的「密码」就是 access token。
+    /// 参考实现 `isLoggedIn`：用户名与密码都非空。OAuth 站点的「密码」就是 access token。
     async fn is_logged_in(&self) -> Result<bool> {
         let c = self.ctx().store.get(self.id()).await?;
         Ok(!c.username.is_empty() && !c.password.is_empty())
@@ -166,9 +166,9 @@ pub async fn check(
     Ok(serde_json::from_str(&body).unwrap_or(serde_json::Value::String(body)))
 }
 
-/// 解析回调地址里的某个键（对应上游 `String.extractToken`）。
+/// 解析回调地址里的某个键（对应参考实现 `String.extractToken`）。
 ///
-/// 上游是按 `&` 切段后在每段里**搜索** `key=`，不是要求 key 正好是该段的键名 ——
+/// 参考实现是按 `&` 切段后在每段里**搜索** `key=`，不是要求 key 正好是该段的键名 ——
 /// AniList 的隐式流把 token 放在 fragment 里，回调地址形如
 /// `https://host/#access_token=xxx&state=…`，第一段是 `https://host/#access_token=xxx`，
 /// 只有子串匹配才取得到。
@@ -180,7 +180,7 @@ pub fn extract_token(url: &str, key: &str) -> Option<String> {
     })
 }
 
-/// 上游 `isExpired()` 的统一形态：`created_at + expires_in - 3600 < now`。
+/// 参考实现 `isExpired()` 的统一形态：`created_at + expires_in - 3600 < now`。
 /// 提前一小时刷新，避免请求正好撞在过期点上。
 pub fn expires_soon(created_at: i64, expires_in: i64) -> bool {
     now_secs() > created_at + expires_in - 3600
@@ -194,9 +194,9 @@ pub fn now_millis() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
-/// 对应上游 `PkceUtil.generateCodeVerifier()`：50 字节随机数的 base64url（无填充）。
-/// 上游用 `SecureRandom`，这里用 `uuid` v4（同样走 getrandom）攒够字节数，
-/// 免得到一个函数新引 `rand`。返回长度 67，与上游一致。
+/// 对应参考实现 `PkceUtil.generateCodeVerifier()`：50 字节随机数的 base64url（无填充）。
+/// 参考实现用 `SecureRandom`，这里用 `uuid` v4（同样走 getrandom）攒够字节数，
+/// 免得到一个函数新引 `rand`。返回长度 67，与参考实现一致。
 pub fn generate_code_verifier() -> String {
     use base64::Engine as _;
     let mut bytes = Vec::with_capacity(64);
@@ -207,7 +207,7 @@ pub fn generate_code_verifier() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&bytes)
 }
 
-/// epoch 毫秒 → `yyyy-MM-dd`（本地时区，对应上游 `SimpleDateFormat` 的默认行为）。
+/// epoch 毫秒 → `yyyy-MM-dd`（本地时区，对应参考实现 `SimpleDateFormat` 的默认行为）。
 pub fn format_date(ms: i64) -> Option<String> {
     use chrono::TimeZone as _;
     if ms == 0 {

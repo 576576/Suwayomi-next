@@ -212,7 +212,6 @@ double-click **`build.bat`** in the repo root (or `cmd /c build.bat`).
 ## Docs
 
 - `../zh/user-guide.md` — user guide (configuration/backup/OPDS/Docker)
-- `../zh/migrate-from-kotlin.md` — migrating from the Kotlin version
 - `../agent/release.md` — release pipeline & CI conventions
 - `../agent/rest-api.md` — REST v1 baseline
 - `../agent/graphql.md` — GraphQL schema baseline

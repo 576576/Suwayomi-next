@@ -47,34 +47,25 @@ Suwayomi-next是一个漫画阅读器项目，支持基于Tachiyomi拓展的插�
 
 ```mermaid
 graph TD
-    subgraph repo ["Suwayomi-next（本仓 Rust workspace）"]
-        dbm["suwayomi-db-macros<br>proc-macro"]
-        db["suwayomi-db<br>双后端数据库层"]
-        core["suwayomi-core<br>领域模型 / 配置 / 认证"]
-        domain["suwayomi-domain<br>业务逻辑（唯一对外发 HTTP 的一层）"]
-        api["suwayomi-api<br>AppState + 全站认证中间件"]
-        rest["suwayomi-rest<br>REST API v1"]
-        gql["suwayomi-graphql<br>GraphQL API"]
-        opds["suwayomi-opds<br>OPDS"]
+    subgraph next ["Suwayomi-next（本仓 Rust workspace）"]
+        direction TB
         server["suwayomi-server<br>入口：装配 + 静态托管 + 起沙盒"]
-        android["suwayomi-android<br>JNI cdylib（随 APK 分发）"]
-        db --> dbm
-        core --> db
-        domain --> core & db
-        api --> core & domain
-        rest --> api & core & domain & db
-        gql --> api & core & domain & db
-        opds --> api & core & domain & db
-        server --> rest & gql & opds & api & domain & core & db
-        android --> server & core & db
+        apis["suwayomi-rest / suwayomi-graphql / suwayomi-opds<br>接口层"]
+        api["suwayomi-api<br>AppState + 全站认证中间件"]
+        domain["suwayomi-domain<br>业务逻辑（唯一对外发 HTTP 的一层）"]
+        core["suwayomi-core<br>领域模型 / 配置 / 认证"]
+        db["suwayomi-db<br>双后端数据库层"]
+        dbm["suwayomi-db-macros<br>proc-macro"]
+        server --> apis --> api --> domain --> core --> db --> dbm
     end
+    android["suwayomi-android<br>JNI cdylib（随 APK 分发）"]
     tray["Suwayomi-tray<br>桌面托盘"]
     ext["ext-runtime.jar<br>JVM 扩展沙盒"]
     webui["Suwayomi-WebUI<br>默认前端"]
-    tray -->|"启动 server 进程、注入两个根"| server
-    server -->|"java -jar（子进程）"| ext
-    ext -.->|"扩展源回环 HTTP"| domain
-    webui -->|"HTTP：REST / GraphQL / OPDS"| server
+    android --> next
+    tray --> next
+    next --> ext
+    webui --> next
 ```
 
 
@@ -223,22 +214,7 @@ docs/                文档（zh/ 中文、en/ 英文、agent/ 给维护者与 A
 | `SUWAYOMI_DATA_DIR` | exe 上级 `data/` | 用户数据根：`downloads/`、`local/`、`autobackup/`；也可在 WebUI「数据与存储 → 存储位置」改 |
 | `SUWAYOMI_PORT` | `4567` | HTTP 端口；被占用或落在 Windows 动态保留区时自动顺延 |
 | `SUWAYOMI_IP` | `0.0.0.0` | 监听地址；改成 `127.0.0.1` 可只允许本机访问 |
-| `SUWAYOMI_WEBUI_DIR` | exe 同级的 `webui/` | 捆绑 WebUI 目录（不含 `index.html` 时忽略该项） |
-| `SUWAYOMI_DB_BACKEND` | `sqlite` | 数据库后端：`sqlite` / `postgres` |
-| `SUWAYOMI_DB_URL` | （空） | PostgreSQL 连接串；设置后自动改用外部 PostgreSQL |
-| `SUWAYOMI_TRACKERS_CONFIG` | `<appdata>/settings/trackers.json` | 追踪器 OAuth 应用凭据文件 |
-| `SUWAYOMI_SANDBOX_JAR` | exe 同级（或 `bin/`）的 `ext-runtime.jar` | JVM 扩展沙盒 jar；未找到时扩展不可用 |
-| `SUWAYOMI_SANDBOX_PORT` | `4568` | 沙盒 HTTP 端口；托盘启动时会挑一个可用的传进来 |
-| `SUWAYOMI_SANDBOX_PROXY` | （空） | 沙盒与扩展下载走的 HTTP 代理 |
-| `SUWAYOMI_SANDBOX_URL` | （空） | 已在运行的扩展宿主地址（如 Android 宿主 App）；设了就不再自己拉沙盒 |
-| `SUWAYOMI_JAVA` | 打包的 `jre/` → `JAVA_HOME` → `PATH` | 沙盒使用的 `java` 可执行文件 |
-| `SUWAYOMI_AUTH_MODE` | `DISABLED` | 认证模式：`DISABLED` / `BASIC_AUTH` / `SIMPLE_LOGIN` / `UI_LOGIN` |
-| `SUWAYOMI_AUTH_USERNAME` / `SUWAYOMI_AUTH_PASSWORD` | （空） | 认证凭据；启用认证时两者都不能为空，否则拒绝启动 |
-| `SUWAYOMI_AUTH_COOKIE_SECURE` | （空） | 设 `1` 给会话 cookie 加 `Secure`（仅 HTTPS 反代之后开启） |
-| `SUWAYOMI_SESSION_SECRET` | `<appdata>/db/session.key` | 会话与 JWT 的签名密钥；未设置时首次启动生成 |
-| `SUWAYOMI_JWT_AUDIENCE` | `suwayomi-server-api` | JWT 的 `aud` 声明 |
-| `SUWAYOMI_JWT_TOKEN_EXPIRY` | `5m` | 访问令牌有效期（也接受 `PT5M` 这类 ISO-8601 写法） |
-| `SUWAYOMI_JWT_REFRESH_EXPIRY` | `60d` | 刷新令牌有效期 |
+| 其余变量 | — | 见 [`docs/zh/user-guide.md`](docs/zh/user-guide.md)：WebUI 目录、数据库后端、沙盒、认证、JWT 等 |
 
 ## 数据库后端
 
@@ -270,7 +246,6 @@ docs/                文档（zh/ 中文、en/ 英文、agent/ 给维护者与 A
 
 - `docs/zh/user-guide.md` — 用户指南（配置/备份/OPDS/Docker）
 - `docs/agent/release.md` — 发布流程与 CI 约定
-- `docs/zh/migrate-from-kotlin.md` — 从 Kotlin 版迁移操作指南（Mihon 备份导入）
 - `docs/agent/rest-api.md` — REST v1 端点兼容基线
 - `docs/agent/graphql.md` — GraphQL schema 基线说明
 - `docs/agent/android.md` — Android 宿主工程（构建与验证）

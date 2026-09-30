@@ -14,9 +14,6 @@ use crate::backend::BackendKind;
 pub const ENV_BACKEND: &str = "SUWAYOMI_DB_BACKEND";
 /// Environment variable holding the PostgreSQL connection URL.
 pub const ENV_URL: &str = "SUWAYOMI_DB_URL";
-/// Pre-rename name of the URL variable. Still honoured so a deployment that sets it keeps
-/// using PostgreSQL instead of silently falling back to SQLite.
-pub const ENV_URL_LEGACY: &str = "SUWAYOMI_DATABASE_URL";
 /// Name of the SQLite database file (the directory comes from the appdata root,
 /// see `AppPaths::db`).
 pub const SQLITE_FILE_NAME: &str = "suwayomi.db";
@@ -80,20 +77,9 @@ impl DbSettings {
     }
 }
 
-/// `SUWAYOMI_DB_URL`, falling back to the pre-rename `SUWAYOMI_DATABASE_URL` (with a warning).
+/// `SUWAYOMI_DB_URL`, trimmed; empty when unset.
 fn resolve_url() -> String {
-    if let Ok(v) = std::env::var(ENV_URL)
-        && !v.trim().is_empty()
-    {
-        return v;
-    }
-    if let Ok(v) = std::env::var(ENV_URL_LEGACY)
-        && !v.trim().is_empty()
-    {
-        tracing::warn!("{ENV_URL_LEGACY} is deprecated; use {ENV_URL} instead");
-        return v;
-    }
-    String::new()
+    std::env::var(ENV_URL).unwrap_or_default().trim().to_owned()
 }
 
 #[cfg(test)]

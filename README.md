@@ -185,6 +185,30 @@ docker build -t suwayomi-next --build-arg WEBUI_URL=<zip 地址> .
 docker run -p 4567:4567 -v suwayomi-data:/data suwayomi-next
 ```
 
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+本项目的 Windows 产物（`msi` / `setup.exe`，以及后续的 `msix`）走 SignPath Foundation 的免费开源签名。
+**证书签发对象是 SignPath Foundation 而不是本项目** —— 安装向导与 SmartScreen 里显示的发布者因此是
+SignPath Foundation。
+
+| 角色 | 成员 |
+|---|---|
+| Authors | [@576576](https://github.com/576576) |
+| Reviewers | [@576576](https://github.com/576576) |
+| Approvers | [@576576](https://github.com/576576) |
+
+每一次签名请求都由 Approver 在 SignPath 控制台上人工批准，没有无人值守的签名流水线。被签的文件只有
+本项目自源码构建的产物（`suwayomi.exe` 与 `bin/suwayomi-server.exe`）；随包分发的第三方二进制
+（如 `jre/` 下的 Temurin）不在签名范围内。
+
+隐私见 [PRIVACY.md](PRIVACY.md)：本程序不会向你或任何第三方传输信息，除非你（安装或使用它的人）
+明确要求 —— 所有对外请求都由你的操作触发。
+
+签名接入之前发布的产物是未签名的（`msi` / `setup.exe` 目前如此），产物在
+[Releases](https://github.com/576576/Suwayomi-next/releases)。
+
 ## 许可证
 
 Mozilla Public License, v.2.0

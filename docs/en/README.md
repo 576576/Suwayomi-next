@@ -225,6 +225,32 @@ docker build -t suwayomi-next .
 docker run -p 4567:4567 -v suwayomi-data:/data suwayomi-next   # 4567 on both
 ```
 
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+The Windows artifacts (`msi` / `setup.exe`, and later `msix`) are signed through SignPath
+Foundation's free signing for open source. **The certificate is issued to SignPath Foundation,
+not to this project** — that is the publisher name the installer wizard and SmartScreen show.
+
+| Role | Member |
+|---|---|
+| Authors | [@576576](https://github.com/576576) |
+| Reviewers | [@576576](https://github.com/576576) |
+| Approvers | [@576576](https://github.com/576576) |
+
+Every signing request is approved by hand on the SignPath console; there is no unattended
+signing pipeline. Only binaries built from this repository's own source are signed
+(`suwayomi.exe` and `bin/suwayomi-server.exe`) — third-party binaries shipped alongside
+(such as Temurin under `jre/`) are not.
+
+Privacy: see [PRIVACY.md](../../PRIVACY.md). This program will not transfer any information to
+other networked systems unless specifically requested by the user or the person installing or
+operating it.
+
+Artifacts published before signing is wired up are unsigned (currently true for `msi` /
+`setup.exe`); see [Releases](https://github.com/576576/Suwayomi-next/releases).
+
 ## License
 
 Mozilla Public License, v.2.0

@@ -522,12 +522,17 @@ jobs:
           </table>"
           fi
 
-          # 说明顺序：手填说明 → 捆绑组件表 → 下载架构表；changelog 由 --generate-notes 追加在最后。
+          # 签名政策：SignPath 的条款要求下载 / release 页上出现这一段（标题或链接文字用
+          # "Code signing policy"），所以每个 release 都带，与产物本身是否已签名无关。
+          SIGNING_NOTE="**Code signing policy** — Windows 安装包由 [SignPath.io](https://signpath.io/) 免费签名，证书由 [SignPath Foundation](https://signpath.org/) 签发（安装向导与 SmartScreen 显示的发布者据此为 SignPath Foundation）。详见 [README](https://github.com/${GITHUB_REPOSITORY}#code-signing-policy) 与 [PRIVACY.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/PRIVACY.md)。"
+
+          # 说明顺序：手填说明 → 捆绑组件表 → 下载架构表 → 签名政策；changelog 由 --generate-notes 追加在最后。
           BODY="$BUNDLED_TABLE"
           if [ -n "$DOWNLOAD_TABLE" ]; then
             # 两个换行：markdown 表格与紧随的段落之间必须留空行，否则表被当成延续行。
             BODY="$BODY"$'\n\n'"$DOWNLOAD_TABLE"
           fi
+          BODY="$BODY"$'\n\n'"$SIGNING_NOTE"
           # UI 是单行框，字面量 \n 在这里还原；粘贴进来的 \r 直接去掉。
           NOTES="${NOTES//$'\r'/}"
           if [ -n "$NOTES" ]; then

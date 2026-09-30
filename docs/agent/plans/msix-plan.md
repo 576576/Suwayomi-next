@@ -30,7 +30,9 @@ Store / winget 上架；**不是 msi / setup.exe 的替代**。
 
 - **PE 版本元数据**：SignPath 的 artifact configuration 强制要求被签的二进制带版本资源，且
   product name / product version 由构建统一注入。现状是托盘与 server 都停在 `0.1.0`（见 2.6）。
-- **一份 "Code signing policy"**：条款要求项目主页与下载页上有这一节（见 5.4）。
+- **一份 "Code signing policy"**：条款要求项目主页与下载页上有这一节（见 5.4）——
+  **已落地 2026-09-30**：`README.md` 与 `docs/en/README.md` 各有一节 `## Code signing policy`，
+  `PRIVACY.md` 是随附的隐私政策，release 说明里也固定带一段（`release.yml` 的 `SIGNING_NOTE`）。
 - **人工审批 + 全程 MFA**：每次签名请求都要 Approver 在 SignPath 上点批准，发不出全自动流水线。
 
 **路径**：第 1 项（运行时目录改造）与签名前置条件互不依赖，可以并行。签名本身先落在**已经发布过**
@@ -280,7 +282,7 @@ SignPath Foundation，`AppxManifest` 的 `Publisher` 也必须写成它的证书
 | 无恶意代码 | ✅ |
 | 活跃维护 | ✅ |
 | **已在待签名的形态上发布过** | ⚠️ msi / setup.exe 已发布；**MSIX 尚未发布过，需先发一次未签名版** |
-| 功能有文档（下载页 / 商店条目） | ⚠️ 仓库 `homepage` 为空；README 有「Release 包结构与用法」一节，但没有 Code signing policy / 隐私声明（5.4） |
+| 功能有文档（下载页 / 商店条目） | ✅ README 有「Release 包结构与用法」；Code signing policy 与隐私声明**已落地 2026-09-30**（5.4）。⚠️ 仓库 `homepage` 仍为空 —— 条款没明写这一项，补上只是让「下载页」更好找 |
 | 全体成员双因素认证 | ⚠️ 需在 GitHub 与 SignPath 两侧都开 MFA |
 | 签名团队 = 开发维护团队、拥有仓库 | ✅ |
 | 只签自己构建的二进制、构建可验证 | ✅ GitHub Actions（SignPath 的 trusted build system） |
@@ -314,11 +316,14 @@ project`，未改写、未删除；MPL-2.0 要求的正是保留许可与署名�
 ### 5.4 硬性要求：三条会变成实际工作量的
 
 - **Code signing policy 必须出现在项目主页与下载 / release 页**，并用 "Code signing policy"
-  作为小节标题或链接文字。内容至少要包含：
+  作为小节标题或链接文字（**已落地 2026-09-30**）。内容至少要包含：
   - "Free code signing provided by SignPath.io, certificate by SignPath Foundation" 这一句；
   - 团队角色与成员（Authors / Reviewers / Approvers）；
   - 隐私声明 —— 链接隐私政策，或写 "This program will not transfer any information to other
     networked systems unless specifically requested by the user or the person installing or operating it"。
+- **落点**（2026-09-30）：`README.md` / `docs/en/README.md` 的 `## Code signing policy` 一节
+  （那句英文原文、三个角色、隐私声明链接、被签范围）；`PRIVACY.md` 是中英双语的隐私政策；
+  release 说明里的 `SIGNING_NOTE` 让下载页也带 "Code signing policy" 字样。三项相互印证。
 - **每次签名请求都要人工审批**（Approver 在 SignPath 控制台上批准）。自动构建可以照常出未签名产物，
   但签名那一步必须有人点 —— 不存在全自动的签名流水线。
 - **MFA**：GitHub 与 SignPath 两侧都要开。
@@ -378,7 +383,8 @@ project`，未改写、未删除；MPL-2.0 要求的正是保留许可与署名�
 
 **P2 —— 申请 SignPath 并接进 CI**
 
-- 申请前补齐 5.4 的三条：项目主页 / 下载页上的 "Code signing policy"、两侧 MFA、Approver 角色。
+- 申请前补齐 5.4 剩的两条：两侧 MFA、SignPath 侧的 Approver 角色。
+  （"Code signing policy" 与隐私声明**已落地 2026-09-30**，见 5.4。）
 - 提申请（仓库 URL + 下载页 URL + 描述 + 许可证）：按 5.3 陈述 —— 本项目是独立项目、与
   Suwayomi-Server 没有 fork 关系，被签产物全部由本仓源码构建；同时声明采用 Suwayomi Project
   代码的部分原样保留 MPL-2.0 许可与署名。

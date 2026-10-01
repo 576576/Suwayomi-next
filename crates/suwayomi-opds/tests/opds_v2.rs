@@ -14,8 +14,13 @@
     clippy::indexing_slicing
 )]
 
+use std::sync::{Arc, Mutex};
+
 use serde_json::Value;
 use suwayomi_core::db::Db;
+use suwayomi_core::source::{MangasPage, SChapter, SManga, SourcePage};
+use suwayomi_domain::error::DomainError;
+use suwayomi_domain::source::{SourceBackend, SourceFetcher};
 use suwayomi_opds::v2::feeds::{self, V2Ctx, V2Error};
 
 /// Library with two series: one English source, one source declared `all`
@@ -129,8 +134,92 @@ async fn insert_chapter(
     .expect("insert chapter");
 }
 
+/// No extension sandbox in tests, so the backend is the stub — every fetch
+/// fails, which is exactly the production shape when no sandbox is running.
+static STUB: SourceBackend = SourceBackend::Stub;
+
 fn ctx(db: &Db) -> V2Ctx<'_> {
-    V2Ctx { db, base_url: "/api/opds/v2", lang: "en" }
+    V2Ctx { db, base_url: "/api/opds/v2", lang: "en", fetcher: &STUB }
+}
+
+fn ctx_with<'a>(db: &'a Db, fetcher: &'a SourceBackend) -> V2Ctx<'a> {
+    V2Ctx { db, base_url: "/api/opds/v2", lang: "en", fetcher }
+}
+
+/// A page list of a fixed length, or a source failure — the seam
+/// `chapter_manifest` falls back to when the stored `page_count` is `-1`.
+///
+/// Records every `fetch_pages` call, so a test can tell "never asked" from
+/// "asked and got the same answer".
+struct PageListStub {
+    pages: Option<usize>,
+    calls: Mutex<Vec<(i64, String, String)>>,
+}
+
+impl PageListStub {
+    /// The stub itself (to inspect) plus a backend wrapping it. Returning the
+    /// backend keeps it alive for the caller — the context only borrows it.
+    fn backend(pages: Option<usize>) -> (Arc<Self>, SourceBackend) {
+        let stub = Arc::new(Self { pages, calls: Mutex::new(Vec::new()) });
+        let shared: Arc<dyn SourceFetcher> = stub.clone();
+        (stub, SourceBackend::Test(shared))
+    }
+
+    fn calls(&self) -> Vec<(i64, String, String)> {
+        self.calls.lock().expect("stub mutex").clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl SourceFetcher for PageListStub {
+    async fn fetch_manga_update(
+        &self,
+        _source_id: i64,
+        _manga: &SManga,
+        _chapters: &[SChapter],
+        _fetch_details: bool,
+        _fetch_chapters: bool,
+    ) -> suwayomi_domain::error::Result<(SManga, Vec<SChapter>)> {
+        Err(DomainError::Source("unused in this stub".into()))
+    }
+
+    async fn get_popular_manga(&self, _source_id: i64, _page: u32) -> suwayomi_domain::error::Result<MangasPage> {
+        Ok(MangasPage::default())
+    }
+
+    async fn get_latest_updates(&self, _source_id: i64, _page: u32) -> suwayomi_domain::error::Result<MangasPage> {
+        Ok(MangasPage::default())
+    }
+
+    async fn search_manga(
+        &self,
+        _source_id: i64,
+        _query: &str,
+        _page: u32,
+    ) -> suwayomi_domain::error::Result<MangasPage> {
+        Ok(MangasPage::default())
+    }
+
+    async fn fetch_pages(
+        &self,
+        source_id: i64,
+        manga_url: &str,
+        chapter_url: &str,
+    ) -> suwayomi_domain::error::Result<Vec<SourcePage>> {
+        self.calls.lock().expect("stub mutex").push((source_id, manga_url.to_string(), chapter_url.to_string()));
+        self.pages.map_or_else(
+            || Err(DomainError::Source("source unavailable".into())),
+            |count| {
+                Ok((0..count as i32)
+                    .map(|i| SourcePage::new(i, format!("https://example.com/{i}.jpg"), None))
+                    .collect())
+            },
+        )
+    }
+
+    fn supports_latest(&self, _source_id: i64) -> bool {
+        false
+    }
 }
 
 fn value<T: serde::Serialize>(item: &T) -> Value {
@@ -356,4 +445,49 @@ async fn unknown_page_count_has_no_manifest() {
     // Never answered with an empty readingOrder.
     assert_eq!(feeds::chapter_manifest(&ctx(&db), 1, 3).await.err(), Some(V2Error::PageCountUnknown));
     assert_eq!(feeds::chapter_manifest(&ctx(&db), 1, 99).await.err(), Some(V2Error::NotFound));
+}
+
+#[tokio::test]
+async fn manifest_page_count_falls_back_to_the_source() {
+    let db = seed().await;
+    let (stub, backend) = PageListStub::backend(Some(9));
+    let ctx = ctx_with(&db, &backend);
+
+    // Chapter 3 is stored with `page_count = -1`, so the count has to come
+    // from the source. Everything the count feeds (the reading order,
+    // `numberOfPages`) has to agree with it.
+    let manifest = value(&feeds::chapter_manifest(&ctx, 1, 3).await.expect("manifest"));
+    assert_eq!(manifest["metadata"]["numberOfPages"], 9);
+    assert_eq!(array(&manifest, "readingOrder").len(), 9);
+    assert_eq!(
+        array(&manifest, "readingOrder")[8]["href"],
+        "/api/v1/manga/1/chapter/3/page/8?updateProgress=true&opds=true"
+    );
+    // The source address handed to the fetcher comes from the chapter's row.
+    assert_eq!(stub.calls(), vec![(1, "/series/1".to_string(), "/series/1/ch/3".to_string())]);
+
+    // A known count is never looked up: chapter 1 keeps its stored 20 instead
+    // of the stub's 9, and the fetcher is not asked a second time.
+    let known = value(&feeds::chapter_manifest(&ctx, 1, 1).await.expect("manifest"));
+    assert_eq!(known["metadata"]["numberOfPages"], 20);
+    assert_eq!(stub.calls().len(), 1, "a known page count must not be re-fetched");
+}
+
+#[tokio::test]
+async fn empty_source_page_list_is_not_a_manifest() {
+    let db = seed().await;
+    let (_, backend) = PageListStub::backend(Some(0));
+    let ctx = ctx_with(&db, &backend);
+
+    // A source that answers with no pages is as unusable as one that fails.
+    assert_eq!(feeds::chapter_manifest(&ctx, 1, 3).await.err(), Some(V2Error::PageCountUnknown));
+}
+
+#[tokio::test]
+async fn source_failure_is_not_a_manifest() {
+    let db = seed().await;
+    let (_, backend) = PageListStub::backend(None);
+    let ctx = ctx_with(&db, &backend);
+
+    assert_eq!(feeds::chapter_manifest(&ctx, 1, 3).await.err(), Some(V2Error::PageCountUnknown));
 }

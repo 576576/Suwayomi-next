@@ -109,9 +109,10 @@ pub enum SourceBackend {
     Sandbox(sandbox::HttpSandboxFetcher),
     /// 测试注入点。
     ///
-    /// 只在 `cfg(test)` 下存在，因此生产构建里这个枚举仍然是封闭的两态，
-    /// 派发也仍然是静态的；集成测试（`tests/*.rs`）走的是 `Stub`。
-    #[cfg(test)]
+    /// `cfg(test)` 只对正在编译的 crate 生效，传不到依赖 crate，所以别的 crate 的
+    /// `tests/*.rs` 要注入桩源只能靠 `test-util` feature（`suwayomi-opds` 就是这么开的）。
+    /// 生产构建两者都不开，这个枚举仍是封闭的两态，派发也仍然是静态的。
+    #[cfg(any(test, feature = "test-util"))]
     Test(std::sync::Arc<dyn SourceFetcher>),
 }
 
@@ -121,7 +122,7 @@ impl SourceBackend {
         match self {
             Self::Sandbox(f) => Some(f.base_url()),
             Self::Stub => None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-util"))]
             Self::Test(_) => None,
         }
     }
@@ -208,7 +209,7 @@ impl SourceFetcher for SourceBackend {
                 StubFetcher.fetch_manga_update(source_id, manga, chapters, fetch_details, fetch_chapters).await
             }
             Self::Sandbox(f) => f.fetch_manga_update(source_id, manga, chapters, fetch_details, fetch_chapters).await,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-util"))]
             Self::Test(f) => f.fetch_manga_update(source_id, manga, chapters, fetch_details, fetch_chapters).await,
         }
     }
@@ -217,7 +218,7 @@ impl SourceFetcher for SourceBackend {
         match self {
             Self::Stub => StubFetcher.get_popular_manga(source_id, page).await,
             Self::Sandbox(f) => f.get_popular_manga(source_id, page).await,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-util"))]
             Self::Test(f) => f.get_popular_manga(source_id, page).await,
         }
     }
@@ -226,7 +227,7 @@ impl SourceFetcher for SourceBackend {
         match self {
             Self::Stub => StubFetcher.get_latest_updates(source_id, page).await,
             Self::Sandbox(f) => f.get_latest_updates(source_id, page).await,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-util"))]
             Self::Test(f) => f.get_latest_updates(source_id, page).await,
         }
     }
@@ -235,7 +236,7 @@ impl SourceFetcher for SourceBackend {
         match self {
             Self::Stub => StubFetcher.search_manga(source_id, query, page).await,
             Self::Sandbox(f) => f.search_manga(source_id, query, page).await,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-util"))]
             Self::Test(f) => f.search_manga(source_id, query, page).await,
         }
     }
@@ -249,7 +250,7 @@ impl SourceFetcher for SourceBackend {
         match self {
             Self::Stub => StubFetcher.fetch_pages(source_id, manga_url, chapter_url).await,
             Self::Sandbox(f) => f.fetch_pages(source_id, manga_url, chapter_url).await,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-util"))]
             Self::Test(f) => f.fetch_pages(source_id, manga_url, chapter_url).await,
         }
     }
@@ -258,7 +259,7 @@ impl SourceFetcher for SourceBackend {
         match self {
             Self::Stub => StubFetcher.supports_latest(source_id),
             Self::Sandbox(f) => f.supports_latest(source_id),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-util"))]
             Self::Test(f) => f.supports_latest(source_id),
         }
     }
@@ -267,7 +268,7 @@ impl SourceFetcher for SourceBackend {
         match self {
             Self::Stub => StubFetcher.get_filters(source_id).await,
             Self::Sandbox(f) => f.get_filters(source_id).await,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-util"))]
             Self::Test(f) => f.get_filters(source_id).await,
         }
     }

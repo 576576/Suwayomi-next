@@ -21,3 +21,9 @@ suwayomi-db.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 chrono.workspace = true
+
+[dev-dependencies]
+# 集成测试要注入桩源（`SourceBackend::Test`），它不在默认构建里。
+suwayomi-domain = { path = "../suwayomi-domain", features = ["test-util"] }
+# 桩源要 impl `SourceFetcher`，而那个 trait 是用 `async_trait` 声明的。
+async-trait.workspace = true

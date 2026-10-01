@@ -251,8 +251,11 @@ query 参数与 1.2 同名同义（`lang` / `pageNumber` / `sort` / `filter` / `
 （`identifier` 本来就是 `urn:suwayomi:chapter:{id}`）。
 
 `readingOrder` 里的取页链接仍写 `source_order` —— REST 层的口径是
-`/api/v1/manga/{manga_id}/chapter/{source_order}/page/{n}`，不归本次改；`source_order`
-重复时这些页链接会指到同一章，属同一处既有缺陷。
+`/api/v1/manga/{manga_id}/chapter/{source_order}/page/{n}`，不归本次改。实测（2026-10-01）：
+库里 id 8 / 9 的 `chapter_number` **也**都是 `-1.0`，REST 那个"回落到 `chapter_number`"的兜底
+同样分不开这两行，于是 `/api/v1/manga/8/chapter/0/page/0` 解析到未下载的 id 8 → 404；
+**1.2 自己发的那条同形链接（`/library-updates` 里带 `pse:count="57"` 的）也 404** ——
+属同一处既有数据缺陷，v2 没有变差。
 
 ```json
 { "@context": "http://readium.org/webpub-manifest/context.jsonld",
@@ -289,13 +292,17 @@ query 参数与 1.2 同名同义（`lang` / `pageNumber` / `sort` / `filter` / `
 | `links[].rel=self` | 清单自己的 URL，`type: application/divina+json` |
 | `readingOrder[]` | **一页一条**，`href` 就是 1.2 用的那个取页路径（`/api/v1/manga/{manga_id}/chapter/{source_order}/page/{n}?updateProgress=true&opds=true`），`type: image/jpeg`。`updateProgress` 段按 `opdsEnablePageReadProgress` 决定（§7） |
 
-**页的枚举**（清单路线唯一的硬骨头）：
+**页的枚举**（清单路线唯一的硬骨头，阶段 2 已落地）：
 
-1. `chapter.page_count > 0` → 直接 `0..page_count` 生成；
-2. `page_count == -1`（未知）→ 调 `SourceFetcher::fetch_pages(source_id, manga_url, chapter_url)`
-   取页数（§3.6）。`repository.rs` 需要新增一条按 `chapter.id` 取 `source` / `manga.url` / `chapter.url` 的查询；
-3. 两者都拿不到（源不可用）→ 返回 **502/503**，不要返回一份空 `readingOrder`
-   （RWPM 的 `readingOrder` 是必填且空数组无意义）。
+1. `chapter.page_count > 0` → 直接 `0..page_count` 生成，**不会**再去问源；
+2. `page_count == -1`（未知）→ 先 `repository::chapter_source_ref(chapter_id)` 取 `source` /
+   `manga.url` / `chapter.url`（§3.6），再调 `SourceFetcher::fetch_pages(source_id, manga_url, chapter_url)`
+   拿页列表，取**列表长度**当页数；
+3. 拿不到 —— 章节没有源地址、源报错、源回了空列表，三者同等对待 → **502**，不返回空
+   `readingOrder`（RWPM 的 `readingOrder` 是必填且空数组无意义）。三条失败都 `tracing::warn!`。
+
+这一步**不回写** `chapter.page_count`：下载器回写是因为它本来就在改库，而清单是 GET ——
+响应不该取决于它被请求过几次。
 
 **刻意不写的字段**（写了就是编造）：
 
@@ -405,9 +412,10 @@ query 参数与 1.2 同名同义（`lang` / `pageNumber` / `sort` / `filter` / `
   路由 **4 条**：根 `/`、`/library/series`（含搜索分支）、`/series/{id}/chapters`、
   `/series/{id}/chapter/{n}/manifest`。清单端点提前到这一步，是因为章节的 acquisition 指向它 ——
   指向一个 404 等于 §6.1 只做了形式合规。清单目前只走 `page_count > 0` 的主路径。
-- **阶段 2 — 清单端点的源侧兜底**：`page_count == -1` 时调 `SourceFetcher::fetch_pages` 补页数
-  （§5.4），`repository.rs` 新增一条按 `chapter.id` 取 `source` / `manga.url` / `chapter.url` 的查询；
-  两者都拿不到 → 502（这条已经在了）。再到真实客户端跑通 §9.6 的链路。
+- **阶段 2 — 清单端点的源侧兜底（2026-10-01 已完成）**：`page_count == -1` 时经
+  `repository::chapter_source_ref` 调 `SourceFetcher::fetch_pages` 补页数（§5.4）；拿不到 → 502。
+  集成测试用注入的桩源覆盖了三条路径（源给 N 页 / 源回空列表 / 源报错）。
+  客户端侧见 §9.6。
 - **阶段 3 — 补齐路由**：其余 14 条 —— 导航类 6 条（`/explore`、`/library/{sources,categories,genres,statuses,languages}`）、
   过滤类 5 条（`/source/{id}`、`/category/{id}`、`/genre/{g}`、`/status/{id}`、`/language/{code}`）、
   `/explore/source/{id}`、`/history` 与 `/library-updates`。
@@ -419,15 +427,21 @@ query 参数与 1.2 同名同义（`lang` / `pageNumber` / `sort` / `filter` / `
 
 ## 9. 验证
 
-1. **crate 集成测试（阶段 1 已完成）**：`crates/suwayomi-opds/tests/opds_v2.rs`（11 项）+ `src/v2/json.rs`
+1. **crate 集成测试（阶段 2 已完成）**：`crates/suwayomi-opds/tests/opds_v2.rs`（14 项）+ `src/v2/json.rs`
    里的 BCP-47 单测（4 项），照 `tests/opds_feeds.rs` 的模子（内存 SQLite 播种 + 断言）。断言方式用
    `serde_json::to_value` 后按路径取值，**不要**用字符串 `contains`（JSON 的键序不保证）。已覆盖：
    根 feed 是 navigation 且每条 link 都带 `title`、空结果走 `navigation` 而不是 `publications: []`、
    每个 publication 都有 acquisition、`all` 伪语言被丢弃、章节的 `belongsTo` / `state` / 标题无状态前缀、
    集合去重、**清单的 `readingOrder` 长度等于页数且每项带 `type`**、`page_count == -1` 时不给清单、
-   `source_order` 重复（两章同为 0）时清单仍按**章节 id** 区分、不存在的作品回 `NotFound`。
-   阶段 2 还要补一条：用 `SourceBackend::Test` 注入桩（见 `download.rs` 的 `PageListStub` 用法）
-   验证 `fetch_pages` 兜底真的把页数补齐。
+   `source_order` 重复（两章同为 0）时清单仍按**章节 id** 区分、不存在的作品回 `NotFound`、
+   **`fetch_pages` 兜底**（源给 N 页 → `numberOfPages` 与 `readingOrder` 都是 N，且已知页数的章节不被覆盖）、
+   源回空列表与源报错都回 `PageCountUnknown`。
+
+   注入桩源要绕一道弯：`SourceBackend::Test` 带 `#[cfg(test)]`，而 `cfg(test)` **不传播到依赖 crate**，
+   所以 `tests/*.rs` 里构造不出来 —— 靠 `suwayomi-domain` 的 `test-util` feature 把它放进构建
+   （`suwayomi-opds` 在 `[dev-dependencies]` 里开，生产构建不开，枚举仍是封闭两态）。
+   另外桩要 `impl SourceFetcher`，而那个 trait 是 `#[async_trait]` 声明的，测试目标需要 `async-trait`
+   这个 dev-dependency。
 2. **JSON Schema 校验（阶段 1 已落地）**：离线 schema 集在 `.workbuddy/verify/schemas/opds20/`
    （28 份、173 个 `$ref` 零悬空），由 `.workbuddy/verify/fetch_opds_schemas.py` 重新生成。
    校验器 `.workbuddy/verify/opds_v2_schema_check.py`：每个 feed 响应跑 `feed.schema.json`，
@@ -445,6 +459,10 @@ query 参数与 1.2 同名同义（`lang` / `pageNumber` / `sort` / `filter` / `
 3. **端到端**：按项目惯例**替换 Suwayomi-latest 的产物**（不另起端口，端口从运行态嗅探，
    通常 4567），逐条拉取 18 条 v2 路由，断言 200 + `Content-Type: application/opds+json`
    （清单是 `application/divina+json`）+ schema 通过；导航类与列表类各挑一条人工看一眼 JSON。
+   另有一条**按客户端方式走链路**的脚本 `.workbuddy/verify/opds_v2_client_walk.py`：只跟随 feed
+   里的链接（除目录根外不硬编码路径），走 根 → `Library` → 作品 → 章节 feed → 章节 → 清单 →
+   `readingOrder` 取页 → 清单 `rel=self` 自指；任一环坏掉就 exit 1。它验的是"客户端能跟随的
+   每一环都能解析"，验不了"某个具体客户端愿意跟"（那要看第 6 条）。
 4. **1.2 回归（本次的验收重点）**：改用带 v2 的产物起一次实例，重抓一轮再与基线比对：
 
    ```
@@ -466,8 +484,11 @@ query 参数与 1.2 同名同义（`lang` / `pageNumber` / `sort` / `filter` / `
    清单里的取页链接同样受保护 —— 客户端是带 Basic 头抓图，还是 `?token=`，要在第 6 步一并看。
 6. **客户端**：Thorium Reader 手工加目录（浏览 → 打开作品 → 章节列表 → **打开清单读到页**）。
    这一条是本次最大的未知：Thorium 支持 Divina，但"从 OPDS 2.0 feed 跟随 divina acquisition"没有公开的
-   验证记录。若这条路走不通，v2 的章节仍可作为纯 CBZ 入口（下载型客户端），但"在线阅读"要另想办法 ——
-   **阶段 2 结束就测，不要等到阶段 6**。KOReader 用 1.2 做对照组，确认两条端点互不影响。
+   验证记录。**2026-10-01 阶段 2 收尾时仍未跑**：这台机器上没装 Thorium Reader，而它是 GUI 程序，
+   现有工具驱动不了。替代品是第 3 条那个链路走查 —— 它证明客户端要跟随的每一环都能解析，
+   但**不**证明 Thorium 真的会跟 `indirectAcquisition` 走。这一条仍需人工（装 Thorium → 填目录 URL →
+   点开作品 → 点开章节 → 翻页）。若这条路走不通，v2 的章节仍可作为纯 CBZ 入口（下载型客户端），
+   但"在线阅读"要另想办法 —— **不要等到阶段 6 才试**。KOReader 用 1.2 做对照组，确认两条端点互不影响。
 
 ## 10. 已定（2026-10-01）
 

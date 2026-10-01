@@ -124,6 +124,15 @@ pub struct ChapterMetadataEntry {
     pub upload_date: i64,
 }
 
+/// Where a chapter lives on its source — the three arguments
+/// `SourceFetcher::fetch_pages` takes.
+#[derive(Debug, Clone)]
+pub struct ChapterSourceRef {
+    pub source_id: i64,
+    pub manga_url: String,
+    pub chapter_url: String,
+}
+
 /// Generic navigation item (category / genre / status / language / source).
 #[derive(Debug, Clone)]
 pub struct NavEntry {
@@ -515,6 +524,17 @@ impl<'p> OpdsRepository<'p> {
             bookmark: bm,
             upload_date: du,
         }))
+    }
+
+    /// Where the chapter lives on its source, for `SourceFetcher::fetch_pages`.
+    pub async fn chapter_source_ref(&self, chapter_id: i32) -> Result<Option<ChapterSourceRef>, suwayomi_db::Error> {
+        let row: Option<(i64, String, String)> = suwayomi_db::query_as(
+            "SELECT m.source, m.url, c.url FROM chapter c JOIN manga m ON m.id = c.manga WHERE c.id = $1",
+        )
+        .bind(chapter_id)
+        .fetch_optional(self.pool)
+        .await?;
+        Ok(row.map(|(source_id, manga_url, chapter_url)| ChapterSourceRef { source_id, manga_url, chapter_url }))
     }
 
     /// Category navigation entries with manga counts.

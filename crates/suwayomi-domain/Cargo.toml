@@ -9,6 +9,11 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+# 打开 `SourceBackend::Test`（见 `src/source.rs`）。`cfg(test)` 传不到依赖 crate，
+# 别的 crate 的 `tests/*.rs` 要注入桩源只能靠这个 feature —— 生产构建不开。
+test-util = []
+
 [dependencies]
 suwayomi-core = { path = "../suwayomi-core" }
 serde.workspace = true

@@ -24,7 +24,7 @@ pub fn v2_router() -> Router<AppState> {
 }
 
 fn ctx<'a>(state: &'a AppState, lang: &'a str) -> V2Ctx<'a> {
-    V2Ctx { db: &state.db, base_url: BASE_URL, lang }
+    V2Ctx { db: &state.db, base_url: BASE_URL, lang, fetcher: &state.fetcher }
 }
 
 fn json(body: String, media_type: &'static str) -> Response {

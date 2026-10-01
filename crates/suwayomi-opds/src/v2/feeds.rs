@@ -11,6 +11,7 @@ use chrono::{SecondsFormat, Utc};
 use serde_json::json;
 use suwayomi_core::db::Db;
 use suwayomi_core::text::urlencode;
+use suwayomi_domain::source::{SourceBackend, SourceFetcher};
 
 use crate::constants::TYPE_CBZ;
 use crate::repository::{ChapterListEntry, LibraryFilter, MangaAcqEntry, OpdsRepository, Page, SortKey};
@@ -26,11 +27,15 @@ use crate::v2::model::{
 const TYPE_IMAGE_JPEG: &str = "image/jpeg";
 const TYPE_TEXT_HTML: &str = "text/html";
 
-/// Feed context: database + route prefix + desired language.
+/// Feed context: database + route prefix + desired language + source backend.
+///
+/// The backend is only consulted for chapters whose stored page count is
+/// unknown — see `chapter_manifest`.
 pub struct V2Ctx<'a> {
     pub db: &'a Db,
     pub base_url: &'a str,
     pub lang: &'a str,
+    pub fetcher: &'a SourceBackend,
 }
 
 /// Why a 2.0 feed or manifest could not be produced.
@@ -38,8 +43,9 @@ pub struct V2Ctx<'a> {
 pub enum V2Error {
     /// No such series, or no such chapter in it.
     NotFound,
-    /// The chapter's page count is unknown (`-1`), so no reading order can be
-    /// built. Never answered with an empty `readingOrder`.
+    /// The chapter's page count is unknown (`-1`) and the source could not
+    /// supply it either, so no reading order can be built. Never answered with
+    /// an empty `readingOrder`.
     PageCountUnknown,
 }
 
@@ -611,9 +617,10 @@ pub async fn series_chapters_feed(
 /// Readium Divina manifest for a single chapter: one `readingOrder` entry per
 /// page.
 ///
-/// A chapter whose page count is unknown (`-1`) cannot produce a reading
-/// order, and an empty `readingOrder` is meaningless — so it answers
-/// `PageCountUnknown` rather than an empty manifest.
+/// A chapter whose page count is unknown (`-1`) gets it from the source
+/// (`SourceFetcher::fetch_pages`). When that fails too, the answer is
+/// `PageCountUnknown` rather than an empty manifest — `readingOrder` is
+/// required and an empty one is meaningless.
 pub async fn chapter_manifest(ctx: &V2Ctx<'_>, manga_id: i32, chapter_id: i32) -> Result<Manifest, V2Error> {
     let repo = OpdsRepository::new(ctx.db.pool());
     let details = repo.manga_details(manga_id).await.map_err(|_| V2Error::NotFound)?.ok_or(V2Error::NotFound)?;
@@ -622,15 +629,17 @@ pub async fn chapter_manifest(ctx: &V2Ctx<'_>, manga_id: i32, chapter_id: i32) -
         .await
         .map_err(|_| V2Error::NotFound)?
         .ok_or(V2Error::NotFound)?;
-    if chapter.page_count <= 0 {
-        return Err(V2Error::PageCountUnknown);
-    }
+    let page_count = if chapter.page_count > 0 {
+        chapter.page_count
+    } else {
+        source_page_count(ctx, chapter_id).await.ok_or(V2Error::PageCountUnknown)?
+    };
 
     // Page URLs keep `source_order` — that is the REST layer's own key
     // (`/api/v1/manga/{id}/chapter/{source_order}/page/{n}`), not ours to change.
     let page_order = chapter.source_order;
     let href = format!("{}/series/{manga_id}/chapter/{chapter_id}/manifest", ctx.base_url);
-    let reading_order = (0..chapter.page_count)
+    let reading_order = (0..page_count)
         .map(|page| {
             Link::bare(format!(
                 "/api/v1/manga/{manga_id}/chapter/{page_order}/page/{page}?updateProgress=true&opds=true"
@@ -647,7 +656,7 @@ pub async fn chapter_manifest(ctx: &V2Ctx<'_>, manga_id: i32, chapter_id: i32) -
             conforms_to: Some(CONFORMS_TO_DIVINA.to_string()),
             modified: Some(epoch(chapter.upload_date)),
             author: non_empty(details.author.as_deref().unwrap_or_default()),
-            number_of_pages: Some(chapter.page_count),
+            number_of_pages: Some(page_count),
             belongs_to: Some(BelongsTo {
                 series: SeriesRef {
                     name: details.title.clone(),
@@ -659,6 +668,29 @@ pub async fn chapter_manifest(ctx: &V2Ctx<'_>, manga_id: i32, chapter_id: i32) -
         links: vec![Link::new(REL_SELF, href).with_type(MIME_DIVINA_JSON)],
         reading_order,
     })
+}
+
+/// How many pages the source says a chapter has. `None` when the chapter has
+/// no source address, the source cannot list its pages, or it lists none.
+///
+/// Deliberately read-only: a GET that writes the count back would make the
+/// response depend on how many times it has been requested.
+async fn source_page_count(ctx: &V2Ctx<'_>, chapter_id: i32) -> Option<i32> {
+    let repo = OpdsRepository::new(ctx.db.pool());
+    let addr = match repo.chapter_source_ref(chapter_id).await {
+        Ok(addr) => addr?,
+        Err(e) => {
+            tracing::warn!(chapter = chapter_id, %e, "OPDS 2.0: cannot read the chapter's source address");
+            return None;
+        }
+    };
+    match ctx.fetcher.fetch_pages(addr.source_id, &addr.manga_url, &addr.chapter_url).await {
+        Ok(pages) => i32::try_from(pages.len()).ok().filter(|n| *n > 0),
+        Err(e) => {
+            tracing::warn!(chapter = chapter_id, source = addr.source_id, %e, "OPDS 2.0: source page list unavailable");
+            None
+        }
+    }
 }
 
 /// A `navigation` feed used as a 404 body — e-reader clients handle a minimal

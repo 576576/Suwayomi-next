@@ -44,11 +44,14 @@ async fn seed() -> Db {
     .await
     .expect("insert extension");
 
-    for (name, lang) in [("MangaDex", "en"), ("Everylang", "all")] {
-        suwayomi_db::query("INSERT INTO source (name, lang, extension) VALUES ($1, $2, $3)")
+    for (name, lang, base_url) in
+        [("MangaDex", "en", "https://mangadex.org"), ("Everylang", "all", "https://everylang.example")]
+    {
+        suwayomi_db::query("INSERT INTO source (name, lang, extension, base_url) VALUES ($1, $2, $3, $4)")
             .bind(name)
             .bind(lang)
             .bind(1_i32)
+            .bind(base_url)
             .execute(pool)
             .await
             .expect("insert source");
@@ -490,4 +493,211 @@ async fn source_failure_is_not_a_manifest() {
     let ctx = ctx_with(&db, &backend);
 
     assert_eq!(feeds::chapter_manifest(&ctx, 1, 3).await.err(), Some(V2Error::PageCountUnknown));
+}
+
+/// A source listing for `/explore/source/{id}`: one remote manga, plus a flag
+/// for whether the source offers a latest list.
+struct BrowseStub {
+    latest_supported: bool,
+    calls: Mutex<Vec<&'static str>>,
+}
+
+impl BrowseStub {
+    fn backend(latest_supported: bool) -> (Arc<Self>, SourceBackend) {
+        let stub = Arc::new(Self { latest_supported, calls: Mutex::new(Vec::new()) });
+        let shared: Arc<dyn SourceFetcher> = stub.clone();
+        (stub, SourceBackend::Test(shared))
+    }
+
+    fn calls(&self) -> Vec<&'static str> {
+        self.calls.lock().expect("stub mutex").clone()
+    }
+
+    fn listing(&self, kind: &'static str) -> MangasPage {
+        self.calls.lock().expect("stub mutex").push(kind);
+        MangasPage {
+            mangas: vec![SManga {
+                // Sources address their own pages by path, not by absolute URL.
+                url: "/manga/1".into(),
+                title: "Remote One".into(),
+                author: Some("Author R".into()),
+                description: Some("Remote blurb".into()),
+                genre: Some("Action, Comedy".into()),
+                thumbnail_url: Some("https://source.example/1.jpg".into()),
+                ..Default::default()
+            }],
+            has_next_page: false,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl SourceFetcher for BrowseStub {
+    async fn fetch_manga_update(
+        &self,
+        _source_id: i64,
+        _manga: &SManga,
+        _chapters: &[SChapter],
+        _fetch_details: bool,
+        _fetch_chapters: bool,
+    ) -> suwayomi_domain::error::Result<(SManga, Vec<SChapter>)> {
+        Err(DomainError::Source("unused in this stub".into()))
+    }
+
+    async fn get_popular_manga(&self, _source_id: i64, _page: u32) -> suwayomi_domain::error::Result<MangasPage> {
+        Ok(self.listing("popular"))
+    }
+
+    async fn get_latest_updates(&self, _source_id: i64, _page: u32) -> suwayomi_domain::error::Result<MangasPage> {
+        Ok(self.listing("latest"))
+    }
+
+    async fn search_manga(
+        &self,
+        _source_id: i64,
+        _query: &str,
+        _page: u32,
+    ) -> suwayomi_domain::error::Result<MangasPage> {
+        Ok(MangasPage::default())
+    }
+
+    fn supports_latest(&self, _source_id: i64) -> bool {
+        self.latest_supported
+    }
+}
+
+#[tokio::test]
+async fn navigation_feeds_list_their_targets() {
+    let db = seed().await;
+
+    let feed = value(&feeds::explore_sources_feed(&ctx(&db)).await);
+    assert_eq!(feed["metadata"]["title"], "Sources");
+    assert!(feed.get("publications").is_none(), "navigation feed has no publications");
+    let navigation = array(&feed, "navigation");
+    assert_eq!(navigation.len(), 2);
+    assert!(navigation.iter().all(|link| link["title"].is_string()));
+
+    let mangadex = navigation.iter().find(|link| link["title"] == "MangaDex").expect("MangaDex");
+    assert_eq!(mangadex["rel"], "subsection");
+    assert_eq!(mangadex["type"], "application/opds+json");
+    assert_eq!(mangadex["href"], "/api/opds/v2/explore/source/1?sort=popular&lang=en");
+
+    // The per-source count rides on the link, not on the feed.
+    let sources = value(&feeds::library_sources_feed(&ctx(&db)).await);
+    let counted = array(&sources, "navigation").iter().find(|link| link["title"] == "MangaDex").expect("MangaDex");
+    assert_eq!(counted["properties"]["numberOfItems"], 1);
+    assert_eq!(counted["href"], "/api/opds/v2/source/1?lang=en");
+}
+
+#[tokio::test]
+async fn empty_navigation_feed_falls_back_to_the_root() {
+    let db = seed().await;
+    // The seed has no categories: `navigation` is `minItems: 1` too.
+    let feed = value(&feeds::categories_feed(&ctx(&db)).await);
+    assert_eq!(feed["metadata"]["numberOfItems"], 0);
+    let navigation = array(&feed, "navigation");
+    assert_eq!(navigation.len(), 1);
+    assert_eq!(navigation[0]["rel"], "start");
+    assert_eq!(navigation[0]["title"], "OPDS Catalog Root");
+}
+
+#[tokio::test]
+async fn remote_entries_acquire_the_source_page() {
+    let db = seed().await;
+    let (stub, backend) = BrowseStub::backend(false);
+    let ctx = ctx_with(&db, &backend);
+
+    let feed = value(&feeds::explore_source_feed(&ctx, 1, 1, "popular").await);
+    assert_eq!(feed["metadata"]["title"], "Popular from MangaDex");
+    assert_eq!(stub.calls(), vec!["popular"]);
+
+    let publications = array(&feed, "publications");
+    assert_eq!(publications.len(), 1);
+    let publication = &publications[0];
+    assert_eq!(publication["metadata"]["identifier"], "urn:suwayomi:remote:/manga/1");
+    assert_eq!(publication["metadata"]["title"], "Remote One");
+    assert_eq!(publication["metadata"]["publisher"], "MangaDex");
+    assert_eq!(publication["metadata"]["subject"], serde_json::json!(["Action", "Comedy"]));
+    assert_eq!(array(publication, "images")[0]["href"], "https://source.example/1.jpg");
+
+    // Nothing on this server can serve a remote manga — no id, so no chapter
+    // feed and no manifest. The source's own page is the only acquisition
+    // there is; 1.2 emits this same entry with an empty href. The source's own
+    // address is a path, so it has to be expanded against its base URL —
+    // otherwise the link would resolve back to this server.
+    let links = array(publication, "links");
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0]["rel"], "http://opds-spec.org/acquisition");
+    assert_eq!(links[0]["href"], "https://mangadex.org/manga/1");
+    assert_eq!(links[0]["type"], "text/html");
+    // Not a library series: there is no chapter feed to belong to.
+    assert!(publication["metadata"].get("belongsTo").is_none());
+}
+
+#[tokio::test]
+async fn source_addresses_are_expanded_against_the_base_url() {
+    let db = seed().await;
+    let feed = value(&feeds::library_series_feed(&ctx(&db), None, None, None, None, None, 1, "title", "all").await);
+    let test_manga =
+        array(&feed, "publications").iter().find(|p| p["metadata"]["title"] == "Test Manga").expect("Test Manga");
+    let alternate = array(test_manga, "links").iter().find(|l| l["rel"] == "alternate").expect("alternate link");
+    // The row holds `/series/1`; 1.2 writes that verbatim, so its "View on Web"
+    // resolves against this server instead of the source.
+    assert_eq!(alternate["href"], "https://mangadex.org/series/1");
+}
+
+#[tokio::test]
+async fn latest_listing_is_used_only_when_the_source_has_one() {
+    let db = seed().await;
+
+    let (stub, backend) = BrowseStub::backend(true);
+    let ctx = ctx_with(&db, &backend);
+    let feed = value(&feeds::explore_source_feed(&ctx, 1, 1, "latest").await);
+    assert_eq!(feed["metadata"]["title"], "Latest from MangaDex");
+    assert_eq!(stub.calls(), vec!["latest"]);
+
+    let (stub, backend) = BrowseStub::backend(false);
+    let ctx = ctx_with(&db, &backend);
+    let feed = value(&feeds::explore_source_feed(&ctx, 1, 1, "latest").await);
+    // The title follows the request, but the listing falls back to popular.
+    assert_eq!(feed["metadata"]["title"], "Latest from MangaDex");
+    assert_eq!(stub.calls(), vec!["popular"]);
+}
+
+#[tokio::test]
+async fn history_and_updates_feeds_list_chapters() {
+    let db = seed().await;
+
+    // Only chapter 2 has been read.
+    let history = value(&feeds::history_feed(&ctx(&db), 1).await);
+    let publications = array(&history, "publications");
+    assert_eq!(publications.len(), 1);
+    assert_eq!(history["metadata"]["itemsPerPage"], 50);
+    assert_eq!(history["metadata"]["currentPage"], 1);
+
+    let publication = &publications[0];
+    // 1.2 writes "In Progress Test Manga: Chapter 2" — the series name lives
+    // in `belongsTo` in 2.0, so the title stays clean.
+    assert_eq!(publication["metadata"]["title"], "Chapter 2");
+    assert_eq!(publication["metadata"]["belongsTo"]["series"]["name"], "Test Manga");
+    let manifest =
+        array(publication, "links").iter().find(|l| l["type"] == "application/divina+json").expect("manifest link");
+    assert_eq!(manifest["properties"]["state"], "in-progress");
+
+    let updates = value(&feeds::library_updates_feed(&ctx(&db), 1).await);
+    assert_eq!(array(&updates, "publications").len(), 3);
+    assert_eq!(updates["metadata"]["numberOfItems"], 3);
+}
+
+#[tokio::test]
+async fn filtered_library_feed_names_its_filter() {
+    let db = seed().await;
+    let feed = value(&feeds::library_series_feed(&ctx(&db), Some(1), None, None, None, None, 1, "title", "all").await);
+
+    assert_eq!(feed["metadata"]["title"], "Source: 1");
+    assert_eq!(array(&feed, "publications").len(), 1);
+    // Same redundant-but-harmless query param 1.2 emits: the filter is already
+    // in the path, and the route ignores the duplicate.
+    let self_link = array(&feed, "links").iter().find(|l| l["rel"] == "self").expect("self link");
+    assert_eq!(self_link["href"], "/api/opds/v2/source/1?source_id=1&lang=en");
 }

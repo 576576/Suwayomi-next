@@ -18,7 +18,21 @@ const BASE_URL: &str = "/api/opds/v2";
 pub fn v2_router() -> Router<AppState> {
     Router::new()
         .route("/", get(root_feed))
+        .route("/history", get(history_feed))
+        .route("/explore", get(explore_sources_feed))
+        .route("/explore/source/{source_id}", get(explore_source_feed))
         .route("/library/series", get(library_series_feed))
+        .route("/library/sources", get(library_sources_feed))
+        .route("/library/categories", get(categories_feed))
+        .route("/library/genres", get(genres_feed))
+        .route("/library/statuses", get(statuses_feed))
+        .route("/library/languages", get(languages_feed))
+        .route("/library-updates", get(library_updates_feed))
+        .route("/source/{source_id}", get(source_series_feed))
+        .route("/category/{category_id}", get(category_series_feed))
+        .route("/genre/{genre}", get(genre_series_feed))
+        .route("/status/{status_id}", get(status_series_feed))
+        .route("/language/{lang_code}", get(language_series_feed))
         .route("/series/{series_id}/chapters", get(series_chapters_feed))
         .route("/series/{series_id}/chapter/{chapter_id}/manifest", get(chapter_manifest))
 }
@@ -37,6 +51,19 @@ fn error_response(status: StatusCode, message: &str) -> Response {
 
 #[derive(Deserialize)]
 struct LangQuery {
+    lang: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PageQuery {
+    page_number: Option<usize>,
+    lang: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SourceFeedQuery {
+    page_number: Option<usize>,
+    sort: Option<String>,
     lang: Option<String>,
 }
 
@@ -85,6 +112,130 @@ async fn library_series_feed(State(state): State<AppState>, Query(q): Query<Seri
         .await
     };
     json(to_json(&feed), MIME_OPDS_JSON)
+}
+
+async fn history_feed(State(state): State<AppState>, Query(q): Query<PageQuery>) -> Response {
+    let lang = q.lang.as_deref().unwrap_or("en");
+    let page = q.page_number.unwrap_or(1).max(1);
+    json(to_json(&feeds::history_feed(&ctx(&state, lang), page).await), MIME_OPDS_JSON)
+}
+
+async fn library_updates_feed(State(state): State<AppState>, Query(q): Query<PageQuery>) -> Response {
+    let lang = q.lang.as_deref().unwrap_or("en");
+    let page = q.page_number.unwrap_or(1).max(1);
+    json(to_json(&feeds::library_updates_feed(&ctx(&state, lang), page).await), MIME_OPDS_JSON)
+}
+
+async fn explore_sources_feed(State(state): State<AppState>, Query(q): Query<LangQuery>) -> Response {
+    let lang = q.lang.as_deref().unwrap_or("en");
+    json(to_json(&feeds::explore_sources_feed(&ctx(&state, lang)).await), MIME_OPDS_JSON)
+}
+
+async fn explore_source_feed(
+    State(state): State<AppState>,
+    Path(source_id): Path<i64>,
+    Query(q): Query<SourceFeedQuery>,
+) -> Response {
+    let lang = q.lang.as_deref().unwrap_or("en");
+    let page = q.page_number.unwrap_or(1).max(1);
+    let sort = q.sort.as_deref().unwrap_or("popular");
+    json(to_json(&feeds::explore_source_feed(&ctx(&state, lang), source_id, page, sort).await), MIME_OPDS_JSON)
+}
+
+async fn library_sources_feed(State(state): State<AppState>, Query(q): Query<LangQuery>) -> Response {
+    let lang = q.lang.as_deref().unwrap_or("en");
+    json(to_json(&feeds::library_sources_feed(&ctx(&state, lang)).await), MIME_OPDS_JSON)
+}
+
+async fn categories_feed(State(state): State<AppState>, Query(q): Query<LangQuery>) -> Response {
+    let lang = q.lang.as_deref().unwrap_or("en");
+    json(to_json(&feeds::categories_feed(&ctx(&state, lang)).await), MIME_OPDS_JSON)
+}
+
+async fn genres_feed(State(state): State<AppState>, Query(q): Query<LangQuery>) -> Response {
+    let lang = q.lang.as_deref().unwrap_or("en");
+    json(to_json(&feeds::genres_feed(&ctx(&state, lang)).await), MIME_OPDS_JSON)
+}
+
+async fn statuses_feed(State(state): State<AppState>, Query(q): Query<LangQuery>) -> Response {
+    let lang = q.lang.as_deref().unwrap_or("en");
+    json(to_json(&feeds::statuses_feed(&ctx(&state, lang)).await), MIME_OPDS_JSON)
+}
+
+async fn languages_feed(State(state): State<AppState>, Query(q): Query<LangQuery>) -> Response {
+    let lang = q.lang.as_deref().unwrap_or("en");
+    json(to_json(&feeds::languages_feed(&ctx(&state, lang)).await), MIME_OPDS_JSON)
+}
+
+/// The five single-filter feeds (`/source/{id}` and friends). Each route fixes
+/// one of `library_series_feed`'s cross-filters and leaves sort/filter/paging
+/// to the query string, exactly as 1.2 does.
+#[allow(clippy::too_many_arguments)]
+async fn filtered_series_feed(
+    state: AppState,
+    q: SeriesQuery,
+    source_id: Option<i64>,
+    category_id: Option<i32>,
+    status_id: Option<i32>,
+    lang_code: Option<&str>,
+    genre: Option<&str>,
+) -> Response {
+    let lang = q.lang.as_deref().unwrap_or("en");
+    let page = q.page_number.unwrap_or(1).max(1);
+    let ctx = ctx(&state, lang);
+    let feed = feeds::library_series_feed(
+        &ctx,
+        source_id,
+        category_id,
+        status_id,
+        lang_code,
+        genre,
+        page,
+        q.sort.as_deref().unwrap_or("title"),
+        q.filter.as_deref().unwrap_or("all"),
+    )
+    .await;
+    json(to_json(&feed), MIME_OPDS_JSON)
+}
+
+async fn source_series_feed(
+    State(state): State<AppState>,
+    Path(source_id): Path<i64>,
+    Query(q): Query<SeriesQuery>,
+) -> Response {
+    filtered_series_feed(state, q, Some(source_id), None, None, None, None).await
+}
+
+async fn category_series_feed(
+    State(state): State<AppState>,
+    Path(category_id): Path<i32>,
+    Query(q): Query<SeriesQuery>,
+) -> Response {
+    filtered_series_feed(state, q, None, Some(category_id), None, None, None).await
+}
+
+async fn genre_series_feed(
+    State(state): State<AppState>,
+    Path(genre): Path<String>,
+    Query(q): Query<SeriesQuery>,
+) -> Response {
+    filtered_series_feed(state, q, None, None, None, None, Some(&genre)).await
+}
+
+async fn status_series_feed(
+    State(state): State<AppState>,
+    Path(status_id): Path<i32>,
+    Query(q): Query<SeriesQuery>,
+) -> Response {
+    filtered_series_feed(state, q, None, None, Some(status_id), None, None).await
+}
+
+async fn language_series_feed(
+    State(state): State<AppState>,
+    Path(lang_code): Path<String>,
+    Query(q): Query<SeriesQuery>,
+) -> Response {
+    filtered_series_feed(state, q, None, None, None, Some(&lang_code), None).await
 }
 
 async fn series_chapters_feed(

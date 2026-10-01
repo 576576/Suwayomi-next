@@ -8,13 +8,17 @@
 use std::fmt::Write as _;
 
 use chrono::{SecondsFormat, Utc};
-use serde_json::json;
+use serde_json::{Value, json};
 use suwayomi_core::db::Db;
+use suwayomi_core::source::{MangasPage, SManga};
 use suwayomi_core::text::urlencode;
 use suwayomi_domain::source::{SourceBackend, SourceFetcher};
 
 use crate::constants::TYPE_CBZ;
-use crate::repository::{ChapterListEntry, LibraryFilter, MangaAcqEntry, OpdsRepository, Page, SortKey};
+use crate::repository::{
+    ChapterListEntry, LibraryFilter, MangaAcqEntry, NavEntry, OpdsRepository, Page, SortKey, SourceIdentity,
+    split_genres,
+};
 use crate::v2::json::{
     CONFORMS_TO_DIVINA, CONTEXT_WEBPUB, ITEMS_PER_PAGE, MIME_DIVINA_JSON, MIME_OPDS_JSON, REL_ACQUISITION,
     REL_ACQUISITION_OPEN_ACCESS, REL_ALTERNATE, REL_FIRST, REL_LAST, REL_NEXT, REL_PREVIOUS, REL_SEARCH, REL_SELF,
@@ -268,7 +272,11 @@ fn series_publication(ctx: &V2Ctx<'_>, manga: &MangaAcqEntry) -> Publication {
             ])),
     ];
     if let Some(url) = &manga.url {
-        links.push(Link::new(REL_ALTERNATE, url).with_type(TYPE_TEXT_HTML).with_title("View on Web"));
+        links.push(
+            Link::new(REL_ALTERNATE, source_page_url(manga.source_base_url.as_deref(), url))
+                .with_type(TYPE_TEXT_HTML)
+                .with_title("View on Web"),
+        );
     }
 
     let mut images = Vec::new();
@@ -400,6 +408,57 @@ fn chapter_publication(ctx: &V2Ctx<'_>, chapter: &ChapterListEntry) -> Publicati
     }
 }
 
+/// The absolute URL of a manga on its source.
+///
+/// `MangaAcqEntry::url` and `SManga::url` are the source's **own** address for
+/// the manga — a path like `/g/450767/`, not a URL. Written into a link as-is
+/// it resolves against *this* server and lands on the WebUI's SPA fallback;
+/// 1.2 has exactly that in every `rel="alternate"`. Expanding it against the
+/// source's `base_url` is what makes the link mean "the source's page".
+///
+/// A source with no `base_url` leaves the value as it came — such a source
+/// (an unconfigured Komga entry) has no page to point at, and cannot produce a
+/// listing to begin with.
+fn source_page_url(base_url: Option<&str>, manga_url: &str) -> String {
+    let base = base_url.unwrap_or_default().trim_end_matches('/');
+    if base.is_empty() || manga_url.starts_with("http://") || manga_url.starts_with("https://") {
+        return manga_url.to_string();
+    }
+    format!("{base}{manga_url}")
+}
+
+/// A manga that lives on a source but is not in the library.
+///
+/// Nothing on this server can serve it: there is no manga id, so no chapter
+/// feed and no manifest. The only thing a client can do with it is open it on
+/// the source, so the acquisition link points at the source's own page as
+/// `text/html` — 1.2 emits the same entry with an **empty** href, a dead link.
+fn remote_publication(manga: &SManga, source: &SourceIdentity) -> Publication {
+    let mut images = Vec::new();
+    if let Some(thumbnail) = &manga.thumbnail_url {
+        images.push(Link::bare(thumbnail.clone()).with_type(TYPE_IMAGE_JPEG));
+    }
+
+    Publication {
+        metadata: PublicationMetadata {
+            identifier: Some(format!("urn:suwayomi:remote:{}", manga.url)),
+            title: manga.title.clone(),
+            modified: Some(now()),
+            author: non_empty(manga.author.as_deref().unwrap_or_default()),
+            publisher: non_empty(&source.name),
+            subject: split_genres(manga.genre.as_deref()),
+            description: non_empty(manga.description.as_deref().unwrap_or_default()),
+            ..Default::default()
+        },
+        links: vec![
+            Link::new(REL_ACQUISITION, source_page_url(source.base_url.as_deref(), &manga.url))
+                .with_type(TYPE_TEXT_HTML)
+                .with_title("Open on Source"),
+        ],
+        images,
+    }
+}
+
 // --- feeds ------------------------------------------------------------------
 
 /// Root navigation feed.
@@ -518,6 +577,165 @@ pub async fn search_feed(
     builder.total = Some(result.total as u64);
     builder.publications = result.items.iter().map(|m| series_publication(ctx, m)).collect();
     builder.build()
+}
+
+/// A `navigation` feed over repository nav entries.
+///
+/// `href_of` carries each feed's own link shape — 1.2 spells these per feed
+/// (`explore_sources_feed`, `library_sources_feed`, …) and 2.0 must point at
+/// the same routes.
+fn navigation_feed(
+    ctx: &V2Ctx<'_>,
+    id_path: &str,
+    title: &str,
+    entries: &[NavEntry],
+    href_of: impl Fn(&NavEntry) -> String,
+) -> Feed {
+    let mut builder = FeedBuilder::new(ctx, id_path, title);
+    builder.total = Some(entries.len() as u64);
+    builder.navigation = entries
+        .iter()
+        .map(|entry| {
+            let mut properties: Vec<(&'static str, Value)> = Vec::new();
+            if let Some(count) = entry.manga_count {
+                properties.push(("numberOfItems", json!(count)));
+            }
+            if let Some(description) = &entry.description {
+                properties.push(("description", json!(description)));
+            }
+            let link =
+                Link::new(REL_SUBSECTION, href_of(entry)).with_type(MIME_OPDS_JSON).with_title(entry.title.clone());
+            if properties.is_empty() { link } else { link.with_properties(props(properties)) }
+        })
+        .collect();
+    builder.build()
+}
+
+/// Explore sources navigation feed (every installed source).
+pub async fn explore_sources_feed(ctx: &V2Ctx<'_>) -> Feed {
+    let repo = OpdsRepository::new(ctx.db.pool());
+    let sources = repo.explore_sources().await.unwrap_or_default();
+    navigation_feed(ctx, "explore", "Sources", &sources, |source| {
+        format!("{}/explore/source/{}?sort=popular&lang={}", ctx.base_url, source.id, ctx.lang)
+    })
+}
+
+/// Library sources navigation feed (sources that have series in the library).
+pub async fn library_sources_feed(ctx: &V2Ctx<'_>) -> Feed {
+    let repo = OpdsRepository::new(ctx.db.pool());
+    let sources = repo.library_sources().await.unwrap_or_default();
+    navigation_feed(ctx, "library/sources", "Library Sources", &sources, |source| {
+        format!("{}/source/{}?lang={}", ctx.base_url, source.id, ctx.lang)
+    })
+}
+
+/// Categories navigation feed.
+pub async fn categories_feed(ctx: &V2Ctx<'_>) -> Feed {
+    let repo = OpdsRepository::new(ctx.db.pool());
+    let categories = repo.categories().await.unwrap_or_default();
+    navigation_feed(ctx, "library/categories", "Categories", &categories, |category| {
+        format!("{}/category/{}?lang={}", ctx.base_url, category.id, ctx.lang)
+    })
+}
+
+/// Genres navigation feed.
+pub async fn genres_feed(ctx: &V2Ctx<'_>) -> Feed {
+    let repo = OpdsRepository::new(ctx.db.pool());
+    let genres = repo.genres().await.unwrap_or_default();
+    navigation_feed(ctx, "library/genres", "Genres", &genres, |genre| {
+        format!("{}/genre/{}?lang={}", ctx.base_url, urlencode(&genre.id), ctx.lang)
+    })
+}
+
+/// Statuses navigation feed.
+pub async fn statuses_feed(ctx: &V2Ctx<'_>) -> Feed {
+    let repo = OpdsRepository::new(ctx.db.pool());
+    let statuses = repo.statuses().await.unwrap_or_default();
+    navigation_feed(ctx, "library/statuses", "Statuses", &statuses, |status| {
+        format!("{}/status/{}?lang={}", ctx.base_url, status.id, ctx.lang)
+    })
+}
+
+/// Languages navigation feed.
+pub async fn languages_feed(ctx: &V2Ctx<'_>) -> Feed {
+    let repo = OpdsRepository::new(ctx.db.pool());
+    let languages = repo.languages().await.unwrap_or_default();
+    navigation_feed(ctx, "library/languages", "Languages", &languages, |language| {
+        format!("{}/language/{}?lang={}", ctx.base_url, language.id, ctx.lang)
+    })
+}
+
+/// A paged feed of chapter publications (`/history`, `/library-updates`).
+///
+/// The series name is **not** prefixed onto the title (1.2 prefixes it when
+/// `add_manga_title` is set): it is already carried by `belongsTo.series.name`,
+/// and 2.0 keeps each fact in one place.
+fn chapter_list_feed(
+    ctx: &V2Ctx<'_>,
+    id_path: &str,
+    title: &str,
+    page_num: usize,
+    result: Page<ChapterListEntry>,
+) -> Feed {
+    let mut builder = FeedBuilder::new(ctx, id_path, title).with_page(page_num);
+    builder.total = Some(result.total as u64);
+    builder.publications = result.items.iter().map(|chapter| chapter_publication(ctx, chapter)).collect();
+    builder.build()
+}
+
+/// Recently read chapters.
+pub async fn history_feed(ctx: &V2Ctx<'_>, page_num: usize) -> Feed {
+    let repo = OpdsRepository::new(ctx.db.pool());
+    let result = repo.history(page_num).await.unwrap_or_else(|_| empty_page());
+    chapter_list_feed(ctx, "history", "Reading History", page_num, result)
+}
+
+/// Recent chapter additions for library manga.
+pub async fn library_updates_feed(ctx: &V2Ctx<'_>, page_num: usize) -> Feed {
+    let repo = OpdsRepository::new(ctx.db.pool());
+    let result = repo.library_updates(page_num).await.unwrap_or_else(|_| empty_page());
+    chapter_list_feed(ctx, "library-updates", "Library Updates", page_num, result)
+}
+
+/// Popular (or latest) manga of one source — remote entries (see
+/// [`remote_publication`]).
+pub async fn explore_source_feed(ctx: &V2Ctx<'_>, source_id: i64, page_num: usize, sort: &str) -> Feed {
+    let repo = OpdsRepository::new(ctx.db.pool());
+    let source = repo
+        .source_identity(source_id)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(SourceIdentity { name: source_id.to_string(), base_url: None });
+    let title =
+        if sort == "latest" { format!("Latest from {}", source.name) } else { format!("Popular from {}", source.name) };
+
+    let mangas = fetch_popular(ctx, source_id, page_num, sort).await;
+    // A source that says it has a next page gives a lower bound only — 1.2
+    // counts it the same way.
+    let total = if mangas.has_next_page {
+        (page_num * ITEMS_PER_PAGE + 1) as u64
+    } else {
+        ((page_num.saturating_sub(1)) * ITEMS_PER_PAGE + mangas.mangas.len()) as u64
+    };
+
+    let mut builder = FeedBuilder::new(ctx, &format!("explore/source/{source_id}"), title)
+        .with_page(page_num)
+        .with_sort_filter(Some(sort), None);
+    builder.total = Some(total);
+    builder.publications = mangas.mangas.iter().map(|manga| remote_publication(manga, &source)).collect();
+    builder.build()
+}
+
+/// Popular/latest listing for a source. `latest` only when the source says it
+/// supports it; otherwise the popular listing stands in.
+async fn fetch_popular(ctx: &V2Ctx<'_>, source_id: i64, page_num: usize, sort: &str) -> MangasPage {
+    let fetcher = ctx.fetcher;
+    if sort == "latest" && fetcher.supports_latest(source_id) {
+        fetcher.get_latest_updates(source_id, page_num as u32).await.unwrap_or_default()
+    } else {
+        fetcher.get_popular_manga(source_id, page_num as u32).await.unwrap_or_default()
+    }
 }
 
 fn cross_params(

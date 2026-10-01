@@ -131,7 +131,7 @@ OPDS 1.2 侧对 CBZ 链接写死 `TYPE_CBZ = "application/vnd.comicbook+zip"`（
 | `/` | `/` | `navigation`（根目录 9 项） |
 | `/history` | 同 | `publications`（章节） |
 | `/explore` | 同 | `navigation`（在线源） |
-| `/explore/source/{source_id}` | 同 | `publications`（源里的漫画 = 远程条目） |
+| `/explore/source/{source_id}` | 同 | `publications`（源里的漫画 = 远程条目；acquisition 指向源页面，见 §5.2） |
 | `/library/series` | 同 | `publications`（漫画）+ `facets`（排序） |
 | `/library/sources` | 同 | `navigation` |
 | `/library/categories` | 同 | `navigation` |
@@ -190,7 +190,7 @@ query 参数与 1.2 同名同义（`lang` / `pageNumber` / `sort` / `filter` / `
 | `<dc:publisher>`（= 源名） | `publisher`（同 `author` 的写法） |
 | `<dc:language>` | `language`（**必须先过 BCP-47 正则**，见 §6.8） |
 | `<dc:issued>` | `published` |
-| `<link rel="alternate">`（源上的网页） | `links: [{rel: "alternate", type: "text/html"}]` |
+| `<link rel="alternate">`（源上的网页） | `links: [{rel: "alternate", type: "text/html"}]` —— **href 要按 `source.base_url` 展开成绝对 URL**，见下 |
 | `<link rel="image">` / `"image/thumbnail"` | `images: [{href: 代理缩略图, type: "image/jpeg"}]` —— 2.0 的 `images` 不靠 rel 区分，两种合成一张即可 |
 | `<link rel="subsection">`（指向章节 feed） | **改成 acquisition 链接**（§6.1），`type: application/opds+json` + `properties.indirectAcquisition` |
 
@@ -204,6 +204,22 @@ query 参数与 1.2 同名同义（`lang` / `pageNumber` / `sort` / `filter` / `
   "properties": { "numberOfItems": 42,
                   "indirectAcquisition": [{ "type": "application/divina+json" }] } }
 ```
+
+**远程条目（`/explore/source/{id}`）是唯一一条没有间接获取可给的漫画**：它来自源的分页列表（`SManga`），
+库里没有 id，因此没有章节 feed、也没有清单可以指向。1.2 给这种条目发的是 `rel="subsection"` +
+**空 href**（`feeds.rs:802` 那句注释写着"readers rely on source browse only"）—— 也就是一条死链，
+而且空串在 2.0 里也过不了 `format: uri-reference` 的意图。2026-10-01 定：**acquisition 指向源上的
+漫画页**（`rel: http://opds-spec.org/acquisition` + `type: text/html` + `title: "Open on Source"`）。
+它是这台服务器唯一能兑现的"获取"——客户端点开就是源站页面。其余字段照 §5.2 的漫画口径，
+但没有 `belongsTo`（不属于任何库内作品）。
+
+**源地址是"源内路径"，写进链接前必须展开成绝对 URL**（2026-10-01 实测）。`SManga::url` 与
+`MangaAcqEntry::url` 存的是 `/g/450767/` 这种**源自己的地址**（只有 `real_url` 被填过才是绝对 URL）。
+直接写进 `href` 会被解析成**本机**的路径 —— 打到 WebUI 的 SPA fallback 上。1.2 的每条
+`rel="alternate"`（"View on Web"）都有这个毛病（实测基线里是 `href="/g/573225/"`）。
+v2 里一律按 `source.base_url`（`source` 表本来就有这一列）展开：`https://nhentai.to` + `/g/573225/`
+→ `https://nhentai.to/g/573225/`。落在 `v2/feeds.rs::source_page_url`。**1.2 一个字都不动**，
+所以这是 v2 相对 1.2 的又一处有意差异（与 §5.1 的尾斜杠同类）。
 
 ### 5.3 publication：章节（`/series/{id}/chapters`、`/history`、`/library-updates`）
 
@@ -337,7 +353,8 @@ query 参数与 1.2 同名同义（`lang` / `pageNumber` / `sort` / `filter` / `
 1. **每个 publication 至少有一条 acquisition 链接**（`publication.schema.json` 的 `links.contains`）。
    → 漫画没有可下载的文件，用**间接获取**（`rel: acquisition` + 指向章节 feed + `properties.indirectAcquisition`）；
    章节一律给清单（`rel: http://opds-spec.org/acquisition/open-access`）—— 这两条覆盖所有条目，
-   不存在"没有 acquisition 可给"的情况。
+   不存在"没有 acquisition 可给"的情况。**唯一的例外是 explore 的远程条目**（库里没有 id），
+   它的 acquisition 指向源页面（§5.2）。
 2. **acquisition 的 `rel` 枚举只有这些值**（`publication.schema.json` 的 `$defs.acquisition`）。
    ```
    acquisition / borrow / buy / preview / subscribe
@@ -416,10 +433,18 @@ query 参数与 1.2 同名同义（`lang` / `pageNumber` / `sort` / `filter` / `
   `repository::chapter_source_ref` 调 `SourceFetcher::fetch_pages` 补页数（§5.4）；拿不到 → 502。
   集成测试用注入的桩源覆盖了三条路径（源给 N 页 / 源回空列表 / 源报错）。
   客户端侧见 §9.6。
-- **阶段 3 — 补齐路由**：其余 14 条 —— 导航类 6 条（`/explore`、`/library/{sources,categories,genres,statuses,languages}`）、
-  过滤类 5 条（`/source/{id}`、`/category/{id}`、`/genre/{g}`、`/status/{id}`、`/language/{code}`）、
-  `/explore/source/{id}`、`/history` 与 `/library-updates`。
-- **阶段 4 — facets 与分页**：把 1.2 的 `sort` / `filter` facet 组翻译成 2.0 的 `facets` 结构。
+- **阶段 3 — 补齐路由（2026-10-01 已完成）**：其余 14 条 —— 导航类 6 条（`/explore`、
+  `/library/{sources,categories,genres,statuses,languages}`）共用一个 `navigation_feed` 组装器，
+  每项的条目数写进链接的 `properties.numberOfItems`（feed 级 `numberOfItems` 是项数本身）；
+  过滤类 5 条（`/source/{id}`、`/category/{id}`、`/genre/{g}`、`/status/{id}`、`/language/{code}`）
+  都是给 `library_series_feed` 固定一个维度、其余留给 query，路由形状与 1.2 逐条对应；
+  `/explore/source/{id}` 走远程条目（acquisition 指向源页面，§5.2）；`/history` 与 `/library-updates`
+  发章节 publication。**18 条路由齐了**（19 条 1.2 去掉 `/search` 与 `/metadata`、加上清单）。
+  章节 publication 在三个 feed 里共用一套：漫画名**不**拼进标题（1.2 的 `add_manga_title`），
+  它在 `belongsTo.series.name` —— 与 §5.2 的"每个事实只有一个归宿"同一口径。
+- **阶段 4 — facets 的计数**：分组、组名、"当前项标 `rel: self`"与四个分页 rel 都在阶段 1 落地了
+  （`sort_facets` / `chapter_facets` / `pagination_links`）。**剩下的只有 §5.1 的
+  `properties.numberOfItems`**：排序组共享同一个总数（排序不改变结果集），章节的过滤组两个选项各算一次。
 - **阶段 5 — 设置接线**：按 §7 的表接 6 项（其余 3 项不适用/不需要）。
 - **阶段 6 — 文档与客户端**：`rest-api.md` 加 v2 一节、`user-guide.md` 改 OPDS 一节（写清 v2 的定位与
   客户端现状）、两份 README 去掉 `In-progress`；手工用 Thorium Reader 加一次目录，跑通
@@ -427,7 +452,7 @@ query 参数与 1.2 同名同义（`lang` / `pageNumber` / `sort` / `filter` / `
 
 ## 9. 验证
 
-1. **crate 集成测试（阶段 2 已完成）**：`crates/suwayomi-opds/tests/opds_v2.rs`（14 项）+ `src/v2/json.rs`
+1. **crate 集成测试（阶段 3 已完成）**：`crates/suwayomi-opds/tests/opds_v2.rs`（21 项）+ `src/v2/json.rs`
    里的 BCP-47 单测（4 项），照 `tests/opds_feeds.rs` 的模子（内存 SQLite 播种 + 断言）。断言方式用
    `serde_json::to_value` 后按路径取值，**不要**用字符串 `contains`（JSON 的键序不保证）。已覆盖：
    根 feed 是 navigation 且每条 link 都带 `title`、空结果走 `navigation` 而不是 `publications: []`、
@@ -435,7 +460,13 @@ query 参数与 1.2 同名同义（`lang` / `pageNumber` / `sort` / `filter` / `
    集合去重、**清单的 `readingOrder` 长度等于页数且每项带 `type`**、`page_count == -1` 时不给清单、
    `source_order` 重复（两章同为 0）时清单仍按**章节 id** 区分、不存在的作品回 `NotFound`、
    **`fetch_pages` 兜底**（源给 N 页 → `numberOfPages` 与 `readingOrder` 都是 N，且已知页数的章节不被覆盖）、
-   源回空列表与源报错都回 `PageCountUnknown`。
+   源回空列表与源报错都回 `PageCountUnknown`、
+   **阶段 3 新增**：导航 feed 的 `href` / `rel` / `properties.numberOfItems` 与空导航回落根目录、
+   远程条目的 acquisition 指向源页面（展开成绝对 URL 的 `text/html`，且不带 `belongsTo`）、
+   **源内路径按 `source.base_url` 展开**（远程条目与库内作品的 `alternate` 各一条断言）、
+   `sort=latest` 只在该源 `supports_latest` 时走 latest（否则回落 popular 且标题仍跟请求）、
+   `/history` 只列读过的章节且标题不带漫画名、`/library-updates` 列全部章节、
+   过滤 feed 的标题与 `rel=self`（含 1.2 那条冗余的 `source_id=` query，属有意的形状对齐）。
 
    注入桩源要绕一道弯：`SourceBackend::Test` 带 `#[cfg(test)]`，而 `cfg(test)` **不传播到依赖 crate**，
    所以 `tests/*.rs` 里构造不出来 —— 靠 `suwayomi-domain` 的 `test-util` feature 把它放进构建

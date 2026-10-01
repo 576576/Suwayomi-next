@@ -36,6 +36,7 @@ struct MangaJoinedRow {
     memo: String,
     source_name: Option<String>,
     source_lang: Option<String>,
+    source_base_url: Option<String>,
 }
 
 /// Flat join row: chapter + manga summary + total chapters.
@@ -64,6 +65,9 @@ struct ChapterJoinedRow {
 pub struct MangaAcqEntry {
     pub id: i32,
     pub title: String,
+    /// Where the manga lives on its source — a source-internal path like
+    /// `/g/450767/` unless `real_url` is set. Expand it against
+    /// [`MangaAcqEntry::source_base_url`] before writing it into a link.
     pub url: Option<String>,
     pub author: Option<String>,
     pub genres: Vec<String>,
@@ -73,6 +77,7 @@ pub struct MangaAcqEntry {
     pub last_fetched_at: i64,
     pub source_name: String,
     pub source_lang: String,
+    pub source_base_url: Option<String>,
     pub in_library: bool,
     pub total_chapters: i64,
 }
@@ -142,6 +147,14 @@ pub struct NavEntry {
     pub description: Option<String>,
 }
 
+/// A source's display name and base URL — what a remote entry needs to link
+/// back to the page it came from.
+#[derive(Debug, Clone)]
+pub struct SourceIdentity {
+    pub name: String,
+    pub base_url: Option<String>,
+}
+
 /// Paginated query result.
 #[derive(Debug, Clone)]
 pub struct Page<T> {
@@ -156,7 +169,7 @@ pub struct OpdsRepository<'p> {
 const MANGA_SELECT: &str = "SELECT m.id, m.url, m.title, m.initialized, m.artist, m.author, m.description, m.genre, m.status, \
      m.thumbnail_url, m.thumbnail_url_last_fetched, m.in_library, m.in_library_at, m.source, m.real_url, \
      m.last_fetched_at, m.chapters_last_fetched_at, m.update_strategy, m.last_modified_at, m.version, \
-     m.is_syncing, m.memo, s.name AS source_name, s.lang AS source_lang \
+     m.is_syncing, m.memo, s.name AS source_name, s.lang AS source_lang, s.base_url AS source_base_url \
      FROM manga m LEFT JOIN source s ON s.id = m.source";
 
 /// Library sort keys (mirror Suwayomi library sort enum used by OPDS).
@@ -209,7 +222,7 @@ impl LibraryFilter {
     }
 }
 
-fn split_genres(g: Option<&str>) -> Vec<String> {
+pub(crate) fn split_genres(g: Option<&str>) -> Vec<String> {
     g.unwrap_or("").split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
 }
 
@@ -231,6 +244,7 @@ impl<'p> OpdsRepository<'p> {
             last_fetched_at: r.last_fetched_at,
             source_name: r.source_name.unwrap_or_default(),
             source_lang: r.source_lang.unwrap_or_default(),
+            source_base_url: r.source_base_url,
             in_library: r.in_library,
             total_chapters,
         }
@@ -670,6 +684,16 @@ impl<'p> OpdsRepository<'p> {
             .bind(source_id)
             .fetch_optional(self.pool)
             .await
+    }
+
+    /// Source display name + base URL for a source id.
+    pub async fn source_identity(&self, source_id: i64) -> Result<Option<SourceIdentity>, suwayomi_db::Error> {
+        let row: Option<(String, Option<String>)> =
+            suwayomi_db::query_as("SELECT name, base_url FROM source WHERE id = $1")
+                .bind(source_id)
+                .fetch_optional(self.pool)
+                .await?;
+        Ok(row.map(|(name, base_url)| SourceIdentity { name, base_url }))
     }
 }
 

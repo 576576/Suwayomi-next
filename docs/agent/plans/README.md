@@ -10,6 +10,7 @@
 | `msix-plan.md` | MSIX 渠道：与 msi 的语义差别、安装目录只读带来的运行时约束（含 per-machine 的预置托盘设置）、签名路线（SignPath Foundation 的准入条件与硬性要求）、分阶段计划 |
 | `backup-options-alignment.md` | 备份选项对齐 Mihon：10 个选项的语义与灰化依赖、proto 104/105/106 的取舍、恢复侧 `in_library` 的语义、落地情况 |
 | `database-settings.md` | 数据库设置接线：为什么这一项不能存进库、引导文件的位置与优先级、四个字段 + `useHikariConnectionPool` 的逐个处置、实施分层 |
+| `opds-v2.md` | OPDS 2.0 端点（`/api/opds/v2`，含章节的 Readium Divina 清单端点）：与 1.2 的硬边界、规范与客户端现实、逐字段映射（Atom → JSON）、JSON Schema 强制的结构约束、9 个 `opds*` 设置的逐条处置、实施分层与验证。五项选型 2026-10-01 已定（§10） |
 
 ## 维护约定
 

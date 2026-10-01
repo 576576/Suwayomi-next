@@ -26,4 +26,5 @@ pub mod feeds;
 pub mod model;
 pub mod repository;
 pub mod router;
+pub mod v2;
 pub mod xml;

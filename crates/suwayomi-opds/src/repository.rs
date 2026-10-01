@@ -480,6 +480,43 @@ impl<'p> OpdsRepository<'p> {
         }))
     }
 
+    /// Chapter metadata addressed by the chapter's own id.
+    ///
+    /// `source_order` is **not** unique within a series: extensions that emit
+    /// one chapter per volume (the nhentai family, for one) write
+    /// `source_order = 0` on every row. A route keyed on it therefore cannot
+    /// address the later entries — the id can.
+    #[allow(clippy::type_complexity)]
+    pub async fn chapter_metadata_by_id(
+        &self,
+        manga_id: i32,
+        chapter_id: i32,
+    ) -> Result<Option<ChapterMetadataEntry>, suwayomi_db::Error> {
+        let row: Option<(i32, String, f32, i32, Option<String>, i32, i64, i32, bool, bool, bool, i64)> =
+            suwayomi_db::query_as(
+                "SELECT id, name, chapter_number, source_order, scanlator, last_page_read, last_read_at, page_count, \
+             is_downloaded, read, bookmark, date_upload FROM chapter WHERE manga = $1 AND id = $2",
+            )
+            .bind(manga_id)
+            .bind(chapter_id)
+            .fetch_optional(self.pool)
+            .await?;
+        Ok(row.map(|(id, name, chapter_number, so, scanlator, lpr, lra, pc, dl, rd, bm, du)| ChapterMetadataEntry {
+            id,
+            name,
+            chapter_number,
+            source_order: so,
+            scanlator,
+            last_page_read: lpr,
+            last_read_at: lra,
+            page_count: pc,
+            downloaded: dl,
+            read: rd,
+            bookmark: bm,
+            upload_date: du,
+        }))
+    }
+
     /// Category navigation entries with manga counts.
     pub async fn categories(&self) -> Result<Vec<NavEntry>, suwayomi_db::Error> {
         let rows: Vec<(i32, String, i64)> = suwayomi_db::query_as(

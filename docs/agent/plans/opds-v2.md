@@ -212,7 +212,7 @@ query 参数与 1.2 同名同义（`lang` / `pageNumber` / `sort` / `filter` / `
 | `<id>urn:suwayomi:chapter:{id}` | `identifier` |
 | `<title>`（"Unread Chapter 3" 这种前缀） | `title`：**不带状态前缀**（2026-10-01 定），空名回落到 1.2 的 `chapter_title` 规则（`Oneshot` / `Chapter N`） |
 | `<updated>` | `modified`（`date_upload`） |
-| `<summary>`（"… — 5 of 20 pages read"） | `description`（同文本；读数进度不在这里，另进取页链接的 `properties`） |
+| `<summary>`（`"{manga} — {chapter}" (Scanlator: X) — 5 of 20 pages read`） | `description`：**只承载 scanlator**，写成 `"{title} (Scanlator: X)"`，没有 scanlator 就整个键不写。1.2 拼进 summary 的另外三样各有归宿 —— 漫画名在 `belongsTo.series.name`、总页数在 `numberOfPages`、进度在链接 `properties` |
 | `<author>`（→ 漫画作者） | `author` |
 | `dc:*` 无 | `belongsTo: {series: {name: 漫画标题, position: 章节号}}` —— 章节挂回所属作品（`series` 对象要求 `name`） |
 | 无 | `numberOfPages`（`page_count > 0` 时才写，schema 要求 > 0） |
@@ -240,8 +240,19 @@ query 参数与 1.2 同名同义（`lang` / `pageNumber` / `sort` / `filter` / `
 
 ### 5.4 清单端点：Readium Divina（新增路由）
 
-`GET /api/opds/v2/series/{series_id}/chapter/{chapter_number}/manifest` →
+`GET /api/opds/v2/series/{series_id}/chapter/{chapter_id}/manifest` →
 `Content-Type: application/divina+json`。
+
+键用 **章节 id**，不用 1.2 那套 `source_order` —— 实测发现后者在一部作品里**不唯一**
+（nhentai 系的扩展一卷一章，每行都写 `source_order = 0`）：库里 id 8 / 9 两条章节的
+`source_order` 都是 0，1.2 的章节 feed 于是把两条 entry **都**指向同一个 metadata 子 feed
+`/series/8/chapter/0/metadata`（feed 里根本没有 `chapter/1/metadata` 这条链接），
+第二条章节的元数据取不到。清单是 v2 独有的路由，没有"与 1.2 同形"的包袱，用 id 才自洽
+（`identifier` 本来就是 `urn:suwayomi:chapter:{id}`）。
+
+`readingOrder` 里的取页链接仍写 `source_order` —— REST 层的口径是
+`/api/v1/manga/{manga_id}/chapter/{source_order}/page/{n}`，不归本次改；`source_order`
+重复时这些页链接会指到同一章，属同一处既有缺陷。
 
 ```json
 { "@context": "http://readium.org/webpub-manifest/context.jsonld",
@@ -252,7 +263,6 @@ query 参数与 1.2 同名同义（`lang` / `pageNumber` / `sort` / `filter` / `
     "modified": "2026-09-30T12:00:00Z",
     "numberOfPages": 20,
     "author": "…",
-    "language": "en",
     "belongsTo": { "series": { "name": "作品标题", "position": 3 } }
   },
   "links": [
@@ -273,7 +283,8 @@ query 参数与 1.2 同名同义（`lang` / `pageNumber` / `sort` / `filter` / `
 | `metadata.conformsTo` | 常量 `https://readium.org/webpub-manifest/profiles/divina`（**Divina 的合规声明就在这一个字段上**） |
 | `metadata.title` / `identifier` / `modified` | 与章节 publication 同源（同一个 `chapter_title` 规则、同一个 `urn:suwayomi:chapter:{id}`、同一个 `date_upload`） |
 | `metadata.numberOfPages` | `page_count > 0` 时写；未知则不写（schema 要求 > 0） |
-| `metadata.author` / `language` | 与章节 publication 同源（`language` 同样要先过 BCP-47，§6.8） |
+| `metadata.author` | 与章节 publication 同源（漫画作者） |
+| `metadata.language` | **不写** —— 章节与漫画两边的查询结果里都没有语言列（`ChapterListEntry` / `MangaDetails` 都没有 `source.lang`）。要写就得先加一条按 `manga.source` 取 `source.lang` 的查询，属可选增量，不在本次范围 |
 | `metadata.belongsTo.series` | `{name: 漫画标题, position: 章节号}` |
 | `links[].rel=self` | 清单自己的 URL，`type: application/divina+json` |
 | `readingOrder[]` | **一页一条**，`href` 就是 1.2 用的那个取页路径（`/api/v1/manga/{manga_id}/chapter/{source_order}/page/{n}?updateProgress=true&opds=true`），`type: image/jpeg`。`updateProgress` 段按 `opdsEnablePageReadProgress` 决定（§7） |
@@ -342,8 +353,11 @@ query 参数与 1.2 同名同义（`lang` / `pageNumber` / `sort` / `filter` / `
 7. `metadata.title` 必填；`itemsPerPage` / `currentPage` 是 `exclusiveMinimum: 0`（未分页的 feed 别写
    `itemsPerPage`）；`numberOfItems` 是 `minimum: 0`（允许 0，与第 3 条不冲突：一个是计数、一个是数组长度）。
    publication 的 `numberOfPages` 同样是 `exclusiveMinimum: 0`（0 页的章节别写）。
-8. `language` 必须匹配 **BCP-47 正则**。源表里的 `lang` 可能是 `all` / `other` / 空值
-   （Mihon 系扩展的语言枚举里就有这两个），**不能原样写进去** → 只在通过校验时输出 `language`。
+8. `language` 必须匹配 **BCP-47 正则**（`metadata.schema.json` 的 `pattern`）。但**正则挡不住
+   `all` / `other`** —— 这两个 Mihon 伪语言正好落在语法里（`all` 是 2-3 个 ASCII 字母、`other`
+   是 5-8 个），语法合法、语义是错的。所以输出前要过两道：语法校验 **+** 显式排除
+   `all` / `other` / 空值（落地在 `v2/json.rs::language_tag`）。凡是不通过的就不写这个键，
+   不要回落成 `"en"` 之类的编造值。
 9. `images` 一旦出现就 `minItems: 1`，且 `allOf.contains` 要求**至少一张**的 `type` 属于
    `image/jpeg|webp|avif|png|jxl|gif`。代理缩略图实际返回的类型由缓存里的 `.mime` 决定（可能 png/webp），
    1.2 一律声明 `image/jpeg`；v2 沿用同一口径 —— 记为**已知偏差**，不为了这一处去读 REST 的缓存布局。
@@ -354,6 +368,10 @@ query 参数与 1.2 同名同义（`lang` / `pageNumber` / `sort` / `filter` / `
     本项目只有搜索链接是 templated。
 12. **清单侧**（另一套 schema）：RWPM 要求 `metadata` + `readingOrder` 必填，且 `readingOrder` 每一项
     **必须带 `type`**；divina 的合规声明只在 `metadata.conformsTo` 上，媒体类型用 `application/divina+json`。
+13. **feed 顶层不能写 `@context`**，哪怕规范正文的示例里出现过。`feed.schema.json` 把
+    `additionalProperties` 指向 subcollection schema —— 那个 schema 的 object 分支要求
+    `metadata` + `links`、array 分支要求元素是 Link 或子集合，一个字符串 `@context` 两个分支都不满足，
+    直接挂在校验器上。清单侧相反：RWPM 的 `publication.schema.json` 明确列了 `@context`，**必须写**。
 
 ## 7. 设置项逐条处置（9 个 `opds*`）
 
@@ -381,12 +399,15 @@ query 参数与 1.2 同名同义（`lang` / `pageNumber` / `sort` / `filter` / `
   `.workbuddy/verify/out/opds12_baseline/pre/`（19 个 `.xml` + `manifest.json`），
   由 `.workbuddy/verify/opds12_baseline.py` 抓取，`opds12_regress.py` 做比对。抓完连抓两轮
   19/19 逐字节一致，快照可当基线用。跑法与遮罩口径见 §9.4。
-- **阶段 1 — 骨架打样**：`src/v2/{mod,model,json,router,feeds}.rs`；先实现 **3 条**：根 `/`、
-  `/library/series`、`/series/{id}/chapters`。挂载 `.nest("/api/opds/v2", …)`。
-  这一步要同时落地 §6 的全部约束（尤其空结果与 acquisition 链接），因为它们是模型层的形状，
-  补在后面等于重写。
-- **阶段 2 — 清单端点（Divina）**：§5.4 的路由 + 页枚举（含 `fetch_pages` 兜底）+ 章节的 acquisition 链接。
-  排在前面是因为它是本次唯一的**新机制**，风险集中在这里（§9.6 的客户端链路）。
+- **阶段 1 — 骨架打样（2026-10-01 已完成）**：`src/v2/{mod,model,json,router,feeds}.rs`，挂载
+  `.nest("/api/opds/v2", …)`。§6 的结构约束全部落进模型层（空结果走 `navigation`、acquisition 受
+  枚举限制、`language` 语法 + 语义双检、空集合不序列化、feed 顶层无 `@context`）。
+  路由 **4 条**：根 `/`、`/library/series`（含搜索分支）、`/series/{id}/chapters`、
+  `/series/{id}/chapter/{n}/manifest`。清单端点提前到这一步，是因为章节的 acquisition 指向它 ——
+  指向一个 404 等于 §6.1 只做了形式合规。清单目前只走 `page_count > 0` 的主路径。
+- **阶段 2 — 清单端点的源侧兜底**：`page_count == -1` 时调 `SourceFetcher::fetch_pages` 补页数
+  （§5.4），`repository.rs` 新增一条按 `chapter.id` 取 `source` / `manga.url` / `chapter.url` 的查询；
+  两者都拿不到 → 502（这条已经在了）。再到真实客户端跑通 §9.6 的链路。
 - **阶段 3 — 补齐路由**：其余 14 条 —— 导航类 6 条（`/explore`、`/library/{sources,categories,genres,statuses,languages}`）、
   过滤类 5 条（`/source/{id}`、`/category/{id}`、`/genre/{g}`、`/status/{id}`、`/language/{code}`）、
   `/explore/source/{id}`、`/history` 与 `/library-updates`。
@@ -398,16 +419,29 @@ query 参数与 1.2 同名同义（`lang` / `pageNumber` / `sort` / `filter` / `
 
 ## 9. 验证
 
-1. **crate 集成测试**：`crates/suwayomi-opds/tests/opds_v2_feeds.rs`，照 `tests/opds_feeds.rs` 的模子
-   （内存 SQLite 播种 + 断言）。断言方式用 `serde_json::from_str::<Value>` 后按路径取值，
-   **不要**用字符串 `contains`（JSON 的键序不保证）。覆盖：三类 feed 的形状、空结果走 `navigation`、
-   每个 publication 都有 acquisition、`language` 过滤、章节的 `belongsTo`、**清单的 `readingOrder` 长度等于页数**、
-   `page_count == -1` 时走 `fetch_pages`（用 `SourceBackend::Test` 注入桩，见 `download.rs` 的 `PageListStub` 用法）。
-2. **JSON Schema 校验**：离线 schema 集在 `.workbuddy/verify/schemas/opds20/`（28 份，`$ref` 已本地化），
-   由 `.workbuddy/verify/fetch_opds_schemas.py` 重新生成。验证脚本对**每个路由的响应体**跑
-   `feed.schema.json`；对**清单响应**跑 `rwpm-publication.schema.json` + 检查 `conformsTo` 含 divina 的 URI。
-   需要 `jsonschema`（本机 miniconda 里没有）→ 装进隔离 venv
-   `C:\Users\16695\.workbuddy\binaries\python\envs\default`，不要装到系统 Python。
+1. **crate 集成测试（阶段 1 已完成）**：`crates/suwayomi-opds/tests/opds_v2.rs`（11 项）+ `src/v2/json.rs`
+   里的 BCP-47 单测（4 项），照 `tests/opds_feeds.rs` 的模子（内存 SQLite 播种 + 断言）。断言方式用
+   `serde_json::to_value` 后按路径取值，**不要**用字符串 `contains`（JSON 的键序不保证）。已覆盖：
+   根 feed 是 navigation 且每条 link 都带 `title`、空结果走 `navigation` 而不是 `publications: []`、
+   每个 publication 都有 acquisition、`all` 伪语言被丢弃、章节的 `belongsTo` / `state` / 标题无状态前缀、
+   集合去重、**清单的 `readingOrder` 长度等于页数且每项带 `type`**、`page_count == -1` 时不给清单、
+   `source_order` 重复（两章同为 0）时清单仍按**章节 id** 区分、不存在的作品回 `NotFound`。
+   阶段 2 还要补一条：用 `SourceBackend::Test` 注入桩（见 `download.rs` 的 `PageListStub` 用法）
+   验证 `fetch_pages` 兜底真的把页数补齐。
+2. **JSON Schema 校验（阶段 1 已落地）**：离线 schema 集在 `.workbuddy/verify/schemas/opds20/`
+   （28 份、173 个 `$ref` 零悬空），由 `.workbuddy/verify/fetch_opds_schemas.py` 重新生成。
+   校验器 `.workbuddy/verify/opds_v2_schema_check.py`：每个 feed 响应跑 `feed.schema.json`，
+   清单跑 `rwpm-publication.schema.json` + 检查 `conformsTo` 含 divina 的 URI。`jsonschema` 在隔离
+   venv `C:\Users\16695\.workbuddy\binaries\python\envs\default`（4.26.0）。
+   两个必须先知道的坑：
+   - 两份 schema 里 `language` 的 pattern 用 **.NET 风格的命名组** `(?<name>…)`，Python 的 `re`
+     编不过（同一 pattern 里还有重名组，改成 `(?P<name>…)` 也仍然失败）→ 加载时统一降级成非捕获组
+     `(?:`。命名组只影响捕获、不影响匹配语义。
+   - 那条例行 pattern **接受 `all` / `other`**（2-3 / 5-8 个 ASCII 字母，正好落在语法里）。
+     所以"schema 通过"不等于"语言合法" —— §6.8 的语义排除只能在代码里做。
+   脚本带 `--selftest`（12 例正反例：空 `publications`、缺 `title` 的 navigation 链接、
+   顶层 `@context`、裸 `open-access`、无 acquisition 的 publication，以及 `language` 的三态）——
+   **先证明校验器本身可信，再拿它判别人**。
 3. **端到端**：按项目惯例**替换 Suwayomi-latest 的产物**（不另起端口，端口从运行态嗅探，
    通常 4567），逐条拉取 18 条 v2 路由，断言 200 + `Content-Type: application/opds+json`
    （清单是 `application/divina+json`）+ schema 通过；导航类与列表类各挑一条人工看一眼 JSON。

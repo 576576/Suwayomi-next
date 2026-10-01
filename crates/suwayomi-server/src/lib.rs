@@ -158,6 +158,9 @@ fn build_router(
         .nest("/api/v1", suwayomi_rest::routes::api_v1_router())
         .nest("/api", suwayomi_graphql::schema::graphql_router(graphql_schema, state.auth.clone()))
         .nest("/api/opds/v1.2", suwayomi_opds::router::opds_router())
+        // OPDS 2.0（JSON）与 1.2 并存：同一个 `config` 句柄、同一份数据，
+        // 只是换了序列化层。1.2 的输出保持逐字节不变。
+        .nest("/api/opds/v2", suwayomi_opds::v2::router::v2_router())
         // 优雅关闭端点（托盘用）：触发 axum graceful shutdown → Db drop 停
         // postgres、杀 JVM 沙盒子进程。
         //

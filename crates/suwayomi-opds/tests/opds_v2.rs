@@ -701,3 +701,43 @@ async fn filtered_library_feed_names_its_filter() {
     let self_link = array(&feed, "links").iter().find(|l| l["rel"] == "self").expect("self link");
     assert_eq!(self_link["href"], "/api/opds/v2/source/1?source_id=1&lang=en");
 }
+
+#[tokio::test]
+async fn sort_facet_entries_share_the_feed_total() {
+    let db = seed().await;
+
+    // Re-ordering never changes the result set, so every entry in the group
+    // reports the same count.
+    let feed = value(&feeds::library_series_feed(&ctx(&db), None, None, None, None, None, 1, "title", "all").await);
+    let sort = array(&feed, "facets").iter().find(|g| g["metadata"]["title"] == "Sort").expect("sort group");
+    let links = array(sort, "links");
+    assert_eq!(links.len(), 6);
+    assert!(links.iter().all(|l| l["properties"]["numberOfItems"] == 2), "two series in the library");
+
+    // The count tracks the filter the feed is pinned to, not the library size.
+    let filtered =
+        value(&feeds::library_series_feed(&ctx(&db), Some(1), None, None, None, None, 1, "title", "all").await);
+    let sort = array(&filtered, "facets").iter().find(|g| g["metadata"]["title"] == "Sort").expect("sort group");
+    assert!(array(sort, "links").iter().all(|l| l["properties"]["numberOfItems"] == 1));
+}
+
+#[tokio::test]
+async fn chapter_filter_facet_counts_each_option() {
+    let db = seed().await;
+    // Three chapters of which two are unread.
+    let feed = value(&feeds::series_chapters_feed(&ctx(&db), 1, 1, "number_asc", "all").await.expect("feed"));
+    let groups = array(&feed, "facets");
+
+    let sort = groups.iter().find(|g| g["metadata"]["title"] == "Sort").expect("sort group");
+    assert!(array(sort, "links").iter().all(|l| l["properties"]["numberOfItems"] == 3));
+
+    let filter = groups.iter().find(|g| g["metadata"]["title"] == "Filter").expect("filter group");
+    let links = array(filter, "links");
+    let all = links.iter().find(|l| l["title"] == "All").expect("All");
+    let unread = links.iter().find(|l| l["title"] == "Unread").expect("Unread");
+    assert_eq!(all["properties"]["numberOfItems"], 3);
+    assert_eq!(unread["properties"]["numberOfItems"], 2);
+    // The active entry keeps `rel: self` — the count rides alongside it.
+    assert_eq!(all["rel"], "self");
+    assert!(unread.get("rel").is_none());
+}

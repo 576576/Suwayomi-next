@@ -471,6 +471,17 @@ impl<'p> OpdsRepository<'p> {
         self.chapter_page(&where_clause, &order_clause, page_num).await
     }
 
+    /// Chapter counts for one manga, as `(all, unread)` — the chapter feed's
+    /// filter facet lists both options at once.
+    pub async fn chapter_counts(&self, manga_id: i32) -> Result<(i64, i64), suwayomi_db::Error> {
+        let sql = format!(
+            "SELECT COUNT(*), COALESCE(SUM(CASE WHEN c.read = FALSE THEN 1 ELSE 0 END), 0) \
+             FROM chapter c WHERE c.manga = {manga_id}"
+        );
+        let counts: (i64, i64) = suwayomi_db::query_as(&sql).fetch_one(self.pool).await?;
+        Ok(counts)
+    }
+
     /// Chapter metadata for the details feed (by source order).
     #[allow(clippy::type_complexity)]
     pub async fn chapter_metadata(

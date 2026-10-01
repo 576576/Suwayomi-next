@@ -249,8 +249,11 @@ fn facet_group(title: &str, links: Vec<Link>) -> Option<Facet> {
     Some(Facet { metadata: FeedMetadata { title: title.to_string(), ..Default::default() }, links })
 }
 
-fn facet_link(label: &str, href: String, active: bool) -> Link {
-    let mut link = Link::new(REL_SELF, href).with_type(MIME_OPDS_JSON).with_title(label);
+fn facet_link(label: &str, href: String, active: bool, count: u64) -> Link {
+    let mut link = Link::new(REL_SELF, href)
+        .with_type(MIME_OPDS_JSON)
+        .with_title(label)
+        .with_properties(props([("numberOfItems", json!(count))]));
     if !active {
         link.rel = None;
     }
@@ -540,7 +543,7 @@ pub async fn library_series_feed(
         .with_query_params(cross_params(source_id, category_id, status_id, lang_code, genre))
         .with_sort_filter(Some(sort), Some(filter));
     builder.total = Some(result.total as u64);
-    builder.facets = sort_facets(ctx, &feed_path, sort).into_iter().collect();
+    builder.facets = sort_facets(ctx, &feed_path, sort, result.total as u64).into_iter().collect();
     builder.publications = result.items.iter().map(|m| series_publication(ctx, m)).collect();
     builder.build()
 }
@@ -764,7 +767,9 @@ fn cross_params(
     if parts.is_empty() { None } else { Some(parts.join("&")) }
 }
 
-fn sort_facets(ctx: &V2Ctx<'_>, feed_path: &str, active: &str) -> Option<Facet> {
+/// The sort facet group. Re-ordering never changes the result set, so all
+/// entries report the same `numberOfItems`.
+fn sort_facets(ctx: &V2Ctx<'_>, feed_path: &str, active: &str, count: u64) -> Option<Facet> {
     const SORTS: [(&str, &str); 6] = [
         ("title", "Title"),
         ("date_added", "Date Added"),
@@ -776,33 +781,38 @@ fn sort_facets(ctx: &V2Ctx<'_>, feed_path: &str, active: &str) -> Option<Facet> 
     let links = SORTS
         .iter()
         .map(|(key, label)| {
-            facet_link(label, format!("{}/{feed_path}?lang={}&sort={key}", ctx.base_url, ctx.lang), active == *key)
+            let href = format!("{}/{feed_path}?lang={}&sort={key}", ctx.base_url, ctx.lang);
+            facet_link(label, href, active == *key, count)
         })
         .collect();
     facet_group("Sort", links)
 }
 
-fn chapter_facets(ctx: &V2Ctx<'_>, manga_id: i32, active_sort: &str, active_filter: &str) -> Vec<Facet> {
+/// The chapter feed's two facet groups. The sort entries all report the same
+/// total (sorting does not change the result set); the filter entries report
+/// the counts of the two subsets they select.
+fn chapter_facets(
+    ctx: &V2Ctx<'_>,
+    manga_id: i32,
+    active_sort: &str,
+    active_filter: &str,
+    total: u64,
+    unread: u64,
+) -> Vec<Facet> {
     let base = format!("{}/series/{manga_id}/chapters", ctx.base_url);
     let sorts =
         [("number_asc", "Number ↑"), ("number_desc", "Number ↓"), ("date_asc", "Date ↑"), ("date_desc", "Date ↓")]
             .iter()
             .map(|(key, label)| {
-                facet_link(
-                    label,
-                    format!("{base}?lang={}&sort={key}&filter={active_filter}", ctx.lang),
-                    active_sort == *key,
-                )
+                let href = format!("{base}?lang={}&sort={key}&filter={active_filter}", ctx.lang);
+                facet_link(label, href, active_sort == *key, total)
             })
             .collect();
-    let filters = [("all", "All"), ("unread", "Unread")]
+    let filters = [("all", "All", total), ("unread", "Unread", unread)]
         .iter()
-        .map(|(key, label)| {
-            facet_link(
-                label,
-                format!("{base}?lang={}&sort={active_sort}&filter={key}", ctx.lang),
-                active_filter == *key,
-            )
+        .map(|(key, label, count)| {
+            let href = format!("{base}?lang={}&sort={active_sort}&filter={key}", ctx.lang);
+            facet_link(label, href, active_filter == *key, *count)
         })
         .collect();
     [facet_group("Sort", sorts), facet_group("Filter", filters)].into_iter().flatten().collect()
@@ -819,13 +829,16 @@ pub async fn series_chapters_feed(
     let repo = OpdsRepository::new(ctx.db.pool());
     let details = repo.manga_details(manga_id).await.map_err(|_| V2Error::NotFound)?.ok_or(V2Error::NotFound)?;
     let result = repo.chapters_for_manga(manga_id, sort, filter, page_num).await.map_err(|_| V2Error::NotFound)?;
+    // The filter facet shows both options at once, so it needs the count under
+    // the *other* filter as well — `result.total` only covers the active one.
+    let (all_chapters, unread_chapters) = repo.chapter_counts(manga_id).await.map_err(|_| V2Error::NotFound)?;
 
     let mut builder =
         FeedBuilder::new(ctx, &format!("series/{manga_id}/chapters"), format!("{} — Chapters", details.title))
             .with_page(page_num)
             .with_sort_filter(Some(sort), Some(filter));
     builder.total = Some(result.total as u64);
-    builder.facets = chapter_facets(ctx, manga_id, sort, filter);
+    builder.facets = chapter_facets(ctx, manga_id, sort, filter, all_chapters as u64, unread_chapters as u64);
     builder.publications = result.items.iter().map(|c| chapter_publication(ctx, c)).collect();
     Ok(builder.build())
 }

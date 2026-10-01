@@ -335,6 +335,8 @@ v2 里一律按 `source.base_url`（`source` 表本来就有这一列）展开�
   2.0 分组表达，`facets[].metadata.title` 是组名（"Sort" / "Filter"），组内每个链接自己带 `title`；
   当前生效的那项用 **`rel: "self"`** 表示（规范原文如此），不是 `activeFacet` 布尔。
   一组的 `links` 少于 2 条就不发这组（规范说 should 有两条以上，schema 只要求 ≥ 1）。
+  每个链接带 `properties.numberOfItems`（`opds-properties.schema.json` 的链路属性）：排序组共享该 feed
+  的总数（排序不改变结果集），过滤组按各自子集算 —— 所以章节 feed 的 Filter 组要一次取回两个计数。
 - **分页**：`next` / `previous` / `first` / `last` 四个 rel 与 1.2 同名（1.2 用的就是 `previous`）。
   `previous` 与 `first` 在同一页时可以合并成一个链接的 `rel: ["first", "previous"]`（规范的分页示例就这么写）。
 - **搜索**：不再有 OpenSearch 描述文档，改成每个 feed 上都挂一条模板链接：
@@ -442,9 +444,10 @@ v2 里一律按 `source.base_url`（`source` 表本来就有这一列）展开�
   发章节 publication。**18 条路由齐了**（19 条 1.2 去掉 `/search` 与 `/metadata`、加上清单）。
   章节 publication 在三个 feed 里共用一套：漫画名**不**拼进标题（1.2 的 `add_manga_title`），
   它在 `belongsTo.series.name` —— 与 §5.2 的"每个事实只有一个归宿"同一口径。
-- **阶段 4 — facets 的计数**：分组、组名、"当前项标 `rel: self`"与四个分页 rel 都在阶段 1 落地了
-  （`sort_facets` / `chapter_facets` / `pagination_links`）。**剩下的只有 §5.1 的
-  `properties.numberOfItems`**：排序组共享同一个总数（排序不改变结果集），章节的过滤组两个选项各算一次。
+- **阶段 4 — facets 的计数（2026-10-01 已完成）**：分组、组名、"当前项标 `rel: self`"与四个分页 rel
+  都在阶段 1 落地了（`sort_facets` / `chapter_facets` / `pagination_links`）；这一步补上 §5.1 的
+  `properties.numberOfItems` —— 排序组共享该 feed 的总数，章节的 Filter 组两个选项各算一次
+  （`repository::chapter_counts` 用一条 SQL 同时取回全部与未读，不然就得把章节列表查两遍）。
 - **阶段 5 — 设置接线**：按 §7 的表接 6 项（其余 3 项不适用/不需要）。
 - **阶段 6 — 文档与客户端**：`rest-api.md` 加 v2 一节、`user-guide.md` 改 OPDS 一节（写清 v2 的定位与
   客户端现状）、两份 README 去掉 `In-progress`；手工用 Thorium Reader 加一次目录，跑通
@@ -452,7 +455,7 @@ v2 里一律按 `source.base_url`（`source` 表本来就有这一列）展开�
 
 ## 9. 验证
 
-1. **crate 集成测试（阶段 3 已完成）**：`crates/suwayomi-opds/tests/opds_v2.rs`（21 项）+ `src/v2/json.rs`
+1. **crate 集成测试（阶段 4 已完成）**：`crates/suwayomi-opds/tests/opds_v2.rs`（23 项）+ `src/v2/json.rs`
    里的 BCP-47 单测（4 项），照 `tests/opds_feeds.rs` 的模子（内存 SQLite 播种 + 断言）。断言方式用
    `serde_json::to_value` 后按路径取值，**不要**用字符串 `contains`（JSON 的键序不保证）。已覆盖：
    根 feed 是 navigation 且每条 link 都带 `title`、空结果走 `navigation` 而不是 `publications: []`、
@@ -466,7 +469,10 @@ v2 里一律按 `source.base_url`（`source` 表本来就有这一列）展开�
    **源内路径按 `source.base_url` 展开**（远程条目与库内作品的 `alternate` 各一条断言）、
    `sort=latest` 只在该源 `supports_latest` 时走 latest（否则回落 popular 且标题仍跟请求）、
    `/history` 只列读过的章节且标题不带漫画名、`/library-updates` 列全部章节、
-   过滤 feed 的标题与 `rel=self`（含 1.2 那条冗余的 `source_id=` query，属有意的形状对齐）。
+   过滤 feed 的标题与 `rel=self`（含 1.2 那条冗余的 `source_id=` query，属有意的形状对齐）、
+   **阶段 4 新增**：排序组的每项都带同一个 `numberOfItems` 且该数跟着 feed 被固定的那个维度走
+   （库内 2 部、`/source/1` 命中 1 部）、章节 Filter 组的两项各报自己的计数（全部 3 / 未读 2）且
+   当前项仍是 `rel: self`。
 
    注入桩源要绕一道弯：`SourceBackend::Test` 带 `#[cfg(test)]`，而 `cfg(test)` **不传播到依赖 crate**，
    所以 `tests/*.rs` 里构造不出来 —— 靠 `suwayomi-domain` 的 `test-util` feature 把它放进构建

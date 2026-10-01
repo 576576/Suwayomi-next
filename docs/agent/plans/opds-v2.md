@@ -61,6 +61,19 @@ OPDS 1.2 侧对 CBZ 链接写死 `TYPE_CBZ = "application/vnd.comicbook+zip"`（
 
 也就是说 1.2 的章节「能不能直接读」取决于它在哪个 feed 里 —— 2.0 内联元数据后不再有这个分叉。
 
+**实测补充（2026-10-01 抓基线时发现）**：
+
+- 路由必须写**无尾斜杠**的形式。`/api/opds/v1.2` 与 `/api/opds/v1.2/library/series` 命中 OPDS
+  （`200 application/xml;profile=opds-catalog`）；各加一个尾斜杠后不匹配 nest 路由，落到 WebUI 的
+  SPA fallback，返回 `200 text/html` 的 index.html（状态码仍是 200，所以光看状态码发现不了）。
+- 连带后果：1.2 每个 feed 的 `rel="self"` 都写成**带尾斜杠**的形式，**实际取到的是 WebUI**；
+  分页的 `next` / `prev` / `first` / `last` 走同一个函数，同理。成因在
+  `FeedBuilder::url_with`（`feeds.rs:94`）的收尾 `format!("{base}/?{q}")` —— 无条件在 `?` 前插一个
+  `/`，而 `lang=` 是必加参数、`q` 永不为空，所以没有一条 self 是干净的。
+- 1.2 保持现状不动 —— 改它就是改 1.2 的输出，与本方案的硬约束冲突。**v2 拼 href 时不要沿用这个
+  写法**：2.0 的 `rel=self` 是 schema 强制的，但 schema 只管 href 是不是合法 URI，不管它取不取得到
+  feed —— 指向一个返回 HTML 的 URL 等于没写。
+
 文档面（改动时同步）：
 
 - `docs/agent/rest-api.md` §3 的 19 行路由表；
@@ -153,8 +166,8 @@ query 参数与 1.2 同名同义（`lang` / `pageNumber` / `sort` / `filter` / `
 | `opensearch:totalResults` | `metadata.numberOfItems`（≥ 0） |
 | `opensearch:itemsPerPage` | `metadata.itemsPerPage`（**> 0**） |
 | `opensearch:startIndex` | `metadata.currentPage`（**> 0**，1-based；1.2 那个是 0-based 下标，不要直接搬） |
-| `<link rel="self">` | `links: [{rel: "self", href, type: "application/opds+json"}]`（必须有） |
-| `<link rel="start">` | 同 rel，指向 `/api/opds/v2/?lang=…` |
+| `<link rel="self">` | `links: [{rel: "self", href, type: "application/opds+json"}]`（必须有）。href 写成**无尾斜杠**的 `/api/opds/v2/<path>?<query>` —— 1.2 的 `{base}/?{q}` 写法取到的是 WebUI（§1） |
+| `<link rel="start">` | 同 rel，指向 `/api/opds/v2?lang=…` |
 | `<link rel="search">`（指向 OpenSearch 文档） | templated link（§5.5） |
 | `first` / `previous` / `next` / `last` | 同 rel，只列**存在**的那几个（1.2 在 `total_pages > 1` 时才发，v2 照此） |
 | `<link rel="facet" opds:facetGroup="sort">` | `facets: [{metadata: {title: "Sort"}, links: […]}]`，每组的 `links` 带 `title` 与 `properties.numberOfItems`；当前生效那项用 `rel: "self"` 标 |
@@ -364,8 +377,10 @@ query 参数与 1.2 同名同义（`lang` / `pageNumber` / `sort` / `filter` / `
 
 ## 8. 实施分层
 
-- **阶段 0 — 基线**：把 19 条 1.2 路由的响应抓成基线快照（时间戳字段留占位符），落
-  `.workbuddy/verify/out/`，供 §9.4 回归比对。
+- **阶段 0 — 基线（2026-10-01 已完成）**：19 条 1.2 路由的响应快照已落在
+  `.workbuddy/verify/out/opds12_baseline/pre/`（19 个 `.xml` + `manifest.json`），
+  由 `.workbuddy/verify/opds12_baseline.py` 抓取，`opds12_regress.py` 做比对。抓完连抓两轮
+  19/19 逐字节一致，快照可当基线用。跑法与遮罩口径见 §9.4。
 - **阶段 1 — 骨架打样**：`src/v2/{mod,model,json,router,feeds}.rs`；先实现 **3 条**：根 `/`、
   `/library/series`、`/series/{id}/chapters`。挂载 `.nest("/api/opds/v2", …)`。
   这一步要同时落地 §6 的全部约束（尤其空结果与 acquisition 链接），因为它们是模型层的形状，
@@ -396,9 +411,22 @@ query 参数与 1.2 同名同义（`lang` / `pageNumber` / `sort` / `filter` / `
 3. **端到端**：按项目惯例**替换 Suwayomi-latest 的产物**（不另起端口，端口从运行态嗅探，
    通常 4567），逐条拉取 18 条 v2 路由，断言 200 + `Content-Type: application/opds+json`
    （清单是 `application/divina+json`）+ schema 通过；导航类与列表类各挑一条人工看一眼 JSON。
-4. **1.2 回归（本次的验收重点）**：与阶段 0 的基线逐条比对 19 条 1.2 路由的响应体
-   （`<updated>` / `pse:lastReadDate` 这类动态字段做遮罩）。**任何一处差异都视为失败** ——
-   这是"不影响 1.2"的唯一硬证据，不靠"我只加了新文件"的推理。
+4. **1.2 回归（本次的验收重点）**：改用带 v2 的产物起一次实例，重抓一轮再与基线比对：
+
+   ```
+   python .workbuddy/verify/run_latest_server.py --root <隔离根> --port 4567   # 后台起
+   python .workbuddy/verify/opds12_baseline.py --out <同上> --label post
+   python .workbuddy/verify/opds12_regress.py \
+       --base .workbuddy/verify/out/opds12_baseline/pre \
+       --head .workbuddy/verify/out/opds12_baseline/post     # 退出码 0 才算过
+   ```
+
+   **任何一处差异都视为失败** —— 这是"不影响 1.2"的唯一硬证据，不靠"我只加了新文件"的推理。
+   两条前提：比对两侧要用**同一个库**（基线绑定抓取时刻的库内容，库变了会假阳性），
+   且路径要写**无尾斜杠**的 `/api/opds/v1.2`（见 §1 的实测补充）。动态字段的遮罩口径：只有落在
+   抓取时间窗内的 `<updated>` 换成 `{{NOW}}` —— feed 级与部分 entry 走 `now_opds()`（当前时间），
+   另一批 entry 走 `epoch_opds()`（来自库，稳定），两者格式相同，只能按时间窗区分。
+   `pse:lastReadDate` 来自库、稳定，不遮罩。
 5. **认证**：`/api/opds/v2/**` 在 `UI_LOGIN` 模式下匿名 401、`?token=` 放行（既有断言在
    `crates/suwayomi-api/src/auth.rs` 的单测与 `.workbuddy/verify/auth_matrix.py`，补一条 v2 路径的用例）。
    清单里的取页链接同样受保护 —— 客户端是带 Basic 头抓图，还是 `?token=`，要在第 6 步一并看。

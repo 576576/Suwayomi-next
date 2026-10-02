@@ -17,6 +17,7 @@
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
+use suwayomi_core::config::{CbzMediaType, ChapterSortOrder, ServerConfig};
 use suwayomi_core::db::Db;
 use suwayomi_core::source::{MangasPage, SChapter, SManga, SourcePage};
 use suwayomi_domain::error::DomainError;
@@ -142,11 +143,17 @@ async fn insert_chapter(
 static STUB: SourceBackend = SourceBackend::Stub;
 
 fn ctx(db: &Db) -> V2Ctx<'_> {
-    V2Ctx { db, base_url: "/api/opds/v2", lang: "en", fetcher: &STUB }
+    ctx_with_config(db, ServerConfig::default())
+}
+
+/// A context with hand-set settings — the seam the `opds*` settings are
+/// verified through.
+fn ctx_with_config(db: &Db, config: ServerConfig) -> V2Ctx<'_> {
+    V2Ctx { db, base_url: "/api/opds/v2", lang: "en", fetcher: &STUB, config }
 }
 
 fn ctx_with<'a>(db: &'a Db, fetcher: &'a SourceBackend) -> V2Ctx<'a> {
-    V2Ctx { db, base_url: "/api/opds/v2", lang: "en", fetcher }
+    V2Ctx { db, base_url: "/api/opds/v2", lang: "en", fetcher, config: ServerConfig::default() }
 }
 
 /// A page list of a fixed length, or a source failure — the seam
@@ -740,4 +747,139 @@ async fn chapter_filter_facet_counts_each_option() {
     // The active entry keeps `rel: self` — the count rides alongside it.
     assert_eq!(all["rel"], "self");
     assert!(unread.get("rel").is_none());
+}
+
+/// `opdsItemsPerPage` is the page size (`metadata.itemsPerPage`) *and* the
+/// `LIMIT`/`OFFSET` step, so it has to reach the repository too.
+#[tokio::test]
+async fn items_per_page_comes_from_the_setting() {
+    let db = seed().await;
+    // Three chapters in series 1; two per page means a second page exists.
+    let ctx = ctx_with_config(&db, ServerConfig { opds_items_per_page: 2, ..ServerConfig::default() });
+
+    let feed = value(&feeds::series_chapters_feed(&ctx, 1, 1, "number_asc", "all").await.expect("feed"));
+    assert_eq!(feed["metadata"]["itemsPerPage"], 2);
+    assert_eq!(feed["metadata"]["currentPage"], 1);
+    assert_eq!(feed["metadata"]["numberOfItems"], 3);
+    assert_eq!(array(&feed, "publications").len(), 2);
+    assert!(array(&feed, "links").iter().any(|l| l["rel"] == "next"), "3 items at 2 per page has a next page");
+
+    let page_two = value(&feeds::series_chapters_feed(&ctx, 1, 2, "number_asc", "all").await.expect("feed"));
+    assert_eq!(page_two["metadata"]["currentPage"], 2);
+    assert_eq!(array(&page_two, "publications").len(), 1);
+}
+
+/// A non-positive `opdsItemsPerPage` falls back to the default: the page
+/// arithmetic divides by it and `itemsPerPage` is `exclusiveMinimum: 0`.
+#[tokio::test]
+async fn a_zero_page_size_falls_back_to_the_default() {
+    let db = seed().await;
+    let ctx = ctx_with_config(&db, ServerConfig { opds_items_per_page: 0, ..ServerConfig::default() });
+    let feed = value(&feeds::series_chapters_feed(&ctx, 1, 1, "number_asc", "all").await.expect("feed"));
+    assert_eq!(feed["metadata"]["itemsPerPage"], 50);
+    assert_eq!(array(&feed, "publications").len(), 3);
+}
+
+/// `opdsChapterSortOrder` names the default `sort` key (the router reads it; an
+/// explicit `sort` query wins).
+#[tokio::test]
+async fn chapter_sort_order_setting_names_a_default_sort_key() {
+    let db = seed().await;
+    // The reference implementation defaults to DESC.
+    assert_eq!(ctx(&db).default_chapter_sort(), "number_desc");
+
+    let asc = ServerConfig { opds_chapter_sort_order: ChapterSortOrder::Asc, ..ServerConfig::default() };
+    assert_eq!(ctx_with_config(&db, asc).default_chapter_sort(), "number_asc");
+}
+
+/// `opdsMarkAsReadOnDownload` and `opdsCbzMimetype` shape the CBZ link — the
+/// MIME type is what `opdsCbzMimetype` is named for.
+#[tokio::test]
+async fn the_cbz_link_follows_the_download_settings() {
+    let db = seed().await;
+    // Only chapter 1 is downloaded.
+    let feed = value(&feeds::series_chapters_feed(&ctx(&db), 1, 1, "number_asc", "all").await.expect("feed"));
+    let cbz = cbz_link(&feed);
+    assert_eq!(cbz["type"], "application/vnd.comicbook+zip");
+    assert_eq!(cbz["href"], "/api/v1/chapter/1/download?markAsRead=false");
+
+    let config = ServerConfig {
+        opds_mark_as_read_on_download: true,
+        opds_cbz_mimetype: CbzMediaType::Legacy,
+        ..ServerConfig::default()
+    };
+    let ctx = ctx_with_config(&db, config);
+    let feed = value(&feeds::series_chapters_feed(&ctx, 1, 1, "number_asc", "all").await.expect("feed"));
+    let cbz = cbz_link(&feed);
+    assert_eq!(cbz["type"], "application/x-cbz");
+    assert_eq!(cbz["href"], "/api/v1/chapter/1/download?markAsRead=true");
+}
+
+fn cbz_link(feed: &Value) -> &Value {
+    array(feed, "publications")
+        .iter()
+        .flat_map(|p| array(p, "links"))
+        .find(|l| l["href"].as_str().is_some_and(|h| h.contains("/download?")))
+        .expect("CBZ link")
+}
+
+/// `opdsEnablePageReadProgress` decides whether the manifest's page links ask
+/// the REST route to write the reading position back.
+#[tokio::test]
+async fn the_manifest_follows_the_read_progress_setting() {
+    let db = seed().await;
+    let manifest = value(&feeds::chapter_manifest(&ctx(&db), 1, 1).await.expect("manifest"));
+    let href = array(&manifest, "readingOrder")[0]["href"].as_str().expect("page href").to_string();
+    assert!(href.ends_with("updateProgress=true&opds=true"), "{href}");
+
+    let config = ServerConfig { opds_enable_page_read_progress: false, ..ServerConfig::default() };
+    let manifest = value(&feeds::chapter_manifest(&ctx_with_config(&db, config), 1, 1).await.expect("manifest"));
+    let href = array(&manifest, "readingOrder")[0]["href"].as_str().expect("page href").to_string();
+    assert!(href.ends_with("updateProgress=false&opds=true"), "{href}");
+}
+
+/// The two `opdsShowOnly*Chapters` settings **add** conditions on top of the
+/// `filter` query parameter instead of replacing it, so they combine with each
+/// other and with an explicit `filter`.
+#[tokio::test]
+async fn show_only_settings_narrow_the_chapter_feed() {
+    let db = seed().await;
+    // Chapter 1 is downloaded and unread; chapter 2 is read; chapter 3 is
+    // unread but not downloaded.
+
+    let downloaded = ServerConfig { opds_show_only_downloaded_chapters: true, ..ServerConfig::default() };
+    let feed = value(
+        &feeds::series_chapters_feed(&ctx_with_config(&db, downloaded.clone()), 1, 1, "number_asc", "all")
+            .await
+            .expect("feed"),
+    );
+    assert_eq!(titles(&feed), vec!["Chapter 1"]);
+    // The facet counts describe the narrowed set — that is what following the
+    // link actually yields.
+    let filter = array(&feed, "facets").iter().find(|g| g["metadata"]["title"] == "Filter").expect("filter group");
+    assert!(array(filter, "links").iter().all(|l| l["properties"]["numberOfItems"] == 1));
+
+    // Both on: the intersection, not a replacement.
+    let both = ServerConfig {
+        opds_show_only_downloaded_chapters: true,
+        opds_show_only_unread_chapters: true,
+        ..ServerConfig::default()
+    };
+    let feed = value(
+        &feeds::series_chapters_feed(&ctx_with_config(&db, both), 1, 1, "number_asc", "all").await.expect("feed"),
+    );
+    assert_eq!(titles(&feed), vec!["Chapter 1"]);
+
+    // `unread` + `only_downloaded` is the same intersection.
+    let feed = value(
+        &feeds::series_chapters_feed(&ctx_with_config(&db, downloaded), 1, 1, "number_asc", "unread")
+            .await
+            .expect("feed"),
+    );
+    assert_eq!(titles(&feed), vec!["Chapter 1"]);
+    assert_eq!(feed["metadata"]["numberOfItems"], 1);
+}
+
+fn titles(feed: &Value) -> Vec<&str> {
+    array(feed, "publications").iter().map(|p| p["metadata"]["title"].as_str().expect("title")).collect()
 }

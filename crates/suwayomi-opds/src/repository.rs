@@ -164,6 +164,9 @@ pub struct Page<T> {
 
 pub struct OpdsRepository<'p> {
     pool: &'p Db,
+    /// Items per page. 1.2 pins this at its built-in default; only the 2.0
+    /// routes read `opdsItemsPerPage`.
+    per_page: usize,
 }
 
 const MANGA_SELECT: &str = "SELECT m.id, m.url, m.title, m.initialized, m.artist, m.author, m.description, m.genre, m.status, \
@@ -222,13 +225,65 @@ impl LibraryFilter {
     }
 }
 
+/// Which chapters a feed lists: the client's `filter` query parameter plus the
+/// two `opdsShowOnly*Chapters` settings.
+///
+/// The settings **add** conditions instead of replacing the query parameter
+/// (the reference implementation's `ChapterRepository` does the same), so the
+/// two can be on at once and either can narrow an explicit `filter`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ChapterFilter {
+    /// The client asked for `filter=unread`.
+    pub unread: bool,
+    /// `opdsShowOnlyUnreadChapters`.
+    pub only_unread: bool,
+    /// `opdsShowOnlyDownloadedChapters`.
+    pub only_downloaded: bool,
+}
+
+impl ChapterFilter {
+    /// 1.2's set — only the query parameter exists there, and the only value it
+    /// understands is `unread`.
+    pub fn from_query(filter: &str) -> Self {
+        Self { unread: filter == "unread", ..Self::default() }
+    }
+
+    /// The `AND …` clause appended to the chapter `WHERE`; empty when nothing
+    /// is filtered out. `WHERE c.manga = 1 ` keeps its trailing space — that is
+    /// the SQL the 1.2 regression baseline recorded.
+    fn clause(&self) -> String {
+        let mut conditions = Vec::new();
+        if self.unread || self.only_unread {
+            conditions.push("c.read = FALSE");
+        }
+        if self.only_downloaded {
+            conditions.push("c.is_downloaded = TRUE");
+        }
+        if conditions.is_empty() { String::new() } else { format!("AND {}", conditions.join(" AND ")) }
+    }
+
+    /// Same as [`Self::clause`] but with the query parameter dropped: the facet
+    /// entries name subsets of the whole series, so the entry for "all" must
+    /// not inherit the `filter` the client is currently on.
+    fn setting_clause(&self) -> String {
+        Self { unread: false, ..*self }.clause()
+    }
+}
+
 pub(crate) fn split_genres(g: Option<&str>) -> Vec<String> {
     g.unwrap_or("").split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
 }
 
 impl<'p> OpdsRepository<'p> {
+    /// 1.2's repository: page size pinned to the built-in default, because
+    /// `opdsItemsPerPage` only drives the 2.0 routes.
     pub fn new(pool: &'p Db) -> Self {
-        Self { pool }
+        Self { pool, per_page: ITEMS_PER_PAGE }
+    }
+
+    /// The 2.0 repository, with `opdsItemsPerPage` as the page size.
+    pub fn with_page_size(pool: &'p Db, per_page: usize) -> Self {
+        Self { pool, per_page }
     }
 
     fn to_acq(r: MangaJoinedRow, total_chapters: i64) -> MangaAcqEntry {
@@ -309,13 +364,14 @@ impl<'p> OpdsRepository<'p> {
             }
         };
 
-        let offset = (page_num.saturating_sub(1)) * ITEMS_PER_PAGE;
+        let per_page = self.per_page;
+        let offset = (page_num.saturating_sub(1)) * per_page;
         let base = if params.is_empty() {
             "WHERE m.in_library = TRUE".to_string()
         } else {
             format!("WHERE m.in_library = TRUE AND {}", params.join(" AND "))
         };
-        let sql = format!("{MANGA_SELECT} {base} ORDER BY {order} LIMIT {ITEMS_PER_PAGE} OFFSET {offset}");
+        let sql = format!("{MANGA_SELECT} {base} ORDER BY {order} LIMIT {per_page} OFFSET {offset}");
         let count_sql = format!("SELECT COUNT(*) FROM manga m LEFT JOIN source s ON s.id = m.source {base}");
 
         let total: i64 = suwayomi_db::query_scalar(&count_sql).fetch_one(self.pool).await?;
@@ -350,8 +406,9 @@ impl<'p> OpdsRepository<'p> {
         } else {
             format!("WHERE m.in_library = TRUE AND {}", conds.join(" AND "))
         };
-        let offset = (page_num.saturating_sub(1)) * ITEMS_PER_PAGE;
-        let sql = format!("{MANGA_SELECT} {base} ORDER BY m.title ASC LIMIT {ITEMS_PER_PAGE} OFFSET {offset}");
+        let per_page = self.per_page;
+        let offset = (page_num.saturating_sub(1)) * per_page;
+        let sql = format!("{MANGA_SELECT} {base} ORDER BY m.title ASC LIMIT {per_page} OFFSET {offset}");
         let count_sql = format!("SELECT COUNT(*) FROM manga m LEFT JOIN source s ON s.id = m.source {base}");
         let total: i64 = suwayomi_db::query_scalar(&count_sql).fetch_one(self.pool).await?;
         let rows: Vec<MangaJoinedRow> = suwayomi_db::query_as(&sql).fetch_all(self.pool).await?;
@@ -412,13 +469,14 @@ impl<'p> OpdsRepository<'p> {
         order_clause: &str,
         page_num: usize,
     ) -> Result<Page<ChapterListEntry>, suwayomi_db::Error> {
-        let offset = (page_num.saturating_sub(1)) * ITEMS_PER_PAGE;
+        let per_page = self.per_page;
+        let offset = (page_num.saturating_sub(1)) * per_page;
         let sql = format!(
             "SELECT c.id, c.name, c.date_upload, c.chapter_number, c.scanlator, c.last_page_read, c.last_read_at, \
              c.source_order, c.is_downloaded, c.page_count, m.id AS manga_id, m.title AS manga_title, \
              m.author AS manga_author, m.thumbnail_url AS manga_thumbnail_url, \
              (SELECT COUNT(*) FROM chapter cc WHERE cc.manga = m.id) AS manga_total_chapters \
-             FROM chapter c JOIN manga m ON m.id = c.manga {where_clause} {order_clause} LIMIT {ITEMS_PER_PAGE} OFFSET {offset}"
+             FROM chapter c JOIN manga m ON m.id = c.manga {where_clause} {order_clause} LIMIT {per_page} OFFSET {offset}"
         );
         // NOTE: the count query must NOT carry ORDER BY — it is an aggregate
         // and PostgreSQL rejects the ordering.
@@ -453,7 +511,7 @@ impl<'p> OpdsRepository<'p> {
         &self,
         manga_id: i32,
         sort: &str,
-        filter: &str,
+        filter: ChapterFilter,
         page_num: usize,
     ) -> Result<Page<ChapterListEntry>, suwayomi_db::Error> {
         let (order_col, direction) = match sort {
@@ -462,21 +520,21 @@ impl<'p> OpdsRepository<'p> {
             "number_desc" | "desc" => ("source_order", "DESC"),
             _ => ("source_order", "ASC"),
         };
-        let filter_clause = match filter {
-            "unread" => "AND c.read = FALSE",
-            _ => "",
-        };
-        let where_clause = format!("WHERE c.manga = {manga_id} {filter_clause}");
+        let where_clause = format!("WHERE c.manga = {manga_id} {}", filter.clause());
         let order_clause = format!("ORDER BY c.{order_col} {direction}, c.id ASC");
         self.chapter_page(&where_clause, &order_clause, page_num).await
     }
 
     /// Chapter counts for one manga, as `(all, unread)` — the chapter feed's
     /// filter facet lists both options at once.
-    pub async fn chapter_counts(&self, manga_id: i32) -> Result<(i64, i64), suwayomi_db::Error> {
+    ///
+    /// Both counts carry the `opdsShowOnly*Chapters` conditions, so a facet
+    /// link reports what following it actually yields.
+    pub async fn chapter_counts(&self, manga_id: i32, filter: ChapterFilter) -> Result<(i64, i64), suwayomi_db::Error> {
         let sql = format!(
             "SELECT COUNT(*), COALESCE(SUM(CASE WHEN c.read = FALSE THEN 1 ELSE 0 END), 0) \
-             FROM chapter c WHERE c.manga = {manga_id}"
+             FROM chapter c WHERE c.manga = {manga_id} {}",
+            filter.setting_clause()
         );
         let counts: (i64, i64) = suwayomi_db::query_as(&sql).fetch_one(self.pool).await?;
         Ok(counts)

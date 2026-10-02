@@ -144,6 +144,15 @@ impl CbzMediaType {
     }
 }
 
+/// 章节 feed 的默认排序方向（`opdsChapterSortOrder`）。客户端显式给了 `sort` 就听客户端的。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChapterSortOrder {
+    /// 旧章在前。
+    Asc,
+    /// 新章在前（参考实现的默认）。
+    Desc,
+}
+
 /// Mirrors the core `ServerConfig` settings consumed at startup.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -193,6 +202,18 @@ pub struct ServerConfig {
     pub sync_interval: i64,
     /// CBZ 下载与 OPDS 条目的 MIME 类型。
     pub opds_cbz_mimetype: CbzMediaType,
+    /// 章节 feed 的默认排序方向。
+    pub opds_chapter_sort_order: ChapterSortOrder,
+    /// 每页条目数（`metadata.itemsPerPage`）。只驱动 OPDS 2.0 路由 —— 1.2 的分页固定用内置默认值。
+    pub opds_items_per_page: i32,
+    /// 清单里的取页链接是否带 `updateProgress=true`。
+    pub opds_enable_page_read_progress: bool,
+    /// CBZ 链接是否带 `markAsRead=true`。
+    pub opds_mark_as_read_on_download: bool,
+    /// 章节 feed 只列已下载的章节（与客户端的 `filter` 并列，不是替换它）。
+    pub opds_show_only_downloaded_chapters: bool,
+    /// 章节 feed 只列未读的章节（同上）。
+    pub opds_show_only_unread_chapters: bool,
 }
 
 impl Default for ServerConfig {
@@ -229,6 +250,12 @@ impl Default for ServerConfig {
             sync_data_categories: true,
             sync_interval: 0,
             opds_cbz_mimetype: CbzMediaType::Modern,
+            opds_chapter_sort_order: ChapterSortOrder::Desc,
+            opds_items_per_page: 50,
+            opds_enable_page_read_progress: true,
+            opds_mark_as_read_on_download: false,
+            opds_show_only_downloaded_chapters: false,
+            opds_show_only_unread_chapters: false,
         }
     }
 }
@@ -367,6 +394,28 @@ impl ServerConfig {
                 "COMPATIBLE" => CbzMediaType::Compatible,
                 _ => self.opds_cbz_mimetype,
             };
+        }
+        if let Some(v) = text(blob, "opdsChapterSortOrder") {
+            self.opds_chapter_sort_order = match v.as_str() {
+                "ASC" => ChapterSortOrder::Asc,
+                "DESC" => ChapterSortOrder::Desc,
+                _ => self.opds_chapter_sort_order,
+            };
+        }
+        if let Some(v) = blob.get("opdsItemsPerPage").and_then(serde_json::Value::as_i64) {
+            self.opds_items_per_page = v as i32;
+        }
+        if let Some(v) = flag(blob, "opdsEnablePageReadProgress") {
+            self.opds_enable_page_read_progress = v;
+        }
+        if let Some(v) = flag(blob, "opdsMarkAsReadOnDownload") {
+            self.opds_mark_as_read_on_download = v;
+        }
+        if let Some(v) = flag(blob, "opdsShowOnlyDownloadedChapters") {
+            self.opds_show_only_downloaded_chapters = v;
+        }
+        if let Some(v) = flag(blob, "opdsShowOnlyUnreadChapters") {
+            self.opds_show_only_unread_chapters = v;
         }
     }
 }

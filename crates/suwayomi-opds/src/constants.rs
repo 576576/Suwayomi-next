@@ -44,5 +44,6 @@ pub const TYPE_EPUB: &str = "application/epub+zip";
 pub const MIME_OPDS_CATALOG: &str = "application/xml;profile=opds-catalog;charset=UTF-8";
 pub const MIME_OPENSEARCH: &str = "application/opensearchdescription+xml;charset=UTF-8";
 
-/// How many items per OPDS feed page (mirrors `opdsItemsPerPage` default).
+/// How many items a 1.2 feed page carries — pinned at the built-in default,
+/// because `opdsItemsPerPage` only drives the 2.0 routes (plan §7.1).
 pub const ITEMS_PER_PAGE: usize = 50;

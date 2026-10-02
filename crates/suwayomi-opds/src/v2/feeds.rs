@@ -9,18 +9,18 @@ use std::fmt::Write as _;
 
 use chrono::{SecondsFormat, Utc};
 use serde_json::{Value, json};
+use suwayomi_core::config::{ChapterSortOrder, ServerConfig};
 use suwayomi_core::db::Db;
 use suwayomi_core::source::{MangasPage, SManga};
 use suwayomi_core::text::urlencode;
 use suwayomi_domain::source::{SourceBackend, SourceFetcher};
 
-use crate::constants::TYPE_CBZ;
 use crate::repository::{
-    ChapterListEntry, LibraryFilter, MangaAcqEntry, NavEntry, OpdsRepository, Page, SortKey, SourceIdentity,
-    split_genres,
+    ChapterFilter, ChapterListEntry, LibraryFilter, MangaAcqEntry, NavEntry, OpdsRepository, Page, SortKey,
+    SourceIdentity, split_genres,
 };
 use crate::v2::json::{
-    CONFORMS_TO_DIVINA, CONTEXT_WEBPUB, ITEMS_PER_PAGE, MIME_DIVINA_JSON, MIME_OPDS_JSON, REL_ACQUISITION,
+    CONFORMS_TO_DIVINA, CONTEXT_WEBPUB, DEFAULT_ITEMS_PER_PAGE, MIME_DIVINA_JSON, MIME_OPDS_JSON, REL_ACQUISITION,
     REL_ACQUISITION_OPEN_ACCESS, REL_ALTERNATE, REL_FIRST, REL_LAST, REL_NEXT, REL_PREVIOUS, REL_SEARCH, REL_SELF,
     REL_START, REL_SUBSECTION, language_tag, non_empty, props,
 };
@@ -40,6 +40,44 @@ pub struct V2Ctx<'a> {
     pub base_url: &'a str,
     pub lang: &'a str,
     pub fetcher: &'a SourceBackend,
+    /// The runtime settings, snapshotted once per request. A snapshot rather
+    /// than a handle: a feed must read one consistent set of settings even if
+    /// `setSettings` lands while it is being built.
+    pub config: ServerConfig,
+}
+
+impl V2Ctx<'_> {
+    /// The repository, pinned to this request's `opdsItemsPerPage`.
+    pub fn repo(&self) -> OpdsRepository<'_> {
+        OpdsRepository::with_page_size(self.db.pool(), self.items_per_page())
+    }
+
+    /// `opdsItemsPerPage`. A non-positive value falls back to the default: the
+    /// page arithmetic divides by it and `itemsPerPage` is `exclusiveMinimum: 0`.
+    pub fn items_per_page(&self) -> usize {
+        usize::try_from(self.config.opds_items_per_page).ok().filter(|n| *n > 0).unwrap_or(DEFAULT_ITEMS_PER_PAGE)
+    }
+
+    /// `opdsChapterSortOrder` as one of the chapter feed's `sort` keys. The
+    /// setting only picks a direction, so 1.2's `date_*` keys stay unreachable
+    /// from it.
+    pub fn default_chapter_sort(&self) -> &'static str {
+        match self.config.opds_chapter_sort_order {
+            ChapterSortOrder::Asc => "number_asc",
+            ChapterSortOrder::Desc => "number_desc",
+        }
+    }
+
+    /// Chapter filtering for a request: the `filter` query parameter plus the
+    /// two `opdsShowOnly*Chapters` settings (which add conditions rather than
+    /// replace the parameter).
+    pub fn chapter_filter(&self, filter: &str) -> ChapterFilter {
+        ChapterFilter {
+            unread: filter == "unread",
+            only_unread: self.config.opds_show_only_unread_chapters,
+            only_downloaded: self.config.opds_show_only_downloaded_chapters,
+        }
+    }
 }
 
 /// Why a 2.0 feed or manifest could not be produced.
@@ -188,7 +226,7 @@ impl<'a> FeedBuilder<'a> {
             title: self.title,
             modified: Some(now()),
             number_of_items: self.total,
-            items_per_page: self.page_num.is_some().then_some(ITEMS_PER_PAGE),
+            items_per_page: self.page_num.is_some().then(|| self.ctx.items_per_page()),
             current_page: self.page_num,
         };
         Feed { metadata, links, navigation: self.navigation, publications: self.publications, facets: self.facets }
@@ -199,7 +237,7 @@ impl<'a> FeedBuilder<'a> {
             return Vec::new();
         };
         let total = self.total.unwrap_or(0);
-        let total_pages = if total == 0 { 0 } else { total.div_ceil(ITEMS_PER_PAGE as u64) as usize };
+        let total_pages = if total == 0 { 0 } else { total.div_ceil(self.ctx.items_per_page() as u64) as usize };
         if total_pages <= 1 {
             return Vec::new();
         }
@@ -366,10 +404,17 @@ fn chapter_publication(ctx: &V2Ctx<'_>, chapter: &ChapterListEntry) -> Publicati
         .with_properties(props(state)),
     ];
     if chapter.downloaded {
+        // `opdsMarkAsReadOnDownload` / `opdsCbzMimetype`: the REST download
+        // route reads `markAsRead` from the query, so the setting only bites if
+        // it is written into the link.
+        let mark_as_read = ctx.config.opds_mark_as_read_on_download;
         links.push(
-            Link::new(REL_ACQUISITION_OPEN_ACCESS, format!("/api/v1/chapter/{}/download?markAsRead=true", chapter.id))
-                .with_type(TYPE_CBZ)
-                .with_title("Download CBZ"),
+            Link::new(
+                REL_ACQUISITION_OPEN_ACCESS,
+                format!("/api/v1/chapter/{}/download?markAsRead={mark_as_read}", chapter.id),
+            )
+            .with_type(ctx.config.opds_cbz_mimetype.media_type())
+            .with_title("Download CBZ"),
         );
     }
 
@@ -506,7 +551,7 @@ pub async fn library_series_feed(
     sort: &str,
     filter: &str,
 ) -> Feed {
-    let repo = OpdsRepository::new(ctx.db.pool());
+    let repo = ctx.repo();
     let result = repo
         .library_manga(
             source_id,
@@ -556,7 +601,7 @@ pub async fn search_feed(
     title: Option<&str>,
     page_num: usize,
 ) -> Feed {
-    let repo = OpdsRepository::new(ctx.db.pool());
+    let repo = ctx.repo();
     let result = repo.search_manga(query, author, title, page_num).await.unwrap_or_else(|_| empty_page());
 
     let query_params = {
@@ -616,7 +661,7 @@ fn navigation_feed(
 
 /// Explore sources navigation feed (every installed source).
 pub async fn explore_sources_feed(ctx: &V2Ctx<'_>) -> Feed {
-    let repo = OpdsRepository::new(ctx.db.pool());
+    let repo = ctx.repo();
     let sources = repo.explore_sources().await.unwrap_or_default();
     navigation_feed(ctx, "explore", "Sources", &sources, |source| {
         format!("{}/explore/source/{}?sort=popular&lang={}", ctx.base_url, source.id, ctx.lang)
@@ -625,7 +670,7 @@ pub async fn explore_sources_feed(ctx: &V2Ctx<'_>) -> Feed {
 
 /// Library sources navigation feed (sources that have series in the library).
 pub async fn library_sources_feed(ctx: &V2Ctx<'_>) -> Feed {
-    let repo = OpdsRepository::new(ctx.db.pool());
+    let repo = ctx.repo();
     let sources = repo.library_sources().await.unwrap_or_default();
     navigation_feed(ctx, "library/sources", "Library Sources", &sources, |source| {
         format!("{}/source/{}?lang={}", ctx.base_url, source.id, ctx.lang)
@@ -634,7 +679,7 @@ pub async fn library_sources_feed(ctx: &V2Ctx<'_>) -> Feed {
 
 /// Categories navigation feed.
 pub async fn categories_feed(ctx: &V2Ctx<'_>) -> Feed {
-    let repo = OpdsRepository::new(ctx.db.pool());
+    let repo = ctx.repo();
     let categories = repo.categories().await.unwrap_or_default();
     navigation_feed(ctx, "library/categories", "Categories", &categories, |category| {
         format!("{}/category/{}?lang={}", ctx.base_url, category.id, ctx.lang)
@@ -643,7 +688,7 @@ pub async fn categories_feed(ctx: &V2Ctx<'_>) -> Feed {
 
 /// Genres navigation feed.
 pub async fn genres_feed(ctx: &V2Ctx<'_>) -> Feed {
-    let repo = OpdsRepository::new(ctx.db.pool());
+    let repo = ctx.repo();
     let genres = repo.genres().await.unwrap_or_default();
     navigation_feed(ctx, "library/genres", "Genres", &genres, |genre| {
         format!("{}/genre/{}?lang={}", ctx.base_url, urlencode(&genre.id), ctx.lang)
@@ -652,7 +697,7 @@ pub async fn genres_feed(ctx: &V2Ctx<'_>) -> Feed {
 
 /// Statuses navigation feed.
 pub async fn statuses_feed(ctx: &V2Ctx<'_>) -> Feed {
-    let repo = OpdsRepository::new(ctx.db.pool());
+    let repo = ctx.repo();
     let statuses = repo.statuses().await.unwrap_or_default();
     navigation_feed(ctx, "library/statuses", "Statuses", &statuses, |status| {
         format!("{}/status/{}?lang={}", ctx.base_url, status.id, ctx.lang)
@@ -661,7 +706,7 @@ pub async fn statuses_feed(ctx: &V2Ctx<'_>) -> Feed {
 
 /// Languages navigation feed.
 pub async fn languages_feed(ctx: &V2Ctx<'_>) -> Feed {
-    let repo = OpdsRepository::new(ctx.db.pool());
+    let repo = ctx.repo();
     let languages = repo.languages().await.unwrap_or_default();
     navigation_feed(ctx, "library/languages", "Languages", &languages, |language| {
         format!("{}/language/{}?lang={}", ctx.base_url, language.id, ctx.lang)
@@ -688,14 +733,14 @@ fn chapter_list_feed(
 
 /// Recently read chapters.
 pub async fn history_feed(ctx: &V2Ctx<'_>, page_num: usize) -> Feed {
-    let repo = OpdsRepository::new(ctx.db.pool());
+    let repo = ctx.repo();
     let result = repo.history(page_num).await.unwrap_or_else(|_| empty_page());
     chapter_list_feed(ctx, "history", "Reading History", page_num, result)
 }
 
 /// Recent chapter additions for library manga.
 pub async fn library_updates_feed(ctx: &V2Ctx<'_>, page_num: usize) -> Feed {
-    let repo = OpdsRepository::new(ctx.db.pool());
+    let repo = ctx.repo();
     let result = repo.library_updates(page_num).await.unwrap_or_else(|_| empty_page());
     chapter_list_feed(ctx, "library-updates", "Library Updates", page_num, result)
 }
@@ -703,7 +748,7 @@ pub async fn library_updates_feed(ctx: &V2Ctx<'_>, page_num: usize) -> Feed {
 /// Popular (or latest) manga of one source — remote entries (see
 /// [`remote_publication`]).
 pub async fn explore_source_feed(ctx: &V2Ctx<'_>, source_id: i64, page_num: usize, sort: &str) -> Feed {
-    let repo = OpdsRepository::new(ctx.db.pool());
+    let repo = ctx.repo();
     let source = repo
         .source_identity(source_id)
         .await
@@ -716,10 +761,11 @@ pub async fn explore_source_feed(ctx: &V2Ctx<'_>, source_id: i64, page_num: usiz
     let mangas = fetch_popular(ctx, source_id, page_num, sort).await;
     // A source that says it has a next page gives a lower bound only — 1.2
     // counts it the same way.
+    let per_page = ctx.items_per_page();
     let total = if mangas.has_next_page {
-        (page_num * ITEMS_PER_PAGE + 1) as u64
+        (page_num * per_page + 1) as u64
     } else {
-        ((page_num.saturating_sub(1)) * ITEMS_PER_PAGE + mangas.mangas.len()) as u64
+        ((page_num.saturating_sub(1)) * per_page + mangas.mangas.len()) as u64
     };
 
     let mut builder = FeedBuilder::new(ctx, &format!("explore/source/{source_id}"), title)
@@ -826,12 +872,15 @@ pub async fn series_chapters_feed(
     sort: &str,
     filter: &str,
 ) -> Result<Feed, V2Error> {
-    let repo = OpdsRepository::new(ctx.db.pool());
+    let repo = ctx.repo();
     let details = repo.manga_details(manga_id).await.map_err(|_| V2Error::NotFound)?.ok_or(V2Error::NotFound)?;
-    let result = repo.chapters_for_manga(manga_id, sort, filter, page_num).await.map_err(|_| V2Error::NotFound)?;
+    let chapter_filter = ctx.chapter_filter(filter);
+    let result =
+        repo.chapters_for_manga(manga_id, sort, chapter_filter, page_num).await.map_err(|_| V2Error::NotFound)?;
     // The filter facet shows both options at once, so it needs the count under
     // the *other* filter as well — `result.total` only covers the active one.
-    let (all_chapters, unread_chapters) = repo.chapter_counts(manga_id).await.map_err(|_| V2Error::NotFound)?;
+    let (all_chapters, unread_chapters) =
+        repo.chapter_counts(manga_id, chapter_filter).await.map_err(|_| V2Error::NotFound)?;
 
     let mut builder =
         FeedBuilder::new(ctx, &format!("series/{manga_id}/chapters"), format!("{} — Chapters", details.title))
@@ -853,7 +902,7 @@ pub async fn series_chapters_feed(
 /// `PageCountUnknown` rather than an empty manifest — `readingOrder` is
 /// required and an empty one is meaningless.
 pub async fn chapter_manifest(ctx: &V2Ctx<'_>, manga_id: i32, chapter_id: i32) -> Result<Manifest, V2Error> {
-    let repo = OpdsRepository::new(ctx.db.pool());
+    let repo = ctx.repo();
     let details = repo.manga_details(manga_id).await.map_err(|_| V2Error::NotFound)?.ok_or(V2Error::NotFound)?;
     let chapter = repo
         .chapter_metadata_by_id(manga_id, chapter_id)
@@ -870,10 +919,13 @@ pub async fn chapter_manifest(ctx: &V2Ctx<'_>, manga_id: i32, chapter_id: i32) -
     // (`/api/v1/manga/{id}/chapter/{source_order}/page/{n}`), not ours to change.
     let page_order = chapter.source_order;
     let href = format!("{}/series/{manga_id}/chapter/{chapter_id}/manifest", ctx.base_url);
+    // `opdsEnablePageReadProgress` — page streaming writes the reading position
+    // back only when the link asks for it.
+    let update_progress = ctx.config.opds_enable_page_read_progress;
     let reading_order = (0..page_count)
         .map(|page| {
             Link::bare(format!(
-                "/api/v1/manga/{manga_id}/chapter/{page_order}/page/{page}?updateProgress=true&opds=true"
+                "/api/v1/manga/{manga_id}/chapter/{page_order}/page/{page}?updateProgress={update_progress}&opds=true"
             ))
             .with_type(TYPE_IMAGE_JPEG)
         })
@@ -907,7 +959,7 @@ pub async fn chapter_manifest(ctx: &V2Ctx<'_>, manga_id: i32, chapter_id: i32) -
 /// Deliberately read-only: a GET that writes the count back would make the
 /// response depend on how many times it has been requested.
 async fn source_page_count(ctx: &V2Ctx<'_>, chapter_id: i32) -> Option<i32> {
-    let repo = OpdsRepository::new(ctx.db.pool());
+    let repo = ctx.repo();
     let addr = match repo.chapter_source_ref(chapter_id).await {
         Ok(addr) => addr?,
         Err(e) => {

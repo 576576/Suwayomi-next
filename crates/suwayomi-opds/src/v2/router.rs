@@ -38,7 +38,15 @@ pub fn v2_router() -> Router<AppState> {
 }
 
 fn ctx<'a>(state: &'a AppState, lang: &'a str) -> V2Ctx<'a> {
-    V2Ctx { db: &state.db, base_url: BASE_URL, lang, fetcher: &state.fetcher }
+    V2Ctx {
+        db: &state.db,
+        base_url: BASE_URL,
+        lang,
+        fetcher: &state.fetcher,
+        // One snapshot per request: the feed reads a consistent set of settings
+        // even if `setSettings` lands while it is being built.
+        config: state.config.snapshot(),
+    }
 }
 
 fn json(body: String, media_type: &'static str) -> Response {
@@ -246,15 +254,9 @@ async fn series_chapters_feed(
     let lang = q.lang.as_deref().unwrap_or("en");
     let ctx = ctx(&state, lang);
     let page = q.page_number.unwrap_or(1).max(1);
-    feeds::series_chapters_feed(
-        &ctx,
-        series_id,
-        page,
-        q.sort.as_deref().unwrap_or("number_asc"),
-        q.filter.as_deref().unwrap_or("all"),
-    )
-    .await
-    .map_or_else(
+    // `opdsChapterSortOrder` supplies the direction; an explicit `sort` wins.
+    let sort = q.sort.as_deref().map_or_else(|| ctx.default_chapter_sort().to_string(), str::to_string);
+    feeds::series_chapters_feed(&ctx, series_id, page, &sort, q.filter.as_deref().unwrap_or("all")).await.map_or_else(
         |_| {
             (StatusCode::NOT_FOUND, json(to_json(&feeds::not_found_feed(&ctx, "Manga not found")), MIME_OPDS_JSON))
                 .into_response()

@@ -15,8 +15,8 @@ use crate::constants::{
 };
 use crate::model::{Author, Category, Content, Entry, Feed, Link, Summary};
 use crate::repository::{
-    ChapterListEntry, ChapterMetadataEntry, LibraryFilter, MangaAcqEntry, MangaDetails, NavEntry, OpdsRepository,
-    SortKey,
+    ChapterFilter, ChapterListEntry, ChapterMetadataEntry, LibraryFilter, MangaAcqEntry, MangaDetails, NavEntry,
+    OpdsRepository, SortKey,
 };
 use std::fmt::Write as _;
 use suwayomi_core::text::urlencode;
@@ -844,7 +844,8 @@ pub async fn series_chapters_feed(
 ) -> Result<String, String> {
     let repo = OpdsRepository::new(ctx.db.pool());
     let details = repo.manga_details(manga_id).await.map_err(|e| e.to_string())?.ok_or("manga not found")?;
-    let result = repo.chapters_for_manga(manga_id, sort, filter, page_num).await.map_err(|e| e.to_string())?;
+    let chapter_filter = ChapterFilter::from_query(filter);
+    let result = repo.chapters_for_manga(manga_id, sort, chapter_filter, page_num).await.map_err(|e| e.to_string())?;
     let mut builder = FeedBuilder::new(
         ctx,
         &format!("series/{manga_id}/chapters"),

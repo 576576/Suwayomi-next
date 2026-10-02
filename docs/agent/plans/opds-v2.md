@@ -419,6 +419,28 @@ v2 里一律按 `source.base_url`（`source` 表本来就有这一列）展开�
 `ServerConfig` 加字段 → 默认值 → `apply_settings_blob` 加分支（GraphQL 侧的写入路径不动，
 它写的本来就是同一个 blob）。1.2 是否跟进是**独立**的一次改动，需单独决定。
 
+### 7.1 接线做法（阶段 5，2026-10-02 完成）
+
+**链路**：`ServerConfig` 加 6 个字段（`opds_chapter_sort_order` 是新枚举 `ChapterSortOrder`，其余复用
+已有类型）→ `apply_settings_blob` 认这 6 个 key → 设置页的**读**（`SettingsType::from_config`，原先这 6
+项是硬编码常量，现在从 config 派生）与**写**（`setSettings` 的 `put!`，本来就写同一个 blob）都不需要改结构。
+v2 侧把它们收进 `V2Ctx.config`（每请求一次 `config.snapshot()`），由 `V2Ctx` 上的
+`items_per_page()` / `default_chapter_sort()` / `chapter_filter()` / `repo()` 分发给各 feed。
+
+**默认值照参考实现**：`opdsItemsPerPage` = **50**、`opdsChapterSortOrder` = **DESC**（不是设置页原先
+硬编码的 30 / Asc）。接通后有两处可见变化：设置页显示值变成 50 / DESC；**v2 章节 feed 的默认 `sort`
+从 `number_asc` 变成 `number_desc`**（显式带 `sort=` 的客户端不受影响 —— 请求里的 `sort` 仍然优先）。
+
+**两个 `show-only` 是叠加条件，不是默认 filter**：与参考实现的 `ChapterRepository` 一致 ——
+`conditions.add(isDownloaded eq true)`，与客户端的 `filter` 参数**并列** AND。因此两者可以同时开
+（取交集），`filter=unread` 与 `showOnlyDownloaded` 也取交集。facets 的 Filter 组计数跟着走
+（`repository::chapter_counts` 也带这组条件）—— 这一条与参考实现**有意不同**：它的 facet 计数不带该条件，
+但 1.2 的 facet 本来就不发计数，没有可对齐的行为。
+
+**1.2 一个字没动**：页大小是 `OpdsRepository` 的字段，1.2 走 `OpdsRepository::new`（固定内置默认 50）；
+`ChapterFilter::from_query` 只认 `unread`，1.2 的 `filter` 值域保持原样。`opdsItemsPerPage` 的
+非正值在 v2 侧回落到默认（`itemsPerPage` 是 `exclusiveMinimum: 0`，且分页算术要拿它做除数）。
+
 ## 8. 实施分层
 
 - **阶段 0 — 基线（2026-10-01 已完成）**：19 条 1.2 路由的响应快照已落在
@@ -448,14 +470,16 @@ v2 里一律按 `source.base_url`（`source` 表本来就有这一列）展开�
   都在阶段 1 落地了（`sort_facets` / `chapter_facets` / `pagination_links`）；这一步补上 §5.1 的
   `properties.numberOfItems` —— 排序组共享该 feed 的总数，章节的 Filter 组两个选项各算一次
   （`repository::chapter_counts` 用一条 SQL 同时取回全部与未读，不然就得把章节列表查两遍）。
-- **阶段 5 — 设置接线**：按 §7 的表接 6 项（其余 3 项不适用/不需要）。
+- **阶段 5 — 设置接线（2026-10-02 已完成）**：按 §7 的表接 6 项（其余 3 项不适用/不需要）。
+  core 加字段与 blob 分支、设置页的显示值改为从 config 派生、v2 经 `V2Ctx.config` 读取；
+  两个 `show-only` 按参考实现做成**与 `filter` 并列的叠加条件**。做法与两处行为变化见 §7.1。
 - **阶段 6 — 文档与客户端**：`rest-api.md` 加 v2 一节、`user-guide.md` 改 OPDS 一节（写清 v2 的定位与
   客户端现状）、两份 README 去掉 `In-progress`；手工用 Thorium Reader 加一次目录，跑通
   "浏览 → 打开作品 → 看章节 → **打开清单并翻页**"。
 
 ## 9. 验证
 
-1. **crate 集成测试（阶段 4 已完成）**：`crates/suwayomi-opds/tests/opds_v2.rs`（23 项）+ `src/v2/json.rs`
+1. **crate 集成测试（阶段 5 已完成）**：`crates/suwayomi-opds/tests/opds_v2.rs`（29 项）+ `src/v2/json.rs`
    里的 BCP-47 单测（4 项），照 `tests/opds_feeds.rs` 的模子（内存 SQLite 播种 + 断言）。断言方式用
    `serde_json::to_value` 后按路径取值，**不要**用字符串 `contains`（JSON 的键序不保证）。已覆盖：
    根 feed 是 navigation 且每条 link 都带 `title`、空结果走 `navigation` 而不是 `publications: []`、
@@ -472,7 +496,13 @@ v2 里一律按 `source.base_url`（`source` 表本来就有这一列）展开�
    过滤 feed 的标题与 `rel=self`（含 1.2 那条冗余的 `source_id=` query，属有意的形状对齐）、
    **阶段 4 新增**：排序组的每项都带同一个 `numberOfItems` 且该数跟着 feed 被固定的那个维度走
    （库内 2 部、`/source/1` 命中 1 部）、章节 Filter 组的两项各报自己的计数（全部 3 / 未读 2）且
-   当前项仍是 `rel: self`。
+   当前项仍是 `rel: self`、
+   **阶段 5 新增**：`opdsItemsPerPage` 同时决定 `metadata.itemsPerPage` 与分页步长（3 章按每页 2 条
+   分成两页、第 2 页 1 条且带 `next`）、非正值回落默认、`opdsChapterSortOrder` 映射到默认 `sort` 键、
+   `opdsMarkAsReadOnDownload` 与 `opdsCbzMimetype` 改 CBZ 链接的 `markAsRead=` 与 `type`、
+   `opdsEnablePageReadProgress` 改清单取页链接的 `updateProgress=`、
+   两个 `show-only` 各自收窄章节 feed 且**同时开取交集**（`filter=unread` 与 `onlyDownloaded` 也取交集），
+   facet 的 Filter 组计数跟着收窄后的集合走。
 
    注入桩源要绕一道弯：`SourceBackend::Test` 带 `#[cfg(test)]`，而 `cfg(test)` **不传播到依赖 crate**，
    所以 `tests/*.rs` 里构造不出来 —— 靠 `suwayomi-domain` 的 `test-util` feature 把它放进构建

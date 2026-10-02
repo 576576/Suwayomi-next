@@ -32,9 +32,9 @@ pub const REL_PREVIOUS: &str = "previous";
 pub const REL_FIRST: &str = "first";
 pub const REL_LAST: &str = "last";
 
-/// How many publications a feed page carries (mirrors `opdsItemsPerPage`'s
-/// default while that setting is unwired — see §7 of the plan).
-pub const ITEMS_PER_PAGE: usize = 50;
+/// Fallback page size for the 2.0 feeds. `itemsPerPage` is `exclusiveMinimum: 0`,
+/// so an unusable `opdsItemsPerPage` cannot be written through as-is.
+pub const DEFAULT_ITEMS_PER_PAGE: usize = 50;
 
 /// Mihon sources declare these two pseudo-languages for "works in every
 /// language" / "other"; they pass the BCP-47 grammar but name no language, so

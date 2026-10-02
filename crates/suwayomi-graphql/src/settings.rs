@@ -6,7 +6,7 @@ use async_graphql::{Enum, SimpleObject};
 use suwayomi_core::auth::parse_duration;
 use suwayomi_core::backup::BackupFlags;
 use suwayomi_core::config::{
-    CbzMediaType as CoreCbzMediaType, DatabaseType as CoreDatabaseType,
+    CbzMediaType as CoreCbzMediaType, ChapterSortOrder as CoreChapterSortOrder, DatabaseType as CoreDatabaseType,
     KoreaderSyncChecksumMethod as CoreKoreaderSyncChecksumMethod,
     KoreaderSyncConflictStrategy as CoreKoreaderSyncConflictStrategy, ServerConfig,
 };
@@ -108,6 +108,15 @@ impl From<CoreKoreaderSyncConflictStrategy> for KoreaderSyncConflictStrategy {
             CoreKoreaderSyncConflictStrategy::KeepLocal => Self::KeepLocal,
             CoreKoreaderSyncConflictStrategy::KeepRemote => Self::KeepRemote,
             CoreKoreaderSyncConflictStrategy::Disabled => Self::Disabled,
+        }
+    }
+}
+
+impl From<CoreChapterSortOrder> for crate::query::SortOrder {
+    fn from(v: CoreChapterSortOrder) -> Self {
+        match v {
+            CoreChapterSortOrder::Asc => Self::Asc,
+            CoreChapterSortOrder::Desc => Self::Desc,
         }
     }
 }
@@ -362,12 +371,12 @@ impl SettingsType {
             max_log_folder_size: String::new(),
             max_sources_in_parallel: 6,
             opds_cbz_mimetype: c.opds_cbz_mimetype.into(),
-            opds_chapter_sort_order: crate::query::SortOrder::Asc,
-            opds_enable_page_read_progress: true,
-            opds_items_per_page: 30,
-            opds_mark_as_read_on_download: false,
-            opds_show_only_downloaded_chapters: false,
-            opds_show_only_unread_chapters: false,
+            opds_chapter_sort_order: c.opds_chapter_sort_order.into(),
+            opds_enable_page_read_progress: c.opds_enable_page_read_progress,
+            opds_items_per_page: c.opds_items_per_page,
+            opds_mark_as_read_on_download: c.opds_mark_as_read_on_download,
+            opds_show_only_downloaded_chapters: c.opds_show_only_downloaded_chapters,
+            opds_show_only_unread_chapters: c.opds_show_only_unread_chapters,
             opds_skip_chapter_metadata_feed: false,
             opds_use_binary_file_sizes: false,
             port: c.port,

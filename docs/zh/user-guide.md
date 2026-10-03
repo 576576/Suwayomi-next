@@ -36,7 +36,7 @@ data/          用户数据：downloads/ autobackup/ local/
 - WebUI：`http://localhost:4567`（托管目录，见下）
 - GraphQL：`http://localhost:4567/api/graphql`
 - REST：`http://localhost:4567/api/v1`
-- OPDS：`http://localhost:4567/api/opds/v1.2`（KOReader 等阅读器）
+- OPDS：`http://localhost:4567/api/opds/v1.2`（1.2）与 `http://localhost:4567/api/opds/v2`（2.0）
 
 ## 配置（环境变量）
 
@@ -70,7 +70,7 @@ JWT 的 `aud` 与两个令牌有效期不在这张表里：它们是**设置里*
 ## 认证
 
 默认 `DISABLED`（不认证）。开启后，**所有数据接口都要凭据**：`/api/v1/**`、
-`/api/graphql`（含 WebSocket 订阅）、`/api/opds/v1.2/**`、`/api/v1/local/**` 与
+`/api/graphql`（含 WebSocket 订阅）、`/api/opds/v1.2/**`、`/api/opds/v2/**`、`/api/v1/local/**` 与
 `/local/**`。WebUI 的静态产物（`/assets/*`、`/favicon.svg`、`/sw.js` 等）匿名可读——
 否则登录页本身都加载不出来——但 `index.html` 不在豁免之内。
 
@@ -168,8 +168,21 @@ curl -X POST http://localhost:4567/api/v1/backup/import --data-binary @backup.ta
 
 ## OPDS / KOReader
 
-根目录：`http://localhost:4567/api/opds/v1.2`
-（支持：库浏览、来源探索、历史、库更新、系列章节、章节元数据；`?lang=` 切换语言）
+同一份数据提供两个目录，编成两种格式，路径一一对应（把前缀换掉即可）：
+
+| 版本 | 根目录 | 格式 | 阅读器 |
+| --- | --- | --- | --- |
+| 1.2 | `http://localhost:4567/api/opds/v1.2` | Atom / XML | KOReader、Panels、Chunky、Calibre、Moon+ 等 |
+| 2.0 | `http://localhost:4567/api/opds/v2` | OPDS 2.0 / JSON | Thorium Reader 等 Readium 系客户端 |
+
+两者都支持库浏览、来源探索、历史、库更新与系列章节，`?lang=` 切换语言（2.0 没有搜索与章节元数据子 feed：搜索走 `/library/series?query=`，章节元数据直接内联在条目里）。
+2.0 的章节多一条 **Readium Divina 清单**（`application/divina+json`），阅读器可以直接翻页，不必先下载 CBZ。
+
+> 1.2 的行为没有变化 —— 2.0 是并列新增的另一条端点，两条互不影响。既有的 KOReader 用户
+> 继续用 1.2 即可。
+
+设置页里的 `opds*` 一组（每页条目数、章节排序、CBZ 类型、下载即已读、只列未读/已下载章节、
+上报阅读进度）**只在 2.0 上生效**，1.2 保持既有行为。认证开启后两个端点都接受 `?token=`（见上）。
 
 ## Docker
 

@@ -5,8 +5,8 @@
 
 ## 0. 结论先行
 
-- 新端点 **`/api/opds/v2`**，与 `/api/opds/v1.2` **并列挂载**（`crates/suwayomi-server/src/lib.rs:160` 的 `build_router`）。两份 README 里已经写着
-  `OPDS: /api/opds/v1.2（In-progress: /api/opds/v2）`。
+- 新端点 **`/api/opds/v2`**，与 `/api/opds/v1.2` **并列挂载**（`crates/suwayomi-server/src/lib.rs` 的 `build_router`）。两份 README 原先写着
+  `OPDS: /api/opds/v1.2（In-progress: /api/opds/v2）`，阶段 6 已改成两个端点并列。
 - 代码落在**同一个 crate** `suwayomi-opds` 内：新增 `src/v2/`（模型 + 序列化 + 路由 + feed 组装），
   **复用 `src/repository.rs` 这层数据访问**（它返回的是协议无关的数据载体，与 Atom 无关），只换序列化层。
 - **路由形状与 1.2 一一对应**：把 URL 里的 `/api/opds/v1.2` 换成 `/api/opds/v2` 即可，19 条里去掉 2 条、
@@ -74,11 +74,11 @@ OPDS 1.2 侧对 CBZ 链接写死 `TYPE_CBZ = "application/vnd.comicbook+zip"`（
   写法**：2.0 的 `rel=self` 是 schema 强制的，但 schema 只管 href 是不是合法 URI，不管它取不取得到
   feed —— 指向一个返回 HTML 的 URL 等于没写。
 
-文档面（改动时同步）：
+文档面（改动时同步，2026-10-03 阶段 6 已落）：
 
-- `docs/agent/rest-api.md` §3 的 19 行路由表；
+- `docs/agent/rest-api.md` §6 的 18 行路由表（并写明它是本仓新增、参考实现无对应端点）；
 - `docs/zh/user-guide.md` 「OPDS / KOReader」一节；
-- 根 `README.md` 与 `docs/en/README.md` 各一行 `In-progress: /api/opds/v2`。
+- 根 `README.md` 与 `docs/en/README.md` 各一行的 `In-progress` 已去掉，改成两个端点并列。
 
 ## 2. 规范与客户端现实（2026-10-01）
 
@@ -473,9 +473,11 @@ v2 侧把它们收进 `V2Ctx.config`（每请求一次 `config.snapshot()`），
 - **阶段 5 — 设置接线（2026-10-02 已完成）**：按 §7 的表接 6 项（其余 3 项不适用/不需要）。
   core 加字段与 blob 分支、设置页的显示值改为从 config 派生、v2 经 `V2Ctx.config` 读取；
   两个 `show-only` 按参考实现做成**与 `filter` 并列的叠加条件**。做法与两处行为变化见 §7.1。
-- **阶段 6 — 文档与客户端**：`rest-api.md` 加 v2 一节、`user-guide.md` 改 OPDS 一节（写清 v2 的定位与
-  客户端现状）、两份 README 去掉 `In-progress`；手工用 Thorium Reader 加一次目录，跑通
-  "浏览 → 打开作品 → 看章节 → **打开清单并翻页**"。
+- **阶段 6 — 文档与客户端（2026-10-03 已完成，只差 Thorium 实测）**：`rest-api.md` 加 §6 一节
+  （18 条路由；写明 v2 是**本仓新增**、参考实现没有，所以那一节不是兼容对照）、`user-guide.md` 的
+  OPDS 一节改成 1.2 / 2.0 双端点对照（定位、客户端现状、设置只在 v2 生效）、两份 README 去掉
+  `In-progress`；`auth.rs` 单测与 `.workbuddy/verify/auth_matrix.py` 各补 v2 路径用例（§9.5）。
+  **§9.6 的 Thorium Reader 人工实测仍未跑** —— 本机没装、且它是 GUI 程序，现有工具驱动不了。
 
 ## 9. 验证
 
@@ -546,16 +548,19 @@ v2 侧把它们收进 `V2Ctx.config`（每请求一次 `config.snapshot()`），
    抓取时间窗内的 `<updated>` 换成 `{{NOW}}` —— feed 级与部分 entry 走 `now_opds()`（当前时间），
    另一批 entry 走 `epoch_opds()`（来自库，稳定），两者格式相同，只能按时间窗区分。
    `pse:lastReadDate` 来自库、稳定，不遮罩。
-5. **认证**：`/api/opds/v2/**` 在 `UI_LOGIN` 模式下匿名 401、`?token=` 放行（既有断言在
-   `crates/suwayomi-api/src/auth.rs` 的单测与 `.workbuddy/verify/auth_matrix.py`，补一条 v2 路径的用例）。
-   清单里的取页链接同样受保护 —— 客户端是带 Basic 头抓图，还是 `?token=`，要在第 6 步一并看。
+5. **认证**：`/api/opds/v2/**` 在 `UI_LOGIN` 模式下匿名 401、`?token=` 放行。2026-10-03 已补用例：
+   `crates/suwayomi-api/src/auth.rs` 的 `opds_v2_falls_under_the_same_auth_prefixes`（两条前缀判定）
+   与 `token_query_is_limited_to_opds_and_pages` 多一行 v2 断言；`.workbuddy/verify/auth_matrix.py`
+   的数据接口匿名 401 清单加了 v2 三条（根、`library/series`、清单）、`?token=` 段加一条。
+   清单里的取页链接不必另想办法：它指向 `/api/v1/manga/{id}/chapter/{n}/page/{i}`，本来就在
+   `?token=` 的白名单里，与 1.2 的取页链接同一条路径族。
 6. **客户端**：Thorium Reader 手工加目录（浏览 → 打开作品 → 章节列表 → **打开清单读到页**）。
    这一条是本次最大的未知：Thorium 支持 Divina，但"从 OPDS 2.0 feed 跟随 divina acquisition"没有公开的
-   验证记录。**2026-10-01 阶段 2 收尾时仍未跑**：这台机器上没装 Thorium Reader，而它是 GUI 程序，
+   验证记录。**到阶段 6 收尾（2026-10-03）仍未跑**：这台机器上没装 Thorium Reader，而它是 GUI 程序，
    现有工具驱动不了。替代品是第 3 条那个链路走查 —— 它证明客户端要跟随的每一环都能解析，
    但**不**证明 Thorium 真的会跟 `indirectAcquisition` 走。这一条仍需人工（装 Thorium → 填目录 URL →
-   点开作品 → 点开章节 → 翻页）。若这条路走不通，v2 的章节仍可作为纯 CBZ 入口（下载型客户端），
-   但"在线阅读"要另想办法 —— **不要等到阶段 6 才试**。KOReader 用 1.2 做对照组，确认两条端点互不影响。
+   点开作品 → 点开章节 → 翻页）—— 它是本方案唯一未验的假设。走不通也不影响交付：v2 的章节仍可作为
+   纯 CBZ 入口（下载型客户端），只是"在线阅读"要另想办法。KOReader 用 1.2 做对照组，确认两条端点互不影响。
 
 ## 10. 已定（2026-10-01）
 

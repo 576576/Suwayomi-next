@@ -519,9 +519,19 @@ mod tests {
     #[test]
     fn token_query_is_limited_to_opds_and_pages() {
         assert!(token_query_allowed("/api/opds/v1.2/library/series"));
+        assert!(token_query_allowed("/api/opds/v2/library/series"));
         assert!(token_query_allowed("/api/v1/manga/1/chapter/2/page/3"));
         assert!(!token_query_allowed("/api/graphql"));
         assert!(!token_query_allowed("/api/v1/backup/export"));
+    }
+
+    /// v2 与 1.2 并列挂载，认证认的是 `/api/` 与 `/api/opds/` 两条**前缀**而不是
+    /// 精确路径 —— 这条锁住"新增端点不需要动认证"。
+    #[test]
+    fn opds_v2_falls_under_the_same_auth_prefixes() {
+        assert!(is_data_path("/api/opds/v2"));
+        assert!(is_data_path("/api/opds/v2/series/1/chapter/2/manifest"));
+        assert!(token_query_allowed("/api/opds/v2/series/1/chapter/2/manifest"));
     }
 
     /// 静态托管的路径判定：先解码再判，`%2f` 写法不能蒙混过关。

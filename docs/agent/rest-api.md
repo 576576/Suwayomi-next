@@ -178,3 +178,35 @@
 | GET | `/{webui 静态资源}` | WebUI 托管（WebInterfaceManager） |
 
 认证规则（beforeMatched）：`/login.html`、`site.webmanifest`、`manifest.json`、首页图标免认证；OPTIONS 免认证；`SIMPLE_LOGIN` 未登录 → 302 到 login.html（带 redirect 参数）；`BASIC_AUTH` 校验失败 → 401 + WWW-Authenticate: Basic。
+
+## 6. OPDS API v2（`/api/opds/v2/`）——本仓新增，参考实现无
+
+参考实现**没有**这一组端点，所以本节不是兼容对照，而是本仓自己的契约：与 §3 的 1.2 **并列提供**同一份数据的第二种编码 —— OPDS 2.0（feed 媒体类型 `application/opds+json`），章节的正文用 Readium Divina 清单（`application/divina+json`）表达。
+
+路由形状与 1.2 逐一对应：把 §3 表里的 `opds/v1.2` 换成 `opds/v2`，去掉 1.2 的 `search` 与 `series/{id}/chapter/{chapterIndex}/metadata`，再加一条清单，共 **18 条**。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `opds/v2` | 根目录（导航） |
+| GET | `opds/v2/explore` | 在线源列表（导航） |
+| GET | `opds/v2/explore/source/{sourceId}` | 源浏览（远程条目，acquisition 指向源页面） |
+| GET | `opds/v2/library/series` | 库漫画 / 搜索结果 |
+| GET | `opds/v2/library/sources` | 库源导航 |
+| GET | `opds/v2/library/categories` | 分类导航 |
+| GET | `opds/v2/library/genres` | 题材导航 |
+| GET | `opds/v2/library/statuses` | 状态导航 |
+| GET | `opds/v2/library/languages` | 语言导航 |
+| GET | `opds/v2/history` | 阅读历史 |
+| GET | `opds/v2/library-updates` | 库更新 |
+| GET | `opds/v2/source/{sourceId}` | 源漫画 |
+| GET | `opds/v2/category/{categoryId}` | 分类漫画 |
+| GET | `opds/v2/genre/{genre}` | 题材漫画 |
+| GET | `opds/v2/status/{statusId}` | 状态漫画 |
+| GET | `opds/v2/language/{langCode}` | 语言漫画 |
+| GET | `opds/v2/series/{seriesId}/chapters` | 章节列表 |
+| GET | `opds/v2/series/{seriesId}/chapter/{chapterId}/manifest` | 章节的 Divina 清单 |
+
+- 公共 query：`lang=`（缺省 `en`）与 `pageNumber=`；`library/series` 另认 `query=` / `author=` / `title=`（与 §3 同规则切搜索分支），章节 feed 另认 `sort=` / `filter=`（缺省由 `opdsChapterSortOrder` 决定，客户端显式给了就听客户端的）。
+- **清单路径用的是章节的库内 `id`，不是 1.2 那个 `chapterIndex`（`source_order`）** —— 章节的 acquisition 链接由 feed 自己给出，客户端照抄即可；这个取值口径与 §0 的偏离说明不冲突。
+- 路径要写**无尾斜杠**的形式，与 §1 的实测一致（带尾斜杠会落到 WebUI 的 SPA fallback，返回 `200 text/html`）。
+- 认证与 1.2 同源，不需要为 v2 单独配：`/api/` 前缀进「匿名 401」，`/api/opds/` 前缀放行 `?token=`（`crates/suwayomi-api/src/auth.rs` 的两处前缀判定）。

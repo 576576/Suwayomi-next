@@ -16,7 +16,7 @@ Suwayomi-next是一个漫画阅读器项目，支持基于Tachiyomi拓展的插�
 - WebUI：`http://localhost:4567`（端口不满足时将自动顺延）
 - GraphQL：`/api/graphql`
 - REST：`/api/v1`
-- OPDS：`/api/opds/v1.2`（In-progress: `/api/opds/v2`）
+- OPDS：`/api/opds/v1.2`、`/api/opds/v2`
 
 > 桌面WebUI 窗口由**系统WebView** 打开（Tauri 2），不支持WebView 时回退浏览器
 >

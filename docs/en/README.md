@@ -16,7 +16,7 @@ Suwayomi-next is a manga reader project with a plugin system based on Tachiyomi 
 - WebUI: `http://localhost:4567` (falls back to a higher port when 4567 is unavailable)
 - GraphQL: `/api/graphql`
 - REST: `/api/v1`
-- OPDS: `/api/opds/v1.2` (In-progress: `/api/opds/v2`)
+- OPDS: `/api/opds/v1.2`, `/api/opds/v2`
 
 > The desktop WebUI window is opened by the **system WebView** (Tauri 2); without a WebView it falls back to the browser
 >

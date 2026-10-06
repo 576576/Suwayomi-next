@@ -252,6 +252,38 @@ python .workbuddy/verify/ci_pack_check.py     # 输入顺序 / prep 各分支 / 
 - 扩展沙盒（`bin/ext-runtime.jar`）：**所有桌面 target 都带**，server 跑扩展靠它，任何 target 都不能少。它**不再由本仓库构建** —— 见下面「ext-runtime 从哪来」。
 - 不打包 JRE 的场合：核心包（`pack_core`）、Android。桌面端 Linux 核心包历来也不捆（可自行装系统 OpenJDK 或取 `+jre` 包），勾 `pack_jre` 即自带 `jre/`；Windows 的 msi / setup.exe 装的就是 `+jre` 那份。
 
+## 伴生仓前置（`refresh_companions`）
+
+发布要捆两份**别的仓库**出的资产（ext-runtime 的 jar/JRE、托盘的桌面壳），那两仓推 main 的自动 alpha 只出最小发货集。「全平台 + `windows_toolchain=all`」这类组合因此必然缺件，而缺件的表现不是一句报错：5~7 个 job 各自 404、`publish` 被 skip，整轮不出 Release。
+
+手动 dispatch 的 `refresh_companions`（布尔，默认关，**只对 alpha / beta 有效**）把这两件事一次做掉：先按本次矩阵派发两仓的对应构建，等它们跑完，再按 run id 反查它们新出的 tag 交给取件步骤。
+
+- 步骤顺序 `out` → `companions` → `webui` → `ext_runtime` → `tray` → 覆盖检查：tag 先定下来，取件步骤才能按它精确取。勾选时 `resolve-ext-runtime.sh` / `resolve-tray.sh` 收到的是 **tag**，此时**不能再叠 `--stable` / `--build`** —— beta 的 release 是 `prerelease=false`，加 `--build` 会把刚构建出来的那份挡掉。
+- release 通道选它就是报错：那边两仓取的是**正式版**，出一份新构建是「该不该发这个版本」的人为决定。
+- 跨仓派发只能用它自己的 **fine-grained PAT**（`github.token` 只作用于本仓）：secret `COMPANION_DISPATCH_TOKEN`，只授两仓的 `Actions: write` + `Contents: read` / `Metadata: read`。没这个 secret 时脚本明确失败，不会静默退回「取最新」。
+- 伴生仓 run 失败 / 派发后没出现新 run / 跑完但查不到对应 tag，一律**整轮失败**，连失败的 job 名一起报出来；不做「退回旧 release」的降级。
+
+派发参数由主仓的输入推出来（`scripts/refresh-companions.py`）：
+
+| 目标仓 | 参数 | 来源 |
+|---|---|---|
+| Suwayomi-ext-runtime | `channel` | 本次通道 |
+| | `build_jre` | `pack_jre`（要六份裁剪 JRE 才够取） |
+| | `publish_packages` | 恒 `false`（本仓库只吃 Release 资产） |
+| Suwayomi-tray | `channel` | 本次通道 |
+| | `windows_toolchain` | 本次的 `windows_toolchain`（1:1） |
+| | `build_<平台>` | 本次选中的桌面 target 映射过去（带 `-gnullvm` 的矩阵项先摘掉工具链段 —— 托盘仓的工具链是单独一个开关，平台开关没有这个维） |
+
+只勾 Android 时只派 ext-runtime（要它那份共享源码）；托盘仓一个平台都没勾会自己报错，所以不派。
+
+两仓是**顺序**跑的（派发 → 等完 → 再派下一个），各自超时 60 分钟：prep 在这个步骤里会一直等，所以勾上它等于给整轮发布加两段构建的时间。要"用现成的、不重新构建"，就别勾它 —— 够不够由上面那道覆盖检查判。
+
+不勾这个开关也有一道兜底：prep 最后一步 `scripts/check-companion-assets.py` 按**本次矩阵真正会用到的资产名**逐个比对该 release 的资产清单，缺件就直接失败，并把「去哪个仓、用哪些参数 dispatch」打出来。
+
+- **一个托盘 Release 都没解析到 + 本次要出 Windows 安装包 = 必然 ICE64**：`.wxs` 里含 `AppMenuFolder` 的 `RemoveFolder` 组件被 `HasTray` 条件排除，`wix msi validate` 报错。这不是「少个托盘」的可容忍降级，所以是硬失败。
+- 清单三级探测（`gh` → REST → HTML）全取不到时**只降级成 `::warning::`**：那是「没查到」不是「缺件」，下游照旧报它自己的 404。
+- 托盘仓的 `release.yml` 配了 `concurrency: group: release-${{ github.ref }}`（`cancel-in-progress: false`）：两次派发撞上时排队，而不是并行烧 runner 分钟。
+
 ## ext-runtime 从哪来
 
 桌面沙盒与 Android 扩展宿主共用的那份代码已经剥离到独立仓库 **`576576/Suwayomi-ext-runtime`**（`jvm-sandbox` 改名为 `ext-runtime`，原来的 `extension-runtime` 共享源码树并入其中）。本仓库**不再**持有任何一份源码，两条消费链都从它发布的 Release 资产取：
@@ -267,7 +299,7 @@ python .workbuddy/verify/ci_pack_check.py     # 输入顺序 / prep 各分支 / 
 - 解析脚本：`scripts/resolve-ext-runtime.sh`（默认取桌面 jar，加 `--sources` 取共享源码包），三级探测同 `resolve-webui.sh`。它同时吐一个 `base=`（该 release 的资产下载前缀）—— 同一版本下其余资产按 `<base>/<资产名>` 拼即可，不必为每种 `(os, arch)` 再探测一遍。Android 侧再包一层 `android/scripts/fetch-ext-runtime-src.sh`，下载 + 展开 + 校验三个包根齐全。
 - **位置参数是 tag，不是版本号**：`--stable`/`--build` 之外的那个参数按 **tag** 全等匹配（去前导 `v` 后比，`v30.0.47` 与 `30.0.47` 同样认）。alpha 的 tag 是 `36.0.67-alpha.<run_id>`、而资产名里是裸版本号 `36.0.67`，给版本号在 alpha 下**匹配不到**（同一个版本号还会被多次 alpha 构建复用，只给版本号等于放弃"精确定位某一次构建"）。
 - Android **只能吃源码**：`:extension-host` 由 AGP 9 内置的 Kotlin **2.3.20** 编译，而 ext-runtime 用 Kotlin **2.4.0**，元数据版本不兼容，2.3 读不了 2.4 编出来的 class。
-- 版本由 `release.yml` 的 prep 解析一次、经 `build.yml` 的 `ext_runtime_version`（+ `ext_runtime_jre_base`）传给所有 target，**同一批产物用的是同一个 ext-runtime 版本**。
+- 版本由 `release.yml` 的 prep 解析一次、经 `build.yml` 的 `ext_runtime_version`（+ `ext_runtime_jre_base`）传给所有 target，**同一批产物用的是同一个 ext-runtime 版本**。勾了 `refresh_companions` 时改为用派发出来的 tag（见「伴生仓前置」）。
 - **tag 与版本号是两个值，不能互相代用**（2026-10-06 修）：release 的 tag 是 `v30.1.0`、alpha 是 `36.0.67-alpha.<run_id>`，而**资产名里一律是裸版本号**（`ext-runtime-36.0.67.jar`）—— 下载路径要 tag、资产名要版本号。prep 因此另吐一个 `ext_runtime_tag`（`base` 的尾段），只有「按路径取件」的两处消费它：`android` job 取共享源码（`fetch-ext-runtime-src.sh` 按 tag 全等校验，避免退化成"最新预发布"而取到另一次构建）、`oci` job 传给 Dockerfile 的 `EXT_RUNTIME_TAG` build-arg。**桌面矩阵不用它**：`ext_runtime_url` / `ext_runtime_jre_base` 这两个 URL 里已经带对了 tag。
 - 版本号是 `<AOSP API level>.{提交数/100}.{提交数%100}`（如 `30.0.47`）：大版本跟着沙盒 pin 的 Android API 基线走，后两位是那个仓库自己的提交数（`versionCode = 提交数 + 1000`，规则同本仓库，只是基线不同）。
 - 改沙盒的流程：在 Suwayomi-ext-runtime 改 → 推 main（自动出 alpha，只有 jar 与两份 JRE）或手动 dispatch release 通道（出齐全六份 JRE 并发 Packages）→ 回这边跑一次发布即生效（无需改本仓库代码）。
@@ -296,10 +328,10 @@ python .workbuddy/verify/ci_pack_check.py     # 输入顺序 / prep 各分支 / 
 | Windows 的 gnullvm 那份 | 同上换扩展名（`<.dll>`） | 同一份产物根目录的 `WebView2Loader.dll`（与 exe 成对，缺它托盘起不来） |
 
 - 解析脚本：`scripts/resolve-tray.sh`，三级探测同 `resolve-webui.sh`，同样吐 `base=`（该 release 的资产下载前缀）—— 各 target 的资产都在同一个 release 里，prep 解析一次，各 target 按 `<base>/suwayomi-tray-<V>-<target>[.exe]` 取，不必逐个探测。`<target>` 就是 `matrix.target`（带工具链段的那份也一样），所以本仓库的 server 与取来的桌面壳恒同工具链。
-- **解析不到或下载失败只打 `::warning::`，不让发布失败**：没有托盘壳时 server 本身照样可用。这是刻意选的（托盘仓库 CI 挂掉不该阻塞 server 发布），代价是可能静默出一个不含桌面壳的包 —— 看构建日志里的 warning。
+- **解析不到或下载失败只打 `::warning::`，不让发布失败**：没有托盘壳时 server 本身照样可用。这是刻意选的（托盘仓库 CI 挂掉不该阻塞 server 发布），代价是可能静默出一个不含桌面壳的包 —— 看构建日志里的 warning。**唯一例外**：本次要出 Windows 安装包却一个托盘 Release 都没解析到 → 必然 ICE64，prep 直接失败（见「伴生仓前置」）。
 - 版本号由托盘仓库自己管（算法与本仓库同款：`versionCode = 提交数 + 1000`，版本名 `1.{提交数/100}.{提交数%100}`；三通道共用同一个版本名，差异在 tag）。**不与本仓库的 `r{code}` / `3.y.z` 对齐**：exe 的 PE 版本资源显示的是托盘自己的版本。
 - 改托盘的流程：在 Suwayomi-tray 改 → 推 main（自动出 alpha，只有 windows-x64 + linux-x64 两份，工具链恒 `msvc`）或手动 dispatch release 通道（六份出齐，`windows_toolchain` 可选 `msvc`/`gnullvm`/`all`，选 `all`/`gnullvm` 时 Windows 的是两套）→ 回这边跑一次发布即生效（无需改本仓库代码）。
-- **通道到这里是分岔的**：那边推 main 会自动出 alpha 预发布，所以本仓库正式发布只认非预发布版本（`resolve-tray.sh --stable`），alpha/beta 才跟最新构建（`--build`）。
+- **通道到这里是分岔的**：那边推 main 会自动出 alpha 预发布，所以本仓库正式发布只认非预发布版本（`resolve-tray.sh --stable`），alpha/beta 才跟最新构建（`--build`）。勾了 `refresh_companions` 时改用派发出来的 tag（见「伴生仓前置」）。
 - 为什么拆：托盘是独立 workspace + 494 个 crate 的 Tauri 依赖树，原先在每个 desktop target 的 job 里**串行**编译一次，托盘代码没变也照编。拆走后本仓库每次构建只下载几 MB，顺带省掉 Linux 那套 webkit2gtk/appindicator 系统依赖。
 
 ## 桌面壳的形态与行为
@@ -316,8 +348,12 @@ python .workbuddy/verify/ci_pack_check.py     # 输入顺序 / prep 各分支 / 
 ```bash
 python .workbuddy/verify/workflows_check.py   # 四个 workflow：YAML 可解析 + 每个 run 块过 bash -n + 触发/依赖结构
 python .workbuddy/verify/clear_dryrun.py      # gh 打桩 + 假 Release 列表，真跑 clear.yml 两个 run 块（9 个场景）
-python .workbuddy/verify/ci_pack_check.py     # 产物形态开关 / 附件白名单 / paths-ignore 的结构断言
+python .workbuddy/verify/ci_pack_check.py     # 产物形态开关 / 附件白名单 / paths-ignore / 伴生仓联动的断言
+python .workbuddy/verify/companions_flow_check.py  # 假 GitHub API 跑真脚本：派发 → 等完成 → 反查 tag（7 个场景）
+python .workbuddy/verify/ci_run_watch.py      # 查某个 run 的 job / 步骤级状态（--watch / --steps）
 ```
+
+`companions_flow_check.py` 与 `ci_pack_check.py` 的伴生仓那节都把 `scripts/refresh-companions.py` / `check-companion-assets.py` **当产品代码真跑**，只把网络换成本地假服务（`--api-base` / `--html-base`）—— 靠改 `PATH` 塞 gh 桩是不隔离的，脚本子进程会按真实环境找到 gh/curl 去打真网络。
 
 做法（详见 `gh-actions-verify` 技能）：把 `run:` 块抽出来、按场景替换 `${{ }}`、外部 CLI 打桩、在最小的假仓库骨架里真跑，断言 `$GITHUB_OUTPUT` / 产物名 / 归档内容 / gh 的 `--notes`。
 

@@ -84,6 +84,13 @@ on:
         description: 额外产出 OCI 包
         type: boolean
         default: false
+      # 伴生仓（ext-runtime / tray）的资产只有在它们自己出全量时才够用，而那两个仓推 main 的
+      # 自动 alpha 只出最小发货集。勾上这条会先派发它们的对应构建、等跑完、再按 run id 取它们
+      # 新出的那份资产 —— 不必人肉先去点两下。需要 COMPANION_DISPATCH_TOKEN（只授那两仓）。
+      refresh_companions:
+        description: 先派发伴生仓的对应构建，再取它们新出的资产
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -100,6 +107,9 @@ jobs:
       channel: ${{ steps.out.outputs.channel }}
       channel_suffix: ${{ steps.out.outputs.channel_suffix }}
       pack_core: ${{ steps.out.outputs.pack_core }}
+      windows_toolchain: ${{ steps.out.outputs.windows_toolchain }}
+      selected: ${{ steps.out.outputs.selected }}
+      refresh_companions: ${{ steps.out.outputs.refresh_companions }}
       targets: ${{ steps.out.outputs.targets }}
       android_targets: ${{ steps.out.outputs.android_targets }}
       version_name: ${{ steps.out.outputs.version_name }}
@@ -147,6 +157,7 @@ jobs:
             PACK_OCI="${{ github.event.inputs.pack_oci }}"
             ANDROID_ARM64="${{ github.event.inputs.build_android_arm64 }}"
             ANDROID_X64="${{ github.event.inputs.build_android_x64 }}"
+            REFRESH="${{ github.event.inputs.refresh_companions }}"
 
             SEL=""
             [ "${{ github.event.inputs.build_windows_x64 }}" = "true" ] && SEL="$SEL windows-x64"
@@ -164,6 +175,7 @@ jobs:
             PACK_OCI="${PACK_OCI:-false}"
             ANDROID_ARM64="${ANDROID_ARM64:-false}"
             ANDROID_X64="${ANDROID_X64:-false}"
+            REFRESH="${REFRESH:-false}"
             WIN_TC="${WIN_TC:-msvc}"
           else
             # 推送 main：自动 alpha，固定 windows-x64 + linux-x64；形态与手动 dispatch 的默认值保持一致。
@@ -177,8 +189,13 @@ jobs:
             PACK_OCI="false"
             ANDROID_ARM64="false"
             ANDROID_X64="false"
+            REFRESH="false"
             SEL="windows-x64 linux-x64"
           fi
+
+          # SEL 是逐项 `SEL="$SEL x"` 拼的，首项前会留一个空格；它要原样作为 `--targets`
+          # 传给派发脚本，先去干净，免得下游拿到 `<空格>windows-x64` 这种值。
+          SEL="${SEL# }"
 
           # 通道段只有 beta 非空（beta 与 release 共用 3.y.z 版本名，不区分会重名）。
           if [ "$CHANNEL" = "beta" ]; then CH_SUFFIX="-beta"; else CH_SUFFIX=""; fi
@@ -260,6 +277,12 @@ jobs:
             msvc|gnullvm|all) ;;
             *) echo "::error::未知的 Windows 工具链：$WIN_TC"; exit 1 ;;
           esac
+          # refresh_companions 只在 alpha / beta 有意义：release 通道取的是两仓的**正式**版，
+          # 那是"该不该发这个版本"的人为决定，不该被一次编排隐式触发成一次新构建。
+          if [ "$REFRESH" = "true" ] && [ "$CHANNEL" = "release" ]; then
+            echo "::error::refresh_companions 只对 alpha / beta 有效（release 通道取两仓的正式版）"
+            exit 1
+          fi
           # 两种安装包装的都是 +jre 那份内容（setup.exe 只是 msi 的 Burn 外壳），关掉 pack_jre 时无处可取。
           if [ "$PACK_MSI" = "true" ] || [ "$PACK_EXE" = "true" ]; then
             if [ "$PACK_JRE" != "true" ]; then
@@ -277,6 +300,7 @@ jobs:
             echo "channel=$CHANNEL"
             echo "channel_suffix=$CH_SUFFIX"
             echo "pack_core=$PACK_CORE"
+            echo "windows_toolchain=$WIN_TC"
             echo "targets=$INCLUDE"
             echo "android_targets=$ANDROID_INCLUDE"
             echo "version_name=$VER_NAME"
@@ -288,6 +312,9 @@ jobs:
             echo "pack_msi=$PACK_MSI"
             echo "pack_exe=$PACK_EXE"
             echo "pack_oci=$PACK_OCI"
+            echo "refresh_companions=$REFRESH"
+            # 派发伴生仓时要用：托盘仓的平台开关与 ext-runtime 的 JRE 开关都由它推出来。
+            echo "selected=$SEL"
           } >> "$GITHUB_OUTPUT"
           echo "$FLOW 发布: $CHANNEL $VER_NAME (code $VER_CODE, commits $COUNT) -> $TAG"
           echo "   targets=[$SEL] android=[$ANDROID_ARM64 $ANDROID_X64] core=$PACK_CORE jre=$PACK_JRE msi=$PACK_MSI exe=$PACK_EXE oci=$PACK_OCI win_tc=$WIN_TC"
@@ -299,6 +326,24 @@ jobs:
               -H "Accept: application/vnd.github+json" \
               -d "{\"name\":\"Release ${VER_NAME}\"}" >/dev/null 2>&1 || true
           fi
+
+      - name: 派发伴生仓（refresh_companions）
+        # 勾上时先把 ext-runtime / tray 的对应构建派发出去、等它们跑完，拿到这次新出的 tag ——
+        # 后面两个解析步骤会优先用它，于是取到的是"与本次主仓构建同一批"的资产。
+        # 不能用 github.token：它只能操作本仓；跨仓派发需要 COMPANION_DISPATCH_TOKEN。
+        id: companions
+        if: steps.out.outputs.refresh_companions == 'true'
+        env:
+          COMPANION_DISPATCH_TOKEN: ${{ secrets.COMPANION_DISPATCH_TOKEN }}
+        run: |
+          OUT="$(python3 scripts/refresh-companions.py \
+            --channel '${{ steps.out.outputs.channel }}' \
+            --windows-toolchain '${{ steps.out.outputs.windows_toolchain }}' \
+            --targets '${{ steps.out.outputs.selected }}' \
+            --android '${{ steps.out.outputs.android_targets }}' \
+            --pack-jre '${{ steps.out.outputs.pack_jre }}' \
+            --pack-oci '${{ steps.out.outputs.pack_oci }}')"
+          printf '%s\n' "$OUT" >> "$GITHUB_OUTPUT"
 
       - name: 解析捆绑的 WebUI 制品
         id: webui
@@ -326,11 +371,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # ext-runtime 六个桌面 target 共用同一个 jar，解析一次即可；该仓推 main 会出 alpha 预发布，必须按通道挑。
-          case "${{ steps.out.outputs.channel }}" in
-            release) ER_KIND="--stable" ;;
-            *)       ER_KIND="--build"  ;;
-          esac
-          OUT="$(bash scripts/resolve-ext-runtime.sh $ER_KIND)"
+          # 勾了 refresh_companions 时改用派发出来的那个 tag 精确取件：这时**不能**再带
+          # --stable/--build —— beta 的 release 是 prerelease=false，与"通道 = 预发布"的假设
+          # 相反，而 tag 本身已唯一确定那一份。
+          ER_TAG="${{ steps.companions.outputs.ext_runtime_tag }}"
+          if [ -n "$ER_TAG" ]; then
+            OUT="$(bash scripts/resolve-ext-runtime.sh "$ER_TAG")"
+          else
+            case "${{ steps.out.outputs.channel }}" in
+              release) ER_KIND="--stable" ;;
+              *)       ER_KIND="--build"  ;;
+            esac
+            OUT="$(bash scripts/resolve-ext-runtime.sh $ER_KIND)"
+          fi
           URL="$(printf '%s' "$OUT" | sed -n 's/^url=//p')"
           VER="$(printf '%s' "$OUT" | sed -n 's/^version=//p')"
           BASE="$(printf '%s' "$OUT" | sed -n 's/^base=//p')"
@@ -356,11 +409,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # 托盘壳六个 target 的资产在同一个 release 里，只解析版本与前缀；解析不到只告警（--optional）。
-          case "${{ steps.out.outputs.channel }}" in
-            release) TRAY_KIND="--stable" ;;
-            *)       TRAY_KIND="--build"  ;;
-          esac
-          OUT="$(bash scripts/resolve-tray.sh --optional $TRAY_KIND)"
+          # 同 ext-runtime：勾了 refresh_companions 就用派发出来的 tag 精确取件。
+          TRAY_TAG="${{ steps.companions.outputs.tray_tag }}"
+          if [ -n "$TRAY_TAG" ]; then
+            OUT="$(bash scripts/resolve-tray.sh --optional "$TRAY_TAG")"
+          else
+            case "${{ steps.out.outputs.channel }}" in
+              release) TRAY_KIND="--stable" ;;
+              *)       TRAY_KIND="--build"  ;;
+            esac
+            OUT="$(bash scripts/resolve-tray.sh --optional $TRAY_KIND)"
+          fi
           URL="$(printf '%s' "$OUT" | sed -n 's/^url=//p')"
           VER="$(printf '%s' "$OUT" | sed -n 's/^version=//p')"
           BASE="$(printf '%s' "$OUT" | sed -n 's/^base=//p')"
@@ -373,6 +432,26 @@ jobs:
             echo "release_url=${URL%%/releases/download/*}/releases/tag/${BASE##*/}" >> "$GITHUB_OUTPUT"
             echo "捆绑桌面壳: $VER（$BASE）"
           fi
+
+      - name: 核对伴生仓资产
+        # 取件前把「这次要用的资产在不在」判一次。不做这一步的话，缺件的表现是 5~7 个 job
+        # 各自 404（裁剪 JRE）或 ICE64（托盘壳），外加桌面矩阵一挂 publish 被 skip —— 整轮
+        # 不出 Release，且没有任何一句话说清"该去哪个仓点什么"。
+        # 不在这里碰网络之外的东西：查不到资产清单时降级为 ::warning::（查不到 ≠ 缺件）。
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/check-companion-assets.py \
+            --targets '${{ steps.out.outputs.targets }}' \
+            --android '${{ steps.out.outputs.android_targets }}' \
+            --pack-jre '${{ steps.out.outputs.pack_jre }}' \
+            --pack-installer '${{ steps.out.outputs.pack_msi == 'true' || steps.out.outputs.pack_exe == 'true' }}' \
+            --ext-base '${{ steps.ext_runtime.outputs.jre_base }}' \
+            --ext-version '${{ steps.ext_runtime.outputs.version }}' \
+            --tray-base '${{ steps.tray.outputs.base }}' \
+            --tray-version '${{ steps.tray.outputs.version }}' \
+            --channel '${{ steps.out.outputs.channel }}' \
+            --windows-toolchain '${{ steps.out.outputs.windows_toolchain }}'
 
   lint:
     name: 质量门禁（复用 lint.yml）

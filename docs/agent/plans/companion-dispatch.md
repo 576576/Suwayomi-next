@@ -121,13 +121,14 @@ prep 拿到三个 `base` 并算完矩阵之后，核对"这次要取的资产是
 
 | 阶段 | 内容 | 依赖 | 状态 |
 |---|---|---|---|
-| 0 | **A1** 取件前覆盖检查（prep 内，无 token） | — | 未开始 |
-| 1 | tray 仓补 `concurrency`；两仓 dispatch 参数表写进 `docs/agent/release.md` | — | 未开始 |
-| 2 | **A2**：`refresh_companions` 输入 + `companions` job + `COMPANION_DISPATCH_TOKEN` + `tray_tag` + `resolve-tray.sh` 对齐 tag 口径 | 阶段 0/1、secret | 未开始 |
-| 3 | 文档收口：`docs/agent/release.md` 补「伴生仓前置」一节；`GOTCHAS.md` 里那三条硬伤改成"已由谁解决/仍需人肉" | 阶段 2 | 未开始 |
+| 0 | **A1** 取件前覆盖检查（prep 内，无 token）→ `scripts/check-companion-assets.py` | — | 已完成（2026-10-06） |
+| 1 | tray 仓补 `concurrency`（ext-runtime 本来就有）；两仓 dispatch 参数表写进 `docs/agent/release.md` | — | 已完成（2026-10-06） |
+| 2 | **A2**：`refresh_companions` 输入 + prep 里的 `companions` 步骤 + `COMPANION_DISPATCH_TOKEN` + `ext_runtime_tag` / `tray_tag` override + `resolve-tray.sh` 对齐 tag 口径 → `scripts/refresh-companions.py` | 阶段 0/1 | 代码已完成（2026-10-06）；**首次真跑待建 secret** |
+| 3 | 文档收口：`docs/agent/release.md` 补「伴生仓前置」一节；`GOTCHAS.md` 里那三条硬伤改成"已由谁解决/仍需人肉" | 阶段 2 | 已完成（2026-10-06） |
 | — | **不**单独预验 tray 的 gnullvm（`windows_toolchain=gnullvm`）—— 等阶段 2 第一次真跑时一起验 | — | 已决定跳过 |
 
-全部待定项已拍板，见 §8。下一步从**阶段 0（A1，零密钥）**开始。
+全部待定项已拍板，见 §8。仅剩的一件事是**在主仓建 secret `COMPANION_DISPATCH_TOKEN`** —— 那是
+只有人能做的授权动作；不建它时 workflow 本身照样能跑（`refresh_companions` 默认关），勾了则脚本明确报错。
 
 ## 8. 已拍板（2026-10-06）
 

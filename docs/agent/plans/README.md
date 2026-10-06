@@ -11,6 +11,7 @@
 | `backup-options-alignment.md` | 备份选项对齐 Mihon：10 个选项的语义与灰化依赖、proto 104/105/106 的取舍、恢复侧 `in_library` 的语义、落地情况 |
 | `database-settings.md` | 数据库设置接线：为什么这一项不能存进库、引导文件的位置与优先级、四个字段 + `useHikariConnectionPool` 的逐个处置、实施分层 |
 | `opds-v2.md` | OPDS 2.0 端点（`/api/opds/v2`，含章节的 Readium Divina 清单端点）：与 1.2 的硬边界、规范与客户端现实、逐字段映射（Atom → JSON）、JSON Schema 强制的结构约束、9 个 `opds*` 设置的逐条处置、实施分层与验证。五项选型 2026-10-01 已定（§10） |
+| `companion-dispatch.md` | 伴生仓联动：为什么"全平台 alpha"必然缺件、手动 dispatch 先拉起 ext-runtime / tray 对应构建的方案（预检 → 编排 → 按 tag 取件）、零密钥备选、密钥与失败语义、分阶段安排 |
 
 ## 维护约定
 

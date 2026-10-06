@@ -21,6 +21,9 @@
 - 现状是**人肉前置**：先去 ext-runtime 手动 dispatch（`channel=alpha`、`build_jre=true`、`publish_packages=false`），
   再去 tray 手动 dispatch（`windows_toolchain=all` + 六个平台全勾），等两边出完，再回主仓跑全量。
   可行，但"参数对不对 / 出没出完"全靠人记。
+- **注**：2026-10-03 那轮里 android 取件与 OCI 的两处 404 是**另一个问题**（把裸版本号当 release tag 用，
+  与资产覆盖无关），已于 2026-10-06 修好并在 CI 上实证（定向 run `37407805350`：android×2 + OCI×2 + manifest
+  全 success）。本文要处理的是剩下的那一类 —— **伴生仓根本没产出所需资产**。
 
 ## 2. 目标与非目标
 
@@ -137,4 +140,5 @@ prep 拿到三个 `base` 并算完矩阵之后，核对"这次要取的资产是
   `ext_runtime_tag`（prep 输出 → `build.yml` → android 取共享源码 / OCI 的 `EXT_RUNTIME_TAG` build-arg）。
   `resolve-ext-runtime.sh` 的位置参数改为按 **tag** 全等匹配（带不带前导 `v` 都认），
   `fetch-ext-runtime-src.sh` 按 tag 校验。**这不是本文的方案，而是它的前提**：按 tag 精确定位是 A2
-  第 4/5 步"派发完按 run id 反查 tag"的必要条件。
+  第 4/5 步"派发完按 run id 反查 tag"的必要条件。CI 实证：定向 run `37407805350` 的 android×2
+  （第 10 步「取 ext-runtime 共享源码」）、OCI amd64/arm64（构建 / 冒烟 / 推送）与多架构 manifest 全 success。

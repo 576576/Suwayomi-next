@@ -30,3 +30,8 @@ node_modules/
 extensions
 !assets/templates/directory/appdata/extensions/
 /.idea
+
+# 临时文件落这里（git bash 写 /tmp 会失败）；`/build/` 只点仓库根这一层，
+# 免得连带盖掉将来别处的 build 目录
+/build/
+__pycache__/

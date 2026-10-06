@@ -70,7 +70,7 @@ prep 拿到三个 `base` 并算完矩阵之后，核对"这次要取的资产是
 
 ### A2 `refresh_companions`：派发 + 等待 + 按 tag 取件
 
-新增 dispatch 输入 `refresh_companions`（boolean，**默认关**）。开着时新增一个 `companions` job（在 `lint`/`prep`
+新增 dispatch 输入 `refresh_companions`（boolean，**默认关**，已拍板）。开着时新增一个 `companions` job（在 `lint`/`prep`
 之前跑完，或与 `prep` 串行）：
 
 1. 按主仓本次的选择推导两仓的 dispatch 参数（见 §3 的表）：工具链 1:1 传、平台开关按主仓选中的桌面目标映射。
@@ -125,14 +125,19 @@ prep 拿到三个 `base` 并算完矩阵之后，核对"这次要取的资产是
 | 1 | tray 仓补 `concurrency`；两仓 dispatch 参数表写进 `docs/agent/release.md` | — | 未开始 |
 | 2 | **A2**：`refresh_companions` 输入 + `companions` job + `COMPANION_DISPATCH_TOKEN` + `tray_tag` + `resolve-tray.sh` 对齐 tag 口径 | 阶段 0/1、secret | 未开始 |
 | 3 | 文档收口：`docs/agent/release.md` 补「伴生仓前置」一节；`GOTCHAS.md` 里那三条硬伤改成"已由谁解决/仍需人肉" | 阶段 2 | 未开始 |
+| — | **不**单独预验 tray 的 gnullvm（`windows_toolchain=gnullvm`）—— 等阶段 2 第一次真跑时一起验 | — | 已决定跳过 |
 
-## 8. 待定（需要拍板）
+全部待定项已拍板，见 §8。下一步从**阶段 0（A1，零密钥）**开始。
 
-1. 是否接受新增一个受限 PAT（`COMPANION_DISPATCH_TOKEN`）？这是 A2 的硬前提。
-2. `refresh_companions` 默认关，还是"手动 dispatch 时默认开"？（自动 alpha 不该开 —— 它只出 `windows-x64` + `linux-x64` + `msvc`，现有资产已够。）
-3. A1 的覆盖检查发现缺件时：**直接失败**（推荐，缺件一定坏事），还是只 `::warning::` 后照跑？
-4. 阶段 1 是否顺手把 tray 的 gnullvm CI 路径先单独验一次（派发一次 `windows_toolchain=gnullvm`，
-   它是全链路里唯一从未在 CI 跑过的分支）？
+## 8. 已拍板（2026-10-06）
+
+1. **接受**新增受限 PAT `COMPANION_DISPATCH_TOKEN`（fine-grained，只授权 ext-runtime / tray 两仓的
+   `Actions: write` + `Contents: read` / `Metadata: read`），存成主仓 repository secret。A2 的硬前提已满足。
+2. `refresh_companions` **默认关**。自动 alpha 通道一律不生效（它只出 `windows-x64` + `linux-x64` + `msvc`，
+   现有资产已够）；要全量 alpha 时由人手勾。
+3. A1 覆盖检查发现缺件 → **直接失败**。消息里列全缺口，并给出"去哪个仓、用哪些参数 dispatch"。
+4. **不**单独预验 tray 的 gnullvm 分支，等 A2 第一次真跑时一起验。
+   代价：首次跑 A2 会同时面对"编排新代码"与"gnullvm 首次在 CI 实跑"两个变量 —— 出问题先看是不是后者。
 
 ## 已落地（与本文相关的部分）
 

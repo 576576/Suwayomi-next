@@ -2,7 +2,12 @@
 # 取 ext-runtime 的**共享源码包**，展开成 :extension-host 的源目录。
 #
 # 用法：
-#   android/scripts/fetch-ext-runtime-src.sh [<version>]
+#   android/scripts/fetch-ext-runtime-src.sh [<tag>]
+#
+#   <tag> 是 ext-runtime 那个 release 的 tag（`v30.0.47`，alpha 形如
+#   `36.0.67-alpha.<run_id>`），不带则取最新预发布。**别传裸版本号**：alpha 的
+#   tag 带 `-alpha.<run_id>` 段、同一个版本号会被多次构建复用，只给版本号匹配不到，
+#   而不给 tag 时解析脚本会退化成"最新预发布"—— 那可能与主仓那批 jar 不是同一次构建。
 #
 # 为什么是源码而不是编译好的 jar：
 #   :extension-host 用 AGP 内置的 Kotlin 2.3.20，ext-runtime 用 Kotlin 2.4.0。
@@ -19,25 +24,32 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-VER="${1:-}"
+TAG="${1:-}"
 DEST="$REPO_ROOT/android/build/ext-runtime-src"
 
 PY="$(command -v python3 || command -v python)"
 
-OUT="$(bash "$REPO_ROOT/scripts/resolve-ext-runtime.sh" --sources ${VER:+"$VER"})"
+OUT="$(bash "$REPO_ROOT/scripts/resolve-ext-runtime.sh" --sources ${TAG:+"$TAG"})"
 URL="$(printf '%s' "$OUT" | sed -n 's/^url=//p')"
 GOT="$(printf '%s' "$OUT" | sed -n 's/^version=//p')"
+BASE="$(printf '%s' "$OUT" | sed -n 's/^base=//p')"
 
-if [ -z "$URL" ] || [ -z "$GOT" ]; then
-  echo "::error::fetch-ext-runtime-src.sh: 解析结果不完整：url='${URL}' version='${GOT}'" >&2
+if [ -z "$URL" ] || [ -z "$GOT" ] || [ -z "$BASE" ]; then
+  echo "::error::fetch-ext-runtime-src.sh: 解析结果不完整：url='${URL}' version='${GOT}' base='${BASE}'" >&2
   exit 1
 fi
-if [ -n "$VER" ] && [ "$GOT" != "$VER" ]; then
-  echo "::error::fetch-ext-runtime-src.sh: 版本不符，请求 '${VER}' 实得 '${GOT}'" >&2
-  exit 1
+if [ -n "$TAG" ]; then
+  # 实得的 release 必须就是请求的那个：资产名里的版本号（36.0.67）会被多次 alpha 构建复用，
+  # 拿它做判据挡不住"取到了另一次构建的源码"。
+  GOT_TAG="${BASE##*/}"; GOT_TAG="${GOT_TAG#v}"
+  WANT_TAG="${TAG#v}"
+  if [ "$GOT_TAG" != "$WANT_TAG" ]; then
+    echo "::error::fetch-ext-runtime-src.sh: release 不符，请求 '${TAG}' 实得 '${BASE##*/}'" >&2
+    exit 1
+  fi
 fi
 
-echo "ext-runtime 共享源码：$GOT"
+echo "ext-runtime 共享源码：$GOT（${BASE##*/}）"
 echo "  $URL"
 
 rm -rf "$DEST"

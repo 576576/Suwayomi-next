@@ -118,6 +118,9 @@ jobs:
       ext_runtime_version: ${{ steps.ext_runtime.outputs.version }}
       # 裁剪 JRE 按 <base>/ext-runtime-jre-<V>-<os>-<arch>.tar.gz 拼，不必逐个探测。
       ext_runtime_jre_base: ${{ steps.ext_runtime.outputs.jre_base }}
+      # 下载路径要的是 tag（alpha 形如 36.0.67-alpha.<run_id>），资产名要的是裸版本号 ——
+      # 两者不同，所以整个 release 定位一次、两个值一起传下去。
+      ext_runtime_tag: ${{ steps.ext_runtime.outputs.tag }}
       # 托盘壳同理：解析一次，各 target 按 <base>/suwayomi-tray-<V>-<target>[.exe] 取。
       tray_version: ${{ steps.tray.outputs.version }}
       tray_base: ${{ steps.tray.outputs.base }}
@@ -339,9 +342,13 @@ jobs:
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "version=$VER" >> "$GITHUB_OUTPUT"
           echo "jre_base=$BASE" >> "$GITHUB_OUTPUT"
+          # tag 就是资产前缀的最后一段（base = <repo>/releases/download/<tag>）。别用 $VER 重拼：
+          # alpha 的 tag 是 <VER>-alpha.<run_id>，形状不一样。
+          echo "tag=${BASE##*/}" >> "$GITHUB_OUTPUT"
           echo "release_url=$REPO_URL/releases/tag/${BASE##*/}" >> "$GITHUB_OUTPUT"
           echo "捆绑 ext-runtime: $VER（$URL）"
           echo "裁剪 JRE 前缀: $BASE"
+          echo "release tag: ${BASE##*/}"
 
       - name: 解析桌面壳制品
         id: tray
@@ -392,6 +399,7 @@ jobs:
       ext_runtime_url: ${{ needs.prep.outputs.ext_runtime_url }}
       ext_runtime_version: ${{ needs.prep.outputs.ext_runtime_version }}
       ext_runtime_jre_base: ${{ needs.prep.outputs.ext_runtime_jre_base }}
+      ext_runtime_tag: ${{ needs.prep.outputs.ext_runtime_tag }}
       tray_version: ${{ needs.prep.outputs.tray_version }}
       tray_base: ${{ needs.prep.outputs.tray_base }}
       targets: ${{ needs.prep.outputs.targets }}

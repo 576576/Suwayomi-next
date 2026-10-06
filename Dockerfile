@@ -49,18 +49,25 @@ RUN SUWAYOMI_VERSION_NAME="$VERSION_NAME" \
 # --- 2) 扩展沙盒 jar -----------------------------------------------------
 # 从 Suwayomi-ext-runtime 的 Release 资产取（免鉴权）。曾在镜像里跑 gradle 构建，
 # 改成下载之后本仓库不再有 gradle 工程，也不必把整个上下文 COPY 进去。
-# CI 会显式传 EXT_RUNTIME_VERSION（由 release.yml 的 prep 解析），默认值只为本机手搓兜底。
+# CI 会显式传这两个 build-arg（由 release.yml 的 prep 解析），默认值只为本机手搓兜底：
+#   EXT_RUNTIME_VERSION —— **资产名**里的裸版本号（`ext-runtime-36.0.67.jar`）
+#   EXT_RUNTIME_TAG     —— **下载路径**里的 release tag（release 是 `v30.1.0`，
+#                          alpha 是 `36.0.67-alpha.<run_id>`）
+# 两者不同，拿版本号拼下载路径在 alpha 通道上必 404。
 ARG EXT_RUNTIME_VERSION="30.1.0"
+ARG EXT_RUNTIME_TAG=""
 FROM alpine:3.21 AS sandbox
 ARG EXT_RUNTIME_VERSION
+ARG EXT_RUNTIME_TAG
 RUN apk add --no-cache curl unzip
 WORKDIR /out
 # -f 必须加：不加会把 404 的 HTML 当 jar 存下来，要到运行时才发现。
 # 落地后校验主类，避免「下到了错误页但文件非空」。
-RUN curl -fsSL -o ext-runtime.jar \
-      "https://github.com/576576/Suwayomi-ext-runtime/releases/download/v${EXT_RUNTIME_VERSION}/ext-runtime-${EXT_RUNTIME_VERSION}.jar" \
+RUN TAG="${EXT_RUNTIME_TAG:-v${EXT_RUNTIME_VERSION}}"; \
+    curl -fsSL -o ext-runtime.jar \
+      "https://github.com/576576/Suwayomi-ext-runtime/releases/download/${TAG}/ext-runtime-${EXT_RUNTIME_VERSION}.jar" \
     && unzip -l ext-runtime.jar | grep -q 'sandbox/MainKt.class' \
-    && echo "ext-runtime ${EXT_RUNTIME_VERSION} 就绪"
+    && echo "ext-runtime ${EXT_RUNTIME_VERSION}（${TAG}）就绪"
 
 # --- 3) 裁剪 JRE 25（从 Suwayomi-ext-runtime 下载） -----------------------
 # 裁剪本身在 Suwayomi-ext-runtime 跑（jlink 不能跨平台编译，那边用原生 runner 出六份
@@ -69,16 +76,18 @@ RUN curl -fsSL -o ext-runtime.jar \
 # （含 jdk.httpserver / jdk.crypto.ec，刻意排除 java.desktop）。
 FROM alpine:3.21 AS jre
 ARG EXT_RUNTIME_VERSION
+ARG EXT_RUNTIME_TAG
 WORKDIR /jre
 RUN apk add --no-cache curl \
     && set -eu; \
+    TAG="${EXT_RUNTIME_TAG:-v${EXT_RUNTIME_VERSION}}"; \
     case "$(uname -m)" in \
       aarch64|arm64) A=aarch64 ;; \
       x86_64|amd64)  A=x64 ;; \
       *) echo "不支持的架构：$(uname -m)" >&2; exit 1 ;; \
     esac; \
     curl -fsSL --retry 3 -o /tmp/jre.tar.gz \
-      "https://github.com/576576/Suwayomi-ext-runtime/releases/download/v${EXT_RUNTIME_VERSION}/ext-runtime-jre-${EXT_RUNTIME_VERSION}-linux-${A}.tar.gz" \
+      "https://github.com/576576/Suwayomi-ext-runtime/releases/download/${TAG}/ext-runtime-jre-${EXT_RUNTIME_VERSION}-linux-${A}.tar.gz" \
     && tar -xzf /tmp/jre.tar.gz -C /jre \
     && rm -f /tmp/jre.tar.gz \
     && test -x /jre/jre/bin/java

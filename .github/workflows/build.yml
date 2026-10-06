@@ -42,6 +42,10 @@ on:
         description: ext-runtime 该版本 Release 的资产下载前缀（裁剪 JRE 按 <base>/ext-runtime-jre-<V>-<os>-<arch>.tar.gz 取）
         required: true
         type: string
+      ext_runtime_tag:
+        description: ext-runtime 该版本所在 release 的 tag（release 形如 v30.1.0，alpha 形如 36.0.67-alpha.<run_id>）—— 资产名里是裸版本号、下载路径里是 tag，两者不同，按 tag 定位资产的消费方用它
+        required: true
+        type: string
       tray_version:
         description: 桌面壳版本号（Suwayomi-tray 的 Release 版本）；空串表示没解析到制品，本包不含桌面壳
         required: false
@@ -436,7 +440,10 @@ jobs:
           fi
       - name: 取 ext-runtime 共享源码
         # Android 侧只能吃源码（AGP 的 Kotlin 读不了 ext-runtime 的元数据），取同一个 release 的 -shared-sources 资产。
-        run: bash android/scripts/fetch-ext-runtime-src.sh "${{ inputs.ext_runtime_version }}"
+        # 必须给 tag：alpha 的 tag 带 -alpha.<run_id> 段而资产名里是裸版本号，只给版本号
+        # 解析不成立（见 scripts/resolve-ext-runtime.sh），退化成"最新预发布"就会与本次
+        # 桌面 target 用的那份 jar 不是同一次构建。
+        run: bash android/scripts/fetch-ext-runtime-src.sh "${{ inputs.ext_runtime_tag }}"
       - name: Gradle 构建 APK
         working-directory: android
         run: ./gradlew :app:assembleRelease --no-daemon
@@ -508,6 +515,7 @@ jobs:
           build-args: |
             WEBUI_URL=${{ inputs.webui_url }}
             EXT_RUNTIME_VERSION=${{ inputs.ext_runtime_version }}
+            EXT_RUNTIME_TAG=${{ inputs.ext_runtime_tag }}
             VERSION_NAME=${{ inputs.version_name }}
             VERSION_COUNT=${{ inputs.count }}
             BUILD_TYPE=${{ inputs.channel }}

@@ -155,6 +155,7 @@
 - **推之前先冒烟**：`docker/build-push-action` 只 `load: true`，冒烟通过才 `docker push`。冒烟两段：① `--version` + `jre/bin/java -version` + `ldd` 查缺库 + 三件套（webui / 沙盒 jar / jre）在位；② 真起容器等 HTTP 有响应。第一段能抓到「缺 `libssl3t64`」这类问题 —— Linux 的 server 动态链接 `libssl.so.3`（`default-tls` 只对 android 换成 rustls），缺它连 `--version` 都起不来。
 - `provenance: false`：多架构 manifest 由 imagetools 合成，混进 attestation 会让 index 里多出平台未知的条目。
 - Dockerfile 的目录布局必须与 server 的路径解析约定一致（`bin/` 下时 `jre/` 在上一级）：`/opt/suwayomi/{bin/suwayomi-server, bin/ext-runtime.jar, jre, webui}`，数据在 `/data`。改动时以 `Dockerfile` 与本节的路径为准，本地用 `docker run` 真起一次确认三件套都在（OCI 冒烟的第一段就在做这件事）。
+- **`EXT_RUNTIME_TAG` 与 `EXT_RUNTIME_VERSION` 两个 build-arg 都要传**：前者进下载路径、后者进资产名（`<tag>/ext-runtime-<版本号>.jar`）。只传版本号是 2026-10-03 那次全量里两个 OCI job 一起 404 的根因 —— 当时 Dockerfile 里是 `download/v${EXT_RUNTIME_VERSION}/`，只对 release 通道成立。本机不带 build-arg 时 tag 回落到 `v<版本号>`，手搓镜像仍能构建。
 
 ## 发布说明
 
@@ -264,8 +265,10 @@ python .workbuddy/verify/ci_pack_check.py     # 输入顺序 / prep 各分支 / 
 三条都走 **Release 资产而不是 GitHub Packages**：两者发布的 jar 是同一份，但 Packages 即使对公开包也要求 token（跨仓库取还要单独配 PAT），Release 资产免鉴权 —— 反正都要先下载再展开（Gradle 没法把一个依赖直接当源目录），没必要为一个 secret 付出 PAT 过期导致 401 的风险。
 
 - 解析脚本：`scripts/resolve-ext-runtime.sh`（默认取桌面 jar，加 `--sources` 取共享源码包），三级探测同 `resolve-webui.sh`。它同时吐一个 `base=`（该 release 的资产下载前缀）—— 同一版本下其余资产按 `<base>/<资产名>` 拼即可，不必为每种 `(os, arch)` 再探测一遍。Android 侧再包一层 `android/scripts/fetch-ext-runtime-src.sh`，下载 + 展开 + 校验三个包根齐全。
+- **位置参数是 tag，不是版本号**：`--stable`/`--build` 之外的那个参数按 **tag** 全等匹配（去前导 `v` 后比，`v30.0.47` 与 `30.0.47` 同样认）。alpha 的 tag 是 `36.0.67-alpha.<run_id>`、而资产名里是裸版本号 `36.0.67`，给版本号在 alpha 下**匹配不到**（同一个版本号还会被多次 alpha 构建复用，只给版本号等于放弃"精确定位某一次构建"）。
 - Android **只能吃源码**：`:extension-host` 由 AGP 9 内置的 Kotlin **2.3.20** 编译，而 ext-runtime 用 Kotlin **2.4.0**，元数据版本不兼容，2.3 读不了 2.4 编出来的 class。
 - 版本由 `release.yml` 的 prep 解析一次、经 `build.yml` 的 `ext_runtime_version`（+ `ext_runtime_jre_base`）传给所有 target，**同一批产物用的是同一个 ext-runtime 版本**。
+- **tag 与版本号是两个值，不能互相代用**（2026-10-06 修）：release 的 tag 是 `v30.1.0`、alpha 是 `36.0.67-alpha.<run_id>`，而**资产名里一律是裸版本号**（`ext-runtime-36.0.67.jar`）—— 下载路径要 tag、资产名要版本号。prep 因此另吐一个 `ext_runtime_tag`（`base` 的尾段），只有「按路径取件」的两处消费它：`android` job 取共享源码（`fetch-ext-runtime-src.sh` 按 tag 全等校验，避免退化成"最新预发布"而取到另一次构建）、`oci` job 传给 Dockerfile 的 `EXT_RUNTIME_TAG` build-arg。**桌面矩阵不用它**：`ext_runtime_url` / `ext_runtime_jre_base` 这两个 URL 里已经带对了 tag。
 - 版本号是 `<AOSP API level>.{提交数/100}.{提交数%100}`（如 `30.0.47`）：大版本跟着沙盒 pin 的 Android API 基线走，后两位是那个仓库自己的提交数（`versionCode = 提交数 + 1000`，规则同本仓库，只是基线不同）。
 - 改沙盒的流程：在 Suwayomi-ext-runtime 改 → 推 main（自动出 alpha，只有 jar 与两份 JRE）或手动 dispatch release 通道（出齐全六份 JRE 并发 Packages）→ 回这边跑一次发布即生效（无需改本仓库代码）。
 - **通道到这里是分岔的**：那边推 main 会自动出 alpha 预发布，所以本仓库正式发布只认非预发布版本（`resolve-ext-runtime.sh --stable`），alpha/beta 才跟最新构建（`--build`）。要这边的 release 包吃到新沙盒，那边得 dispatch 一次 release/beta 通道。

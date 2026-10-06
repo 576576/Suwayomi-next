@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # Resolve the ext-runtime.jar release-asset URL published by Suwayomi-ext-runtime.
 #
-# Usage: bash scripts/resolve-ext-runtime.sh [--sources] [--stable|--build] [<version>]
+# Usage: bash scripts/resolve-ext-runtime.sh [--sources] [--stable|--build] [<tag>]
 #   （无参数） 取最新符合条件的 release 资产
 #   --sources  取共享源码包 ext-runtime-<V>-shared-sources.jar（Android 用）
 #   --stable   只看非预发布 release（Suwayomi-next 正式发布通道用）
 #   --build    只看预发布 release（ext-runtime 推 main 自动出的那批 alpha）
-#   <version>  取指定版本，如 30.0.47（对应 tag v30.0.47；大版本是 AOSP API level）
+#   <tag>      指定 release，按 **tag** 全等匹配（去前导 v 后比）：`v30.0.47` 与
+#              `30.0.47` 都认；alpha 形如 `36.0.67-alpha.<run_id>`。
+#              注意资产名里写的是**裸版本号**（`ext-runtime-36.0.67.jar`）而 tag 带
+#              `-alpha.<run_id>` 段 —— 要精确定位某一次 alpha 构建只能给 tag，只给
+#              版本号在 alpha 下匹配不到（同一个版本号会有多个 alpha）。
 #
 # 不加 --stable / --build 时不区分预发布 —— ext-runtime 现在推 main 就会自动出
 # alpha，区分不开会把自动构建的版本混进正式发布包（与 scripts/resolve-webui.sh 同套做法）。
@@ -40,7 +44,7 @@ for arg in "$@"; do
     --sources) KIND="sources" ;;
     --stable)  PICK="stable" ;;
     --build)   PICK="build"  ;;
-    v*) echo "::error::resolve-ext-runtime.sh: 版本号不要带 v 前缀，收到 '${arg}'" >&2; exit 1 ;;
+    v*) WANT="${arg#v}" ;;   # tag 的常规形态；下面的比对用的是去过 v 的 tag
     *)  WANT="$arg" ;;
   esac
 done
@@ -48,7 +52,7 @@ REPO="576576/Suwayomi-ext-runtime"
 UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
 
 # 从 releases JSON 里挑出 ext-runtime-<V>.jar：draft 一律跳过；
-# 指定版本时只认 tag v<V>，否则按 created_at 取最新。
+# 指定了 tag 时只认该 tag（去前导 v 后全等），否则按 created_at 取最新。
 PY_PICK='
 import json, re, sys
 
@@ -117,7 +121,8 @@ fi
 #    正常环境前两级（gh / REST）一定命中，走不到这里。
 if [ -z "$OUT" ]; then
   if [ -n "$WANT" ]; then
-    TAGS="v${WANT}"
+    # 两种 tag 形态都试：版本号要补 v，alpha 的 tag（36.0.67-alpha.<run_id>）本来就带全段。
+    TAGS="v${WANT} ${WANT}"
   else
     TAGS="$(curl -sL --max-time 30 -A "$UA" "https://github.com/${REPO}/releases.atom" \
       | python3 -c "import re,sys,html; h=sys.stdin.read(); ts=[html.unescape(t).strip() for t in re.findall(r'releases/tag/([^/\"><]+)', h)]; u=[]; [u.append(t) for t in ts if t not in u]; print('\n'.join(u[:10]))" 2>/dev/null || true)"
@@ -140,7 +145,7 @@ $(printf '%s' "$URL" | sed -E 's|.*/ext-runtime-(.*)\.jar$|\1|; s|-shared-source
 fi
 
 if [ -z "$OUT" ]; then
-  echo "::error::无法解析 ${REPO} 的 ext-runtime jar 资产（version=${WANT:-latest}：gh / API / HTML 三级探测均无结果）" >&2
+  echo "::error::无法解析 ${REPO} 的 ext-runtime jar 资产（tag=${WANT:-latest}：gh / API / HTML 三级探测均无结果）" >&2
   exit 1
 fi
 

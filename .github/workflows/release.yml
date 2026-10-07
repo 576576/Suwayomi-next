@@ -336,6 +336,8 @@ jobs:
         env:
           COMPANION_DISPATCH_TOKEN: ${{ secrets.COMPANION_DISPATCH_TOKEN }}
         run: |
+          # 抽值后写 $GITHUB_OUTPUT：那个文件只认 name=value，把脚本 stdout 整段倒进去会报
+          # "Unable to process file command 'output'"。脚本的进度走 stderr，进不了这里。
           OUT="$(python3 scripts/refresh-companions.py \
             --channel '${{ steps.out.outputs.channel }}' \
             --windows-toolchain '${{ steps.out.outputs.windows_toolchain }}' \
@@ -343,7 +345,11 @@ jobs:
             --android '${{ steps.out.outputs.android_targets }}' \
             --pack-jre '${{ steps.out.outputs.pack_jre }}' \
             --pack-oci '${{ steps.out.outputs.pack_oci }}')"
-          printf '%s\n' "$OUT" >> "$GITHUB_OUTPUT"
+          ER_TAG="$(printf '%s' "$OUT" | sed -n 's/^ext_runtime_tag=//p')"
+          TRAY_TAG="$(printf '%s' "$OUT" | sed -n 's/^tray_tag=//p')"
+          # 两个都写（tray_tag 空串是有意义的：本次没派托盘仓或只勾了 android）。
+          echo "ext_runtime_tag=$ER_TAG" >> "$GITHUB_OUTPUT"
+          echo "tray_tag=$TRAY_TAG" >> "$GITHUB_OUTPUT"
 
       - name: 解析捆绑的 WebUI 制品
         id: webui

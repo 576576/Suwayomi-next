@@ -16,10 +16,12 @@ tag 只能**按 run id 反查**：派发到查询之间可能有另一条自动 
   python3 scripts/refresh-companions.py --channel alpha --windows-toolchain all \
       --targets "windows-x64 linux-x64" --android '[{"target":"android-arm64"}]' \
       --pack-jre true --pack-oci false
-输出（追加进 $GITHUB_OUTPUT）：
+输出：stdout 只有下面两行（调用方按 `sed -n 's/^<key>=//p'` 抽值后写 $GITHUB_OUTPUT，
+多一行就会让那个文件报解析失败）：
   ext_runtime_tag=<tag>
   tray_tag=<tag>
-两者都可能为空串（本次不需要该仓）。
+两者都可能为空串（本次不需要该仓）。进度与诊断一律走 stderr；`::warning::` 是工作流命令、
+由 runner 从 stdout 收，例外留在 stdout。
 """
 
 from __future__ import annotations
@@ -150,19 +152,23 @@ def tag_for_run(slug: str, run_id: str, channel: str, tok: str) -> str:
 
 def refresh(label: str, slug: str, inputs: dict, tok: str, channel: str,
             timeout: int, interval: int, dry_run: bool) -> str:
-    print(f"== {label}：{slug} ==")
-    print(f"   dispatch inputs: {json.dumps(inputs, ensure_ascii=False, sort_keys=True)}")
+    # 进度一律走 stderr：stdout 是给调用方按 `sed -n 's/^<key>=//p'` 抽值的机器输出，
+    # 多一行 k=v 之外的内容就会污染它。::warning:: 例外 —— 工作流命令由 runner 从
+    # stdout 收（与 resolve-*.sh 同款），抽值那边自然忽略它。
+    print(f"== {label}：{slug} ==", file=sys.stderr)
+    print(f"   dispatch inputs: {json.dumps(inputs, ensure_ascii=False, sort_keys=True)}",
+          file=sys.stderr)
     if dry_run:
         return ""
 
     before = {str(r["id"]) for r in list_runs(slug, tok)}
-    print(f"   派发前的 workflow_dispatch run 数：{len(before)}")
+    print(f"   派发前的 workflow_dispatch run 数：{len(before)}", file=sys.stderr)
 
     st, txt = api("POST", f"/repos/{slug}/actions/workflows/{WORKFLOW}/dispatches", tok,
                   {"ref": "main", "inputs": inputs})
     if st not in (204, 201, 200):
         raise RuntimeError(f"{slug} 派发失败（HTTP {st}）：{txt[:300]}")
-    print("   已派发")
+    print("   已派发", file=sys.stderr)
 
     deadline = time.time() + timeout
 
@@ -179,7 +185,7 @@ def refresh(label: str, slug: str, inputs: dict, tok: str, channel: str,
     if run is None:
         raise RuntimeError(f"{slug} 派发后 {timeout} 秒内没看到新的 workflow_dispatch run")
     run_id = str(run["id"])
-    print(f"   新 run：{run_id}（{run.get('html_url', '')}）")
+    print(f"   新 run：{run_id}（{run.get('html_url', '')}）", file=sys.stderr)
 
     # 2) 等它跑完
     while time.time() < deadline:
@@ -203,7 +209,7 @@ def refresh(label: str, slug: str, inputs: dict, tok: str, channel: str,
     for _ in range(10):
         tag = tag_for_run(slug, run_id, channel, tok)
         if tag:
-            print(f"   tag：{tag}")
+            print(f"   tag：{tag}", file=sys.stderr)
             return tag
         time.sleep(interval)
     raise RuntimeError(f"{slug} 的 run {run_id} 跑完了，但没找到以 '{channel}.{run_id}' "
@@ -243,7 +249,7 @@ def main() -> int:
 
     todos = wanted(targets, android, pack_oci, pack_jre, a.channel, a.windows_toolchain)
     if not todos:
-        print("本次没有需要刷新的伴生仓，跳过")
+        print("本次没有需要刷新的伴生仓，跳过", file=sys.stderr)
         return 0
 
     if a.dry_run:

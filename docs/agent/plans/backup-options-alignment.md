@@ -93,10 +93,9 @@ GraphQL `PartialBackupFlagsInput`（`crates/suwayomi-graphql/src/mutation_b4.rs:
 
 `backup.rs:22-24` 的注释已声明前三个是空操作。
 
-WebUI 侧（`Suwayomi-WebUI`）已有分组与隐藏机制：
-`BACKUP_FLAGS_BY_GROUP`（`Backup.constants.ts:31`）两组、
-`BackupFlagInclusionDialog` 的 `hiddenFlags` prop、`canCreate` 尚无对应实现。
-`Backup.utils.ts:18/28` 的两个映射与 `autoBackupInclude*` 服务端设置 1:1 对应。
+WebUI 侧（`Suwayomi-WebUI`）的分组与隐藏机制、以及两个 flag 映射与 `autoBackupInclude*` 服务端设置
+1:1 对应的关系，记在 WebUI 仓：
+https://github.com/576576/Suwayomi-WebUI/blob/main/docs/agent/plans/backup-options-alignment.md
 
 ---
 
@@ -223,7 +222,7 @@ Mihon 用 key 前缀 `__PRIVATE_` 过滤。本仓可映射的敏感项有两处�
 | L3 导出 | `build_backup`：非库已读查询 → `backupManga`（3.1）、`extension_store` 表 → 106、沙盒偏好 → 105、9000 `meta`、9001 服务端设置（排除 auth/ip/port）、`privateSettings` 过滤 |
 | L4 恢复 | `restore_backup`：`in_library` 跟随 `favorite`（**待定，见下方未定项**）；105/106 的应用与忽略策略 |
 | L5 GraphQL | `PartialBackupFlagsInput` 加 `includeAppSettings`、旧两字段标 `@deprecated`；`backup_flags()` 映射 |
-| L6 WebUI | `Backup.types.ts` / `Backup.constants.ts`（文案、分组）/ `Backup.utils.ts`（两个映射）/ `BackupFlagInclusionDialog`（灰化依赖）/ 「创建」按钮的 `canCreate` 禁用；generated 4 个文件重生成；`zh-Hant` 文案补齐 |
+| L6 WebUI | 本仓只决定这一层要做什么（复选框/灰化依赖/「创建」判定/译文/generated 重生成），逐文件清单在 [WebUI 仓的落点](https://github.com/576576/Suwayomi-WebUI/blob/main/docs/agent/plans/backup-options-alignment.md) |
 | L7 沙盒 | `ext-runtime` 加 `GET /source/{id}/preferences/raw`，返回扁平 key/value（3.3） |
 
 **已定（2026-09-29）**：「所有已读作品」的恢复侧语义（3.1）取 Mihon 语义 —— `in_library`
@@ -259,7 +258,7 @@ Mihon 用 key 前缀 `__PRIVATE_` 过滤。本仓可映射的敏感项有两处�
 | L3 导出 | 10 项全部生效：非库已读（`readEntries`）、`extension_store` → 106、沙盒偏好 → 105、9000 `meta`、9001 服务端设置（排除 auth / ip / port）、`privateSettings` 过滤（9002 凭据 + 9001 认证） |
 | L4 恢复 | `in_library` 跟随 `favorite`；105 经沙盒写回、106 回落 `extension_store` 表 |
 | L5 GraphQL | `PartialBackupFlagsInput` 10 项 + 旧两字段 `@deprecated`（解析时任一为 true → `appSettings`，且不回写旧键）；`SettingsType` 的 `autoBackupInclude*` 同步 10 项 |
-| L6 WebUI | 10 个复选框 + 灰化依赖 + 「创建」按钮的内容判定（`hasBackupContent`）；`zh-Hans` / `zh-Hant` 译文补齐 |
+| L6 WebUI | 10 个复选框 + 灰化依赖 + 「创建」按钮的内容判定（`hasBackupContent`）；`zh-Hans` / `zh-Hant` 译文补齐（逐文件清单见 [WebUI 仓的落点](https://github.com/576576/Suwayomi-WebUI/blob/main/docs/agent/plans/backup-options-alignment.md)） |
 | L7 沙盒 | `ext-runtime` 的 `GET /source/{id}/preferences/raw` |
 
 验证（2026-09-30 复跑）：

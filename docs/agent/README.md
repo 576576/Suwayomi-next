@@ -8,11 +8,23 @@
 |---|---|
 | `release.md` | 发布流程与 CI 约定：通道/版本、产物形态开关、Windows 安装包（WiX）、OCI 镜像、发布说明渲染、预发布清理、CI 改动的本地验证 |
 | `runtime.md` | 运行时目录与端口：`data/`·`appdata/` 两棵树的归属与写入者、目录树模板的四个消费点、全部端口的定义点与顺延规则 |
-| `graphql.md` | GraphQL schema 基线：359 个类型定义的对照口径、与 Kotlin 版的差分、WebUI 侧 codegen 的来源约束 |
+| `graphql.md` | GraphQL schema 基线：359 个类型定义的对照口径、与 Kotlin 版的差分（含 WebUI 自更新那一组哪几个没实现） |
 | `rest-api.md` | REST API v1 端点基线：逐条对照 Suwayomi-Server（Kotlin 版）的方法、路径、参数、状态码 |
 | `android.md` | Android 宿主工程：与桌面的形态差别、ART 内加载扩展、安装/卸载、WebView 的两个缺口、工具链与交叉编译 |
 
 方案与计划（调研结论、分阶段安排、落地情况）在 `plans/`。
+
+## 跨仓文档
+
+本项目由四个各自发版的仓库组成，伴生仓的维护者文档在自己的仓库里：
+
+| 仓库 | 文档索引 |
+|---|---|
+| Suwayomi-tray（桌面壳） | https://github.com/576576/Suwayomi-tray/blob/main/docs/agent/README.md |
+| Suwayomi-ext-runtime（扩展沙盒） | https://github.com/576576/Suwayomi-ext-runtime/blob/main/docs/agent/README.md |
+| Suwayomi-WebUI（默认前端） | https://github.com/576576/Suwayomi-WebUI/blob/main/docs/agent/README.md |
+
+引用对方的文档一律写**远端地址**，不写相对路径：四个仓各自发版，本地目录布局不保证同时在场。
 
 ## 维护约定
 

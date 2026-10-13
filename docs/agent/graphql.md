@@ -25,12 +25,13 @@
   基线里 6 个 `interface` **全**在这堆里（本 fork 侧一个 `interface` 都没注册）；
   `Settings` / `PartialSettingsType` / `SettingsDownloadConversion(Header)` /
   `UpdateState` / `DownloadEdge` / `DownloadNodeList` /
-  5 个 `WebUIUpdate*` / `union Node`。
+  4 个 `WebUIUpdate*`（`WebUIUpdateInfo` / `Input` / `Payload` / `Status`）/ `union Node`。
   （`DownloadUpdate` / `DownloadUpdateType` 原先也在这堆里，只因为它们挂不上
   `DownloadUpdates` 的字段而没被注册；补上 `updates` 后已可达。）
-- **固定丢弃、不打算补的**：5 个 `WebUIUpdate*`。WebUI 自更新已交给桌面托盘，
-  WebUI 侧对应的 mutation / subscription / query 已整组删除
-  （`src/lib/graphql/server/ServerInfo{Mutation,Subscription}.ts`），没有消费者。
+- **固定丢弃、不打算补的**：上面那 4 个 `WebUIUpdate*`，以及挂它们的 mutation / subscription
+  （`updateWebUI` / `resetWebUIUpdateStatus` / `webUIUpdateStatusChange`）—— 自更新的安装动作
+  交给了桌面托盘。**`checkForWebUIUpdate` 是实现了的**（`query.rs`），WebUI 侧也仍在用
+  （`Suwayomi-WebUI/src/lib/graphql/server/ServerInfoQuery.ts`）：它只查最新版本号，不装东西。
 - **本 fork 自有 8 个**：`RebuildDownloadIndexInput`+`Payload`、
   `RefreshTrackerUserInput`+`Payload`、`ReorderChapterDownloadsPayload`、
   `TrackerOAuthAppType`、`UpdateTrackerOAuthAppInput`+`Payload`。
@@ -49,29 +50,12 @@
 **目前并未满足**：缺的这 15 个里有查询/变更的返回类型（`NodeList`/`Edge` 家族、
 `Settings`、`WebUIUpdate*`），对老 WebUI 是破坏性的。补齐还是明确放弃，需要单独决策。
 
-## WebUI 侧：generated 类型的 schema 来源
+## WebUI 侧
 
-`Suwayomi-WebUI/src/lib/graphql/generated/`（`graphql-base.types.ts` / `graphql.ts` /
-`apollo-helpers.ts`）由**本仓自己的** server 生成：
+本仓的 server 是 `Suwayomi-WebUI` 生成 `src/lib/graphql/generated/` 的 schema 来源。那边该把
+`CODEGEN_SERVER_URL_GQL` 指向哪、指错会怎么错、末尾要过哪些格式化，记在 WebUI 仓的 agent 文档里：
 
-```sh
-pnpm gql:codegen     # schema 取自 .env 的 CODEGEN_SERVER_URL_GQL
-```
-
-`CODEGEN_SERVER_URL_GQL` 默认是 `http://localhost:4567/api/graphql`（本仓 server 的默认
-端口，见 `crates/suwayomi-core/src/config.rs`）。
-
-三条约束：
-
-- **必须指向本仓的 Rust server**。指错时生成的类型描述的是一个本 fork 不发布的
-  schema：前端能编译通过，请求却落在服务端根本没有的类型/字段上（`MetaType`、
-  `PartialSettingsType`、`SettingsDownloadConversion(Header)`、`UpdateState`、
-  `extension(condition: { storeIndexUrl })` 都属于这一批）。本机实例若不在这个端口上
-  （例如 4567 被占、server 自顺延到了 4568），改 `.env` 的 `CODEGEN_SERVER_URL_GQL`
-  覆盖即可。
-- `gql:codegen` 末尾会跑 `oxfmt` 格式化 generated 目录。漏掉这步 `format:check`
-  （PR CI 会执行）必红 —— graphql-codegen 自己的缩进/换行跟仓库的 oxfmt 风格不一致。
-- 服务端增删类型或字段后必须重新生成，`pnpm tsc` 会立刻指出前端对不上本仓 schema 的位置。
+https://github.com/576576/Suwayomi-WebUI/blob/main/docs/agent/graphql-codegen.md
 
 ## 源 Schema 构成（实测基线 + Kotlin 源码审计）
 

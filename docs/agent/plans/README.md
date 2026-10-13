@@ -12,9 +12,11 @@
 | `database-settings.md` | 数据库设置接线：为什么这一项不能存进库、引导文件的位置与优先级、四个字段 + `useHikariConnectionPool` 的逐个处置、实施分层 |
 | `opds-v2.md` | OPDS 2.0 端点（`/api/opds/v2`，含章节的 Readium Divina 清单端点）：与 1.2 的硬边界、规范与客户端现实、逐字段映射（Atom → JSON）、JSON Schema 强制的结构约束、9 个 `opds*` 设置的逐条处置、实施分层与验证。五项选型 2026-10-01 已定（§10） |
 | `companion-dispatch.md` | 伴生仓联动：为什么"全平台 alpha"必然缺件、手动 dispatch 先拉起 ext-runtime / tray 对应构建的方案（预检 → 编排 → 按 tag 取件）、零密钥备选、密钥与失败语义、分阶段安排 |
+| `image-enhancement-rust.md` | 把图像增强搬到 Rust 侧的可行性：参考实现的「图片处理」到底是什么、上游已留的 HTTP 后处理接缝、Rust 侧「契约在行为不在」、推理引擎选型（`ort` vs ncnn 绑定）、zip 资源包与 keiyoushi 形状的模型仓库、许可证硬约束。沙盒加载面那一半（modelpack 为什么接不住）在 Suwayomi-ext-runtime |
 
 ## 维护约定
 
 - 已定的选型**连日期一起留着**（「已定（YYYY-MM-DD）」），它是后来者判断「能不能改回去」的唯一依据。
 - 落地之后**不删文档**：把结果补成一节（「落地情况」），否则下一个人会照着已失效的前提再推一遍。
 - 与代码现状对不上的口径当场改掉 —— 计划里的过时事实比没有文档更糟。
+- 主体属于伴生仓的计划**留在那个仓**；跨仓引用写 GitHub 远端地址，不写相对路径。

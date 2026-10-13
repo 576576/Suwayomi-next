@@ -132,14 +132,10 @@ crates/suwayomi-db/src/config.rs   DbSettings::from_env()
 
 ## 4. 前端（WebUI 仓）
 
-`ServerSettings.tsx` 的「服务端设置」没有「数据库」分区，原因写在它的头顶注释里  
-（后端由 env 决定、Hikari 无对应实现）。接线后重开这块，只放四个字段 +  
-两条只读信息（`useHikariConnectionPool` 不进界面）：
+本仓只管到"该开哪一块"：`ServerSettings.tsx` 的「服务端设置」要加一个「数据库」分区（原先没有这块，
+原因写在该文件的注释里）。逐项落点（四个字段、两条只读信息、两条提示、codegen）在 WebUI 仓：
 
-- 三个可编辑项：类型（下拉）/ URL / 用户名 / 口令；
-- 只读「当前生效」：`databaseType` 与 `databaseUrl` 回读的必须是**实际生效**的值  
-  （env 或引导文件），不是刚存的草稿；
-- 「改完需重启」提示 + 「换后端不会搬运数据」警示。
+https://github.com/576576/Suwayomi-WebUI/blob/main/docs/agent/plans/database-settings.md
 
 ---
 
@@ -150,7 +146,7 @@ crates/suwayomi-db/src/config.rs   DbSettings::from_env()
 | L1 | 引导文件读写 + 优先级（env → 文件 → 默认）+ 坏文件/坏 JSON 回退默认并 warn        | `suwayomi-db/src/config.rs`、`suwayomi-server/src/lib.rs` |
 | L2 | `setSettings` 写文件；`effective_settings()` 里的这四个字段改读"实际生效"  | `suwayomi-graphql/src/mutation_b4.rs`、`state.rs`         |
 | L3 | `DbSettings` 加用户名/口令；`describe()` 打码；`databaseType` 两个值各映射到一个后端 | `suwayomi-core/src/config.rs`、`suwayomi-db`              |
-| L4 | WebUI 数据库分区 + 重跑 codegen                                  | `Suwayomi-WebUI`                                          |
+| L4 | WebUI 数据库分区 + 重跑 codegen（落点见 §4）                        | `Suwayomi-WebUI`                                          |
 | L5 | user-guide 补「数据库设置」节；`ci_pack_check.py` 加回读一致性断言          | 文档 / 验证脚本                                                |
 
 ---

@@ -2,8 +2,9 @@ name: Lint
 
 # 质量门禁：格式 / 静态检查 / 测试。
 #
-# **不跟 push / PR**：由 release.yml 在调用 build 之前作为一个 job 调起（`workflow_call`），
-# 所以发布链路上没有任何一道能绕过它；只跑它一个用 workflow_dispatch（背景见 docs/agent/release.md）。
+# **自己不跟 push / PR**，有两个调用方：release.yml 在调用 build 之前调它（`workflow_call`，
+# 所以发布链路上没有任何一道能绕过它），pr.yml 在 PR 上调它。单跑它一个用 workflow_dispatch
+# （背景见 docs/agent/release.md）。
 on:
   workflow_call:
   workflow_dispatch:

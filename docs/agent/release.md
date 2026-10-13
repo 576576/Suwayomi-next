@@ -8,10 +8,14 @@
 |---|---|
 | `build.yml` | **可复用构建工作流**（只由 `workflow_call` 触发）：算好参数后由它编译 + 打包全部 target，产物用 `upload-artifact` 上传。两个 job：`build`（桌面/服务端矩阵）与 `android`（APK）。所有平台的构建逻辑只有这一份。 |
 | `release.yml` | **唯一入口**：推送 main → 自动 alpha；手动 dispatch → alpha/beta/release。负责算版本号、解析 WebUI 制品，然后 `uses: ./.github/workflows/lint.yml` 过质量门禁，再 `uses: ./.github/workflows/build.yml` 构建，最后 `download-artifact` 收产物发布 Release。 |
-| `lint.yml` | **质量门禁**：`cargo fmt --check` / `clippy -D warnings` / 全量测试（自带 postgres service）。**不跟 push / PR** —— 只由 `release.yml` 在 build 之前调起（`workflow_call`），或手动 dispatch 单跑。 |
+| `lint.yml` | **质量门禁**：`cargo fmt --check` / `clippy -D warnings` / 全量测试（自带 postgres service）。**自己不跟 push / PR** —— 由 `release.yml` 在 build 之前调起（`workflow_call`），或 `pr.yml` 在 PR 上调起，或手动 dispatch 单跑。 |
+| `pr.yml` | **PR 把关**（只 `pull_request` → main + 手动 dispatch）：不构建、不发布，只把 `lint.yml` 调一遍。同一 PR 连推多次时 `concurrency` 取消上一次。 |
 | `clear.yml` | **预发布清理**（只手动 dispatch，workflow 名 `Clear Pre-release`）：按「每 N 小时窗口内只留最新的 1 个预发布」删掉多余的 alpha Release，见「预发布清理」。 |
 
 - **质量门禁挂在发布链路上，不单独跟 push**：`release.yml` 的 `lint` job 与 `prep` 并行，`build` 的 `needs` 里带上它 —— 门禁不过就直接不进入编译。推送 main 与手动 dispatch 都从 `release.yml` 进，所以没有绕过的路径；唯一的例外是纯文档 push（被 `paths-ignore` 跳过，不发布也不跑门禁）。
+- **PR 上跑同一份门禁**：`pr.yml` 只有「调 `lint.yml`」一个 job，命令不写第二份（写两处必然漂移）；`lint.yml` 自身的触发面保持 `workflow_call` + `workflow_dispatch`，所以它的两个调用方（`release.yml` / `pr.yml`）互不影响。
+  - `pr.yml` **不配 `paths-ignore`**（与上面那条 push 的做法相反）：被忽略时 workflow 整个跳过、该 PR 一条 check 都没有，把它设成 required 就会一直停在 pending。
+  - 门禁要真拦住合并得在 GitHub 的 branch protection 里把 `质量门禁（复用 lint.yml）` 选成 required check —— 那是仓库设置，不在 workflow 里。
 - 产物形态由五个正交开关表达（`pack_core` / `pack_jre` / `pack_msi` / `pack_exe` / `pack_oci`，见「产物形态」）。**推 main 的自动 alpha 与手动 dispatch 的默认值完全一致**（core 关、jre 开、msi 开、exe 关、oci 关），所以两条路径出的包一样，不必再按触发方式分叉。
 - 产物名统一是 `Suwayomi-{VER}{通道段}-{TGT}[+jre]`（Windows 另出 `.msi` 与 `-setup.exe`），**通道段只有 beta 非空**（`-beta`）：beta 与 release 共用 3.y.z 版本名，不区分就会重名；alpha 的 `r{code}` 本身已表明通道。规则在 prep 里算一次（`channel_suffix`），`build.yml` 只负责拼 —— 别在 `build.yml` 里重新推导一遍。
 - Android 的 ABI 矩阵同理由 prep 拼好（`android_targets`），`build.yml` 的 `android` job 直接吃 `include`。

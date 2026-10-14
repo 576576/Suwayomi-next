@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   lint:
-    name: 质量门禁（复用 lint.yml）
+    name: 质量门禁
     permissions:
       contents: read
     uses: ./.github/workflows/lint.yml

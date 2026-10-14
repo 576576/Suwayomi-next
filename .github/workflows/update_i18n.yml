@@ -1,0 +1,48 @@
+name: Update i18n
+
+# 翻译在 Weblate 上做，译文更新后刷新本仓的派生资源 —— 触发与 WebUI 仓的 update_i18n.yml 同款
+# （Weblate 推的提交带固定标记，普通 push 不触发）。
+#
+# 骨架，还没接线：`android/app/src/main/res/` 只有英文 `values/`、且只声明了 `app_name` 一条，
+# 也还没有 Weblate 组件与 `WEBLATE_TOKEN`。启用前要有三样：① Weblate 组件，源选
+# `android/app/src/main/res/values/strings.xml`；② 仓库 secret `WEBLATE_TOKEN`；
+# ③ 把「更新资源」那步换成真的拉取/生成命令。在那之前它会直接报错退出。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  update-i18n:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, 'Translations update from Hosted Weblate')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Configure Git identity
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: 更新资源
+        env:
+          WEBLATE_TOKEN: ${{ secrets.WEBLATE_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # 接线后每个语言拉一次：
+          #   curl -fsS -H "Authorization: Token $WEBLATE_TOKEN" \
+          #     "https://hosted.weblate.org/api/components/<项目>/<组件>/translations/<lang>/file/" \
+          #     -o "android/app/src/main/res/values-<lang>/strings.xml"
+          echo "::error::update_i18n 还没接线：先把本文件顶部那三样做完"
+          exit 1
+
+      - name: Push changes
+        run: git push origin HEAD

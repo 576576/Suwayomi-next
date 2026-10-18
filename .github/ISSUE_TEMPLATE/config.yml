@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 使用文档（简体中文）
+    url: https://github.com/576576/Suwayomi-next/blob/main/docs/zh/user-guide.md
+    about: 目录结构、端口与顺延、认证、OPDS、反向代理等配置说明
+  - name: 📖 User guide (English)
+    url: https://github.com/576576/Suwayomi-next/blob/main/docs/en/README.md
+    about: Installation, ports, authentication, OPDS and reverse proxy
+  - name: 📦 最新发布
+    url: https://github.com/576576/Suwayomi-next/releases
+    about: 下载 msi / setup.exe / 绿色版 / 容器镜像；提 issue 前先确认版本

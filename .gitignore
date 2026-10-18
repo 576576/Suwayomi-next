@@ -28,6 +28,7 @@ data/
 node_modules/
 
 .workbuddy/
+.workbuddy-ai/
 extensions
 !assets/templates/directory/appdata/extensions/
 

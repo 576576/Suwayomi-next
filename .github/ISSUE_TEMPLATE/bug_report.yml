@@ -1,76 +1,45 @@
-name: 🐞 Bug 报告
-description: 报告可复现的缺陷：崩溃、报错、行为与文档不符
+name: Bug 报告
+description: 提交可复现的缺陷（崩溃、报错、行为与文档不符）
 title: "[Bug] "
 labels: [bug]
 body:
   - type: markdown
     attributes:
       value: |
-        提交前先搜一遍[已有 issue](https://github.com/576576/Suwayomi-next/issues?q=is%3Aissue)。
+        提交前请先检索[既有 issue](https://github.com/576576/Suwayomi-next/issues?q=is%3Aissue)，
+        并在最新版本上复现。
 
-        **扩展（图源）自身的问题不由本项目修复** —— 扩展由 keiyoushi 等仓库维护，请到对应仓库反馈。
-        这里只处理「扩展加载 / 沙盒 / 与界面交互」这一层。
+        扩展（图源）自身的问题不属于本项目范围，请向扩展所在仓库反馈。
 
   - type: textarea
     id: steps
     attributes:
       label: 复现步骤
-      description: 从启动开始写，步骤要能让别人照着做出来。
+      description: 从启动开始逐步描述，使他人可以复现。
       placeholder: |
-        1. 打开 WebUI，进入……
-        2. 点击……
-        3. 出现……
+        1.
+        2.
+        3.
     validations:
       required: true
 
   - type: textarea
-    id: expected
+    id: behavior
     attributes:
-      label: 期望行为
-      placeholder: 例如：应该正常打开该章节
-    validations:
-      required: true
-
-  - type: textarea
-    id: actual
-    attributes:
-      label: 实际行为
-      description: 报错原文请整段贴出，不要只写"报错了"。
-      placeholder: 例如：页面空白，服务端日志里出现 panic / 500
-    validations:
-      required: true
-
-  - type: dropdown
-    id: install
-    attributes:
-      label: 安装形态
-      description: 从哪个产物启动的
-      options:
-        - Windows 安装包（msi / setup.exe）
-        - Windows 绿色版 zip
-        - Linux tar.gz
-        - macOS 包
-        - Docker 镜像（GHCR）
-        - Android APK
-        - 从源码构建
+      label: 期望行为与实际行为
+      description: 分别说明预期结果与实际结果；报错请附完整原文。
+      placeholder: |
+        期望：
+        实际：
     validations:
       required: true
 
   - type: input
-    id: platform
+    id: environment
     attributes:
-      label: 平台与架构
-      description: 系统版本 + 产物里的架构段
-      placeholder: 例如 Windows 11 24H2 / windows-x64（msvc）
-    validations:
-      required: true
-
-  - type: input
-    id: version
-    attributes:
-      label: 版本与通道
-      description: 见 WebUI「设置 → 高级 → 调试信息」里的 Version 与 Channel
-      placeholder: 例如 r3347-alpha 或 3.2.93
+      label: 版本与环境
+      description: 产物形态、操作系统、架构与版本号（版本号见 WebUI「设置 → 高级 → 调试信息」中的 Version）
+      placeholder: 例：Windows 绿色版 zip / Windows 11 24H2 / x64 / r3347-alpha
     validations:
       required: true
 
@@ -78,14 +47,13 @@ body:
     id: debug-info
     attributes:
       label: 调试信息
-      description: |
-        WebUI「设置 → 高级 → 调试信息」→ 点「复制」→ 整段粘贴到下面（含版本、系统、数据库、扩展数等）。
+      description: 在 WebUI「设置 → 高级 → 调试信息」中复制后粘贴至下方。
       value: |
         <details>
         <summary>调试信息</summary>
 
         ```
-        把复制到的内容粘到这里
+        在此粘贴
         ```
         </details>
     validations:
@@ -95,8 +63,7 @@ body:
     id: logs
     attributes:
       label: 相关日志
-      description: |
-        `<appdata>/logs/` 下有 `server` / `tray` / `sandbox` 三个日志；只贴出问题前后的一段即可。
+      description: 位于 `<appdata>/logs/`，server、tray、sandbox 各一份，附问题前后片段即可。
     validations:
       required: false
 
@@ -104,15 +71,11 @@ body:
     id: confirm
     attributes:
       label: 确认项
-      description: 逐条确认；缺项会被直接关闭。
+      description: 未满足以下事项的 issue 可能被直接关闭。
       options:
-        - label: 我已搜索过已有 issue，这不是重复问题。
+        - label: 已检索既有 issue，确认不是重复问题。
           required: true
-        - label: 我在**最新版本**上复现过；不是的话请先升级再试。
+        - label: 已在最新版本上复现，并已阅读使用文档。
           required: true
-        - label: 我已读过[使用文档](https://github.com/576576/Suwayomi-next/blob/main/docs/zh/user-guide.md)。
-          required: true
-        - label: 这不是某个扩展（图源）自身的问题。
-          required: true
-        - label: 标题简短且能区分问题（例如「下载完成后章节仍显示未读」）。
+        - label: 该问题不是扩展（图源）自身导致。
           required: true

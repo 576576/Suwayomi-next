@@ -1,21 +1,19 @@
-name: 💬 讨论与求助
-description: 用法、配置、部署上的疑问，或还没有成形的想法
+name: 讨论与求助
+description: 用法、配置与部署方面的疑问
 title: "[Question] "
 labels: [question]
 body:
   - type: markdown
     attributes:
       value: |
-        先看[使用文档](https://github.com/576576/Suwayomi-next/blob/main/docs/zh/user-guide.md)：
-        目录结构、端口与顺延、认证、OPDS、反向代理都在里面。
-
-        **确定的缺陷请走「Bug 报告」**，**明确的新功能请走「功能请求」** —— 混在这里容易漏。
+        提交前请先阅读[使用文档](https://github.com/576576/Suwayomi-next/blob/main/docs/zh/user-guide.md)。
+        可复现的缺陷请使用「Bug 报告」，明确的功能需求请使用「功能请求」。
 
   - type: textarea
     id: question
     attributes:
-      label: 你的问题
-      description: 说清楚想达成什么、卡在哪一步。
+      label: 问题描述
+      description: 说明希望达成的目标与当前遇到的阻碍。
     validations:
       required: true
 
@@ -25,12 +23,12 @@ body:
       label: 主题
       options:
         - 安装与升级
-        - 目录 / 数据迁移
+        - 目录与数据迁移
         - 端口与网络访问
         - 认证与登录
-        - OPDS / 第三方客户端
+        - OPDS 与第三方客户端
         - 扩展与图源
-        - Docker 部署
+        - 容器部署
         - 其他
     validations:
       required: true
@@ -38,8 +36,8 @@ body:
   - type: textarea
     id: tried
     attributes:
-      label: 已经试过什么
-      description: 改过哪些设置、看过哪些日志；贴关键几行即可
+      label: 已尝试的做法
+      description: 已调整的设置，或已查阅的日志片段。
     validations:
       required: false
 
@@ -47,8 +45,8 @@ body:
     id: version
     attributes:
       label: 版本
-      description: 见 WebUI「设置 → 高级 → 调试信息」里的 Version
-      placeholder: 例如 r3347-alpha 或 3.2.93
+      description: 见 WebUI「设置 → 高级 → 调试信息」中的 Version。
+      placeholder: 例：r3347-alpha
     validations:
       required: false
 
@@ -57,7 +55,5 @@ body:
     attributes:
       label: 确认项
       options:
-        - label: 我已读过使用文档，并搜索过已有 issue。
-          required: true
-        - label: 这不是一个可复现的缺陷（那种请用 Bug 模板）。
+        - label: 已阅读使用文档，并检索既有 issue。
           required: true
